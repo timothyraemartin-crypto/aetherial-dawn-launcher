@@ -1185,6 +1185,12 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_m
             Err(e) => log::line(&format!("play: couldn't fix loadorder.txt: {e}")),
         }
     }
+    // The server's Souls-style camera, once; later Mod Configuration tweaks stay.
+    match launcher_core::camera::apply_once(dir) {
+        Ok(f) if !f.is_empty() => log::line(&format!("play: applied the Souls-style camera preset to {} (old files backed up)", f.join(", "))),
+        Ok(_) => {}
+        Err(e) => log::line(&format!("play: couldn't apply the camera preset: {e}")),
+    }
     restore_crash_logger(dir);
     clear_browser_cache();
     match game::ensure_platform_folders(dir) {

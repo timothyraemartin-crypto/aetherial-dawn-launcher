@@ -6,6 +6,7 @@ pub mod aliases;
 pub mod allowlist;
 pub mod auth;
 pub mod bsa;
+pub mod camera;
 pub mod community;
 pub mod downgrade;
 pub mod game;

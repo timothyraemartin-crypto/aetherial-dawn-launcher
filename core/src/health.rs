@@ -86,6 +86,7 @@ pub fn run(i: &Inputs) -> Report {
         required_files(i),
         skse_builds(i),
         wanted_off(i),
+        camera_preset(i),
         load_order(i),
         plugin_names(i),
         load_order_file(i),
@@ -367,6 +368,14 @@ fn wanted_off(i: &Inputs) -> Check {
         check("requiredoff", "Required mods switched on", Status::Ok, "Every required mod's plugin is switched on.", vec![])
     } else {
         check("requiredoff", "Required mods switched on", Status::Warn, "A required mod's plugin is switched off in Vortex's Plugins tab, so its settings page won't show in Mod Configuration. Switch it on there.", off)
+    }
+}
+
+/// Whether the Souls-style camera preset has been applied.
+fn camera_preset(i: &Inputs) -> Check {
+    match crate::camera::applied(i.game_dir) {
+        Some(_) => check("camerapreset", "Camera preset", Status::Ok, "The Souls-style camera (SmoothCam and True Directional Movement) is set. Fine-tune it in Esc > Mod Configuration; the launcher won't undo your changes.", vec![]),
+        None => check("camerapreset", "Camera preset", Status::Info, "The Souls-style camera (SmoothCam and True Directional Movement) is set on the next Play. Your current settings are backed up first.", vec![]),
     }
 }
 

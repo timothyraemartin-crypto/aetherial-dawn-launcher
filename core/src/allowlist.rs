@@ -113,6 +113,7 @@ pub fn required_file(rel: &str) -> bool {
     n.starts_with("skyui_se.")
         || ["mcmhelper.", "smoothcam.", "truedirectionalmovement.", "truehud."].iter().any(|p| n.starts_with(p))
         || n.starts_with("mcm/config/smoothcam") || n.starts_with("mcm/config/truedirectionalmovement") || n.starts_with("mcm/config/truehud")
+        || n.starts_with("mcm/settings/smoothcam") || n.starts_with("mcm/settings/truedirectionalmovement") || n.starts_with("mcm/settings/truehud")
         || n.starts_with(patch)
         || n.starts_with(&format!("bashtags/{patch}"))
         || n.starts_with(&format!("docs/{patch}"))
