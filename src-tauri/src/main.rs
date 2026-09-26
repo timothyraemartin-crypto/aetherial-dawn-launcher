@@ -1,7 +1,7 @@
 // Hides the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use launcher_core::{auth, downgrade, game, gameini, health, loadorder, manifest::Manifest, settings, steamapp, strays, sync, version, watch, Error};
+use launcher_core::{auth, downgrade, game, gameini, health, loadorder, manifest::Manifest, pristine, settings, steamapp, strays, sync, version, watch, Error};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,6 +60,10 @@ struct AppState {
     config: Mutex<Config>,
     manifest: Mutex<Option<Manifest>>,
     http: reqwest::Client,
+    /// The Steam download running inside the launcher, and its input for the
+    /// player's password or Steam Guard code.
+    steam_child: std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>,
+    steam_input: std::sync::Mutex<Option<std::process::ChildStdin>>,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -184,7 +188,7 @@ async fn check(app: AppHandle, state: State<'_, AppState>, verify_all: bool) -> 
         files: plan.download.len(),
         remove: plan.remove.len(),
         bytes: plan.download_bytes,
-        game: version::check(&dir, m.game.as_ref()),
+        game: auto_version(&dir, m.game.as_ref()),
         strays: all_strays(&app, &dir, &m),
     };
     if !result.strays.is_empty() {
@@ -221,7 +225,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     let config = state.config.lock().await.clone();
     let dir = config.game_dir.clone().ok_or("Pick your Skyrim folder first.")?;
     let m = state.manifest.lock().await.clone().ok_or("Check for updates before playing.")?;
-    let gc = version::check(&dir, m.game.as_ref());
+    let gc = auto_version(&dir, m.game.as_ref());
     log::line(&format!("play: game folder {}, build {}, version needed={} skseOk={}", dir.display(), m.build, gc.needed, gc.skse_ok));
     if gc.needed {
         return Err(gc.reason.unwrap_or_else(|| "Your Skyrim version doesn't match the server.".into()));
@@ -281,6 +285,9 @@ struct GameEnded {
     crashed: bool,
     summary: String,
     report: String,
+    /// Staff's report number and likely cause, when the report was sent.
+    report_id: Option<String>,
+    likely_cause: Option<String>,
 }
 
 fn reports_dir() -> Option<PathBuf> {
@@ -339,8 +346,20 @@ async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::
     };
     let health = run_health(&app, &http, &config.base_url, &game_dir, manifest.as_ref()).await;
     report.push_str(&format!("\n===== game health =====\n{}", health.text()));
-    if crashed && config.share_health {
-        send_health(&app, &http, &config, &build, "after a crash", Some(&summary), &health).await;
+    let mut staff_summary = summary.clone();
+    if crashed {
+        if let Some(cl) = watch::crash_logger_summary(&skse_logs, started) {
+            log::line(&format!("game: crash logger says:\n{cl}"));
+            staff_summary.push_str(&format!("\n\nCrash logger:\n{cl}"));
+        }
+    }
+    let filed = if crashed && config.share_health {
+        send_health(&app, &http, &config, &build, "after a crash", Some(&staff_summary), &health).await
+    } else {
+        Filed::default()
+    };
+    if let Some(id) = &filed.report_id {
+        report.push_str(&format!("\nSent to staff as {id}.\n"));
     }
     report.push_str(&format!("\n===== game data =====\n{}", game_data_report(&app, &game_dir)));
     report.push_str(&watch::collect(&skse_logs, &std::env::temp_dir(), started));
@@ -357,11 +376,11 @@ async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::
             let _ = w.unminimize();
             let _ = w.set_focus();
         }
-        let _ = app.emit("game-ended", GameEnded { crashed, summary, report });
+        let _ = app.emit("game-ended", GameEnded { crashed, summary: summary.clone(), report: report.clone(), report_id: filed.report_id.clone(), likely_cause: filed.likely_cause.clone() });
     } else if close_on_launch {
         app.exit(0);
     } else {
-        let _ = app.emit("game-ended", GameEnded { crashed, summary, report });
+        let _ = app.emit("game-ended", GameEnded { crashed, summary: summary.clone(), report: report.clone(), report_id: filed.report_id.clone(), likely_cause: filed.likely_cause.clone() });
     }
 }
 
@@ -582,32 +601,151 @@ async fn auth_sign_out(app: AppHandle, state: State<'_, AppState>) -> CmdResult<
 async fn game_check(state: State<'_, AppState>) -> CmdResult<version::GameCheck> {
     let dir = game_dir(&state).await?;
     let m = state.manifest.lock().await.clone();
-    Ok(version::check(&dir, m.as_ref().and_then(|m| m.game.as_ref())))
+    Ok(auto_version(&dir, m.as_ref().and_then(|m| m.game.as_ref())))
 }
 
 /// Downloads the server's Skyrim build from Steam with the player's own
-/// account, through DepotDownloader in its own window. Sends
-/// `downgrade-stage` events ("tool", "steam", "verify") to the UI.
+/// account through DepotDownloader. Sends `downgrade-stage` events ("tool",
+/// "steam", "verify") to the UI. With `inline`, the sign-in happens inside
+/// the launcher: `steam-login` events say what Steam asks for, and the UI
+/// answers through `steam_login_answer`. Otherwise DepotDownloader opens its
+/// own window.
 #[tauri::command]
-async fn downgrade(app: AppHandle, state: State<'_, AppState>, username: Option<String>) -> CmdResult<version::GameCheck> {
+async fn downgrade(app: AppHandle, state: State<'_, AppState>, username: Option<String>, inline: Option<bool>) -> CmdResult<version::GameCheck> {
     let dir = game_dir(&state).await?;
     let m = state.manifest.lock().await.clone().ok_or("Check for updates first.")?;
     let spec = m.game.clone().ok_or("The server doesn't ask for a particular Skyrim version.")?;
+    let inline = inline.unwrap_or(false);
     let login = match username.as_deref().map(str::trim) {
         Some(u) if !u.is_empty() => downgrade::Login::User(u.to_string()),
+        _ if inline => return Err("Type your Steam account name.".into()),
         _ => downgrade::Login::Qr,
     };
     let args = downgrade::args(&spec, &dir, &login).map_err(err)?;
-    log::line(&format!("downgrade: to {} in {}, DepotDownloader {}", spec.version.as_deref().unwrap_or("?"), dir.display(), args.join(" ")));
+    log::line(&format!("downgrade: to {} in {}{}, DepotDownloader {}", spec.version.as_deref().unwrap_or("?"), dir.display(), if inline { " (sign-in inside the launcher)" } else { "" }, args.join(" ")));
     let tools = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("tools");
     let _ = app.emit("downgrade-stage", "tool");
     let tool = downgrade::ensure_tool(&state.http, &tools, spec.tool.as_ref()).await.map_err(err)?;
     log::line(&format!("downgrade: tool ready at {}", tool.display()));
     let _ = app.emit("downgrade-stage", "steam");
-    downgrade::run(&tool, &args, &tools).await.map_err(err)?;
-    log::line("downgrade: Steam download window closed");
+    if inline {
+        run_inline(&app, &state, &tool, &args, &tools).await?;
+        log::line("downgrade: Steam download finished");
+    } else {
+        downgrade::run(&tool, &args, &tools).await.map_err(err)?;
+        log::line("downgrade: Steam download window closed");
+    }
     let _ = app.emit("downgrade-stage", "verify");
     finish_downgrade(&dir, &spec, false)
+}
+
+async fn run_inline(app: &AppHandle, state: &AppState, tool: &std::path::Path, args: &[String], tools: &std::path::Path) -> CmdResult<()> {
+    use std::io::Read;
+    if state.steam_child.lock().unwrap().is_some() {
+        return Err("A Steam download is already running.".into());
+    }
+    let mut child = downgrade::spawn_piped(tool, args, tools).map_err(err)?;
+    let failed: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
+    let pipes: Vec<Box<dyn Read + Send>> = [child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>)]
+        .into_iter()
+        .flatten()
+        .collect();
+    *state.steam_input.lock().unwrap() = child.stdin.take();
+    *state.steam_child.lock().unwrap() = Some(child);
+    let mut readers = Vec::new();
+    for mut pipe in pipes {
+        let (app, failed) = (app.clone(), failed.clone());
+        readers.push(std::thread::spawn(move || {
+            let mut scanner = downgrade::Scanner::default();
+            let mut buf = [0u8; 4096];
+            let mut last_logged = -10.0f32;
+            while let Ok(n) = pipe.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                for ev in scanner.feed(&String::from_utf8_lossy(&buf[..n])) {
+                    match &ev {
+                        downgrade::Event::Progress { percent } => {
+                            if *percent >= last_logged + 10.0 {
+                                last_logged = *percent;
+                                log::line(&format!("steam: {percent:.0}%"));
+                            }
+                        }
+                        downgrade::Event::Line { text } => log::line(&format!("steam: {text}")),
+                        downgrade::Event::LoginFailed { message } => {
+                            log::line(&format!("steam: sign-in refused: {message}"));
+                            *failed.lock().unwrap() = Some(message.clone());
+                        }
+                        other => log::line(&format!("steam: asks {other:?}")),
+                    }
+                    let _ = app.emit("steam-login", &ev);
+                }
+            }
+        }));
+    }
+    let status = loop {
+        let done = {
+            let mut guard = state.steam_child.lock().unwrap();
+            match guard.as_mut() {
+                None => None,
+                Some(c) => match c.try_wait() {
+                    Ok(Some(s)) => {
+                        guard.take();
+                        Some(Some(s))
+                    }
+                    Ok(None) => Some(None),
+                    Err(_) => {
+                        guard.take();
+                        None
+                    }
+                },
+            }
+        };
+        match done {
+            None => break None,
+            Some(Some(s)) => break Some(s),
+            Some(None) => tokio::time::sleep(std::time::Duration::from_millis(400)).await,
+        }
+    };
+    state.steam_input.lock().unwrap().take();
+    for r in readers {
+        let _ = tokio::task::spawn_blocking(move || r.join()).await;
+    }
+    match status {
+        Some(s) if s.success() => Ok(()),
+        None => Err("The Steam download was stopped. Nothing was changed that a second try won't fix.".into()),
+        Some(s) => {
+            log::line(&format!("downgrade: DepotDownloader ended with {s}"));
+            match failed.lock().unwrap().take() {
+                Some(m) => Err(format!("Steam didn't accept the sign-in ({m}). Check your account name and password, then try again.")),
+                None => Err("The Steam download didn't finish. Nothing was changed that a second try won't fix.".into()),
+            }
+        }
+    }
+}
+
+/// Passes the player's answer (password or Steam Guard code) to Steam. The
+/// text is never logged or kept.
+#[tauri::command]
+fn steam_login_answer(state: State<'_, AppState>, text: String) -> CmdResult<()> {
+    use std::io::Write;
+    let mut guard = state.steam_input.lock().unwrap();
+    let input = guard.as_mut().ok_or("The Steam download isn't running.")?;
+    let line = format!("{}\n", text.trim_end_matches(['\r', '\n']));
+    input.write_all(line.as_bytes()).and_then(|_| input.flush()).map_err(|e| format!("Couldn't pass that to Steam: {e}"))?;
+    log::line("steam: passed the player's answer to Steam");
+    Ok(())
+}
+
+/// Stops a Steam download running inside the launcher.
+#[tauri::command]
+fn steam_login_cancel(state: State<'_, AppState>) {
+    if let Some(mut c) = state.steam_child.lock().unwrap().take() {
+        let _ = c.kill();
+        let _ = c.wait();
+        log::line("steam: download stopped by the player");
+    }
+    state.steam_input.lock().unwrap().take();
 }
 
 #[derive(Serialize)]
@@ -701,9 +839,23 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest) -> CmdResult<
     Ok(())
 }
 
-/// Staff endpoint for health reports. Not set up on the server yet, so
-/// reports are only shown and logged.
-const HEALTH_REPORT_URL: Option<&str> = None;
+/// Staff reports go to the login service's crash-report endpoint, signed
+/// with the player's launcher token. Off until the server has it deployed;
+/// until then reports are only shown and logged.
+const HEALTH_REPORTS_ON: bool = false;
+/// The endpoint takes at most 60 KB.
+const HEALTH_REPORT_MAX: usize = 58_000;
+
+fn health_report_url() -> Option<String> {
+    HEALTH_REPORTS_ON.then(|| format!("{AUTH_URL}/api/crash-reports"))
+}
+
+/// What staff sent back: the report number and the likely cause.
+#[derive(Clone, Default)]
+struct Filed {
+    report_id: Option<String>,
+    likely_cause: Option<String>,
+}
 
 async fn run_health(app: &AppHandle, http: &reqwest::Client, base: &str, dir: &std::path::Path, m: Option<&Manifest>) -> health::Report {
     let url = format!("{}/masters.json", base.trim_end_matches('/'));
@@ -751,15 +903,95 @@ fn health_payload(app: &AppHandle, config: &Config, build: &str, when: &str, cra
     })
 }
 
-async fn send_health(app: &AppHandle, http: &reqwest::Client, config: &Config, build: &str, when: &str, crash: Option<&str>, r: &health::Report) {
-    let Some(url) = HEALTH_REPORT_URL else {
-        log::line(&format!("health: report {when} not sent: the staff endpoint isn't set up yet"));
-        return;
+/// Never names the client settings file or PluginsNoLoad (the endpoint
+/// refuses those), and stays under the size limit.
+fn fit_report(mut body: serde_json::Value) -> serde_json::Value {
+    let bad = |t: &str| {
+        let l = t.to_ascii_lowercase();
+        l.contains("skymp5-client-settings") || l.contains("pluginsnoload")
     };
-    let body = health_payload(app, config, build, when, crash, r);
-    match http.post(url).json(&body).timeout(std::time::Duration::from_secs(10)).send().await.and_then(|r| r.error_for_status()) {
-        Ok(_) => log::line(&format!("health: report {when} sent to staff")),
-        Err(e) => log::line(&format!("health: report {when} not sent: {e}")),
+    if let Some(checks) = body["checks"].as_array_mut() {
+        for c in checks {
+            if c["detail"].as_str().is_some_and(bad) {
+                c["detail"] = "(detail left out: it named a private file)".into();
+            }
+            if let Some(items) = c["items"].as_array_mut() {
+                items.retain(|i| !i.as_str().is_some_and(bad));
+                if items.len() > 40 {
+                    let more = items.len() - 40;
+                    items.truncate(40);
+                    items.push(format!("…and {more} more").into());
+                }
+            }
+        }
+    }
+    if let Some(t) = body["text"].as_str() {
+        let lines: Vec<&str> = t.lines().filter(|l| !bad(l)).collect();
+        body["text"] = lines.join("\n").into();
+    }
+    let mut n = 0;
+    while serde_json::to_vec(&body).map(|v| v.len()).unwrap_or(0) > HEALTH_REPORT_MAX && n < 20 {
+        n += 1;
+        let t = body["text"].as_str().unwrap_or("").to_string();
+        let keep = t.len() / 2;
+        let cut = (0..=keep).rev().find(|i| t.is_char_boundary(*i)).unwrap_or(0);
+        body["text"] = format!("{}\n…(cut to fit)", &t[..cut]).into();
+        if n > 6 {
+            if let Some(checks) = body["checks"].as_array_mut() {
+                for c in checks {
+                    if let Some(items) = c["items"].as_array_mut() {
+                        items.truncate(5);
+                    }
+                }
+            }
+        }
+    }
+    body
+}
+
+async fn send_health(app: &AppHandle, http: &reqwest::Client, config: &Config, build: &str, when: &str, crash: Option<&str>, r: &health::Report) -> Filed {
+    let Some(url) = health_report_url() else {
+        log::line(&format!("health: report {when} not sent: the staff endpoint isn't set up yet"));
+        return Filed::default();
+    };
+    let Some(token) = token(app) else {
+        log::line(&format!("health: report {when} not sent: not signed in"));
+        return Filed::default();
+    };
+    let mut body = health_payload(app, config, build, when, crash, r);
+    body["consent"] = true.into();
+    let body = fit_report(body);
+    let res = http.post(&url).header("authorization", token).json(&body).timeout(std::time::Duration::from_secs(10)).send().await;
+    let res = match res {
+        Ok(r) => r,
+        Err(e) => {
+            log::line(&format!("health: report {when} not sent: {e}"));
+            return Filed::default();
+        }
+    };
+    let status = res.status();
+    let v: serde_json::Value = res.json().await.unwrap_or_default();
+    match status.as_u16() {
+        200..=299 => {
+            let f = Filed {
+                report_id: v["reportId"].as_str().map(str::to_string),
+                likely_cause: v["likelyCause"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
+            };
+            log::line(&format!("health: report {when} sent to staff as {} (likely cause: {})", f.report_id.as_deref().unwrap_or("?"), f.likely_cause.as_deref().unwrap_or("none given")));
+            f
+        }
+        404 => {
+            log::line(&format!("health: report {when} not sent: the staff endpoint isn't on the server yet"));
+            Filed::default()
+        }
+        429 => {
+            log::line(&format!("health: report {when} not sent: too many reports, retry after {}s", v["retryAfter"]));
+            Filed::default()
+        }
+        code => {
+            log::line(&format!("health: report {when} not sent: server answered {code} {}", v["error"].as_str().or(v["message"].as_str()).unwrap_or("")));
+            Filed::default()
+        }
     }
 }
 
@@ -783,7 +1015,7 @@ async fn health_check(app: AppHandle, state: State<'_, AppState>) -> CmdResult<H
     let report = run_health(&app, &state.http, &config.base_url, &dir, m.as_ref()).await;
     log::line(&format!("health (settings): worst={:?}", report.worst));
     let payload = serde_json::to_string_pretty(&health_payload(&app, &config, m.as_ref().map(|m| m.build.as_str()).unwrap_or(""), "example", None, &report)).unwrap_or_default();
-    Ok(HealthOut { text: report.text(), report, payload, endpoint: HEALTH_REPORT_URL.is_some(), share: config.share_health })
+    Ok(HealthOut { text: report.text(), report, payload, endpoint: HEALTH_REPORTS_ON, share: config.share_health })
 }
 
 /// The player's load order file (Vortex and the game both use it).
@@ -855,8 +1087,60 @@ fn finish_downgrade(dir: &std::path::Path, spec: &launcher_core::manifest::GameS
             Ok(p) => log::line(&format!("downgrade: set Steam to update Skyrim only when launched and made {} read-only", p.display())),
             Err(e) => log::line(&format!("downgrade: couldn't stop Steam updating Skyrim: {e}")),
         }
+        keep_copy(dir, spec);
     }
     Ok(version::check(dir, Some(spec)))
+}
+
+fn keep_copy(dir: &std::path::Path, spec: &launcher_core::manifest::GameSpec) {
+    match pristine::save(dir, spec) {
+        Ok(n) => log::line(&format!("version: kept a linked copy of {n} Steam files in {} to put back if Steam updates the game", pristine::DIR)),
+        Err(e) => log::line(&format!("version: couldn't keep a copy of the game files, so a Steam update will need a new download: {e}")),
+    }
+}
+
+/// The version check, fixing what it can by itself: when Steam has updated
+/// or repaired the game since the launcher downgraded it, the kept copy is
+/// put back with no download and nothing for the player to do. A good build
+/// with no kept copy yet (downgraded before 0.1.21) gets one now.
+fn auto_version(dir: &std::path::Path, spec: Option<&launcher_core::manifest::GameSpec>) -> version::GameCheck {
+    let gc = version::check(dir, spec);
+    let Some(spec) = spec else { return gc };
+    if !gc.needed {
+        if gc.warning.is_none() && version::made_by_launcher(dir) && !pristine::available(dir, spec) {
+            keep_copy(dir, spec);
+        }
+        return gc;
+    }
+    if !pristine::available(dir, spec) || watch::find_process(watch::GAME_PROCESS).is_some() {
+        return gc;
+    }
+    log::line(&format!("version: {} Putting the kept copy back.", gc.reason.as_deref().unwrap_or("Game files changed.")));
+    match pristine::restore(dir, spec) {
+        Ok(Some(files)) => {
+            log::line(&format!("version: put back {} file(s): {}", files.len(), files.join(", ")));
+            let want = spec.version.as_deref().and_then(version::parse_version);
+            if want.is_none() || version::exe_version(&dir.join(game::GAME_EXE)) == want {
+                // The Steam files are the saved build again; anything else
+                // that changed (a mod's archive) isn't the game version.
+                if let Err(e) = version::record(dir, spec, false) {
+                    log::line(&format!("version: couldn't record the build: {e}"));
+                }
+                match version::hold_updates(dir, spec.app) {
+                    Ok(_) => log::line("version: Steam set to update Skyrim only when launched from Steam, again"),
+                    Err(e) => log::line(&format!("version: couldn't stop Steam updating Skyrim: {e}")),
+                }
+            }
+            let again = version::check(dir, Some(spec));
+            log::line(&format!("version: after putting files back, needed={}", again.needed));
+            again
+        }
+        Ok(None) => gc,
+        Err(e) => {
+            log::line(&format!("version: couldn't put the kept copy back: {e}"));
+            gc
+        }
+    }
 }
 
 /// The client files in the current server build, for the Game files page.
@@ -1038,10 +1322,10 @@ fn main() {
                 .user_agent(concat!("AetherialDawnLauncher/", env!("CARGO_PKG_VERSION")))
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .build()?;
-            app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http });
+            app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http, steam_child: Default::default(), steam_input: Default::default() });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report, health_check])
+        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report, health_check, steam_login_answer, steam_login_cancel])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }

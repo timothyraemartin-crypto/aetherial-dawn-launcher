@@ -362,7 +362,9 @@
     $('dg-go').hidden = steam;
     document.querySelector('#downgrade .choice').hidden = steam;
     $('dg-notes').hidden = steam;
-    $('dg-user-field').hidden = steam || document.querySelector('input[name="dg-login"]:checked').value !== 'user';
+    const how = document.querySelector('input[name="dg-login"]:checked').value;
+    $('dg-user-field').hidden = steam || (how !== 'user' && how !== 'here');
+    $('dg-other').hidden = steam || !document.querySelector('#downgrade .opt.other[hidden]');
     if (!steam && steamPoll) { clearInterval(steamPoll); steamPoll = null; }
   }
   const gb = n => n >= 1073741824 ? (n / 1073741824).toFixed(1) + ' GB' : mb(n);
@@ -408,7 +410,7 @@
     try { const c = await invoke('steam_app_install'); dgMode(false); dgDone(c); }
     catch (e) { dgFail(e); $('dg-install').disabled = false; }
   }
-  function dgBusy(on) { for (const id of ['dg-go', 'dg-cancel', 'dg-skip']) $(id).disabled = on; busy = on; }
+  function dgBusy(on) { for (const id of ['dg-go', 'dg-cancel', 'dg-skip', 'dg-other']) $(id).disabled = on; busy = on; }
   function dgDone(c) {
     gameCheck = c;
     dgBusy(false);
@@ -419,6 +421,7 @@
   function dgFail(e) {
     dgBusy(false);
     $('dg-progress').hidden = true;
+    $('dg-bar').hidden = true;
     $('dg-error').textContent = String(e);
     $('dg-error').hidden = false;
   }
@@ -427,8 +430,86 @@
     steam: 'Sign in to Steam in the window that just opened. The download runs there, so keep it open until it finishes.',
     verify: 'Checking your game…',
   };
+  // ---------- downgrade with the Steam sign-in inside the launcher ----------
+  let inlineRun = false;
+  function dgAsk(label, type, note) {
+    $('dg-ask-label').textContent = label;
+    $('dg-answer').type = type;
+    $('dg-answer').value = '';
+    $('dg-ask-note').textContent = note;
+    $('dg-ask').hidden = false;
+    $('dg-answer').focus();
+  }
+  function steamEvent(ev) {
+    const stage = t => { $('dg-progress').hidden = false; $('dg-stage').textContent = t; };
+    switch (ev.kind) {
+      case 'signingIn': stage('Signing in to Steam…'); break;
+      case 'password':
+        stage('Steam is asking for your password.');
+        dgAsk('Steam password', 'password', "It goes straight to Steam and isn't saved. Steam remembers this PC afterwards, so next time there's nothing to type.");
+        break;
+      case 'guardApp':
+        stage('Steam Guard is asking for a code.');
+        dgAsk('Steam Guard code', 'text', 'Open the Steam app on your phone and type the code it shows.');
+        break;
+      case 'guardEmail':
+        stage('Steam Guard is asking for a code.');
+        dgAsk('Steam Guard code', 'text', `Steam emailed a code to ${ev.email || 'your email address'}.`);
+        break;
+      case 'confirmPhone':
+        $('dg-ask').hidden = true;
+        stage('Approve the sign-in in the Steam app on your phone. The download starts right after.');
+        break;
+      case 'progress':
+        $('dg-ask').hidden = true;
+        $('dg-bar').hidden = false;
+        $('dg-bar-i').style.width = Math.min(100, ev.percent) + '%';
+        stage(`Downloading Skyrim ${shortVer((gameCheck || {}).target)} from Steam… ${ev.percent.toFixed(0)}%`);
+        break;
+    }
+  }
+  async function sendAnswer() {
+    const text = $('dg-answer').value;
+    if (!text.trim()) return;
+    $('dg-answer').value = '';
+    $('dg-ask').hidden = true;
+    $('dg-stage').textContent = 'Checking with Steam…';
+    try { await invoke('steam_login_answer', { text }); } catch (e) { dgFail(e); }
+  }
+  async function inlineDowngrade() {
+    const user = $('dg-user').value.trim();
+    if (!user) { dgFail('Type your Steam account name.'); return; }
+    try { localStorage.setItem('ad-steam-user', user); } catch {}
+    dgBusy(true);
+    inlineRun = true;
+    $('dg-cancel').disabled = false;
+    $('dg-cancel').textContent = 'Stop';
+    $('dg-error').hidden = true;
+    $('dg-notes').hidden = true;
+    document.querySelector('#downgrade .choice').hidden = true;
+    $('dg-other').hidden = true;
+    $('dg-progress').hidden = false;
+    $('dg-stage').textContent = STAGES.tool;
+    const offStage = await T.event.listen('downgrade-stage', ({ payload }) => {
+      $('dg-stage').textContent = payload === 'steam' ? 'Connecting to Steam…' : (STAGES[payload] || '');
+    });
+    const offLogin = await T.event.listen('steam-login', ({ payload }) => steamEvent(payload));
+    try { dgDone(await invoke('downgrade', { username: user, inline: true })); }
+    catch (e) { dgFail(e); }
+    finally {
+      offStage(); offLogin();
+      inlineRun = false;
+      $('dg-ask').hidden = true;
+      $('dg-bar').hidden = true;
+      $('dg-cancel').textContent = 'Not now';
+      $('dg-notes').hidden = false;
+      document.querySelector('#downgrade .choice').hidden = false;
+      dgMode(false);
+    }
+  }
   async function runDowngrade() {
     const how = document.querySelector('input[name="dg-login"]:checked').value;
+    if (how === 'here') return inlineDowngrade();
     if (how === 'app') return steamBegin();
     const user = how === 'user' ? $('dg-user').value.trim() : null;
     if (user === '') { dgFail('Type your Steam account name, or choose the Steam mobile app.'); return; }
@@ -624,7 +705,17 @@
   $('c-game-pick').onclick = pickFolder;
   $('g-downgrade').onclick = openDowngrade;
   $('dg-go').onclick = runDowngrade;
-  $('dg-cancel').onclick = () => { dgMode(false); showPage(page); };
+  $('dg-cancel').onclick = () => {
+    if (inlineRun) { invoke('steam_login_cancel').catch(() => {}); return; }
+    dgMode(false); showPage(page);
+  };
+  $('dg-send').onclick = sendAnswer;
+  $('dg-answer').onkeydown = e => { if (e.key === 'Enter') sendAnswer(); };
+  $('dg-other').onclick = () => {
+    document.querySelectorAll('#downgrade .opt.other').forEach(o => { o.hidden = false; });
+    $('dg-other').hidden = true;
+  };
+  try { $('dg-user').value = localStorage.getItem('ad-steam-user') || ''; } catch {}
   $('dg-install').onclick = steamInstall;
   $('st-move').onclick = moveStrays;
   // ---------- after the game closes ----------
@@ -636,6 +727,11 @@
     $('cr-summary').textContent = g.summary;
     $('cr-report').textContent = g.report;
     $('cr-note').hidden = true;
+    const staff = $('cr-staff');
+    staff.hidden = !g.reportId;
+    staff.textContent = g.reportId
+      ? `Staff already have this report as ${g.reportId}.` + (g.likelyCause ? ` Likely cause: ${g.likelyCause}` : '') + ' Mention the number if you ask for help.'
+      : '';
     showSheet('crash');
     invoke('game_check').then(c => { gameCheck = c; renderVersion(); ready(); }).catch(() => {});
     ready();
@@ -664,7 +760,8 @@
     try { dgDone(await invoke('mark_game_ok')); } catch (e) { dgFail(e); }
   };
   document.querySelectorAll('input[name="dg-login"]').forEach(r => r.onchange = () => {
-    $('dg-user-field').hidden = document.querySelector('input[name="dg-login"]:checked').value !== 'user';
+    const how = document.querySelector('input[name="dg-login"]:checked').value;
+    $('dg-user-field').hidden = how !== 'user' && how !== 'here';
   });
   $('c-skse-recheck').onclick = refreshState;
   $('f-go').onclick = () => { if (!signedIn()) { showSignIn(); return; } showPage('home'); check(); };

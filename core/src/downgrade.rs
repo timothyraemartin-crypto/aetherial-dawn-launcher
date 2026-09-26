@@ -170,6 +170,114 @@ fn spawn(tool: &Path, args: &[String], work_dir: &Path) -> Result<std::process::
     Ok(std::process::Command::new(tool).args(args).current_dir(work_dir).spawn()?)
 }
 
+/// Runs DepotDownloader with no window of its own, for signing in inside the
+/// launcher: its output is read through [`Scanner`] and the player's answers
+/// (password, Steam Guard code) are written to its input. Nothing typed is
+/// ever echoed, logged or kept by the launcher; with `-remember-password`
+/// Steam hands DepotDownloader a sign-in token (kept in `work_dir`), so later
+/// downloads usually need no password at all.
+pub fn spawn_piped(tool: &Path, args: &[String], work_dir: &Path) -> Result<std::process::Child> {
+    use std::process::Stdio;
+    std::fs::create_dir_all(work_dir)?;
+    let mut cmd = std::process::Command::new(tool);
+    cmd.args(args).current_dir(work_dir).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    Ok(cmd.spawn()?)
+}
+
+/// What DepotDownloader is asking for or doing, for the launcher's window.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Event {
+    /// Wants the Steam password.
+    Password,
+    /// Wants the code from the Steam mobile app's authenticator.
+    GuardApp,
+    /// Wants the code Steam emailed to this (partly hidden) address.
+    GuardEmail { email: String },
+    /// Waiting for the player to approve the sign-in in the Steam mobile app.
+    ConfirmPhone,
+    SigningIn,
+    /// Steam turned the sign-in down (wrong password, too many tries...).
+    LoginFailed { message: String },
+    Progress { percent: f32 },
+    Line { text: String },
+}
+
+/// Turns DepotDownloader's output into [`Event`]s. Prompts end without a
+/// newline, so the unfinished tail of the output is checked for them too.
+#[derive(Default)]
+pub struct Scanner {
+    tail: String,
+}
+
+fn prompt(text: &str) -> Option<Event> {
+    let l = text.to_ascii_lowercase();
+    if l.contains("enter account password") {
+        Some(Event::Password)
+    } else if l.contains("2-factor auth code") || l.contains("2 factor auth code") {
+        Some(Event::GuardApp)
+    } else if l.contains("auth code sent to the email") {
+        let email = text
+            .rsplit_once("email at ")
+            .or_else(|| text.rsplit_once("email address at "))
+            .map(|(_, e)| e.trim().trim_end_matches(':').trim().to_string())
+            .unwrap_or_default();
+        Some(Event::GuardEmail { email })
+    } else {
+        None
+    }
+}
+
+fn classify(line: &str) -> Option<Event> {
+    let t = line.trim();
+    if t.is_empty() {
+        return None;
+    }
+    if let Some(e) = prompt(t) {
+        return Some(e);
+    }
+    let l = t.to_ascii_lowercase();
+    if l.contains("steam mobile app to confirm") {
+        return Some(Event::ConfirmPhone);
+    }
+    if l.starts_with("logging '") && l.contains("into steam") {
+        return Some(Event::SigningIn);
+    }
+    if l.contains("failed to authenticate") || l.contains("invalidpassword") || l.contains("unable to login") || l.contains("ratelimitexceeded") {
+        return Some(Event::LoginFailed { message: t.to_string() });
+    }
+    if let Some((num, _)) = t.split_once('%') {
+        if let Ok(p) = num.trim().parse::<f32>() {
+            return Some(Event::Progress { percent: p });
+        }
+    }
+    Some(Event::Line { text: t.to_string() })
+}
+
+impl Scanner {
+    pub fn feed(&mut self, text: &str) -> Vec<Event> {
+        self.tail.push_str(&text.replace('\r', "\n"));
+        let mut out = Vec::new();
+        while let Some(i) = self.tail.find('\n') {
+            let line: String = self.tail.drain(..=i).collect();
+            out.extend(classify(&line));
+        }
+        if self.tail.trim_end().ends_with(':') {
+            if let Some(e) = prompt(&self.tail) {
+                out.push(e);
+                self.tail.clear();
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +296,24 @@ mod tests {
         let a = args(&spec, Path::new("/g"), &Login::User("dovah_kiin".into())).unwrap().join(" ");
         assert!(a.ends_with("-username dovah_kiin -remember-password"));
         assert!(args(&spec, Path::new("/g"), &Login::User("x & del".into())).is_err());
+    }
+
+    #[test]
+    fn reads_depotdownloader_prompts_and_progress() {
+        let mut s = Scanner::default();
+        assert_eq!(s.feed("Logging 'dovah' into Steam3...\r\nEnter account pass"), vec![Event::SigningIn]);
+        assert_eq!(s.feed("word for \"dovah\": "), vec![Event::Password]);
+        assert_eq!(s.feed("STEAM GUARD! Please enter your 2-factor auth code from your authenticator app: "), vec![Event::GuardApp]);
+        assert_eq!(
+            s.feed("STEAM GUARD! Please enter the auth code sent to the email at d***@mail.com: "),
+            vec![Event::GuardEmail { email: "d***@mail.com".into() }]
+        );
+        assert_eq!(s.feed("STEAM GUARD! Use the Steam Mobile App to confirm your sign in...\n"), vec![Event::ConfirmPhone]);
+        assert_eq!(s.feed(" 12.50% A:\\Skyrim\\Data\\Skyrim.esm\n"), vec![Event::Progress { percent: 12.5 }]);
+        assert_eq!(
+            s.feed("Failed to authenticate with Steam: InvalidPassword\n"),
+            vec![Event::LoginFailed { message: "Failed to authenticate with Steam: InvalidPassword".into() }]
+        );
+        assert_eq!(s.feed("Depot 489831 - Downloaded 10 bytes\n"), vec![Event::Line { text: "Depot 489831 - Downloaded 10 bytes".into() }]);
     }
 }

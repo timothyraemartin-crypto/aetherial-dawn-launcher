@@ -180,6 +180,36 @@ pub fn collect(skse_log_dir: &Path, temp_dir: &Path, since: SystemTime) -> Strin
     o
 }
 
+/// The short version of a crash logger's log written since `since`: the
+/// exception line and the top of the call stack. Works with CrashLogger SSE
+/// ("Unhandled exception ...", "PROBABLE CALL STACK:") and Trainwreck
+/// ("Exception ...", "CALL STACK").
+pub fn crash_logger_summary(skse_log_dir: &Path, since: SystemTime) -> Option<String> {
+    let mut files = Vec::new();
+    walk(skse_log_dir, &mut files, 2);
+    let newest = files
+        .into_iter()
+        .filter(|p| {
+            let n = p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+            n.contains("crash") && n.ends_with(".log")
+        })
+        .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
+        .filter(|(t, _)| *t + Duration::from_secs(2) >= since)
+        .max_by_key(|(t, _)| *t)?
+        .1;
+    let text = String::from_utf8_lossy(&std::fs::read(&newest).ok()?).into_owned();
+    let lines: Vec<&str> = text.lines().collect();
+    let exception = lines.iter().find(|l| {
+        let l = l.to_ascii_lowercase();
+        l.contains("unhandled exception") || l.trim_start().starts_with("exception")
+    })?;
+    let mut out = vec![exception.trim().to_string()];
+    if let Some(i) = lines.iter().position(|l| l.to_ascii_uppercase().contains("CALL STACK")) {
+        out.extend(lines[i + 1..].iter().map(|l| l.trim()).filter(|l| !l.is_empty()).take(5).map(str::to_string));
+    }
+    Some(out.join("\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,6 +240,22 @@ mod tests {
         let r = collect(&skse, &tmp.join("temp"), since);
         assert!(r.contains("last line") && r.contains("Unhandled exception"));
         assert!(!r.contains("old.log"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn summarises_crash_logger() {
+        let tmp = std::env::temp_dir().join(format!("ad-cl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("SKSE")).unwrap();
+        std::fs::write(
+            tmp.join("SKSE/crash-2026-09-26-17-03-13.log"),
+            "Skyrim SSE v1.6.1170\nCrashLoggerSSE v1-15\n\nUnhandled exception \"EXCEPTION_ACCESS_VIOLATION\" at 0x7FF6A1B2C3D4 SkyrimSE.exe+0123456\n\nPROBABLE CALL STACK:\n\t[0] 0x7FF6A1B2C3D4 SkyrimSE.exe+0123456\n\t[1] 0x7FF9 SkyrimPlatformImpl.dll+0000ABC\n",
+        )
+        .unwrap();
+        let s = crash_logger_summary(&tmp.join("SKSE"), SystemTime::now() - Duration::from_secs(60)).unwrap();
+        assert!(s.starts_with("Unhandled exception \"EXCEPTION_ACCESS_VIOLATION\""));
+        assert!(s.contains("[1] 0x7FF9 SkyrimPlatformImpl.dll+0000ABC"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

@@ -270,3 +270,7 @@ html.animated .nav { background: linear-gradient(180deg, rgba(6,10,15,.9), rgba(
 .hl-tag { align-self: start; text-align: center; font: 600 10px/1 var(--mono); letter-spacing: .08em; padding: 4px 0; border-radius: 3px; border: 1px solid currentColor; }
 .hl-tag.ok { color: #7fd1a0; } .hl-tag.info { color: #8fb4d9; } .hl-tag.warn { color: #e5c07b; } .hl-tag.fail { color: #ef7d7d; }
 .hl-sent summary { cursor: pointer; color: var(--muted); font-size: 12px; margin: 8px 0 6px; }
+#dg-other { margin-left: 0; justify-self: start; }
+#dg-ask .hint { color: var(--faint); font-size: 12px; line-height: 1.4; }
+#dg-bar { width: 100%; }
+#cr-staff { color: var(--frost); }

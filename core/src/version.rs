@@ -226,6 +226,12 @@ fn read_marker(game_dir: &Path) -> Option<Marker> {
     serde_json::from_slice(&std::fs::read(game_dir.join(MARKER)).ok()?).ok()
 }
 
+/// Whether the launcher itself put the current build in place (not a
+/// player saying "already on this version").
+pub fn made_by_launcher(game_dir: &Path) -> bool {
+    read_marker(game_dir).is_some_and(|m| m.manual == Some(false))
+}
+
 fn marker_holds(game_dir: &Path, spec: &GameSpec) -> bool {
     let Some(m) = read_marker(game_dir) else { return false };
     m.version == spec.version.clone().unwrap_or_default() && m.depots == spec_depots(spec) && !m.files.is_empty() && m.files == fingerprint(game_dir)
