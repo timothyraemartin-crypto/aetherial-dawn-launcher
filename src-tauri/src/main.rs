@@ -1,7 +1,7 @@
 // Hides the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use launcher_core::{auth, downgrade, game, manifest::Manifest, settings, steamapp, strays, sync, version, watch, Error};
+use launcher_core::{auth, downgrade, game, loadorder, manifest::Manifest, settings, steamapp, strays, sync, version, watch, Error};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -162,7 +162,7 @@ async fn game_dir(state: &AppState) -> CmdResult<PathBuf> {
 
 /// Downloads the server's file list and works out what needs updating.
 #[tauri::command]
-async fn check(state: State<'_, AppState>, verify_all: bool) -> CmdResult<CheckResult> {
+async fn check(app: AppHandle, state: State<'_, AppState>, verify_all: bool) -> CmdResult<CheckResult> {
     let dir = game_dir(&state).await?;
     let base = state.config.lock().await.base_url.clone();
     let m = Manifest::fetch(&state.http, &base).await.map_err(err)?;
@@ -174,7 +174,7 @@ async fn check(state: State<'_, AppState>, verify_all: bool) -> CmdResult<CheckR
         remove: plan.remove.len(),
         bytes: plan.download_bytes,
         game: version::check(&dir, m.game.as_ref()),
-        strays: strays::find(&dir, &m),
+        strays: all_strays(&app, &dir, &m),
     };
     if !result.strays.is_empty() {
         log::line(&format!("check: plugins not from the server: {}", result.strays.join(", ")));
@@ -634,17 +634,46 @@ async fn steam_app_install(state: State<'_, AppState>) -> CmdResult<version::Gam
     finish_downgrade(&dir, &spec, false)
 }
 
+/// The player's load order file (Vortex and the game both use it).
+fn plugins_txt(app: &AppHandle) -> Option<PathBuf> {
+    app.path().local_data_dir().ok().map(|d| d.join("Skyrim Special Edition").join("plugins.txt"))
+}
+
+/// SKSE/Platform plugins the server didn't ship, then plugins switched on in
+/// the load order that aren't base game, Creation Club or the server's.
+fn all_strays(app: &AppHandle, dir: &std::path::Path, m: &Manifest) -> Vec<String> {
+    let mut list = strays::find(dir, m);
+    if let Some(txt) = plugins_txt(app) {
+        list.extend(loadorder::extras(dir, &txt, m).iter().map(|e| e.describe()));
+    }
+    list
+}
+
 /// Moves plugins the server didn't ship into .aetherial-dawn/disabled/<time>/
-/// in the game folder, so they can be put back by hand.
+/// in the game folder, so they can be put back by hand, and switches extra
+/// plugins off in plugins.txt (the files stay in Data).
 #[tauri::command]
-async fn move_strays(state: State<'_, AppState>) -> CmdResult<String> {
+async fn move_strays(app: AppHandle, state: State<'_, AppState>) -> CmdResult<String> {
     let dir = game_dir(&state).await?;
     let m = state.manifest.lock().await.clone().ok_or("Check for updates first.")?;
     let list = strays::find(&dir, &m);
-    let stamp = log::timestamp().replace([':', ' '], "-");
-    let dest = strays::move_aside(&dir, &list, &stamp).map_err(|e| format!("Couldn't move the plugins ({e}). Close Skyrim and try again."))?;
-    log::line(&format!("moved {} plugin(s) to {}: {}", list.len(), dest.display(), list.join(", ")));
-    Ok(dest.display().to_string())
+    let mut said = Vec::new();
+    if !list.is_empty() {
+        let stamp = log::timestamp().replace([':', ' '], "-");
+        let dest = strays::move_aside(&dir, &list, &stamp).map_err(|e| format!("Couldn't move the plugins ({e}). Close Skyrim and try again."))?;
+        log::line(&format!("moved {} plugin(s) to {}: {}", list.len(), dest.display(), list.join(", ")));
+        said.push(format!("Moved to {}", dest.display()));
+    }
+    if let Some(txt) = plugins_txt(&app) {
+        let extras = loadorder::extras(&dir, &txt, &m);
+        if !extras.is_empty() {
+            let names: Vec<String> = extras.iter().map(|e| e.name.clone()).collect();
+            loadorder::switch_off(&txt, &names).map_err(|e| format!("Couldn't change your load order ({e}). Close Skyrim and Vortex, then try again."))?;
+            log::line(&format!("switched off in {}: {}", txt.display(), extras.iter().map(|e| e.describe()).collect::<Vec<_>>().join(", ")));
+            said.push(format!("Switched off {} in your load order. If you use Vortex, switch {} off in its Plugins tab too, or it switches {} back on.", names.join(", "), if names.len() == 1 { "it" } else { "them" }, if names.len() == 1 { "it" } else { "them" }));
+        }
+    }
+    Ok(said.join(" "))
 }
 
 /// For players who already put the right build in place themselves.
@@ -756,7 +785,7 @@ async fn diagnostics(app: AppHandle, state: State<'_, AppState>) -> CmdResult<St
             let gc = version::check(dir, manifest.as_ref().and_then(|m| m.game.as_ref()));
             let _ = writeln!(o, "Version check: {}", serde_json::to_string(&gc).unwrap_or_default());
             if let Some(m) = &manifest {
-                let st = strays::find(dir, m);
+                let st = all_strays(&app, dir, m);
                 let _ = writeln!(o, "Plugins not from the server: {}", if st.is_empty() { "none".into() } else { st.join(", ") });
             }
             let settings = dir.join(settings::SETTINGS_PATH);

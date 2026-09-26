@@ -454,7 +454,7 @@
       pending = { ...pending, strays: [] };
       showPage(page);
       ready();
-      if (playMode === 'play') setStatus(`Moved them to ${dest}. You're ready to play.`);
+      if (playMode === 'play') setStatus(`${dest} You're ready to play.`);
     } catch (e) { $('st-error').textContent = String(e); $('st-error').hidden = false; }
     finally { $('st-move').disabled = false; }
   }
