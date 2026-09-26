@@ -222,6 +222,12 @@
     </div>
   </div>
 
+  <!-- ===== music question (first launch) ===== -->
+  <div class="music-ask" id="music-ask" hidden>
+    <div><b>Menu music</b><small>Skyrim's main theme plays quietly while the launcher is open.</small></div>
+    <div class="line"><button class="btn primary" id="mu-keep">Keep music</button><button class="btn" id="mu-mute">Mute</button></div>
+  </div>
+
   <!-- ===== required mods ===== -->
   <div class="sheet" id="reqs" hidden>
     <div class="panel">
@@ -300,6 +306,7 @@
       </div>
       <div>
         <div class="toggle"><div>Close launcher when the game starts<small>Keeps the launcher out of the way while you play.</small></div><button class="switch" id="set-close" role="switch" aria-checked="true" aria-label="Close launcher when the game starts"></button></div>
+        <div class="toggle"><div>Menu music<small>Skyrim's main theme, played quietly from your own game files while the launcher is open. It stops when the game starts.</small></div><button class="switch" id="set-music" role="switch" aria-checked="true" aria-label="Menu music"></button></div>
         <div class="toggle"><div>Animated background<small>Snow, northern lights, castle lights and waterfalls. Turn off to save power on older PCs.</small></div><button class="switch" id="set-anim" role="switch" aria-checked="true" aria-label="Animated background"></button></div>
         <div class="toggle"><div>Update automatically<small>Downloads new files as soon as the launcher opens.</small></div><button class="switch" id="set-bg" role="switch" aria-checked="true" aria-label="Update automatically"></button></div>
         <div class="toggle"><div>Send game health reports to staff<small>Before Play when something is wrong, and after a crash. Never your password, login or settings file. See exactly what's sent under Check my game.</small></div><button class="switch" id="set-share" role="switch" aria-checked="true" aria-label="Send game health reports to staff"></button></div>

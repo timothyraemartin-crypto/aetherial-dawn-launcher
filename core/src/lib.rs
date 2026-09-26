@@ -3,6 +3,7 @@
 //! finding the game. The Tauri app in `src-tauri` is a thin shell over this.
 
 pub mod auth;
+pub mod bsa;
 pub mod community;
 pub mod downgrade;
 pub mod game;

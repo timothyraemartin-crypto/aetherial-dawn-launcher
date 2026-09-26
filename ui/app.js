@@ -152,6 +152,7 @@
     $('set-close').setAttribute('aria-checked', state.config.closeOnLaunch);
     $('set-bg').setAttribute('aria-checked', state.config.backgroundUpdates);
     $('set-share').setAttribute('aria-checked', state.config.shareHealth !== false);
+    $('set-music').setAttribute('aria-checked', state.config.music !== false);
     $('set-version').textContent = 'Launcher ' + state.launcherVersion;
     $('ver').textContent = 'Launcher v' + state.launcherVersion;
     renderGame();
@@ -876,7 +877,16 @@ async function onPlay() {
   };
   $('set-anim').setAttribute('aria-checked', Ambient.enabled);
   $('set-anim').onclick = () => { Ambient.set(!Ambient.enabled); $('set-anim').setAttribute('aria-checked', Ambient.enabled); };
-  document.querySelectorAll('.switch:not(#set-anim)').forEach(s => s.onclick = async () => {
+  const setMusic = async on => {
+    $('set-music').setAttribute('aria-checked', on);
+    $('music-ask').hidden = true;
+    state.config.music = on;
+    await invoke('set_music', { on }).catch(() => {});
+  };
+  $('set-music').onclick = () => setMusic($('set-music').getAttribute('aria-checked') !== 'true');
+  $('mu-keep').onclick = () => setMusic(true);
+  $('mu-mute').onclick = () => setMusic(false);
+  document.querySelectorAll('.switch:not(#set-anim):not(#set-music)').forEach(s => s.onclick = async () => {
     s.setAttribute('aria-checked', s.getAttribute('aria-checked') !== 'true');
     const prefs = { closeOnLaunch: $('set-close').getAttribute('aria-checked') === 'true', backgroundUpdates: $('set-bg').getAttribute('aria-checked') === 'true', shareHealth: $('set-share').getAttribute('aria-checked') === 'true' };
     await invoke('set_prefs', { prefs });
@@ -1003,6 +1013,7 @@ async function onPlay() {
 
   (async () => {
     await refreshState();
+    invoke('music_start').then(asked => { if (!asked && state.config.gameDir) $('music-ask').hidden = false; }).catch(() => {});
     loadStatus();
     setInterval(loadStatus, 30 * 1000);
     await refreshAuth();

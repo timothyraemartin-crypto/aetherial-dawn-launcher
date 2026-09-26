@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 
 mod log;
 mod mods;
+mod music;
 
 /// Where the server publishes the launcher files. Set AD_BASE_URL when
 /// building to point a release at the real server.
@@ -44,6 +45,9 @@ struct Config {
     /// The Nexus Mods account the player signed in with (the key itself is
     /// kept separately, encrypted).
     nexus_user: Option<launcher_core::nexus::User>,
+    /// Menu music: None until the player answers the Keep music / Mute
+    /// question, then their answer.
+    music: Option<bool>,
 }
 
 impl Default for Config {
@@ -57,6 +61,7 @@ impl Default for Config {
             background_updates: true,
             share_health: true,
             nexus_user: None,
+            music: None,
         }
     }
 }
@@ -70,6 +75,7 @@ struct AppState {
     steam_child: std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>,
     steam_input: std::sync::Mutex<Option<std::process::ChildStdin>>,
     mods: mods::ModsState,
+    music: music::Music,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -277,6 +283,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     .map_err(err)?;
     settings::write_auth_data(&dir, &session, &config.account.clone().unwrap_or_default()).map_err(err)?;
     log::line("play: wrote skymp5-client-settings.txt and auth data");
+    state.music.stop();
     game::launch(&dir).map_err(err)?;
     let google = game::google_env_present();
     if !google.is_empty() {
@@ -439,6 +446,37 @@ async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::
     } else {
         let _ = app.emit("game-ended", GameEnded { crashed, summary: summary.clone(), report: report.clone(), report_id: filed.report_id.clone(), likely_cause: filed.likely_cause.clone() });
     }
+}
+
+// ---------- menu music ----------
+
+/// Starts the menu music unless the player muted it. Returns whether the
+/// player has answered the Keep music / Mute question yet.
+#[tauri::command]
+async fn music_start(state: State<'_, AppState>) -> CmdResult<bool> {
+    let c = state.config.lock().await.clone();
+    if c.music != Some(false) && watch::find_process("SkyrimSE.exe").is_none() {
+        if let Some(dir) = c.game_dir {
+            state.music.play(dir);
+        }
+    }
+    Ok(c.music.is_some())
+}
+
+#[tauri::command]
+async fn set_music(app: AppHandle, state: State<'_, AppState>, on: bool) -> CmdResult<()> {
+    let mut c = state.config.lock().await;
+    c.music = Some(on);
+    save_config(&app, &c)?;
+    if on {
+        if let Some(dir) = c.game_dir.clone() {
+            state.music.play(dir);
+        }
+    } else {
+        state.music.stop();
+    }
+    log::line(&format!("music: turned {}", if on { "on" } else { "off" }));
+    Ok(())
 }
 
 /// What's in the game folder that can crash Skyrim before the main menu:
@@ -1740,11 +1778,11 @@ fn main() {
                 .user_agent(concat!("AetherialDawnLauncher/", env!("CARGO_PKG_VERSION")))
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .build()?;
-            app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http, steam_child: Default::default(), steam_input: Default::default(), mods: Default::default() });
+            app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http, steam_child: Default::default(), steam_input: Default::default(), mods: Default::default(), music: music::Music::new() });
             mods::restore_left_handler(app.handle());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report, health_check, steam_login_answer, steam_login_cancel, patch_game, build_patches, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods])
+        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report, health_check, steam_login_answer, steam_login_cancel, patch_game, build_patches, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }
