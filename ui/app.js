@@ -54,9 +54,11 @@
     const parts = [];
     if (statusMsg) parts.push(`<span${statusMsg.isError ? ' class="error"' : ''}>${esc(statusMsg.msg)}</span>`);
     else {
-      const on = status ? status.online : !!pending;
-      const who = status && typeof status.players === 'number' ? ` · ${status.players}${status.maxPlayers ? '/' + status.maxPlayers : ''} players` : '';
-      parts.push(`<span><i class="dot${on ? '' : ' off'}"></i>${on ? 'Online' : 'Offline'}${who}</span>`);
+      // Live from the login service's /health (refreshed every 30 s); grey when it can't be reached.
+      const known = status && typeof status.online === 'boolean';
+      const on = known && status.online;
+      const who = on && typeof status.players === 'number' ? ` · ${status.maxPlayers ? `${status.players} of ${plural(status.maxPlayers, 'player')}` : plural(status.players, 'player')}` : '';
+      parts.push(`<span><i class="dot${on ? '' : ' off'}"></i>${!known ? 'Server status unavailable' : on ? 'Server online' : 'Server offline'}${who}</span>`);
       if (pending) parts.push(`<span>Build ${esc(pending.build)}</span>`);
     }
     if (state) parts.push(`<span>v${esc(state.launcherVersion)}</span>`);
@@ -515,7 +517,8 @@
     }
     online.className = 'online' + (status.online ? '' : ' off');
     online.querySelector('span').textContent = status.online ? 'Online' : 'Offline';
-    if (typeof status.players === 'number') $('srv-players').textContent = status.maxPlayers ? `${status.players} / ${status.maxPlayers}` : status.players;
+    $('srv-players').textContent = status.online && typeof status.players === 'number'
+      ? (status.maxPlayers ? `${status.players} / ${status.maxPlayers}` : status.players) : '–';
     if (status.sinceReset) $('srv-reset').textContent = status.sinceReset;
     if (Array.isArray(status.news) && status.news.length) {
       $('news').innerHTML = newsHtml(status.news.slice(0, 3));
@@ -644,6 +647,7 @@
   (async () => {
     await refreshState();
     loadStatus();
+    setInterval(loadStatus, 30 * 1000);
     await refreshAuth();
     setInterval(recheckAuth, 10 * 60 * 1000);
     if (!ready_()) {

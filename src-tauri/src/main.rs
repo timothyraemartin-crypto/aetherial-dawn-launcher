@@ -4,6 +4,7 @@
 use launcher_core::{auth, downgrade, game, loadorder, manifest::Manifest, settings, steamapp, strays, sync, version, watch, Error};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
@@ -721,15 +722,45 @@ async fn open_game_folder(state: State<'_, AppState>) -> CmdResult<()> {
     std::process::Command::new(opener).arg(dir).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
-/// Optional `status.json` for the side panel. Missing or broken is fine.
+/// Server state for the home screen and the server page. Up/down and players
+/// come live from the login service's public /health (the game server checks
+/// in there every 5 s); the optional `status.json` adds news and the last reset.
+/// Either can be missing; None only when both are.
 #[tauri::command]
 async fn server_status(state: State<'_, AppState>) -> CmdResult<Option<serde_json::Value>> {
     let base = state.config.lock().await.base_url.clone();
-    let url = format!("{}/status.json", base.trim_end_matches('/'));
-    let Ok(resp) = state.http.get(url).send().await.and_then(|r| r.error_for_status()) else {
-        return Ok(None);
+    let file_url = format!("{}/status.json", base.trim_end_matches('/'));
+    let health_url = format!("{}/health", AUTH_URL.trim_end_matches('/'));
+    let (file, health) = tokio::join!(get_json(&state.http, &file_url), get_json(&state.http, &health_url));
+    let mut out = match file {
+        Some(serde_json::Value::Object(m)) => m,
+        _ => serde_json::Map::new(),
     };
-    Ok(resp.json().await.ok())
+    let seen = health.as_ref().and_then(|h| h.get("gameServerSeen")).and_then(|v| v.as_bool());
+    // Log only changes, so a 30-second poll doesn't flood the log.
+    if HEALTH_OK.swap(seen.is_some(), Ordering::Relaxed) != seen.is_some() {
+        log::line(&match seen {
+            Some(_) => format!("server status: {health_url} answering again"),
+            None => format!("server status: no answer from {health_url}"),
+        });
+    }
+    if let (Some(seen), Some(h)) = (seen, health.as_ref()) {
+        out.insert("online".into(), seen.into());
+        for key in ["players", "maxPlayers"] {
+            match h.get(key) {
+                Some(v) if v.is_number() => { out.insert(key.into(), v.clone()); }
+                _ => { out.remove(key); }
+            }
+        }
+    }
+    Ok(if out.is_empty() { None } else { Some(serde_json::Value::Object(out)) })
+}
+
+static HEALTH_OK: AtomicBool = AtomicBool::new(true);
+
+async fn get_json(http: &reqwest::Client, url: &str) -> Option<serde_json::Value> {
+    let resp = http.get(url).timeout(std::time::Duration::from_secs(8)).send().await.ok()?.error_for_status().ok()?;
+    resp.json().await.ok()
 }
 
 /// Records something from the UI (a failed command, a script error).
