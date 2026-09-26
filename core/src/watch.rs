@@ -251,10 +251,35 @@ pub fn collect(skse_log_dir: &Path, temp_dir: &Path, since: SystemTime) -> Strin
     }
     for f in files {
         let n = f.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-        let lines = if n.contains("crash") { 400 } else { 120 };
-        o.push_str(&format!("\n===== {} (last {lines} lines) =====\n{}\n", f.display(), tail(&f, lines)));
+        if n.starts_with("crash-") {
+            o.push_str(&format!("\n===== {} (exception, call stack and plugin lists) =====\n{}\n", f.display(), crash_log_parts(&f)));
+        } else {
+            o.push_str(&format!("\n===== {} (last 120 lines) =====\n{}\n", f.display(), tail(&f, 120)));
+        }
     }
     o
+}
+
+/// A crash logger's log without the long register and stack dumps: its first
+/// lines (the exception and call stack) and the module and plugin lists at
+/// the end. The last lines alone were all stack dump (2026-09-26).
+fn crash_log_parts(path: &Path) -> String {
+    let bytes = std::fs::read(path).unwrap_or_default();
+    let text = String::from_utf8_lossy(&bytes);
+    let all: Vec<&str> = text.lines().collect();
+    let stack_end = all.iter().position(|l| {
+        let u = l.trim().to_ascii_uppercase();
+        u.starts_with("REGISTERS") || u.starts_with("STACK:")
+    });
+    let head_end = stack_end.unwrap_or(0).clamp(120, 250).min(all.len());
+    let mut out: Vec<&str> = all[..head_end].to_vec();
+    if let Some(p) = all.iter().position(|l| l.trim().to_ascii_uppercase().starts_with("SKSE PLUGINS")) {
+        if p > head_end {
+            out.push("...");
+            out.extend(&all[p..]);
+        }
+    }
+    out.join("\n")
 }
 
 /// The short version of a crash logger's log written since `since`: the
@@ -290,6 +315,22 @@ pub fn crash_logger_summary(skse_log_dir: &Path, since: SystemTime) -> Option<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keeps_the_crash_log_header() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("crash-1.log");
+        let mut text = String::from("Unhandled exception at X.dll+1\nCALL STACK:\n[ 0] X.dll+1\nREGISTERS:\n");
+        for i in 0..1000 {
+            text.push_str(&format!("[RSP+{i}] 0x0\n"));
+        }
+        text.push_str("SKSE PLUGINS:\n\tX.dll\nPLUGINS:\n\t[ 0] Skyrim.esm\n");
+        std::fs::write(&p, text).unwrap();
+        let got = crash_log_parts(&p);
+        assert!(got.starts_with("Unhandled exception"));
+        assert!(got.contains("[ 0] X.dll+1") && got.contains("[ 0] Skyrim.esm"));
+        assert!(got.lines().count() < 200);
+    }
 
     #[test]
     fn describes_and_judges() {
