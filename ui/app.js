@@ -1,7 +1,25 @@
 // Launcher UI. Talks to the Rust side in src-tauri/src/main.rs through invoke().
 (() => {
   const T = window.__TAURI__;
-  const invoke = (cmd, args) => T.core.invoke(cmd, args);
+  // Every command's failure (and the outcome of the important ones) goes to the
+  // launcher log, so Copy diagnostics shows what happened. Nothing secret
+  // reaches the UI, so nothing secret can be logged from here.
+  const QUIET = new Set(['log_ui', 'diagnostics', 'files', 'server_status', 'auth_poll']);
+  const logUi = msg => { try { T.core.invoke('log_ui', { msg: String(msg) }).catch(() => {}); } catch {} };
+  const invoke = async (cmd, args) => {
+    const t = performance.now();
+    try {
+      const r = await T.core.invoke(cmd, args);
+      if (!QUIET.has(cmd)) logUi(`${cmd} ok in ${Math.round(performance.now() - t)} ms${r && typeof r === 'object' ? ' ' + JSON.stringify(r).slice(0, 400) : ''}`);
+      return r;
+    } catch (e) {
+      if (cmd !== 'log_ui') logUi(`${cmd} FAILED after ${Math.round(performance.now() - t)} ms: ${e}`);
+      throw e;
+    }
+  };
+  window.addEventListener('error', e => logUi(`script error: ${e.message} at ${e.filename}:${e.lineno}`));
+  window.addEventListener('unhandledrejection', e => logUi(`unhandled: ${e.reason}`));
+  const HELP = ' If it keeps happening, open Settings, click Copy diagnostics and send it to staff.';
   const $ = id => document.getElementById(id);
 
   const ICON_OK = '<path d="M5 12.5l4.5 4.5L19 7.5"/>';
@@ -178,7 +196,7 @@
         setStatus("The server is still being set up. The launcher will check again in a minute.");
       } else {
         setChip('warn', 'Not checked');
-        setStatus("Couldn't reach the server. Checking again in a minute. " + e, true);
+        setStatus(`Couldn't reach the Aetherial Dawn server (${e}). Check your internet; the launcher tries again every minute.` + HELP, true);
       }
       scheduleRetry();
     } finally {
@@ -211,7 +229,7 @@
     } catch (e) {
       setPlay('retry', 'RETRY');
       setChip('warn', 'Update failed');
-      setStatus('The update stopped. ' + e, true);
+      setStatus(`The game file update stopped: ${e}. Click Retry.` + HELP, true);
       pending = null;
     } finally {
       off();
@@ -369,7 +387,7 @@
         return;
       }
       setPlay('play', 'PLAY');
-      setStatus("Skyrim didn't start. " + msg, true);
+      setStatus(`Skyrim didn't start: ${msg}` + HELP, true);
     }
   }
 
@@ -414,17 +432,24 @@
   async function checkSelfUpdate() {
     try {
       const upd = await T.updater.check();
-      if (!upd) return;
+      if (!upd) { logUi('launcher is up to date'); return; }
       $('self-update-text').textContent = `Launcher ${upd.version} is ready to install.`;
       $('self-update').hidden = false;
       $('self-update-go').onclick = async () => {
         $('self-update-go').disabled = true;
         $('self-update-text').textContent = 'Downloading the new launcher…';
-        await upd.downloadAndInstall();
-        await T.process.relaunch();
+        logUi(`installing launcher ${upd.version}`);
+        try {
+          await upd.downloadAndInstall();
+          await T.process.relaunch();
+        } catch (e) {
+          logUi('launcher self-update failed: ' + e);
+          $('self-update-go').disabled = false;
+          $('self-update-text').textContent = "The launcher update didn't install. Click to try again." ;
+        }
       };
     } catch (e) {
-      console.warn('launcher update check failed', e);
+      logUi('launcher self-update check failed: ' + e);
     }
   }
 
@@ -468,6 +493,16 @@
   $('f-go').onclick = () => { if (!signedIn()) { showSignIn(); return; } showPage('home'); check(); };
   $('si-go').onclick = beginSignIn;
   $('si-cancel').onclick = () => { signInRun++; $('si-wait').hidden = true; $('si-go').disabled = false; };
+  $('set-diag').onclick = async () => {
+    const note = $('set-diag-note');
+    try {
+      const text = await invoke('diagnostics');
+      try { await navigator.clipboard.writeText(text); note.textContent = 'Copied. Paste it in Discord (Ctrl+V).'; }
+      catch { note.textContent = 'Couldn\'t copy automatically. Open the log folder and send launcher.log instead.'; }
+    } catch (e) { note.textContent = 'Couldn\'t collect diagnostics: ' + e; }
+    note.hidden = false;
+  };
+  $('set-logs').onclick = () => invoke('open_log_folder').catch(e => { $('set-diag-note').textContent = String(e); $('set-diag-note').hidden = false; });
   $('acc-signout').onclick = async () => {
     await invoke('auth_sign_out');
     auth = { signedIn: false };

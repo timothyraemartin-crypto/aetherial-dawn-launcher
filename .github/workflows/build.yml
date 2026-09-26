@@ -40,6 +40,7 @@ jobs:
         shell: bash
         run: |
           if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::warning title=Unsigned build::The TAURI_SIGNING_PRIVATE_KEY repository secret is empty, so this installer has no update signature and no latest.json. Add it under Settings, Secrets and variables, Actions, Repository secrets."
             cargo tauri build --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
           else
             cargo tauri build --bundles nsis

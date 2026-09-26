@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
+mod log;
+
 /// Where the server publishes the launcher files. Set AD_BASE_URL when
 /// building to point a release at the real server.
 const DEFAULT_BASE_URL: &str = match option_env!("AD_BASE_URL") {
@@ -203,13 +205,17 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     let dir = config.game_dir.clone().ok_or("Pick your Skyrim folder first.")?;
     let m = state.manifest.lock().await.clone().ok_or("Check for updates before playing.")?;
     let gc = version::check(&dir, m.game.as_ref());
+    log::line(&format!("play: game folder {}, build {}, version needed={} skseOk={}", dir.display(), m.build, gc.needed, gc.skse_ok));
     if gc.needed {
         return Err(gc.reason.unwrap_or_else(|| "Your Skyrim version doesn't match the server.".into()));
     }
     game::inspect(&dir).map_err(err)?;
     let token = token(&app).ok_or("SIGNED_OUT:Sign in with Discord to play.")?;
     let session = match auth::play(&state.http, AUTH_URL, &token).await {
-        auth::Answer::Ok(p) => p.session,
+        auth::Answer::Ok(p) => {
+            log::line("play: login service gave a game session");
+            p.session
+        }
         auth::Answer::SignedOut(msg) => {
             sign_out(&app, &state).await;
             return Err(format!("SIGNED_OUT:{msg}"));
@@ -233,7 +239,9 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     )
     .map_err(err)?;
     settings::write_auth_data(&dir, &session, &config.account.clone().unwrap_or_default()).map_err(err)?;
+    log::line("play: wrote skymp5-client-settings.txt and auth data");
     game::launch(&dir).map_err(err)?;
+    log::line("play: started skse64_loader.exe");
     if config.close_on_launch {
         app.exit(0);
     }
@@ -254,7 +262,19 @@ fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// A loggable summary of a login service answer. Never includes the token.
+fn answer_kind<T>(a: &auth::Answer<T>) -> String {
+    match a {
+        auth::Answer::Ok(_) => "accepted".into(),
+        auth::Answer::Pending => "waiting for the browser".into(),
+        auth::Answer::SignedOut(m) => format!("signed out ({m})"),
+        auth::Answer::Refused { error, message } => format!("refused {error} ({message})"),
+        auth::Answer::Offline(m) => format!("service unreachable ({m})"),
+    }
+}
+
 async fn sign_out(app: &AppHandle, state: &AppState) {
+    log::line("signing out and clearing the saved login");
     if let Some(p) = token_path(app) {
         auth::forget_token(&p);
     }
@@ -293,7 +313,9 @@ async fn auth_status(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Au
     let Some(token) = token(&app) else {
         return Ok(AuthStatus::default());
     };
-    match auth::me(&state.http, AUTH_URL, &token).await {
+    let answer = auth::me(&state.http, AUTH_URL, &token).await;
+    log::line(&format!("sign-in check: {}", answer_kind(&answer)));
+    match answer {
         auth::Answer::Ok(profile) => {
             signed_in(&app, &state, profile.clone()).await?;
             Ok(AuthStatus { signed_in: true, account: Some(profile), ..Default::default() })
@@ -345,7 +367,11 @@ struct PollResult {
 #[tauri::command]
 async fn auth_poll(app: AppHandle, state: State<'_, AppState>, st: String) -> CmdResult<PollResult> {
     let r = |status, message: Option<String>| PollResult { status, message, account: None };
-    Ok(match auth::poll(&state.http, AUTH_URL, &st).await {
+    let answer = auth::poll(&state.http, AUTH_URL, &st).await;
+    if !matches!(answer, auth::Answer::Pending) {
+        log::line(&format!("sign-in: {}", answer_kind(&answer)));
+    }
+    Ok(match answer {
         auth::Answer::Pending => r("pending", None),
         auth::Answer::Ok(done) => {
             let path = token_path(&app).ok_or("No place to save the sign-in.")?;
@@ -386,11 +412,14 @@ async fn downgrade(app: AppHandle, state: State<'_, AppState>, username: Option<
         _ => downgrade::Login::Qr,
     };
     let args = downgrade::args(&spec, &dir, &login).map_err(err)?;
+    log::line(&format!("downgrade: to {} in {}, DepotDownloader {}", spec.version.as_deref().unwrap_or("?"), dir.display(), args.join(" ")));
     let tools = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("tools");
     let _ = app.emit("downgrade-stage", "tool");
     let tool = downgrade::ensure_tool(&state.http, &tools, spec.tool.as_ref()).await.map_err(err)?;
+    log::line(&format!("downgrade: tool ready at {}", tool.display()));
     let _ = app.emit("downgrade-stage", "steam");
     downgrade::run(&tool, &args, &tools).await.map_err(err)?;
+    log::line("downgrade: Steam download window closed");
     let _ = app.emit("downgrade-stage", "verify");
     finish_downgrade(&dir, &spec)
 }
@@ -443,6 +472,93 @@ async fn server_status(state: State<'_, AppState>) -> CmdResult<Option<serde_jso
     Ok(resp.json().await.ok())
 }
 
+/// Records something from the UI (a failed command, a script error).
+#[tauri::command]
+fn log_ui(msg: String) {
+    let mut msg = msg;
+    msg.truncate(2000);
+    log::line(&format!("ui: {msg}"));
+}
+
+#[tauri::command]
+fn open_log_folder() -> CmdResult<()> {
+    let dir = log::path().and_then(|p| p.parent().map(|d| d.to_path_buf())).ok_or("The log isn't set up.")?;
+    let opener = if cfg!(windows) { "explorer" } else { "xdg-open" };
+    std::process::Command::new(opener).arg(dir).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// A plain-text report to paste to staff when something goes wrong.
+/// Never includes the Discord token or the game session.
+#[tauri::command]
+async fn diagnostics(app: AppHandle, state: State<'_, AppState>) -> CmdResult<String> {
+    use std::fmt::Write;
+    let config = state.config.lock().await.clone();
+    let manifest = state.manifest.lock().await.clone();
+    let mut o = String::new();
+    let _ = writeln!(o, "Aetherial Dawn launcher diagnostics");
+    let _ = writeln!(o, "Time: {}", log::timestamp());
+    let _ = writeln!(o, "Launcher: {} on {} {}", app.package_info().version, std::env::consts::OS, std::env::consts::ARCH);
+    let _ = writeln!(o, "Server files: {}", config.base_url);
+    let _ = writeln!(o, "Login service: {AUTH_URL}");
+    let _ = writeln!(o, "\n[Skyrim]");
+    match &config.game_dir {
+        None => {
+            let _ = writeln!(o, "Folder: not set");
+        }
+        Some(dir) => {
+            let _ = writeln!(o, "Folder: {}", dir.display());
+            let exe = version::exe_version(&dir.join(game::GAME_EXE));
+            let _ = writeln!(o, "SkyrimSE.exe: {}", exe.map(version::show).unwrap_or_else(|| "missing or unreadable".into()));
+            let _ = writeln!(o, "skse64_loader.exe: {}", if dir.join(game::SKSE_LOADER).exists() { "present" } else { "MISSING" });
+            let dlls: Vec<String> = std::fs::read_dir(dir)
+                .map(|r| r.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.to_lowercase().starts_with("skse64_") && n.to_lowercase().ends_with(".dll")).collect())
+                .unwrap_or_default();
+            let _ = writeln!(o, "SKSE dlls: {}", if dlls.is_empty() { "none".into() } else { dlls.join(", ") });
+            if let Some(acf) = version::acf_path(dir, 489830) {
+                let depots = std::fs::read_to_string(&acf).map(|t| version::installed_depots(&t)).unwrap_or_default();
+                let mut d: Vec<String> = depots.iter().map(|(k, v)| format!("{k}:{v}")).collect();
+                d.sort();
+                let _ = writeln!(o, "Steam depots: {}", d.join(" "));
+            }
+            let marker = dir.join(".aetherial-dawn").join("game.json");
+            let _ = writeln!(o, "Downgrade marker: {}", if marker.exists() { "present" } else { "none" });
+            let gc = version::check(dir, manifest.as_ref().and_then(|m| m.game.as_ref()));
+            let _ = writeln!(o, "Version check: {}", serde_json::to_string(&gc).unwrap_or_default());
+            let settings = dir.join(settings::SETTINGS_PATH);
+            let _ = writeln!(o, "skymp5-client-settings.txt: {}", if settings.exists() { "present" } else { "not written yet" });
+        }
+    }
+    let _ = writeln!(o, "\n[Server]");
+    match &manifest {
+        Some(m) => {
+            let _ = writeln!(o, "Build: {}  Address: {}:{}  Files: {}", m.build, m.server.ip, m.server.port, m.files.len());
+        }
+        None => {
+            let _ = writeln!(o, "File list: not loaded");
+        }
+    }
+    let _ = writeln!(o, "\n[Discord sign-in]");
+    match &config.account {
+        Some(a) => {
+            let _ = writeln!(
+                o,
+                "Account: {} (Discord id {}, player id {})",
+                a.discord_username.as_deref().unwrap_or("?"),
+                a.discord_id.as_deref().unwrap_or("?"),
+                a.master_api_id.map(|i| i.to_string()).unwrap_or_else(|| "?".into())
+            );
+        }
+        None => {
+            let _ = writeln!(o, "Account: not signed in");
+        }
+    }
+    let _ = writeln!(o, "Saved login: {}", if token(&app).is_some() { "yes" } else { "no" });
+    let _ = writeln!(o, "Last confirmed: {}", config.last_auth_ok.map(|t| format!("{} min ago", now().saturating_sub(t) / 60)).unwrap_or_else(|| "never".into()));
+    let _ = writeln!(o, "\n[Log: {}]", log::path().map(|p| p.display().to_string()).unwrap_or_default());
+    let _ = writeln!(o, "{}", log::tail(80));
+    Ok(o)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -450,7 +566,18 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            if let Ok(dir) = app.path().app_local_data_dir() {
+                log::init(dir.join("logs"));
+            }
             let config = load_config(app.handle());
+            log::line(&format!(
+                "launcher {} starting on {} {}; server files {}; login service {AUTH_URL}; Skyrim folder {}",
+                app.package_info().version,
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                config.base_url,
+                config.game_dir.as_ref().map(|d| d.display().to_string()).unwrap_or_else(|| "not set".into())
+            ));
             save_config(app.handle(), &config)?;
             let http = reqwest::Client::builder()
                 .user_agent(concat!("AetherialDawnLauncher/", env!("CARGO_PKG_VERSION")))
@@ -459,7 +586,7 @@ fn main() {
             app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out])
+        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }
