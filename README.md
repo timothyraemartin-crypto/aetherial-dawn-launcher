@@ -88,6 +88,10 @@ Everything it changes is written to the log. In the first live test, Skyrim.ini 
 
 Steam updates Creation Club downloads separately from the game, so after a downgrade they can stay on the newer build. Before every Play, `loadorder::too_new` compares each plugin's header version and form version with the five base masters. Any plugin that is newer, and any broken stub plugin, is moved with its archives to `.aetherial-dawn/disabled/<time>-plugins/`. The game skips Creation Club files that aren't in Data. The version record and the kept copy are then refreshed. Skyrim Platform's browser cache (`%TEMP%\\Skyrim Platform`) is cleared, because a stale profile there crashed libcef.dll 5 seconds in. A crash logger that launchers before 0.1.20 moved aside is put back, so the next crash names the failing module. Crash reports to staff go out in the background and are retried once when the staff service asks for a short wait.
 
+## Required mods
+
+Every player needs SKSE64 2.2.6, Address Library for SKSE Plugins (the `versionlib-1-6-1170-0.bin` file for the server's build) and Crash Logger SSE AE VR 1.25.0 (Timothy's requirement, 2026-09-26). Before Play, the launcher installs Crash Logger itself when it's missing, from the pinned GitHub release (`core/src/requirements.rs`, SHA-256 checked). Nexus Mods doesn't allow other sites to hand out the Address Library, so when its file is missing Play stops and a screen walks the player through downloading it from Nexus. Tidying never moves the Address Library files or Crash Logger's DLL, PDB and msdia140.dll. The health report's "Required mods" check covers all three.
+
 ## Game health checks
 
 The checks Claude ran by hand on the first tester's PC run for every player: before each Play, after a crash, and from **Settings, Check my game**. They cover:

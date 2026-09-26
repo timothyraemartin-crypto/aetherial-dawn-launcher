@@ -13,7 +13,7 @@ use std::time::UNIX_EPOCH;
 
 use crate::game::GAME_EXE;
 use crate::manifest::Manifest;
-use crate::{gameini, loadorder, strays, version, watch};
+use crate::{gameini, loadorder, requirements, strays, version, watch};
 
 pub const MASTERS: [&str; 5] = ["Skyrim.esm", "Update.esm", "Dawnguard.esm", "HearthFires.esm", "Dragonborn.esm"];
 
@@ -377,13 +377,35 @@ fn steam_updates(i: &Inputs) -> Check {
     }
 }
 
+/// The mods every player needs: SKSE64, the Address Library with the file for
+/// the server's build, and Crash Logger.
 fn crash_logger(i: &Inputs) -> Check {
     let dir = i.game_dir.join("Data").join("SKSE").join("Plugins");
-    let found: Vec<String> = strays::CRASH_LOGGERS.iter().filter(|n| dir.join(n).is_file()).map(|n| n.to_string()).collect();
-    if found.is_empty() {
-        check("crashlogger", "Crash logger", Status::Info, "None installed, so a crash report can't name the module that failed.", vec![])
+    let target = i.manifest.and_then(|m| m.game.as_ref()).and_then(|g| g.version.clone());
+    let mut missing = Vec::new();
+    let mut have = Vec::new();
+    match &target {
+        Some(v) if !requirements::address_library_ok(i.game_dir, v) => {
+            missing.push(format!("Address Library for SKSE Plugins: {} is missing from Data\\SKSE\\Plugins", requirements::address_library_file(v)));
+        }
+        Some(_) => have.push("Address Library"),
+        None => {}
+    }
+    if strays::CRASH_LOGGERS.iter().any(|n| dir.join(n).is_file()) {
+        have.push("Crash Logger");
     } else {
-        check("crashlogger", "Crash logger", Status::Ok, format!("{} installed.", found.join(", ")), vec![])
+        missing.push("Crash Logger: not installed (the launcher installs it before Play)".to_string());
+    }
+    if i.game_dir.join("skse64_loader.exe").is_file() {
+        have.push("SKSE64");
+    } else {
+        missing.push("SKSE64: skse64_loader.exe is missing".to_string());
+    }
+    if missing.is_empty() {
+        check("requirements", "Required mods", Status::Ok, format!("{} installed.", have.join(", ")), vec![])
+    } else {
+        let fail = missing.iter().any(|m| !m.starts_with("Crash Logger"));
+        check("requirements", "Required mods", if fail { Status::Fail } else { Status::Warn }, "Aetherial Dawn needs SKSE64 2.2.6, the Address Library and Crash Logger.", missing)
     }
 }
 

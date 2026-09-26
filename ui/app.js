@@ -93,6 +93,7 @@
     $('strays').hidden = id !== 'strays';
     $('crash').hidden = id !== 'crash';
     $('health').hidden = id !== 'health';
+    $('reqs').hidden = id !== 'reqs';
     if (id === 'settings') {
       for (const nav of Object.values(PAGES)) $(nav).removeAttribute('aria-current');
       $('nav-settings').setAttribute('aria-current', 'page');
@@ -559,6 +560,14 @@
       setTimeout(() => { if (playMode === 'wait' && !busy) ready(); }, 8000);
     } catch (e) {
       const msg = String(e);
+      if (msg.startsWith('NEEDS_ADDRESS_LIBRARY:')) {
+        setPlay('play', 'PLAY');
+        setStatus('Install the Address Library, then press Play.', true);
+        $('rq-file').textContent = `The launcher looks for ${msg.slice(22)} in Data\\SKSE\\Plugins.`;
+        $('rq-error').hidden = true;
+        showSheet('reqs');
+        return;
+      }
       if (msg.startsWith('SIGNED_OUT:')) {
         auth = { signedIn: false };
         renderAccount();
@@ -751,6 +760,9 @@
     catch { $('cr-note').textContent = "Couldn't copy. Open the log folder and send the newest game-….txt file."; }
     $('cr-note').hidden = false;
   };
+  $('rq-open').onclick = () => invoke('open_address_library_page').catch(e => { $('rq-error').textContent = String(e); $('rq-error').hidden = false; });
+  $('rq-close').onclick = () => showPage(page);
+  $('rq-again').onclick = () => { showPage(page); onPlay(); };
   $('cr-logs').onclick = () => invoke('open_log_folder').catch(() => {});
   $('cr-close').onclick = () => showPage(page);
   $('st-cancel').onclick = () => showPage(page);

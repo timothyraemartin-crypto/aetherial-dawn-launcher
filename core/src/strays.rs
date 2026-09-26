@@ -41,7 +41,7 @@ pub fn find(game_dir: &Path, m: &Manifest) -> Vec<String> {
                 continue;
             }
             // Crash loggers only write a log when the game dies; keep them.
-            if CRASH_LOGGERS.iter().any(|c| c.eq_ignore_ascii_case(&name)) {
+            if CRASH_LOGGERS.iter().chain(crate::requirements::CRASH_LOGGER_FILES.iter()).any(|c| c.eq_ignore_ascii_case(&name)) {
                 continue;
             }
             if rel.eq_ignore_ascii_case(crate::settings::SETTINGS_PATH) || listed(m, &rel) {

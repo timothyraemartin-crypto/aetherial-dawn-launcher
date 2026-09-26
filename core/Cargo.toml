@@ -15,6 +15,7 @@ futures-util = "0.3"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread"] }
 rand = "0.9"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+sevenz-rust2 = { version = "0.23", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

@@ -1,7 +1,7 @@
 // Hides the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use launcher_core::{auth, downgrade, game, gameini, health, loadorder, manifest::Manifest, pristine, settings, steamapp, strays, sync, version, watch, Error};
+use launcher_core::{auth, downgrade, game, gameini, health, loadorder, manifest::Manifest, pristine, requirements, settings, steamapp, strays, sync, version, watch, Error};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -237,6 +237,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     if report.worst >= health::Status::Warn && config.share_health {
         send_health(&app, &state.http, &config, &m.build, "before play", None, &report).await;
     }
+    ensure_requirements(&state.http, &dir, &m).await?;
     let token = token(&app).ok_or("SIGNED_OUT:Sign in with Discord to play.")?;
     let session = match auth::play(&state.http, AUTH_URL, &token).await {
         auth::Answer::Ok(p) => {
@@ -891,6 +892,33 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest) -> CmdResult<
     Ok(())
 }
 
+/// Required mods (Timothy, 2026-09-26): Crash Logger is installed here from
+/// its GitHub release when missing; the Address Library can only come from
+/// Nexus Mods, so Play stops with "NEEDS_ADDRESS_LIBRARY:" and the UI walks
+/// the player through it.
+async fn ensure_requirements(http: &reqwest::Client, dir: &std::path::Path, m: &Manifest) -> CmdResult<()> {
+    if !requirements::crash_logger_ok(dir) {
+        match requirements::install_crash_logger(http, dir).await {
+            Ok(()) => log::line(&format!("play: installed Crash Logger {}", requirements::CRASH_LOGGER_VERSION)),
+            Err(e) => log::line(&format!("play: couldn't install Crash Logger: {e}")),
+        }
+    }
+    if let Some(v) = m.game.as_ref().and_then(|g| g.version.as_deref()) {
+        if !requirements::address_library_ok(dir, v) {
+            let file = requirements::address_library_file(v);
+            log::line(&format!("play: stopped, the Address Library file {file} is missing"));
+            return Err(format!("NEEDS_ADDRESS_LIBRARY:{file}"));
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn open_address_library_page(app: AppHandle) -> CmdResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().open_url(requirements::ADDRESS_LIBRARY_PAGE, None::<&str>).map_err(|e| e.to_string())
+}
+
 /// Skyrim Platform's built-in browser (CEF) keeps its profile in
 /// %TEMP%\Skyrim Platform and reuses it on every start. A profile left by a
 /// crashed run or another Skyrim Platform build crashed libcef.dll 5 seconds
@@ -1435,7 +1463,7 @@ fn main() {
             app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http, steam_child: Default::default(), steam_input: Default::default() });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report, health_check, steam_login_answer, steam_login_cancel])
+        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report, health_check, steam_login_answer, steam_login_cancel, open_address_library_page])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }
