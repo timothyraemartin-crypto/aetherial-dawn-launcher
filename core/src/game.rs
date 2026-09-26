@@ -91,6 +91,40 @@ pub fn launch(dir: &Path) -> Result<std::process::Child> {
     Ok(std::process::Command::new(dir.join(SKSE_LOADER)).current_dir(dir).spawn()?)
 }
 
+/// Asks Windows to run Skyrim on the high-performance graphics card (Settings,
+/// Display, Graphics), the same as choosing it by hand. PCs with a built-in
+/// Intel chip next to the gaming card can otherwise start Skyrim Platform's
+/// browser on the wrong adapter. A choice the player already made is kept.
+/// Returns true when the setting was added.
+#[cfg(windows)]
+pub fn prefer_fast_gpu(game_dir: &Path) -> std::io::Result<bool> {
+    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+    let (key, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(r"Software\Microsoft\DirectX\UserGpuPreferences")?;
+    let exe = gpu_pref_path(game_dir);
+    if key.get_value::<String, _>(&exe).is_ok() {
+        return Ok(false);
+    }
+    key.set_value(&exe, &"GpuPreference=2;")?;
+    Ok(true)
+}
+
+#[cfg(not(windows))]
+pub fn prefer_fast_gpu(_game_dir: &Path) -> std::io::Result<bool> {
+    Ok(false)
+}
+
+/// The exe path the way Windows writes it in that setting.
+pub fn gpu_pref_path(game_dir: &Path) -> String {
+    let mut p = game_dir.join(GAME_EXE).to_string_lossy().replace('/', "\\");
+    while p.contains("\\\\") {
+        p = p.replace("\\\\", "\\");
+    }
+    if p.as_bytes().get(1) == Some(&b':') {
+        p = p[..1].to_ascii_uppercase() + &p[1..];
+    }
+    p
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,5 +159,16 @@ mod tests {
         assert!(!inspect(dir.path()).unwrap().has_skse);
         std::fs::write(dir.path().join(SKSE_LOADER), b"").unwrap();
         assert!(inspect(dir.path()).unwrap().has_skse);
+    }
+
+    #[test]
+    fn writes_the_exe_path_like_windows() {
+        let p = gpu_pref_path(Path::new("a:\\steam\\steamapps/common/Skyrim Special Edition"));
+        if cfg!(windows) {
+            assert_eq!(p, "A:\\steam\\steamapps\\common\\Skyrim Special Edition\\SkyrimSE.exe");
+        } else {
+            assert!(p.starts_with("A:\\steam\\steamapps\\common\\Skyrim Special Edition"));
+            assert!(p.ends_with("SkyrimSE.exe"));
+        }
     }
 }

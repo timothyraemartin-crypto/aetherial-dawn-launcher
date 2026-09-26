@@ -867,6 +867,12 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest) -> CmdResult<
         }
     }
     restore_crash_logger(dir);
+    clear_browser_cache();
+    match game::prefer_fast_gpu(dir) {
+        Ok(true) => log::line(&format!("play: set Windows to run {} on the high-performance graphics card", game::gpu_pref_path(dir))),
+        Ok(false) => {}
+        Err(e) => log::line(&format!("play: couldn't set the graphics card preference: {e}")),
+    }
     let docs = app.path().document_dir().or_else(|_| app.path().home_dir().map(|h| h.join("Documents"))).unwrap_or_default();
     for ini in gameini::ini_paths(&docs) {
         match gameini::repair(&ini, &dir.join("Data")) {
@@ -883,6 +889,22 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest) -> CmdResult<
         }
     }
     Ok(())
+}
+
+/// Skyrim Platform's built-in browser (CEF) keeps its profile in
+/// %TEMP%\Skyrim Platform and reuses it on every start. A profile left by a
+/// crashed run or another Skyrim Platform build crashed libcef.dll 5 seconds
+/// in, while loading its settings (first tester, 2026-09-26). It is only a
+/// cache, so it's cleared before every Play and rebuilt by the game.
+fn clear_browser_cache() {
+    let dir = std::env::temp_dir().join("Skyrim Platform");
+    if !dir.exists() {
+        return;
+    }
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => log::line(&format!("play: cleared Skyrim Platform's browser cache at {}", dir.display())),
+        Err(e) => log::line(&format!("play: couldn't clear Skyrim Platform's browser cache at {} ({e}); it may be in use", dir.display())),
+    }
 }
 
 /// Launchers before 0.1.20 moved crash loggers aside with other SKSE plugins.
