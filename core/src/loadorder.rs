@@ -228,6 +228,15 @@ pub fn wanted(game_dir: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Wanted plugins (SkyUI, SmoothCam, ...) that plugins.txt lists switched
+/// off, which the launcher leaves off. SmoothCam's settings page only shows
+/// with SmoothCam.esp on (Timothy, 2026-09-26).
+pub fn wanted_but_off(game_dir: &Path, plugins_txt: &Path) -> Vec<String> {
+    let text = std::fs::read_to_string(plugins_txt).unwrap_or_default();
+    let off: std::collections::HashSet<String> = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('*') && !l.starts_with('#')).map(|l| l.to_ascii_lowercase()).collect();
+    wanted(game_dir).into_iter().filter(|n| off.contains(&n.to_ascii_lowercase())).collect()
+}
+
 /// Switches plugins on in plugins.txt by adding the line when it's missing
 /// (the launcher's own installs). A plugin listed there switched off stays
 /// off: the player or Vortex chose that. Returns the ones it added; the old
@@ -341,6 +350,18 @@ mod tests {
         let after = std::fs::read_to_string(&txt).unwrap();
         assert_eq!(after, "# Vortex\r\nSkyUI_SE.esp\r\n*ccBGSSSE001-Fish.esm\r\nGood.esp\r\nOff.esp\r\n");
         assert!(extras(tmp.path(), &txt, &m).is_empty());
+    }
+
+    #[test]
+    fn spots_a_wanted_plugin_switched_off() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        std::fs::create_dir_all(g.join("Data")).unwrap();
+        std::fs::write(g.join("Data/SmoothCam.esp"), plugin(1.71, true)).unwrap();
+        std::fs::write(g.join("Data/TrueHUD.esp"), plugin(1.71, true)).unwrap();
+        let txt = g.join("plugins.txt");
+        std::fs::write(&txt, "*TrueHUD.esp\r\nSmoothCam.esp\r\n").unwrap();
+        assert_eq!(wanted_but_off(g, &txt), vec!["SmoothCam.esp".to_string()]);
     }
 
     #[test]

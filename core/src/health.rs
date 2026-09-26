@@ -85,6 +85,7 @@ pub fn run(i: &Inputs) -> Report {
         masters(i),
         required_files(i),
         skse_builds(i),
+        wanted_off(i),
         load_order(i),
         plugin_names(i),
         load_order_file(i),
@@ -355,6 +356,17 @@ fn skse_builds(i: &Inputs) -> Check {
         check("sksebuilds", "SKSE mod builds", Status::Ok, "Every SKSE mod is the build for Skyrim 1.6.1170.", vec![])
     } else {
         check("sksebuilds", "SKSE mod builds", Status::Fail, "An SKSE mod is the build for another Skyrim, so SKSE stops the game with \"only compatible with versions earlier than 1.6.629\".", items)
+    }
+}
+
+/// Required mods' plugins switched off in the load order (their menus, like
+/// SmoothCam's settings page, don't show then).
+fn wanted_off(i: &Inputs) -> Check {
+    let off = i.appdata.map(|a| loadorder::wanted_but_off(i.game_dir, &a.join("plugins.txt"))).unwrap_or_default();
+    if off.is_empty() {
+        check("requiredoff", "Required mods switched on", Status::Ok, "Every required mod's plugin is switched on.", vec![])
+    } else {
+        check("requiredoff", "Required mods switched on", Status::Warn, "A required mod's plugin is switched off in Vortex's Plugins tab, so its settings page won't show in Mod Configuration. Switch it on there.", off)
     }
 }
 
