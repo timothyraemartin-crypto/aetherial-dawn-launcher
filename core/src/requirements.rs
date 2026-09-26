@@ -33,7 +33,10 @@ const ENGINE_FIXES_URL: &str = "https://github.com/aers/EngineFixesSkyrim64/rele
 const ENGINE_FIXES_SHA256: &str = "21330c95011f41859139635b43ce95ffb5fbadd3cd375d2f4358abcc3cb99407";
 /// Engine Fixes' files in Data/SKSE/Plugins; tidying never moves them.
 pub const ENGINE_FIXES_FILES: [&str; 5] = ["EngineFixes.dll", "EngineFixes.pdb", "EngineFixes.toml", "EngineFixes_SNCT.ini", "EngineFixes_preload.txt"];
-/// Engine Fixes part 2, next to SkyrimSE.exe.
+/// Engine Fixes' old part 2 files, next to SkyrimSE.exe. Engine Fixes 7 on
+/// SKSE 2.2 loads early through SKSE's own EngineFixes_preload.txt, and the
+/// All-In-One package doesn't ship all of these, so they're copied when the
+/// package has them but never required.
 pub const ENGINE_FIXES_PRELOAD: [&str; 3] = ["d3dx9_42.dll", "tbb.dll", "tbbmalloc.dll"];
 /// SKSE Menu Framework's plugin; tidying never moves it.
 pub const MENU_FRAMEWORK_DLL: &str = "SKSEMenuFramework.dll";
@@ -73,7 +76,7 @@ pub fn engine_fixes_ok(game_dir: &Path) -> bool {
 }
 
 pub fn engine_fixes_preload_ok(game_dir: &Path) -> bool {
-    ENGINE_FIXES_PRELOAD.iter().all(|f| game_dir.join(f).is_file())
+    plugins_dir(game_dir).join("EngineFixes_preload.txt").is_file()
 }
 
 pub fn ussep_ok(game_dir: &Path) -> bool {
@@ -109,7 +112,7 @@ pub fn missing_nexus_mods(game_dir: &Path, game_version: Option<&str>) -> Vec<Ne
             name: "SSE Engine Fixes (All-In-One)",
             page: page("engine-fixes"),
             pick: "Engine Fixes (All-In-One) for 1.6.1170 and newer".into(),
-            looks_for: format!("EngineFixes.dll in Data\\SKSE\\Plugins and {} next to SkyrimSE.exe", ENGINE_FIXES_PRELOAD.join(", ")),
+            looks_for: "EngineFixes.dll and EngineFixes_preload.txt in Data\\SKSE\\Plugins".into(),
         });
     }
     if !ussep_ok(game_dir) {
@@ -397,9 +400,7 @@ mod tests {
         for f in ["versionlib-1-6-1170-0.bin", MENU_FRAMEWORK_DLL, "EngineFixes.dll"] {
             std::fs::write(plugins_dir(d).join(f), b"x").unwrap();
         }
-        for f in ENGINE_FIXES_PRELOAD {
-            std::fs::write(d.join(f), b"x").unwrap();
-        }
+        std::fs::write(plugins_dir(d).join("EngineFixes_preload.txt"), b"x").unwrap();
         std::fs::write(d.join("Data").join(USSEP_PLUGIN), b"x").unwrap();
         assert!(missing_nexus_mods(d, Some("1.6.1170.0")).is_empty());
     }

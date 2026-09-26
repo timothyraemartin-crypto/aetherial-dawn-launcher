@@ -62,8 +62,8 @@ pub struct ModEntry {
     /// With target "game": the file names to take from the archive.
     #[serde(default)]
     pub include: Vec<String>,
-    /// With target "data": file names that go next to SkyrimSE.exe instead
-    /// (an all-in-one package with a preloader).
+    /// With target "data": file names that go next to SkyrimSE.exe instead,
+    /// when the package has them (an all-in-one package with a preloader).
     #[serde(default)]
     pub game_files: Vec<String>,
     /// FOMOD options to pick, by (part of) their name.
@@ -115,7 +115,7 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
         });
     }
     let mut ef_check = vec!["Data/SKSE/Plugins/EngineFixes.dll".to_string()];
-    ef_check.extend(r::ENGINE_FIXES_PRELOAD.iter().map(|s| s.to_string()));
+    ef_check.push("Data/SKSE/Plugins/EngineFixes_preload.txt".to_string());
     out.push(ModEntry {
         id: "engine-fixes".into(),
         name: "SSE Engine Fixes (All-In-One)".into(),
@@ -403,9 +403,6 @@ pub fn plan(entry: &ModEntry, unpacked: &Path) -> Result<Vec<Copy>> {
             if is_game(&f) && seen.insert(f.file_name().unwrap().to_string_lossy().to_ascii_lowercase()) {
                 out.push(Copy { from: f.clone(), to: PathBuf::from(f.file_name().unwrap()) });
             }
-        }
-        if seen.len() < want.len() {
-            return Err(Error::Game(format!("the download for {} is missing some of {}", entry.name, entry.game_files.join(", "))));
         }
     }
     // Readmes and FOMOD pictures don't belong in Data.
@@ -711,13 +708,19 @@ mod tests {
     fn all_in_one_splits_data_and_game_files() {
         let t = tempfile::tempdir().unwrap();
         let a = t.path().join("m.zip");
-        zip_with(&a, &[("SKSE/Plugins/EngineFixes.dll", b"1"), ("SKSE/Plugins/EngineFixes.toml", b"2"), ("d3dx9_42.dll", b"3"), ("tbb.dll", b"4"), ("tbbmalloc.dll", b"5")]);
+        zip_with(&a, &[("SKSE/Plugins/EngineFixes.dll", b"1"), ("SKSE/Plugins/EngineFixes_preload.txt", b"2"), ("d3dx9_42.dll", b"3"), ("tbbmalloc.dll", b"5")]);
         let u = t.path().join("u");
         extract(&a, &u).unwrap();
         let e = builtin(None).into_iter().find(|e| e.id == "engine-fixes").unwrap();
         let mut to: Vec<String> = plan(&e, &u).unwrap().iter().map(|c| c.to.to_string_lossy().replace('\\', "/")).collect();
         to.sort();
-        assert_eq!(to, ["Data/SKSE/Plugins/EngineFixes.dll", "Data/SKSE/Plugins/EngineFixes.toml", "d3dx9_42.dll", "tbb.dll", "tbbmalloc.dll"]);
+        assert_eq!(to, ["Data/SKSE/Plugins/EngineFixes.dll", "Data/SKSE/Plugins/EngineFixes_preload.txt", "d3dx9_42.dll", "tbbmalloc.dll"]);
+        // A package with only the SKSE plugin installs too.
+        let b = t.path().join("n.zip");
+        zip_with(&b, &[("SKSE/Plugins/EngineFixes.dll", b"1"), ("SKSE/Plugins/EngineFixes_preload.txt", b"2")]);
+        let v = t.path().join("v");
+        extract(&b, &v).unwrap();
+        assert_eq!(plan(&e, &v).unwrap().len(), 2);
     }
 
     #[test]
