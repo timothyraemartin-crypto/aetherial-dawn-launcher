@@ -309,6 +309,37 @@ fn reports_dir() -> Option<PathBuf> {
     log::path().and_then(|p| p.parent().map(|d| d.to_path_buf()))
 }
 
+/// Closing Skyrim with its X (or Alt+F4) can leave SkyrimSE.exe and Skyrim
+/// Platform's browser helper running with no window, so Steam still shows the
+/// game as running. Once Skyrim has had a window, and then has none for 15
+/// seconds while the process is still alive, the launcher ends it and the
+/// helpers.
+async fn end_when_window_closed(pid: u32) {
+    let alive = || watch::find_process(watch::GAME_PROCESS) == Some(pid);
+    let mut seen = false;
+    let mut gone = 0;
+    while alive() {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        if watch::has_visible_window(pid) {
+            seen = true;
+            gone = 0;
+        } else if seen {
+            gone += 1;
+            if gone >= 15 && alive() {
+                log::line("game: Skyrim's window closed but the game kept running for 15 seconds; ending it so Steam sees it closed");
+                watch::terminate(pid);
+                for helper in watch::BROWSER_HELPERS {
+                    let ended = tokio::task::spawn_blocking(move || watch::end_all(helper)).await.unwrap_or_default();
+                    if !ended.is_empty() {
+                        log::line(&format!("game: ended {} leftover {helper} process(es)", ended.len()));
+                    }
+                }
+                return;
+            }
+        }
+    }
+}
+
 /// Follows Skyrim from launch to exit. Every session leaves a report in the
 /// log folder; a crash brings the launcher back with that report on screen.
 async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::time::SystemTime, close_on_launch: bool) {
@@ -325,6 +356,7 @@ async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::
         None => (None, std::time::Duration::ZERO, "Skyrim didn't start: SKSE's loader ran, but SkyrimSE.exe never appeared within 90 seconds.".to_string()),
         Some(pid) => {
             log::line(&format!("game: SkyrimSE.exe running as process {pid}"));
+            tokio::spawn(end_when_window_closed(pid));
             let code = tokio::task::spawn_blocking(move || watch::wait_exit(pid)).await.ok().flatten();
             let ran = started.elapsed().unwrap_or_default();
             let summary = match code {

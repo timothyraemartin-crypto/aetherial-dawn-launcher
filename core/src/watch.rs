@@ -108,6 +108,83 @@ pub fn wait_exit(pid: u32) -> Option<u32> {
     None
 }
 
+/// Skyrim Platform's browser helper; it can keep running after Skyrim's window
+/// is gone.
+pub const BROWSER_HELPERS: [&str; 2] = ["SkyrimPlatformCEF.exe", "SkyrimPlatformCEF.exe.hidden"];
+
+/// Whether the process has a visible top-level window (a minimized window
+/// counts as visible).
+#[cfg(windows)]
+pub fn has_visible_window(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible};
+    struct Find {
+        pid: u32,
+        found: bool,
+    }
+    unsafe extern "system" fn each(hwnd: HWND, lp: LPARAM) -> BOOL {
+        let f = &mut *(lp as *mut Find);
+        let mut owner = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut owner);
+        if owner == f.pid && IsWindowVisible(hwnd) != 0 {
+            f.found = true;
+            return 0;
+        }
+        1
+    }
+    let mut f = Find { pid, found: false };
+    unsafe {
+        EnumWindows(Some(each), &mut f as *mut Find as LPARAM);
+    }
+    f.found
+}
+
+#[cfg(not(windows))]
+pub fn has_visible_window(_pid: u32) -> bool {
+    true
+}
+
+/// Ends every running process with this file name; returns their ids.
+pub fn end_all(name: &str) -> Vec<u32> {
+    let mut out = Vec::new();
+    // find_process returns the first match; enough for our helpers, which are
+    // ended one at a time until none are left.
+    for _ in 0..16 {
+        match find_process(name) {
+            Some(p) if !out.contains(&p) => {
+                out.push(p);
+                if !terminate(p) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            _ => break,
+        }
+    }
+    out
+}
+
+/// Ends a process. Returns whether Windows accepted.
+#[cfg(windows)]
+pub fn terminate(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+    unsafe {
+        let h = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        if h.is_null() {
+            return false;
+        }
+        let ok = TerminateProcess(h, 0) != 0;
+        CloseHandle(h);
+        ok
+    }
+}
+
+#[cfg(not(windows))]
+pub fn terminate(_pid: u32) -> bool {
+    false
+}
+
 /// Plain-words meaning of common Windows exit codes.
 pub fn describe(code: Option<u32>) -> String {
     match code {
