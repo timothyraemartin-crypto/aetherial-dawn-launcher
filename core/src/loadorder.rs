@@ -132,7 +132,8 @@ pub fn with_archives(game_dir: &Path, plugin: &str) -> Vec<String> {
 /// Plugins of required SKSE mods, switched on when they're in Data
 /// (Timothy, 2026-09-26: SmoothCam, True Directional Movement, TrueHUD and
 /// MCM Helper, which they need).
-pub const COMPANION_PLUGINS: [&str; 4] = ["MCMHelper.esp", "SmoothCam.esp", "TrueDirectionalMovement.esp", "TrueHUD.esp"];
+// TrueHUD ships TrueHUD.esl (seen on Timothy's PC); .esp kept for older builds.
+pub const COMPANION_PLUGINS: [&str; 5] = ["MCMHelper.esp", "SmoothCam.esp", "TrueDirectionalMovement.esp", "TrueHUD.esl", "TrueHUD.esp"];
 
 fn allowed(game_dir: &Path, manifest: &Manifest) -> Vec<String> {
     let mut ok: Vec<String> = BASE.iter().map(|s| s.to_string()).collect();
@@ -235,6 +236,44 @@ pub fn wanted_but_off(game_dir: &Path, plugins_txt: &Path) -> Vec<String> {
     let text = std::fs::read_to_string(plugins_txt).unwrap_or_default();
     let off: std::collections::HashSet<String> = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('*') && !l.starts_with('#')).map(|l| l.to_ascii_lowercase()).collect();
     wanted(game_dir).into_iter().filter(|n| off.contains(&n.to_ascii_lowercase())).collect()
+}
+
+/// Switches required plugins on in plugins.txt, also when a line lists them
+/// switched off: they're the server's required mods (their menus, like
+/// SmoothCam's settings page, only show with the plugin on; Vortex had
+/// SmoothCam, TDM and TrueHUD off on Timothy's PC). Returns the ones changed;
+/// the old file is kept next to it.
+pub fn force_on(plugins_txt: &Path, names: &[String]) -> Result<Vec<String>> {
+    let text = std::fs::read_to_string(plugins_txt).unwrap_or_default();
+    let nl = if text.contains("\r\n") || text.is_empty() { "\r\n" } else { "\n" };
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let mut changed = Vec::new();
+    for n in names {
+        let l = n.to_ascii_lowercase();
+        match lines.iter_mut().find(|x| x.trim().trim_start_matches('*').trim().to_ascii_lowercase() == l) {
+            Some(x) if x.trim_start().starts_with('*') => {}
+            Some(x) => {
+                *x = format!("*{}", x.trim());
+                changed.push(n.clone());
+            }
+            None => {
+                lines.push(format!("*{n}"));
+                changed.push(n.clone());
+            }
+        }
+    }
+    if changed.is_empty() {
+        return Ok(changed);
+    }
+    if !text.is_empty() {
+        std::fs::write(plugins_txt.with_extension("txt.aetherial-dawn-backup"), &text)?;
+    } else if let Some(d) = plugins_txt.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    lines.retain(|l| !l.is_empty());
+    lines.push(String::new());
+    std::fs::write(plugins_txt, lines.join(nl))?;
+    Ok(changed)
 }
 
 /// Switches plugins on in plugins.txt by adding the line when it's missing
@@ -362,6 +401,9 @@ mod tests {
         let txt = g.join("plugins.txt");
         std::fs::write(&txt, "*TrueHUD.esp\r\nSmoothCam.esp\r\n").unwrap();
         assert_eq!(wanted_but_off(g, &txt), vec!["SmoothCam.esp".to_string()]);
+        assert_eq!(force_on(&txt, &wanted(g)).unwrap(), vec!["SmoothCam.esp".to_string()]);
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*TrueHUD.esp\r\n*SmoothCam.esp\r\n");
+        assert!(wanted_but_off(g, &txt).is_empty());
     }
 
     #[test]

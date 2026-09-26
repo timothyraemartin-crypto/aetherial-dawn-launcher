@@ -79,7 +79,7 @@ pub struct ModEntry {
 
 impl ModEntry {
     pub fn installed(&self, game_dir: &Path) -> bool {
-        !self.check.is_empty() && self.check.iter().all(|c| safe_rel(c).map(|r| present(&game_dir.join(r))).unwrap_or(false))
+        !self.check.is_empty() && self.check.iter().all(|c| safe_rel(c).map(|r| present_like(&game_dir.join(r))).unwrap_or(false))
     }
 
     /// A copy that checks for one file only.
@@ -205,6 +205,17 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
         hint: Some("the main file for Anniversary Edition (1.6)".into()),
         ..Default::default()
     });
+    // Timothy, 2026-09-26: "this is the mod I'm going to use". A SmoothCam
+    // preset file (SmoothCamPreset<slot>.json); `camera` makes it the
+    // default camera once.
+    out.push(ModEntry {
+        id: "smoothcam-modern-preset".into(),
+        name: "SmoothCam - Modern Camera Preset".into(),
+        nexus: Some(NexusRef { mod_id: 41636, file: None, pick: None }),
+        check: vec!["Data/SKSE/Plugins/SmoothCamPreset*.json".into()],
+        hint: Some("the main file".into()),
+        ..Default::default()
+    });
     out.push(ModEntry {
         id: "true-directional-movement".into(),
         name: "True Directional Movement".into(),
@@ -254,6 +265,22 @@ pub fn merged(game_version: Option<&str>, server: Option<&ModList>) -> Vec<ModEn
 /// True Directional Movement Vortex deployed, 2026-09-26).
 fn present(p: &Path) -> bool {
     p.exists() && !(is_plugin(p) && crate::loadorder::broken(p).is_some()) && !(is_skse_dll(p) && crate::skse::wrong_build(p).is_some())
+}
+
+/// Like `present`, with one `*` allowed in the file name (a SmoothCam preset
+/// can sit in any of its preset slots).
+fn present_like(p: &Path) -> bool {
+    let name = p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let Some((head, tail)) = name.split_once('*') else { return present(p) };
+    let Some(dir) = p.parent() else { return false };
+    std::fs::read_dir(dir)
+        .map(|r| {
+            r.flatten().any(|e| {
+                let n = e.file_name().to_string_lossy().to_ascii_lowercase();
+                n.len() >= head.len() + tail.len() && n.starts_with(head) && n.ends_with(tail) && present(&e.path())
+            })
+        })
+        .unwrap_or(false)
 }
 
 fn is_skse_dll(p: &Path) -> bool {

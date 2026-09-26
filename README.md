@@ -120,9 +120,11 @@ SSE Display Tweaks (Nexus 34705, the Anniversary Edition file; `SSEDisplayTweaks
 
 SmoothCam (Nexus 41252), True Directional Movement (51614), TrueHUD (62775) and MCM Helper (53000, which their menus need) are required too (Timothy, 2026-09-26). The Anniversary Edition files are picked where a page has several. Each counts as installed when its DLL is in `Data\SKSE\Plugins`, and their plugins are switched on before Play like SkyUI's. They are client-only and change no world records.
 
-### Souls-style camera
+### Camera: SmoothCam's Modern Camera Preset
 
-On the first Play after 0.1.53 (Timothy, 2026-09-26: "feel more like darksouls") the launcher sets a few keys in SmoothCam's `Data\SKSE\Plugins\SmoothCam.json` (right-shoulder offsets, melee framing pulled toward the middle, faster follow rates, quicker combat transitions, no crosshair outside aiming) and True Directional Movement's `Data\MCM\Settings\TrueDirectionalMovement.ini` (directional movement sheathed and drawn, camera swings behind while moving, hard target lock with faster tracking). Other settings are kept, the old files are copied to `.aetherial-dawn\disabled\<time>-camera-preset\` first, and `.aetherial-dawn\mods\camera-preset.json` stops it running again, so changes made in Mod Configuration stay. Values are in `core/src/camera.rs`; bump `PRESET_VERSION` to apply a changed preset once more.
+SmoothCam - Modern Camera Preset (Nexus 41636) is required (Timothy, 2026-09-26). It only adds a preset file (`Data\SKSE\Plugins\SmoothCamPreset<slot>.json`, so the check accepts any slot). On the first Play with it installed, the launcher does what SmoothCam's "Load preset" does: it writes the preset's settings to `SmoothCam.json`, after copying the old one to `.aetherial-dawn\disabled\<time>-camera-preset\`. `.aetherial-dawn\mods\camera-preset.json` stops it running again, so changes made in Mod Configuration stay; bump `PRESET_VERSION` in `core/src/camera.rs` to apply once more. 0.1.53's hand-made Souls-style preset is replaced; its True Directional Movement change is undone where it ran.
+
+Required mods' plugins (SkyUI, the Unofficial Patch's dashed copy, SmoothCam, True Directional Movement, TrueHUD, MCM Helper) are switched on before every Play even when Vortex lists them switched off, because their menus need them. Other plugins switched off in Vortex stay off.
 
 ### SKSE mods built for another Skyrim
 

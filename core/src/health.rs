@@ -367,15 +367,17 @@ fn wanted_off(i: &Inputs) -> Check {
     if off.is_empty() {
         check("requiredoff", "Required mods switched on", Status::Ok, "Every required mod's plugin is switched on.", vec![])
     } else {
-        check("requiredoff", "Required mods switched on", Status::Warn, "A required mod's plugin is switched off in Vortex's Plugins tab, so its settings page won't show in Mod Configuration. Switch it on there.", off)
+        check("requiredoff", "Required mods switched on", Status::Info, "A required mod's plugin is switched off in Vortex's Plugins tab. The launcher switches it on before every Play, since its settings page in Mod Configuration needs it.", off)
     }
 }
 
 /// Whether the Souls-style camera preset has been applied.
 fn camera_preset(i: &Inputs) -> Check {
-    match crate::camera::applied(i.game_dir) {
-        Some(_) => check("camerapreset", "Camera preset", Status::Ok, "The Souls-style camera (SmoothCam and True Directional Movement) is set. Fine-tune it in Esc > Mod Configuration; the launcher won't undo your changes.", vec![]),
-        None => check("camerapreset", "Camera preset", Status::Info, "The Souls-style camera (SmoothCam and True Directional Movement) is set on the next Play. Your current settings are backed up first.", vec![]),
+    let name = "SmoothCam's Modern Camera Preset";
+    match (crate::camera::applied(i.game_dir), crate::camera::find_modern(i.game_dir)) {
+        (Some(_), _) => check("camerapreset", "Camera preset", Status::Ok, format!("{name} is your camera. Fine-tune it in Esc > Mod Configuration > SmoothCam; the launcher won't undo your changes."), vec![]),
+        (None, Some((f, _))) => check("camerapreset", "Camera preset", Status::Info, format!("{name} ({f}) becomes your camera on the next Play. Your current SmoothCam settings are backed up first."), vec![]),
+        (None, None) => check("camerapreset", "Camera preset", Status::Info, format!("{name} isn't installed yet; the launcher installs it with the other required mods."), vec![]),
     }
 }
 

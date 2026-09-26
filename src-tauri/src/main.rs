@@ -1174,7 +1174,7 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_m
     // Required and listed mods' plugins (SkyUI, the Unofficial Patch) only
     // work switched on; Vortex does this, the launcher's own installs don't.
     if let Some(txt) = plugins_txt(app) {
-        match loadorder::switch_on(&txt, &loadorder::wanted(dir)) {
+        match loadorder::force_on(&txt, &loadorder::wanted(dir)) {
             Ok(on) if !on.is_empty() => log::line(&format!("play: switched on in {}: {}", txt.display(), on.join(", "))),
             Ok(_) => {}
             Err(e) => log::line(&format!("play: couldn't switch plugins on: {e}")),
@@ -1185,10 +1185,11 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_m
             Err(e) => log::line(&format!("play: couldn't fix loadorder.txt: {e}")),
         }
     }
-    // The server's Souls-style camera, once; later Mod Configuration tweaks stay.
+    // SmoothCam's Modern Camera Preset as the camera, once; later Mod
+    // Configuration tweaks stay.
     match launcher_core::camera::apply_once(dir) {
-        Ok(f) if !f.is_empty() => log::line(&format!("play: applied the Souls-style camera preset to {} (old files backed up)", f.join(", "))),
-        Ok(_) => {}
+        Ok(Some(f)) => log::line(&format!("play: loaded SmoothCam's Modern Camera Preset ({f}) into SmoothCam.json (old file backed up)")),
+        Ok(None) => {}
         Err(e) => log::line(&format!("play: couldn't apply the camera preset: {e}")),
     }
     restore_crash_logger(dir);

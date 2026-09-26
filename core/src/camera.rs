@@ -1,134 +1,32 @@
-//! The server's Souls-style camera (Timothy, 2026-09-26: "adjust the smooth
-//! cam settings to feel more like darksouls"). Applied once per game folder:
-//! SmoothCam's own settings file gets closer, right-shoulder framing, a
-//! snappier follow and no crosshair in melee; True Directional Movement's
-//! MCM file gets directional movement and a hard target lock. Only the keys
-//! below change; the player's other settings stay, the old files are copied
-//! to the backup folder first, and a marker stops it running again, so
-//! later tweaks in Mod Configuration are never undone.
+//! The server's camera: SmoothCam's "Modern Camera Preset" (Nexus 41636,
+//! Timothy 2026-09-26: "this is the mod I'm going to use"). The preset mod
+//! only drops a preset file in one of SmoothCam's slots; loading it in the
+//! menu replaces SmoothCam.json with the preset's settings. The launcher does
+//! that once, the same way, so every player starts with it: the old
+//! SmoothCam.json is copied to the backup folder first, and a marker stops it
+//! running again, so later tweaks in Mod Configuration are never undone.
+//!
+//! 0.1.53 briefly applied a hand-made Souls-style preset instead (SmoothCam
+//! and True Directional Movement); where it ran, its TDM change is undone.
 
 use std::path::{Path, PathBuf};
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 /// Bump to apply a changed preset once more (after backing up again).
-pub const PRESET_VERSION: u32 = 1;
+/// Version 1 was 0.1.53's hand-made preset.
+pub const PRESET_VERSION: u32 = 2;
 const MARKER: &str = ".aetherial-dawn/mods/camera-preset.json";
 pub const SMOOTHCAM_JSON: &str = "Data/SKSE/Plugins/SmoothCam.json";
 pub const TDM_INI: &str = "Data/MCM/Settings/TrueDirectionalMovement.ini";
-
-/// One SmoothCam state: over the right shoulder, a little lower; melee pulls
-/// toward the middle so a locked target stays framed, aiming stays wide.
-fn group(side: f64, up: f64) -> Value {
-    json!({
-        "sideOffset": side, "upOffset": up,
-        "combatMeleeSideOffset": side * 0.6, "combatMeleeUpOffset": up,
-        "combatMagicSideOffset": side + 10.0, "combatMagicUpOffset": up,
-        "combatRangedSideOffset": side + 15.0, "combatRangedUpOffset": up,
-    })
-}
-
-/// The SmoothCam keys the preset sets (names from SmoothCam 1.7's config).
-pub fn smoothcam_preset() -> Value {
-    json!({
-        // Snappy follow: the camera catches up fast and lags only a little.
-        "enableInterp": true,
-        "minCameraFollowDistance": 40.0,
-        "minCameraFollowRate": 0.45,
-        "maxCameraFollowRate": 0.9,
-        "zoomMaxSmoothingDistance": 400.0,
-        "separateLocalInterp": true,
-        "localMinFollowRate": 0.8,
-        "localMaxFollowRate": 1.0,
-        "separateZInterp": true,
-        "separateZMinFollowRate": 0.6,
-        "separateZMaxFollowRate": 1.0,
-        // Quick moves between exploring and combat framing.
-        "enableOffsetInterpolation": true,
-        "offsetInterpDurationSecs": 0.45,
-        "enablePitchZoom": false,
-        // No crosshair outside ranged and magic aiming.
-        "hideNonCombatCrosshair": true,
-        "hideCrosshairMeleeCombat": true,
-        "standing": group(30.0, -5.0),
-        "walking": group(30.0, -5.0),
-        "running": group(30.0, -5.0),
-        "sprinting": group(22.0, -5.0),
-        "sneaking": group(30.0, -10.0),
-    })
-}
-
-/// The True Directional Movement keys the preset sets, by section.
-pub const TDM_PRESET: [(&str, &str, &str); 9] = [
-    ("DirectionalMovement", "uDirectionalMovementSheathed", "2"),
-    ("DirectionalMovement", "uDirectionalMovementDrawn", "2"),
-    // The camera swings behind you while you move, as in Dark Souls.
-    ("DirectionalMovement", "uAdjustCameraYawDuringMovement", "2"),
-    ("TargetLock", "uTargetLockMode", "0"),
-    ("TargetLock", "bTargetLockHideCrosshair", "1"),
-    ("TargetLock", "bResetCameraWithTargetLock", "1"),
-    ("TargetLock", "fTargetLockYawAdjustSpeed", "10"),
-    ("TargetLock", "fTargetLockPitchAdjustSpeed", "3"),
-    ("TargetLock", "bAutoTargetNextOnDeath", "1"),
-];
-
-/// Overlays `add` onto `base`, object by object.
-fn merge(base: &mut Value, add: &Value) {
-    match (base, add) {
-        (Value::Object(b), Value::Object(a)) => {
-            for (k, v) in a {
-                match b.get_mut(k) {
-                    Some(bv) if bv.is_object() && v.is_object() => merge(bv, v),
-                    _ => {
-                        b.insert(k.clone(), v.clone());
-                    }
-                }
-            }
-        }
-        (b, a) => *b = a.clone(),
-    }
-}
-
-/// Sets `key = value` under `[section]` in ini text, keeping everything else.
-pub fn ini_set(text: &str, section: &str, key: &str, value: &str) -> String {
-    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let head = format!("[{}]", section.to_ascii_lowercase());
-    let start = lines.iter().position(|l| l.trim().to_ascii_lowercase() == head);
-    match start {
-        None => {
-            if lines.last().map(|l| !l.trim().is_empty()).unwrap_or(false) {
-                lines.push(String::new());
-            }
-            lines.push(format!("[{section}]"));
-            lines.push(format!("{key} = {value}"));
-        }
-        Some(s) => {
-            let end = lines.iter().skip(s + 1).position(|l| l.trim_start().starts_with('[')).map(|e| s + 1 + e).unwrap_or(lines.len());
-            let found = (s + 1..end).find(|&i| lines[i].split('=').next().map(|k| k.trim().eq_ignore_ascii_case(key)).unwrap_or(false));
-            match found {
-                Some(i) => lines[i] = format!("{key} = {value}"),
-                None => {
-                    // After the section's last non-blank line.
-                    let mut at = end;
-                    while at > s + 1 && lines[at - 1].trim().is_empty() {
-                        at -= 1;
-                    }
-                    lines.insert(at, format!("{key} = {value}"));
-                }
-            }
-        }
-    }
-    let mut out = lines.join(nl);
-    out.push_str(nl);
-    out
-}
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct Marker {
     version: u32,
     when: u64,
     files: Vec<String>,
+    #[serde(default)]
+    preset: Option<String>,
 }
 
 fn marker(game_dir: &Path) -> Option<Marker> {
@@ -138,6 +36,28 @@ fn marker(game_dir: &Path) -> Option<Marker> {
 /// When the preset was applied (seconds since 1970), if it has been.
 pub fn applied(game_dir: &Path) -> Option<u64> {
     marker(game_dir).filter(|m| m.version >= PRESET_VERSION).map(|m| m.when)
+}
+
+/// The Modern Camera Preset's file and its settings, in whichever of
+/// SmoothCam's preset slots it sits.
+pub fn find_modern(game_dir: &Path) -> Option<(String, Value)> {
+    let dir = game_dir.join("Data").join("SKSE").join("Plugins");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            let n = p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+            n.starts_with("smoothcampreset") && n.ends_with(".json")
+        })
+        .collect();
+    files.sort();
+    files.into_iter().find_map(|p| {
+        let v: Value = serde_json::from_slice(&std::fs::read(&p).ok()?).ok()?;
+        let name = v.get("name")?.as_str()?.to_ascii_lowercase();
+        let config = v.get("config").filter(|c| c.is_object())?.clone();
+        name.contains("modern").then(|| (p.file_name().unwrap().to_string_lossy().into_owned(), config))
+    })
 }
 
 /// Copies an existing settings file into `.aetherial-dawn/disabled/<stamp>/`.
@@ -154,87 +74,94 @@ fn back_up(game_dir: &Path, rel: &str, stamp: &str) -> std::io::Result<Option<Pa
     Ok(Some(to))
 }
 
-/// Applies the preset once. Returns the files it changed (empty when it
-/// already ran).
-pub fn apply_once(game_dir: &Path) -> std::io::Result<Vec<String>> {
-    if applied(game_dir).is_some() {
-        return Ok(Vec::new());
+/// Undoes 0.1.53's True Directional Movement change: puts back the file it
+/// backed up, or removes the one it created.
+fn undo_v1(game_dir: &Path, m: &Marker) -> std::io::Result<()> {
+    let backup = game_dir.join(crate::strays::DISABLED_DIR).join(format!("{}-camera-preset", m.when)).join(TDM_INI);
+    let tdm = game_dir.join(TDM_INI);
+    if backup.is_file() {
+        std::fs::copy(&backup, &tdm)?;
+    } else if tdm.is_file() {
+        std::fs::remove_file(&tdm)?;
     }
+    Ok(())
+}
+
+/// Makes the Modern Camera Preset SmoothCam's settings, once. Returns the
+/// preset file it used, or None when it already ran or the preset isn't
+/// installed yet.
+pub fn apply_once(game_dir: &Path) -> std::io::Result<Option<String>> {
+    let old = marker(game_dir);
+    if old.as_ref().map(|m| m.version >= PRESET_VERSION).unwrap_or(false) {
+        return Ok(None);
+    }
+    let Some((file, config)) = find_modern(game_dir) else { return Ok(None) };
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let stamp = format!("{now}-camera-preset");
     back_up(game_dir, SMOOTHCAM_JSON, &stamp)?;
-    back_up(game_dir, TDM_INI, &stamp)?;
-
+    if let Some(m) = old.as_ref().filter(|m| m.version == 1) {
+        back_up(game_dir, TDM_INI, &stamp)?;
+        undo_v1(game_dir, m)?;
+    }
+    // Loading a preset in SmoothCam's menu replaces all its settings.
     let sc = game_dir.join(SMOOTHCAM_JSON);
-    // A file SmoothCam can't read would be replaced by its defaults anyway.
-    let mut cfg: Value = std::fs::read(&sc).ok().and_then(|b| serde_json::from_slice(&b).ok()).filter(Value::is_object).unwrap_or_else(|| json!({}));
-    merge(&mut cfg, &smoothcam_preset());
     if let Some(p) = sc.parent() {
         std::fs::create_dir_all(p)?;
     }
-    std::fs::write(&sc, serde_json::to_string_pretty(&cfg)?)?;
+    std::fs::write(&sc, serde_json::to_string_pretty(&config)?)?;
 
-    let tdm = game_dir.join(TDM_INI);
-    let mut text = std::fs::read_to_string(&tdm).unwrap_or_default();
-    for (s, k, v) in TDM_PRESET {
-        text = ini_set(&text, s, k, v);
-    }
-    if let Some(p) = tdm.parent() {
-        std::fs::create_dir_all(p)?;
-    }
-    std::fs::write(&tdm, text)?;
-
-    let files = vec![SMOOTHCAM_JSON.to_string(), TDM_INI.to_string()];
-    let m = Marker { version: PRESET_VERSION, when: now, files: files.clone() };
+    let m = Marker { version: PRESET_VERSION, when: now, files: vec![SMOOTHCAM_JSON.to_string()], preset: Some(file.clone()) };
     let mp = game_dir.join(MARKER);
     if let Some(p) = mp.parent() {
         std::fs::create_dir_all(p)?;
     }
     std::fs::write(mp, serde_json::to_vec_pretty(&m)?)?;
-    Ok(files)
+    Ok(Some(file))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn preset(g: &Path, slot: u32, name: &str, follow: f64) {
+        let p = g.join(format!("Data/SKSE/Plugins/SmoothCamPreset{slot}.json"));
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, serde_json::json!({"name": name, "config": {"minCameraFollowRate": follow, "standing": {"sideOffset": 40.0}}}).to_string()).unwrap();
+    }
+
     #[test]
-    fn applies_once_and_keeps_other_settings() {
+    fn loads_the_modern_preset_once() {
         let t = tempfile::tempdir().unwrap();
         let g = t.path();
-        std::fs::create_dir_all(g.join("Data/SKSE/Plugins")).unwrap();
-        std::fs::write(g.join(SMOOTHCAM_JSON), r#"{"zoomMul": 500.0, "standing": {"fovOffset": 5.0, "sideOffset": 25.0}, "minCameraFollowRate": 0.25}"#).unwrap();
-        std::fs::create_dir_all(g.join("Data/MCM/Settings")).unwrap();
-        std::fs::write(g.join(TDM_INI), "[TargetLock]\r\nuTargetLockMode = 1\r\nfTargetLockDistance = 3000\r\n\r\n[Keys]\r\nuTargetLockKey = 258\r\n").unwrap();
+        assert_eq!(apply_once(g).unwrap(), None, "waits until the preset is installed");
+        preset(g, 1, "My Own", 0.1);
+        preset(g, 3, "ModernPreset", 0.5);
+        std::fs::write(g.join(SMOOTHCAM_JSON), r#"{"minCameraFollowRate": 0.25}"#).unwrap();
 
-        assert_eq!(apply_once(g).unwrap().len(), 2);
+        assert_eq!(apply_once(g).unwrap().as_deref(), Some("SmoothCamPreset3.json"));
         let v: Value = serde_json::from_slice(&std::fs::read(g.join(SMOOTHCAM_JSON)).unwrap()).unwrap();
-        assert_eq!(v["zoomMul"], 500.0);
-        assert_eq!(v["standing"]["fovOffset"], 5.0);
-        assert_eq!(v["standing"]["sideOffset"], 30.0);
-        assert_eq!(v["minCameraFollowRate"], 0.45);
-        let ini = std::fs::read_to_string(g.join(TDM_INI)).unwrap();
-        assert!(ini.contains("uTargetLockMode = 0\r\n"));
-        assert!(ini.contains("fTargetLockDistance = 3000"));
-        assert!(ini.contains("uTargetLockKey = 258"));
-        assert!(ini.contains("[DirectionalMovement]\r\nuDirectionalMovementSheathed = 2"));
-        // The old files are in the backup folder.
+        assert_eq!(v["minCameraFollowRate"], 0.5);
+        assert_eq!(v["standing"]["sideOffset"], 40.0);
         let aside: Vec<_> = std::fs::read_dir(g.join(crate::strays::DISABLED_DIR)).unwrap().flatten().map(|e| e.path()).collect();
-        assert!(aside[0].join(SMOOTHCAM_JSON).is_file() && aside[0].join(TDM_INI).is_file());
+        assert!(std::fs::read_to_string(aside[0].join(SMOOTHCAM_JSON)).unwrap().contains("0.25"));
 
-        // The player's own later change survives the next Play.
+        // The player's later change survives the next Play.
         std::fs::write(g.join(SMOOTHCAM_JSON), r#"{"minCameraFollowRate": 0.1}"#).unwrap();
-        assert!(apply_once(g).unwrap().is_empty());
+        assert_eq!(apply_once(g).unwrap(), None);
         assert!(std::fs::read_to_string(g.join(SMOOTHCAM_JSON)).unwrap().contains("0.1"));
         assert!(applied(g).is_some());
     }
 
     #[test]
-    fn writes_fresh_files() {
+    fn undoes_the_hand_made_preset() {
         let t = tempfile::tempdir().unwrap();
-        apply_once(t.path()).unwrap();
-        let ini = std::fs::read_to_string(t.path().join(TDM_INI)).unwrap();
-        assert!(ini.starts_with("[DirectionalMovement]\n"));
-        assert!(ini.contains("[TargetLock]\nuTargetLockMode = 0\n"));
+        let g = t.path();
+        preset(g, 3, "ModernPreset", 0.5);
+        std::fs::create_dir_all(g.join("Data/MCM/Settings")).unwrap();
+        std::fs::write(g.join(TDM_INI), "[TargetLock]\nuTargetLockMode = 0\n").unwrap();
+        std::fs::create_dir_all(g.join(".aetherial-dawn/mods")).unwrap();
+        std::fs::write(g.join(MARKER), r#"{"version":1,"when":5,"files":[]}"#).unwrap();
+        apply_once(g).unwrap();
+        assert!(!g.join(TDM_INI).exists(), "0.1.53 created it, so it goes");
     }
 }
