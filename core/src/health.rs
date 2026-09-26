@@ -409,6 +409,7 @@ fn crash_logger(i: &Inputs) -> Check {
         (requirements::ussep_ok(i.game_dir), "Unofficial Skyrim Special Edition Patch"),
         (requirements::menu_framework_ok(i.game_dir), "SKSE Menu Framework"),
         (requirements::imgui_icons_ok(i.game_dir), "ImGui Icons"),
+        (requirements::skyui_ok(i.game_dir), "SkyUI"),
     ] {
         if ok {
             have.push(name);

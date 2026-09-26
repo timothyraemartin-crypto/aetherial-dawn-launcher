@@ -120,6 +120,7 @@ fn allowed(game_dir: &Path, manifest: &Manifest) -> Vec<String> {
     let mut ok: Vec<String> = BASE.iter().map(|s| s.to_string()).collect();
     // A required mod (Skyrim Souls RE's dependency), from Nexus Mods.
     ok.push(crate::requirements::USSEP_PLUGIN.to_ascii_lowercase());
+    ok.push(crate::requirements::SKYUI_PLUGIN.to_ascii_lowercase());
     // Plugins of other mods on the server's list.
     ok.extend(crate::allowlist::kept_plugins(&crate::allowlist::keep_set(game_dir)));
     for ccc in [game_dir.join("Data").join("Skyrim.ccc"), game_dir.join("Skyrim.ccc")] {
@@ -144,8 +145,11 @@ pub fn extras(game_dir: &Path, plugins_txt: &Path, manifest: &Manifest) -> Vec<E
     text.lines()
         .filter_map(|l| l.trim().strip_prefix('*'))
         .map(str::trim)
-        .filter(|n| !n.is_empty() && !ok.contains(&n.to_ascii_lowercase()))
+        .filter(|n| !n.is_empty())
         .map(|n| Extra { name: n.to_string(), broken: broken(&game_dir.join("Data").join(n)) })
+        // Allowed plugins stay on unless they're broken, like the SkyUI stub
+        // from the first live test.
+        .filter(|e| !ok.contains(&e.name.to_ascii_lowercase()) || (e.broken.is_some() && game_dir.join("Data").join(&e.name).is_file()))
         .collect()
 }
 
@@ -169,11 +173,77 @@ pub fn switch_off(plugins_txt: &Path, names: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Plugins of required and listed mods that are in Data and sound, which
+/// must be switched on for the mod to work (SkyUI's menus live in its
+/// archive, which only loads with its plugin).
+pub fn wanted(game_dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = vec![crate::requirements::USSEP_PLUGIN.into(), crate::requirements::SKYUI_PLUGIN.into()];
+    for m in crate::allowlist::listed(game_dir) {
+        for c in &m.check {
+            if let Some(n) = c.replace('\\', "/").strip_prefix("Data/") {
+                let l = n.to_ascii_lowercase();
+                if !n.contains('/') && (l.ends_with(".esp") || l.ends_with(".esm") || l.ends_with(".esl")) {
+                    names.push(n.to_string());
+                }
+            }
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    names
+        .into_iter()
+        .filter(|n| seen.insert(n.to_ascii_lowercase()))
+        .filter(|n| {
+            let p = game_dir.join("Data").join(n);
+            p.is_file() && broken(&p).is_none()
+        })
+        .collect()
+}
+
+/// Switches plugins on in plugins.txt (adds the `*`, or the line when it's
+/// missing). Returns the ones it changed; the old file is kept next to it.
+pub fn switch_on(plugins_txt: &Path, names: &[String]) -> Result<Vec<String>> {
+    let text = std::fs::read_to_string(plugins_txt).unwrap_or_default();
+    let nl = if text.contains("\r\n") || text.is_empty() { "\r\n" } else { "\n" };
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let mut changed = Vec::new();
+    for n in names {
+        let l = n.to_ascii_lowercase();
+        match lines.iter_mut().find(|x| x.trim().trim_start_matches('*').trim().to_ascii_lowercase() == l) {
+            Some(x) if x.trim().starts_with('*') => {}
+            Some(x) => {
+                *x = format!("*{}", x.trim());
+                changed.push(n.clone());
+            }
+            None => {
+                lines.push(format!("*{n}"));
+                changed.push(n.clone());
+            }
+        }
+    }
+    if changed.is_empty() {
+        return Ok(changed);
+    }
+    if !text.is_empty() {
+        std::fs::write(plugins_txt.with_extension("txt.aetherial-dawn-backup"), &text)?;
+    } else if let Some(d) = plugins_txt.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    lines.push(String::new());
+    std::fs::write(plugins_txt, lines.join(nl))?;
+    Ok(changed)
+}
+
+/// A minimal plugin file for tests elsewhere in the crate.
+#[cfg(test)]
+pub fn test_plugin(version: f32, records: bool) -> Vec<u8> {
+    tests::plugin(version, records)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn plugin(version: f32, records: bool) -> Vec<u8> {
+    pub fn plugin(version: f32, records: bool) -> Vec<u8> {
         plugin_form(version, 44, records)
     }
 
@@ -218,6 +288,23 @@ mod tests {
         let after = std::fs::read_to_string(&txt).unwrap();
         assert_eq!(after, "# Vortex\r\nSkyUI_SE.esp\r\n*ccBGSSSE001-Fish.esm\r\nGood.esp\r\nOff.esp\r\n");
         assert!(extras(tmp.path(), &txt, &m).is_empty());
+    }
+
+    #[test]
+    fn switches_on_skyui() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("SkyUI_SE.esp"), plugin(1.7, true)).unwrap();
+        assert_eq!(wanted(tmp.path()), ["SkyUI_SE.esp"]);
+        let txt = tmp.path().join("plugins.txt");
+        std::fs::write(&txt, "# Vortex\r\nSkyUI_SE.esp\r\n*Good.esp\r\n").unwrap();
+        assert_eq!(switch_on(&txt, &wanted(tmp.path())).unwrap(), ["SkyUI_SE.esp"]);
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "# Vortex\r\n*SkyUI_SE.esp\r\n*Good.esp\r\n");
+        assert!(switch_on(&txt, &wanted(tmp.path())).unwrap().is_empty());
+        std::fs::remove_file(&txt).unwrap();
+        switch_on(&txt, &["SkyUI_SE.esp".into()]).unwrap();
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*SkyUI_SE.esp\r\n");
     }
 
     #[test]

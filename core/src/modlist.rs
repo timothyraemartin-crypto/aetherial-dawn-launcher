@@ -154,6 +154,14 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
         hint: Some("the main file".into()),
         ..Default::default()
     });
+    out.push(ModEntry {
+        id: "skyui".into(),
+        name: "SkyUI".into(),
+        nexus: Some(NexusRef { mod_id: 12604, file: None, pick: Some("SkyUI".into()) }),
+        check: vec![format!("Data/{}", r::SKYUI_PLUGIN), format!("Data/{}", r::SKYUI_ARCHIVE)],
+        hint: Some("SkyUI 5.2SE (main file)".into()),
+        ..Default::default()
+    });
     out
 }
 

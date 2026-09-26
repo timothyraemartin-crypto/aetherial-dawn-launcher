@@ -112,6 +112,8 @@ Every player needs SKSE64 2.2.6, Address Library for SKSE Plugins (the `versionl
 
 Skyrim Souls RE's dependencies (Timothy, 2026-09-26, "All four"): SSE Engine Fixes (the All-In-One package from Nexus, Timothy 20:19), the Unofficial Skyrim Special Edition Patch (client only; the server keeps its five masters), SKSE Menu Framework and ImGui Icons, all from Nexus through Download all mods or the Open buttons. Engine Fixes counts as installed when Data/SKSE/Plugins has EngineFixes.dll and EngineFixes_preload.txt (Engine Fixes 7 loads early through SKSE 2.2's preload file); any d3dx9_42.dll, tbb.dll or tbbmalloc.dll in the package go next to SkyrimSE.exe but aren't required. USSEP is `Unofficial Skyrim Special Edition Patch.esp` in Data, SKSE Menu Framework is `SKSEMenuFramework.dll`, ImGui Icons is `Data/Interface/ImGuiIcons`. None of them is moved aside or switched off.
 
+SkyUI (Timothy, 2026-09-26) is required too: SkyUI 5.2SE from Nexus (skyrimspecialedition mod 12604; the old-Skyrim page, skyrim mod 3863, doesn't work on Special Edition). It's client-only like USSEP, so the server keeps its five masters. It counts as installed when Data has a real `SkyUI_SE.esp` (not the empty stub from the first live test, which is still moved aside as broken) and `SkyUI_SE.bsa`. Before every Play, the plugins of required and listed mods that are in Data (SkyUI, USSEP, plugins named in mods.json) are switched on in plugins.txt, because the launcher's own installs don't do that the way Vortex does.
+
 ## Game health checks
 
 The checks Claude ran by hand on the first tester's PC run for every player: before each Play, after a crash, and from **Settings, Check my game**. They cover:

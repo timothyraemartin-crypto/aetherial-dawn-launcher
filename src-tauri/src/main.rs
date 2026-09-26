@@ -1148,6 +1148,15 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_m
             }
         }
     }
+    // Required and listed mods' plugins (SkyUI, the Unofficial Patch) only
+    // work switched on; Vortex does this, the launcher's own installs don't.
+    if let Some(txt) = plugins_txt(app) {
+        match loadorder::switch_on(&txt, &loadorder::wanted(dir)) {
+            Ok(on) if !on.is_empty() => log::line(&format!("play: switched on in {}: {}", txt.display(), on.join(", "))),
+            Ok(_) => {}
+            Err(e) => log::line(&format!("play: couldn't switch plugins on: {e}")),
+        }
+    }
     restore_crash_logger(dir);
     clear_browser_cache();
     match game::ensure_platform_folders(dir) {
