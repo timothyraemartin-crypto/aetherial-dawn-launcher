@@ -8,165 +8,118 @@
 </head>
 <body>
 <div class="app">
+  <img class="backdrop" src="art/background.jpg" alt="">
+  <div class="shade"></div>
 
-  <!-- ===== sidebar ===== -->
-  <aside class="sidebar" data-tauri-drag-region>
-    <canvas class="side-art" id="side-art" aria-hidden="true"></canvas>
-    <div class="brand" data-tauri-drag-region>
-      <svg class="emblem" viewBox="0 0 64 64" aria-hidden="true">
-        <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M32 3 L61 32 L32 61 L3 32 Z" stroke-width="1.2" opacity=".55"/>
-          <path d="M32 9 L55 32 L32 55 L9 32 Z" stroke-width=".8" opacity=".3"/>
-          <path d="M18 34 a14 14 0 0 1 28 0" stroke-width="1.8"/>
-          <path d="M32 14v5M21 18.5l2.8 4.2M43 18.5l-2.8 4.2M14.5 26l4.5 2.2M49.5 26l-4.5 2.2" stroke-width="1.6"/>
-          <path d="M12 44 L23 32 L28 37 L34 29 L52 44" stroke-width="1.8"/>
-          <path d="M31 31.5 L34 29 L37 32.6" stroke-width="1.8" opacity=".7"/>
-          <path d="M16 44h32" stroke-width="1.2" opacity=".6"/>
-        </g>
-      </svg>
-      <div class="wm">AETHERIAL<span>DAWN</span></div>
-      <div class="motto">SKYRIM MULTIPLAYER</div>
-    </div>
-
-    <nav class="nav" aria-label="Launcher">
-      <button id="nav-home" aria-current="page">
-        <svg viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5h13V10"/><path d="M10 19.5v-5h4v5"/></svg>Home
-      </button>
-      <button id="nav-files">
-        <svg viewBox="0 0 24 24"><path d="M4 7.5 12 3l8 4.5-8 4.5z"/><path d="M4 12l8 4.5 8-4.5"/><path d="M4 16.5 12 21l8-4.5"/></svg>Game files
-      </button>
-      <button id="nav-settings">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings
-      </button>
-    </nav>
-
-    <div class="side-foot">
-      <div class="side-motto">ONE WORLD.<br>EVERY HOLD REMEMBERS.</div>
-      <div class="side-ver" id="side-ver">Launcher</div>
-    </div>
-  </aside>
-
+  <!-- ===== header ===== -->
+  <div class="plate" data-tauri-drag-region>
+    <img src="art/emblem.png" alt="" data-tauri-drag-region>
+    <div class="wm" data-tauri-drag-region>AETHERIAL DAWN<span class="sub">SKYRIM MULTIPLAYER</span></div>
+  </div>
   <div class="titlebar" data-tauri-drag-region>
     <div class="wc">
+      <button id="w-settings" aria-label="Settings"><svg class="gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
       <button id="w-min" aria-label="Minimize"><svg viewBox="0 0 10 10"><path d="M1 5h8"/></svg></button>
       <button id="w-close" class="x" aria-label="Close"><svg viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7"/></svg></button>
     </div>
   </div>
+  <p class="tagline" id="tagline">“SAME SKY. MORE STORIES.”</p>
 
   <div class="banner" id="self-update" hidden>
     <span id="self-update-text">A new version of the launcher is ready.</span>
     <button class="btn" id="self-update-go">Restart to update</button>
   </div>
 
-  <!-- ===== main ===== -->
-  <main class="main">
-    <section class="hero" data-tauri-drag-region>
-      <canvas id="hero-art" aria-hidden="true"></canvas>
-      <img id="hero-img" alt="" hidden>
-      <blockquote class="hero-quote">“The dragons are gone.<br>The people remain.”</blockquote>
-      <div class="hero-text">
-        <h1>A NEW DAWN RISES</h1>
-        <p>A PERSISTENT SKYRIM MULTIPLAYER WORLD</p>
+  <!-- ===== nav ===== -->
+  <nav class="nav" aria-label="Launcher">
+    <button id="nav-home" aria-current="page"><svg viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5h13V10"/><path d="M10 19.5v-5h4v5"/></svg>Home</button>
+    <button id="nav-server"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8" ry="2.5"/><path d="M4 5.5v6c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5v-6"/><path d="M4 11.5v6c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5v-6"/></svg>Server Info</button>
+    <button id="nav-mods"><svg viewBox="0 0 24 24"><path d="M9 4h6v3a2 2 0 1 0 4 0h1v6h-3a2 2 0 1 0 0 4h3v3H4v-6h1a2 2 0 1 0 0-4H4V4z"/></svg>Mods</button>
+    <button id="nav-news"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 12h7M9 16h7"/></svg>News</button>
+    <button id="nav-settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>Settings</button>
+    <div class="ver" id="ver">Launcher</div>
+  </nav>
+
+  <!-- ===== home ===== -->
+  <section class="about" id="page-home">
+    <div class="eyebrow">A PERSISTENT SKYRIM</div>
+    <p>Aetherial Dawn is a community-driven Skyrim multiplayer world. Forge your own story in a shared land where every journey matters, and your character, home and coin carry over between sessions.</p>
+  </section>
+
+  <!-- ===== server info ===== -->
+  <section class="page" id="page-server" hidden>
+    <div class="section">
+      <div class="srv-head">
+        <div><h2 id="srv-name">Aetherial Dawn</h2><div class="online off" id="srv-online"><i></i><span>Checking…</span></div></div>
+        <button class="btn" id="srv-copy"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg><span>Copy address</span></button>
       </div>
-    </section>
-
-    <div class="content">
-      <!-- home -->
-      <section class="grid" id="page-home">
-        <article class="card server">
-          <div class="thumb"><span class="tag">SERVER STATUS</span><canvas id="server-art" aria-hidden="true"></canvas></div>
-          <div class="info">
-            <div class="head">
-              <div>
-                <h2 id="srv-name">Aetherial Dawn</h2>
-                <div class="online off" id="srv-online"><i></i><span>Checking…</span></div>
-              </div>
-              <button class="btn" id="srv-copy"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg><span>Copy address</span></button>
-            </div>
-            <p class="desc" id="srv-desc">One shared, persistent Skyrim. Your character, home and coin carry over between sessions.</p>
-            <div class="facts">
-              <span><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 20a6.5 6.5 0 0 0-3-5.5"/></svg><b id="srv-players">–</b></span>
-              <span><svg viewBox="0 0 24 24"><path d="M12 3 20 7v5c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V7z"/></svg>SE / AE</span>
-              <span><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg><span id="srv-addr">–</span></span>
-              <span><svg viewBox="0 0 24 24"><path d="M12 7v5l3 2"/><circle cx="12" cy="12" r="9"/></svg><span id="srv-reset">–</span></span>
-            </div>
-          </div>
-        </article>
-
-        <article class="card">
-          <h3 class="card-title">YOUR GAME</h3>
-          <div class="rows">
-            <div class="row" id="g-game"><svg viewBox="0 0 24 24"></svg><div><b></b><small></small></div></div>
-            <div class="row" id="g-skse"><svg viewBox="0 0 24 24"></svg><div><b></b><small></small></div></div>
-          </div>
-          <div class="foot"><button class="btn" id="g-change">Change folder</button></div>
-        </article>
-
-        <article class="card">
-          <h3 class="card-title">CLIENT FILES</h3>
-          <div class="pack"><canvas id="pack-art" aria-hidden="true"></canvas><b>Aetherial Dawn Client</b></div>
-          <div class="pack-meta" id="pack-meta">–</div>
-          <div class="foot">
-            <span class="chip busy" id="pack-chip"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg><span>Checking</span></span>
-            <button class="btn" id="pack-view">View files<svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
-          </div>
-        </article>
-
-        <article class="card">
-          <h3 class="card-title">QUICK TOOLS</h3>
-          <div class="tools">
-            <button id="t-verify"><svg viewBox="0 0 24 24"><path d="M12 3 20 7v5c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V7z"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>Verify files<svg class="arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
-            <button id="t-check"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg>Check for updates<svg class="arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
-            <button id="t-folder"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Open game folder<svg class="arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
-            <button id="t-settings"><svg viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>Launch options<svg class="arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
-          </div>
-        </article>
-
-        <article class="card news">
-          <h3 class="card-title">NEWS &amp; UPDATES</h3>
-          <div class="news-list" id="news"><p class="empty">News from the server will show here.</p></div>
-        </article>
-      </section>
-
-      <!-- files -->
-      <section class="files-page" id="page-files" hidden>
-        <article class="card">
-          <h3 class="card-title"><span>CLIENT FILES</span><span class="pack-meta" id="files-summary"></span></h3>
-          <div class="ftable-wrap">
-            <table class="ftable"><thead><tr><th>FILE</th><th>SIZE</th></tr></thead><tbody id="files-body"></tbody></table>
-          </div>
-          <div class="foot"><span class="note">Files are installed into your Skyrim folder. Your saves and other mods are left alone.</span><button class="btn" id="files-verify">Verify all files</button></div>
-        </article>
-      </section>
+      <div class="facts">
+        <div><b id="srv-players">–</b><span>players online</span></div>
+        <div><b id="srv-addr">–</b><span>address</span></div>
+        <div><b id="srv-reset">–</b><span>since the last reset</span></div>
+        <div><b id="srv-build">–</b><span>client build</span></div>
+      </div>
     </div>
+    <div class="section">
+      <div class="label">YOUR GAME</div>
+      <div class="rows">
+        <div class="row" id="g-game"><svg viewBox="0 0 24 24"></svg><div><b></b><small></small></div><button class="btn" id="g-change">Change folder</button></div>
+        <div class="row" id="g-skse"><svg viewBox="0 0 24 24"></svg><div><b></b><small></small></div><span></span></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="label">TOOLS</div>
+      <div class="tools">
+        <button id="t-verify"><svg viewBox="0 0 24 24"><path d="M12 3 20 7v5c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V7z"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>Verify files</button>
+        <button id="t-check"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg>Check for updates</button>
+        <button id="t-folder"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Open game folder</button>
+        <button id="t-settings"><svg viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>Launch options</button>
+      </div>
+    </div>
+  </section>
 
-    <footer class="band">
-      <canvas id="band-art" aria-hidden="true"></canvas>
-      <div class="band-left">
-        <div id="band-quote">
-          <blockquote>“Skyrim was never meant<br>to be walked alone.”</blockquote>
-        </div>
-        <cite id="band-cite">— AETHERIAL DAWN</cite>
-        <div class="progress" id="progress" hidden>
-          <div class="prow"><span id="p-label">Updating client files</span><span id="p-num"></span></div>
-          <div class="bar"><i id="p-bar"></i></div>
-          <div class="prow"><span class="file" id="p-file"></span><span id="p-speed"></span></div>
-        </div>
+  <!-- ===== mods ===== -->
+  <section class="page" id="page-mods" hidden>
+    <div class="srv-head">
+      <div><h2>Mods</h2><p class="note" id="mods-summary" style="margin:6px 0 0">The server decides which mods and files every player needs.</p></div>
+      <span class="chip busy" id="mods-chip"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg><span>Checking</span></span>
+    </div>
+    <div class="ftable-wrap">
+      <table class="ftable"><thead><tr><th>FILE</th><th>SIZE</th></tr></thead><tbody id="files-body"></tbody></table>
+    </div>
+    <div class="page-foot"><span class="note">Installed into your Skyrim folder. Your saves and other mods are left alone.</span><button class="btn" id="files-verify">Verify all files</button></div>
+  </section>
+
+  <!-- ===== news ===== -->
+  <section class="page" id="page-news" hidden>
+    <h2>News</h2>
+    <div class="news-full" id="news-full"><p class="empty">News from the server will show here.</p></div>
+  </section>
+
+  <!-- ===== dock: news + play ===== -->
+  <div class="dock">
+    <div class="dock-panel news-box" id="news-box">
+      <div class="label">LATEST NEWS<button id="news-all">View all</button></div>
+      <div class="news-list" id="news"><p class="empty">News from the server will show here.</p></div>
+    </div>
+    <div class="dock-panel play-box">
+      <div class="progress" id="progress" hidden>
+        <div class="prow"><span id="p-label">Updating client files</span><span id="p-num"></span></div>
+        <div class="bar"><i id="p-bar"></i></div>
+        <div class="prow"><span class="file" id="p-file"></span><span id="p-speed"></span></div>
       </div>
-      <div class="play-zone">
-        <div class="play-wrap off" id="play-wrap">
-          <button class="play" id="play" disabled>
-            <span id="play-label">CHECKING</span>
-            <svg class="play-frame" viewBox="0 0 250 68" preserveAspectRatio="none" aria-hidden="true">
-              <path d="M18.5 1.5H231.5L248 34L231.5 66.5H18.5L2 34Z"/>
-              <path class="inner" d="M21.5 6H228.5L242 34L228.5 62H21.5L8 34Z"/>
-            </svg>
-          </button>
-        </div>
-        <div class="play-status" id="play-status"><span>Checking for updates…</span></div>
+      <div class="play-wrap off" id="play-wrap">
+        <button class="play" id="play" disabled>
+          <span id="play-label">CHECKING</span>
+          <svg class="play-frame" viewBox="0 0 360 72" preserveAspectRatio="none" aria-hidden="true">
+            <path d="M20.5 1.5H339.5L358 36L339.5 70.5H20.5L2 36Z"/>
+            <path class="inner" d="M24 6H336L351 36L336 66H24L9 36Z"/>
+          </svg>
+        </button>
       </div>
-    </footer>
-  </main>
+      <div class="status" id="status"><span>Checking for updates…</span></div>
+    </div>
+  </div>
 
   <!-- ===== first run ===== -->
   <div class="sheet" id="first" hidden>
@@ -188,7 +141,7 @@
   <!-- ===== settings ===== -->
   <div class="sheet" id="settings" hidden>
     <div class="panel">
-      <h2>Launch options</h2>
+      <h2>Settings</h2>
       <div class="field">
         <label for="set-path">Skyrim folder</label>
         <div class="line"><input id="set-path" readonly><button class="btn" id="set-browse">Browse</button></div>
@@ -202,7 +155,6 @@
     </div>
   </div>
 </div>
-<script src="scenery.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
