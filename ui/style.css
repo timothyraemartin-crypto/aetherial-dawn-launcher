@@ -41,15 +41,16 @@ img { display: block; }
 
 /* ---------- backdrop ---------- */
 .backdrop { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 30% 0; }
-#ambient { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.scene { position: absolute; inset: 0; }
+#ambient, #lights { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .aurora { position: absolute; left: 0; right: 0; top: 0; height: 52%; pointer-events: none; opacity: 0; mix-blend-mode: screen;
   background: radial-gradient(ellipse 22% 60% at 22% 30%, rgba(60,220,200,.35), transparent 70%),
               radial-gradient(ellipse 18% 55% at 72% 25%, rgba(70,190,240,.3), transparent 70%),
               radial-gradient(ellipse 30% 40% at 50% 10%, rgba(90,160,255,.18), transparent 70%);
   -webkit-mask-image: linear-gradient(180deg, #000 40%, transparent); mask-image: linear-gradient(180deg, #000 40%, transparent); }
-html.animated .backdrop { animation: drift 80s ease-in-out infinite alternate; will-change: transform; }
+html.animated .scene { animation: drift 80s ease-in-out infinite alternate; will-change: transform; }
 html.animated .aurora { animation: aurora 11s ease-in-out infinite alternate; }
-html.paused .backdrop, html.paused .aurora { animation-play-state: paused; }
+html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 @keyframes drift { from { transform: scale(1.03) translate(0, 0); } to { transform: scale(1.09) translate(-1.4%, -1%); } }
 @keyframes aurora { 0% { opacity: .15; transform: translateX(-1.5%) scaleY(1); } 50% { opacity: .55; } 100% { opacity: .25; transform: translateX(1.5%) scaleY(1.08); } }
 .shade { position: absolute; inset: 0; pointer-events: none;
