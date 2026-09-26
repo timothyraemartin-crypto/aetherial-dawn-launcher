@@ -33,6 +33,8 @@ pub struct GameCheck {
     pub skse_version: Option<String>,
     /// e.g. "skse64_1_6_1170.dll".
     pub skse_dll: Option<String>,
+    /// Soft check: play is allowed, but the game files may be the wrong build.
+    pub warning: Option<String>,
 }
 
 /// Reads the file version from a Windows executable's version resource.
@@ -118,8 +120,9 @@ struct Marker {
     files: Vec<(String, u64, u64)>,
     /// True when the player said "already on this version" rather than the
     /// launcher putting the files in place itself.
+    /// None on marks from launchers before 0.1.13, which didn't say.
     #[serde(default)]
-    manual: bool,
+    manual: Option<bool>,
 }
 
 /// The files that change between builds: the executable and the base game data.
@@ -159,7 +162,7 @@ pub fn record(game_dir: &Path, spec: &GameSpec, manual: bool) -> Result<()> {
         version: spec.version.clone().unwrap_or_default(),
         depots: spec_depots(spec),
         files: fingerprint(game_dir),
-        manual,
+        manual: Some(manual),
     };
     let path = game_dir.join(MARKER);
     std::fs::create_dir_all(path.parent().unwrap())?;
@@ -171,8 +174,8 @@ pub fn record(game_dir: &Path, spec: &GameSpec, manual: bool) -> Result<()> {
 /// looks at Steam's record again. Returns true when one was removed.
 pub fn forget_manual(game_dir: &Path) -> bool {
     let path = game_dir.join(MARKER);
-    let manual = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Marker>(&b).ok()).map(|m| m.manual).unwrap_or(false);
-    manual && std::fs::remove_file(path).is_ok()
+    let trusted = read_marker(game_dir).map(|m| m.manual == Some(false)).unwrap_or(true);
+    !trusted && std::fs::remove_file(path).is_ok()
 }
 
 /// Stops Steam updating Skyrim past the build the launcher just put in place:
@@ -219,9 +222,12 @@ fn set_auto_update(acf: &str) -> String {
     s
 }
 
+fn read_marker(game_dir: &Path) -> Option<Marker> {
+    serde_json::from_slice(&std::fs::read(game_dir.join(MARKER)).ok()?).ok()
+}
+
 fn marker_holds(game_dir: &Path, spec: &GameSpec) -> bool {
-    let Ok(bytes) = std::fs::read(game_dir.join(MARKER)) else { return false };
-    let Ok(m) = serde_json::from_slice::<Marker>(&bytes) else { return false };
+    let Some(m) = read_marker(game_dir) else { return false };
     m.version == spec.version.clone().unwrap_or_default() && m.depots == spec_depots(spec) && !m.files.is_empty() && m.files == fingerprint(game_dir)
 }
 
@@ -246,13 +252,23 @@ pub fn check(game_dir: &Path, spec: Option<&GameSpec>) -> GameCheck {
             c.needed = true;
             c.reason = Some(format!("Your Skyrim is {}. Aetherial Dawn needs {}.", short(v), short(target)));
         }
-        Some(_) if spec.depots.is_empty() || marker_holds(game_dir, spec) => {}
+        Some(_) if spec.depots.is_empty() => {}
         Some(_) => {
             // Same executable; make sure Steam hasn't swapped the game data underneath it.
             let acf = acf_path(game_dir, spec.app).and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
             let have = installed_depots(&acf);
             let stale = spec.depots.iter().any(|d| matches!(have.get(&d.depot), Some(m) if m.to_string() != d.manifest));
-            if stale {
+            if marker_holds(game_dir, spec) {
+                // Steam's record never changes after a downgrade, so only a
+                // mark the launcher didn't make itself gets the soft warning.
+                let by_launcher = read_marker(game_dir).and_then(|m| m.manual) == Some(false);
+                if stale && !by_launcher {
+                    c.warning = Some(format!(
+                        "Your game was marked as {} by hand, but Steam says it has newer game files. If Skyrim crashes on start, click Fix version.",
+                        short(target)
+                    ));
+                }
+            } else if stale {
                 c.needed = true;
                 c.reason = Some(format!("Steam has updated your game data past {}. Aetherial Dawn needs {}.", short(target), short(target)));
             }
@@ -282,6 +298,7 @@ mod tests {
         assert!(edited.contains("\"1\"") && !edited.contains("\"0\""));
 
         record(&dir, &spec(), false).unwrap();
+        assert!(check(&dir, Some(&spec())).warning.is_none());
         assert!(!forget_manual(&dir));
         record(&dir, &spec(), true).unwrap();
         assert!(forget_manual(&dir));
@@ -376,8 +393,16 @@ mod tests {
         let g = game([1, 6, 1170, 0], &ACF.replace("8442952117333549665", "1111"));
         let d = dir(&g);
         assert!(check(&d, Some(&spec())).needed);
+        record(&d, &spec(), true).unwrap();
+        let c = check(&d, Some(&spec()));
+        assert!(!c.needed && c.warning.is_some(), "a hand-set mark over stale depots gets the soft warning");
+        // A mark from before 0.1.13 (no "manual" field) is treated the same way.
+        let legacy = std::fs::read_to_string(d.join(MARKER)).unwrap().replace("\"manual\": true", "\"x\": 0");
+        std::fs::write(d.join(MARKER), legacy).unwrap();
+        assert!(check(&d, Some(&spec())).warning.is_some());
         record(&d, &spec(), false).unwrap();
-        assert!(!check(&d, Some(&spec())).needed);
+        let c = check(&d, Some(&spec()));
+        assert!(!c.needed && c.warning.is_none());
         // Steam rewrites the data afterwards: the record no longer holds.
         std::fs::write(d.join("Data/Skyrim.esm"), b"newer esm").unwrap();
         assert!(check(&d, Some(&spec())).needed);

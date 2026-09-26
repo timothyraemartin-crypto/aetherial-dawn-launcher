@@ -132,7 +132,8 @@
     // Always reachable, so a player can re-download the right build even after
     // the check was satisfied (for example by "already on this version").
     $('g-downgrade').hidden = !c.canDowngrade;
-    $('g-downgrade').textContent = c.needed ? 'Fix version' : 'Re-download';
+    $('g-downgrade').textContent = c.needed || c.warning ? 'Fix version' : 'Re-download';
+    if (c.warning) renderRow(row, false, have, c.warning);
     if (g.hasSkse && c.target && !c.skseOk) {
       const skse = [false, "SKSE doesn't match", `Install SKSE ${c.skseVersion || ''} for Skyrim ${shortVer(c.target)}. ${c.skseDll} is missing.`.replace('  ', ' ')];
       renderRow($('g-skse'), ...skse); renderRow($('c-skse'), ...skse);
@@ -259,6 +260,7 @@
     if (!signedIn()) { setPlay('signin', 'SIGN IN'); setStatus('Sign in with Discord to play.', true); return; }
     if (auth.locked) { setPlay('wait', 'OFFLINE'); setStatus(auth.message, true); return; }
     setPlay('play', 'PLAY');
+    if (c && c.warning) setStatus(c.warning, true);
     if (c && c.target && !c.skseOk) setStatus(`SKSE for Skyrim ${shortVer(c.target)} is missing. Install SKSE ${c.skseVersion || ''} from skse.silverlock.org.`, true);
     else setStatus(null);
   }
@@ -335,7 +337,7 @@
   // ---------- game version ----------
   function openDowngrade() {
     const c = gameCheck || {};
-    $('dg-lead').textContent = `${c.reason || ''} The launcher downloads Skyrim ${shortVer(c.target)} from Steam with your own account, then checks it.`;
+    $('dg-lead').textContent = `${c.reason || c.warning || ''} The launcher downloads Skyrim ${shortVer(c.target)} from Steam with your own account, then checks it.`;
     $('dg-error').hidden = true;
     $('dg-progress').hidden = true;
     skipArmed = false;
