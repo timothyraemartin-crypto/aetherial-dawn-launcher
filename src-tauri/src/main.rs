@@ -1119,6 +1119,16 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_m
     if set_aside > 0 {
         let _ = app.emit("mods-set-aside", set_aside);
     }
+    // SKSE DLLs built for another Skyrim stop the game at the SKSE Plugin
+    // Loader ("only compatible with versions earlier than 1.6.629", True
+    // Directional Movement 2026-09-26). They're set aside with the reason; a
+    // required mod's right build is installed by the mod check.
+    for (rel, why) in launcher_core::skse::wrong_builds(dir) {
+        match launcher_core::modlist::set_aside_wrong_build(dir, &rel, &why) {
+            Ok(dest) => log::line(&format!("play: set aside {rel} ({why}) to {}", dest.display())),
+            Err(e) => return Err(format!("Couldn't move {rel} out of the way ({e}). It's a build for another Skyrim version. Close Skyrim and Vortex, then try again.")),
+        }
+    }
     if let Some(txt) = plugins_txt(app) {
         let extras = loadorder::extras(dir, &txt, m);
         if !extras.is_empty() {

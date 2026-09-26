@@ -249,9 +249,36 @@ pub fn merged(game_version: Option<&str>, server: Option<&ModList>) -> Vec<ModEn
 }
 
 /// A file or folder that's really there; a plugin must also be a sound one,
-/// not an empty stub like the SkyUI_SE.esp from the first live test.
+/// not an empty stub like the SkyUI_SE.esp from the first live test, and an
+/// SKSE DLL must be the build SKSE loads on 1.6.1170 (not the old-Skyrim
+/// True Directional Movement Vortex deployed, 2026-09-26).
 fn present(p: &Path) -> bool {
-    p.exists() && !(is_plugin(p) && crate::loadorder::broken(p).is_some())
+    p.exists() && !(is_plugin(p) && crate::loadorder::broken(p).is_some()) && !(is_skse_dll(p) && crate::skse::wrong_build(p).is_some())
+}
+
+fn is_skse_dll(p: &Path) -> bool {
+    let l = p.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+    l.ends_with(".dll") && l.contains("/skse/plugins/")
+}
+
+/// SKSE DLLs in the plan that SKSE would refuse, with the reason. Where the
+/// archive also has a same-named DLL that fits (an installer with an SE and
+/// an AE folder), the plan is switched to that one first.
+pub fn fix_wrong_builds(copies: &mut [Copy], unpacked: &Path) -> Vec<(String, String)> {
+    let mut wrong = Vec::new();
+    for c in copies.iter_mut() {
+        if !crate::skse::is_skse_plugin(&c.to.to_string_lossy()) {
+            continue;
+        }
+        let Some(why) = crate::skse::wrong_build(&c.from) else { continue };
+        let name = c.to.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        let better = files_under(unpacked).into_iter().find(|f| f.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase() == name).unwrap_or(false) && crate::skse::build_of(f) == crate::skse::Build::Fits);
+        match better {
+            Some(f) => c.from = f,
+            None => wrong.push((c.to.file_name().unwrap().to_string_lossy().into_owned(), why)),
+        }
+    }
+    wrong
 }
 
 fn is_plugin(p: &Path) -> bool {
@@ -651,6 +678,12 @@ pub fn apply(entry: &ModEntry, copies: &[Copy], game_dir: &Path, file_id: Option
             skipped.push(rel);
             continue;
         }
+        // A DLL of the wrong build is set aside with the reason, never deleted.
+        if dest.is_file() && is_skse_dll(&dest) {
+            if let Some(why) = crate::skse::wrong_build(&dest) {
+                set_aside_wrong_build(game_dir, &rel, &why)?;
+            }
+        }
         if let Some(p) = dest.parent() {
             std::fs::create_dir_all(p)?;
         }
@@ -675,6 +708,18 @@ pub fn apply(entry: &ModEntry, copies: &[Copy], game_dir: &Path, file_id: Option
     }
     std::fs::write(path, serde_json::to_vec_pretty(&all)?)?;
     Ok(rec)
+}
+
+/// Moves a DLL SKSE would refuse to `.aetherial-dawn/disabled/<time>-wrong-build/`
+/// and notes why in `why.txt` there.
+pub fn set_aside_wrong_build(game_dir: &Path, rel: &str, why: &str) -> Result<PathBuf> {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let stamp = format!("{secs}-wrong-build");
+    let dest = crate::strays::move_aside(game_dir, &[rel.to_string()], &stamp)?;
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(dest.join("why.txt"))?;
+    writeln!(f, "{rel}: {why}; SKSE won't load it on Skyrim 1.6.1170")?;
+    Ok(dest)
 }
 
 /// Plugins in the plan made for a newer Skyrim than the game's masters
@@ -869,6 +914,39 @@ mod tests {
         let to: Vec<String> = plan(&e, &t.path().join("u")).unwrap().iter().map(|c| c.to.to_string_lossy().replace('\\', "/")).collect();
         assert!(to.contains(&"Data/SKSE/Plugins/EngineFixes.dll".to_string()), "{to:?}");
         assert!(to.contains(&"Data/SKSE/Plugins/EngineFixes.toml".to_string()), "{to:?}");
+    }
+
+    #[test]
+    fn takes_the_right_skse_build_and_sets_the_old_one_aside() {
+        use crate::skse::tests::{good_dll, old_dll};
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path().join("game");
+        let pl = g.join("Data/SKSE/Plugins");
+        std::fs::create_dir_all(&pl).unwrap();
+        std::fs::write(g.join("Data/vortex.deployment.json"), b"{}").unwrap();
+        std::fs::write(pl.join("TrueDirectionalMovement.dll"), old_dll()).unwrap();
+        let e = ModEntry { id: "tdm".into(), name: "True Directional Movement".into(), check: vec!["Data/SKSE/Plugins/TrueDirectionalMovement.dll".into()], ..Default::default() };
+        assert!(!e.installed(&g), "the old build doesn't count as installed");
+        // An installer with an SE and an AE folder: the plan takes the AE DLL.
+        let u = t.path().join("unpacked");
+        for (dir, b) in [("SE", old_dll()), ("AE", good_dll())] {
+            std::fs::create_dir_all(u.join(dir).join("SKSE/Plugins")).unwrap();
+            std::fs::write(u.join(dir).join("SKSE/Plugins/TrueDirectionalMovement.dll"), b).unwrap();
+        }
+        let mut copies = vec![Copy { from: u.join("SE/SKSE/Plugins/TrueDirectionalMovement.dll"), to: PathBuf::from("Data/SKSE/Plugins/TrueDirectionalMovement.dll") }];
+        assert!(fix_wrong_builds(&mut copies, &u).is_empty());
+        assert!(copies[0].from.to_string_lossy().contains("AE"));
+        apply(&e, &copies, &g, None, None).unwrap();
+        assert!(e.installed(&g));
+        // The old one was set aside with the reason, not deleted.
+        let aside: Vec<_> = std::fs::read_dir(g.join(crate::strays::DISABLED_DIR)).unwrap().flatten().map(|d| d.path()).collect();
+        assert_eq!(aside.len(), 1);
+        assert!(aside[0].join("Data/SKSE/Plugins/TrueDirectionalMovement.dll").is_file());
+        assert!(std::fs::read_to_string(aside[0].join("why.txt")).unwrap().contains("1.6.629"));
+        // An archive with only the old build is refused.
+        std::fs::remove_dir_all(u.join("AE")).unwrap();
+        let mut copies = vec![Copy { from: u.join("SE/SKSE/Plugins/TrueDirectionalMovement.dll"), to: PathBuf::from("Data/SKSE/Plugins/TrueDirectionalMovement.dll") }];
+        assert_eq!(fix_wrong_builds(&mut copies, &u).len(), 1);
     }
 
     #[test]

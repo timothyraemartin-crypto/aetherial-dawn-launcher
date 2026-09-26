@@ -19,6 +19,7 @@ pub mod patcher;
 pub mod pristine;
 pub mod requirements;
 pub mod settings;
+pub mod skse;
 pub mod steamapp;
 pub mod strays;
 pub mod sync;

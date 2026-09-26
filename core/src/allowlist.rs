@@ -229,6 +229,10 @@ pub fn restore_kept(game_dir: &Path) -> std::io::Result<Vec<String>> {
                 if !(keep.contains(&rel_s.to_ascii_lowercase()) || required_file(&rel_s)) {
                     continue;
                 }
+                // Never put back a DLL SKSE would refuse.
+                if crate::skse::is_skse_plugin(&rel_s) && crate::skse::wrong_build(&p).is_some() {
+                    continue;
+                }
                 let to = game_dir.join(rel);
                 if to.exists() {
                     continue;

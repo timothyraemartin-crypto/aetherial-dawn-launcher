@@ -84,6 +84,7 @@ pub fn run(i: &Inputs) -> Report {
         exe(i),
         masters(i),
         required_files(i),
+        skse_builds(i),
         load_order(i),
         plugin_names(i),
         load_order_file(i),
@@ -339,12 +340,33 @@ fn required_files(i: &Inputs) -> Check {
     }
 }
 
+/// SKSE DLLs built for another Skyrim, named by mod where the mod list
+/// checks for them.
+fn skse_builds(i: &Inputs) -> Check {
+    let list = crate::modlist::builtin(None);
+    let items: Vec<String> = crate::skse::wrong_builds(i.game_dir)
+        .into_iter()
+        .map(|(rel, why)| match list.iter().find(|m| m.check.iter().any(|c| c.eq_ignore_ascii_case(&rel))) {
+            Some(m) => format!("{} ({}): {why}; the launcher sets it aside and installs the 1.6.1170 build", m.name, rel.rsplit('/').next().unwrap_or(&rel)),
+            None => format!("{}: {why}; the launcher sets it aside before Play", rel.rsplit('/').next().unwrap_or(&rel)),
+        })
+        .collect();
+    if items.is_empty() {
+        check("sksebuilds", "SKSE mod builds", Status::Ok, "Every SKSE mod is the build for Skyrim 1.6.1170.", vec![])
+    } else {
+        check("sksebuilds", "SKSE mod builds", Status::Fail, "An SKSE mod is the build for another Skyrim, so SKSE stops the game with \"only compatible with versions earlier than 1.6.629\".", items)
+    }
+}
+
 /// The launcher's own best guess at a crash's cause, from the checks, most
 /// specific first. None when nothing points anywhere.
 pub fn likely_cause(r: &Report) -> Option<String> {
     let failed = |id: &str, st: Status| r.checks.iter().find(|c| c.id == id && c.status >= st);
     if let Some(c) = failed("requiredfiles", Status::Fail) {
         return Some(format!("A required mod is missing its support files: {}", c.items.first().cloned().unwrap_or_default()));
+    }
+    if let Some(c) = failed("sksebuilds", Status::Fail) {
+        return Some(format!("An SKSE mod is the build for another Skyrim: {}", c.items.first().cloned().unwrap_or_default()));
     }
     for (id, why) in [
         ("exe", "Wrong Skyrim version"),

@@ -357,6 +357,8 @@ enum Outcome {
     Installed,
     /// Made for a newer Skyrim than the game's masters.
     TooNew(Vec<String>),
+    /// Has an SKSE DLL built for another Skyrim.
+    WrongBuild(Vec<String>),
 }
 
 /// Unpacks, checks and installs one downloaded archive.
@@ -367,7 +369,14 @@ async fn install(m: &ModEntry, archive: &Path, game_dir: &Path, file_id: Option<
         let work = game_dir.join(modlist::MODS_DIR).join("unpacked").join(&m.id);
         let _ = std::fs::remove_dir_all(&work);
         modlist::extract(&archive, &work)?;
-        let copies = modlist::plan(&m, &work)?;
+        let mut copies = modlist::plan(&m, &work)?;
+        // An SKSE DLL for another Skyrim never goes in; the next file is tried.
+        let wrong = modlist::fix_wrong_builds(&mut copies, &work);
+        if !wrong.is_empty() {
+            let _ = std::fs::remove_dir_all(&work);
+            log::line(&format!("mods: {} download has the wrong build: {}", m.name, wrong.iter().map(|(n, w)| format!("{n} ({w})")).collect::<Vec<_>>().join(", ")));
+            return Ok(Outcome::WrongBuild(wrong.into_iter().map(|(n, _)| n).collect()));
+        }
         let newer = modlist::too_new_plugins(&copies, &game_dir);
         if !newer.is_empty() && !allow_too_new {
             let _ = std::fs::remove_dir_all(&work);
@@ -415,12 +424,22 @@ fn archive_path(game_dir: &Path, m: &ModEntry, file: &str) -> PathBuf {
 async fn premium_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, game_dir: &Path, cancel: &AtomicBool) -> Result<(), String> {
     let n = m.nexus.as_ref().unwrap();
     let files = api.files(modlist::NEXUS_GAME, n.mod_id).await.map_err(|e| e.to_string())?;
-    let cands = nexus::candidates(&files, n.file, n.pick.as_deref());
+    let mut cands = nexus::candidates(&files, n.file, n.pick.as_deref());
+    // After the picked files, the page's other files, in case the picked
+    // one is a build for another Skyrim (True Directional Movement, 2026-09-26).
+    if n.file.is_none() {
+        for f in nexus::candidates(&files, None, None) {
+            if !cands.iter().any(|c| c.file_id == f.file_id) {
+                cands.push(f);
+            }
+        }
+    }
     if cands.is_empty() {
         return Err("no matching file on Nexus".into());
     }
     let mut too_new = Vec::new();
-    for f in cands.iter().take(6) {
+    let mut wrong = Vec::new();
+    for f in cands.iter().take(8) {
         if cancel.load(Ordering::SeqCst) {
             return Err("cancelled".into());
         }
@@ -436,7 +455,15 @@ async fn premium_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, gam
                 too_new.extend(p);
                 let _ = std::fs::remove_file(&path);
             }
+            Outcome::WrongBuild(p) => {
+                log::line(&format!("mods: {} file {} has a build SKSE won't load on 1.6.1170 ({}); trying another", m.name, f.name, p.join(", ")));
+                wrong.extend(p);
+                let _ = std::fs::remove_file(&path);
+            }
         }
+    }
+    if !wrong.is_empty() && too_new.is_empty() {
+        return Err(format!("no file on its Nexus page has a build of {} that works on Skyrim 1.6.1170", wrong.join(", ")));
     }
     Err(format!("every recent file is made for a newer Skyrim ({})", too_new.join(", ")))
 }
@@ -473,6 +500,10 @@ async fn free_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, game_d
                 let _ = std::fs::remove_file(&path);
                 note = format!("That file is for a newer Skyrim ({}). Open Files, pick an older version for Skyrim 1.6.1170 and press Mod manager download.", p.join(", "));
             }
+            Outcome::WrongBuild(p) => {
+                let _ = std::fs::remove_file(&path);
+                note = format!("That file has the old-Skyrim build of {}. Open Files, pick the one for Anniversary Edition (1.6.640 or newer) and press Mod manager download.", p.join(", "));
+            }
         }
     }
 }
@@ -485,6 +516,7 @@ async fn direct_one(app: &AppHandle, http: &reqwest::Client, m: &ModEntry, game_
     match install(m, &path, game_dir, None, None, true).await? {
         Outcome::Installed => Ok(()),
         Outcome::TooNew(_) => unreachable!(),
+        Outcome::WrongBuild(p) => Err(format!("the download has a build of {} that SKSE won't load on Skyrim 1.6.1170", p.join(", "))),
     }
 }
 

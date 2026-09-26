@@ -120,6 +120,10 @@ SSE Display Tweaks (Nexus 34705, the Anniversary Edition file; `SSEDisplayTweaks
 
 SmoothCam (Nexus 41252), True Directional Movement (51614), TrueHUD (62775) and MCM Helper (53000, which their menus need) are required too (Timothy, 2026-09-26). The Anniversary Edition files are picked where a page has several. Each counts as installed when its DLL is in `Data\SKSE\Plugins`, and their plugins are switched on before Play like SkyUI's. They are client-only and change no world records.
 
+### SKSE mods built for another Skyrim
+
+A DLL in `Data\SKSE\Plugins` only counts as installed when it's the build SKSE 2.2.6 loads on Skyrim 1.6.1170. The launcher reads the DLL's `SKSEPlugin_Version` data and applies SKSE's own rules (1.6.629+ structure layout or no struct use; Address Library, signatures or 1.6.1170 in its version list; SKSE 2.2.6 or older required). In the first test Vortex had deployed True Directional Movement's old build and SKSE stopped the game with "only compatible with versions earlier than 1.6.629". Before every Play such DLLs are moved to `.aetherial-dawn\disabled\<time>-wrong-build\` with a `why.txt` (never deleted), the game check lists them, and a required mod's right build is installed: from an installer with SE and AE folders it takes the one that fits, and with Premium it tries the page's other files when the picked one is the wrong build.
+
 ## Plugin names the game client can't load
 
 SkyMP's client checks the load order by calling Skyrim Platform's `getFileInfo` for every plugin, and that rejects names with spaces: on 2026-09-26 Timothy's `skyrim-platform.log` ended with "'unofficial skyrim special edition patch.esp' is not a valid argument for 'filename'", and the game sat on a black screen after loading in.
