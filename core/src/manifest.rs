@@ -19,6 +19,47 @@ pub struct Manifest {
     pub files: Vec<FileEntry>,
     #[serde(default)]
     pub remove: Vec<String>,
+    /// The Skyrim build the server needs, and where Steam keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game: Option<GameSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GameSpec {
+    /// SkyrimSE.exe file version, such as "1.6.1170.0".
+    #[serde(default)]
+    pub version: Option<String>,
+    /// The SKSE release for that game version, such as "2.2.6". Shown to players.
+    #[serde(default)]
+    pub skse_version: Option<String>,
+    #[serde(default = "default_app")]
+    pub app: u32,
+    /// Steam depot manifests that make up that build. Manifest ids are strings
+    /// because they don't fit in a JSON number.
+    #[serde(default)]
+    pub depots: Vec<Depot>,
+    /// Pinned DepotDownloader build for Windows. Without it the launcher uses
+    /// the latest release from github.com/SteamRE/DepotDownloader.
+    #[serde(default)]
+    pub tool: Option<Tool>,
+}
+
+fn default_app() -> u32 {
+    489830
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Depot {
+    pub depot: u32,
+    pub manifest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Tool {
+    pub url: String,
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -45,6 +86,13 @@ impl Manifest {
             safe_relative(&f.path)?;
             if f.sha256.len() != 64 || !f.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err(Error::UnsafePath(format!("{} (bad hash)", f.path)));
+            }
+        }
+        if let Some(g) = &m.game {
+            for d in &g.depots {
+                if d.manifest.parse::<u64>().is_err() {
+                    return Err(Error::Game(format!("the server lists a bad Steam manifest id for depot {}", d.depot)));
+                }
             }
         }
         for r in &m.remove {

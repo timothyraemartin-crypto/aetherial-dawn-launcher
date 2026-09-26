@@ -258,6 +258,7 @@ mod tests {
             master: String::new(),
             files,
             remove,
+            game: None,
         }
     }
 

@@ -2,10 +2,12 @@
 //! client files into the Skyrim folder, writing SkyMP client settings, and
 //! finding the game. The Tauri app in `src-tauri` is a thin shell over this.
 
+pub mod downgrade;
 pub mod game;
 pub mod manifest;
 pub mod settings;
 pub mod sync;
+pub mod version;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

@@ -43,9 +43,16 @@ To cross-build the Windows installer from Linux, as used for the first test buil
 
 To test the file sync against any server, run `cargo run -p launcher-core --example sync -- <base-url> <skyrim-folder>`.
 
+## Game version check and downgrader
+
+The server's `manifest.json` names the Skyrim build it needs (`game.version`, now 1.6.1170.0 with SKSE 2.2.6) and the Steam depot manifests for it. `core/src/version.rs` compares the player's SkyrimSE.exe, Steam's `appmanifest_489830.acf` and the launcher's own record. `core/src/downgrade.rs` fixes a mismatch by running DepotDownloader in its own window, where the player signs in with their own Steam account. The full format is in the spec.
+
+To test without Steam, point `game.tool.url` at a zip holding a stand-in `DepotDownloader`. `cargo run -p launcher-core --example gamever -- SkyrimSE.exe` prints an exe's version.
+
 ## Known gaps
 
 - **Player identity:** the launcher sends a random `profileId` saved on the player's PC. SkyMP's offline mode trusts that number, so players aren't truly authenticated yet. The plan is Discord sign-in checked by the server.
+- **Downgrader:** tested end to end with a stand-in for DepotDownloader, not yet against real Steam. Players on non-Steam copies can't use it.
 - **Game detection:** only Steam installs are found automatically. GOG and other installs use the folder picker.
 
 Fonts are Cinzel, Hanken Grotesk and JetBrains Mono, all under the SIL Open Font License.

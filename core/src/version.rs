@@ -1,0 +1,312 @@
+//! Works out whether the player's Skyrim is the build the server needs.
+//!
+//! The executable's version alone isn't enough: Bethesda's 1.7.99 update
+//! (August 2026) changed the game data but left SkyrimSE.exe at 1.6.1170.0.
+//! So the check also looks at which depot manifests Steam says it installed,
+//! and remembers the files the launcher's own downgrade put in place.
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
+
+use crate::game::GAME_EXE;
+use crate::manifest::GameSpec;
+use crate::Result;
+
+const MARKER: &str = ".aetherial-dawn/game.json";
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GameCheck {
+    /// SkyrimSE.exe version, such as "1.6.1170.0".
+    pub installed: Option<String>,
+    pub target: Option<String>,
+    /// True when the player must downgrade before playing.
+    pub needed: bool,
+    /// Why, in words a player understands.
+    pub reason: Option<String>,
+    /// True when the server listed the Steam depots, so the launcher can fix it.
+    pub can_downgrade: bool,
+    /// False when the SKSE build for the target version is missing.
+    pub skse_ok: bool,
+    pub skse_version: Option<String>,
+    /// e.g. "skse64_1_6_1170.dll".
+    pub skse_dll: Option<String>,
+}
+
+/// Reads the file version from a Windows executable's version resource.
+pub fn exe_version(path: &Path) -> Option<[u16; 4]> {
+    let bytes = std::fs::read(path).ok()?;
+    // VS_FIXEDFILEINFO starts with the signature 0xFEEF04BD.
+    let sig = [0xBD, 0x04, 0xEF, 0xFE];
+    let at = bytes.windows(4).position(|w| w == sig)?;
+    let word = |o: usize| bytes.get(at + o..at + o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let (ms, ls) = (word(8)?, word(12)?);
+    Some([(ms >> 16) as u16, ms as u16, (ls >> 16) as u16, ls as u16])
+}
+
+/// "1.6.1170" or "1.6.1170.0" → [1, 6, 1170, 0].
+pub fn parse_version(s: &str) -> Option<[u16; 4]> {
+    let mut v = [0u16; 4];
+    let parts: Vec<&str> = s.trim().split('.').collect();
+    if parts.is_empty() || parts.len() > 4 {
+        return None;
+    }
+    for (i, p) in parts.iter().enumerate() {
+        v[i] = p.parse().ok()?;
+    }
+    Some(v)
+}
+
+pub fn show(v: [u16; 4]) -> String {
+    format!("{}.{}.{}.{}", v[0], v[1], v[2], v[3])
+}
+
+/// Short form players know, such as "1.6.1170".
+pub fn short(v: [u16; 4]) -> String {
+    format!("{}.{}.{}", v[0], v[1], v[2])
+}
+
+/// Steam's record of the game: `steamapps/appmanifest_<app>.acf` next to `common/`.
+pub fn acf_path(game_dir: &Path, app: u32) -> Option<PathBuf> {
+    Some(game_dir.parent()?.parent()?.join(format!("appmanifest_{app}.acf")))
+}
+
+/// Depot → manifest id from the `InstalledDepots` block of an .acf file.
+pub fn installed_depots(acf: &str) -> HashMap<u32, u64> {
+    let mut out = HashMap::new();
+    let mut stack: Vec<String> = Vec::new();
+    let mut pending: Option<String> = None;
+    let mut chars = acf.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                let mut tok = String::new();
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\\' => { if let Some(n) = chars.next() { tok.push(n); } }
+                        '"' => break,
+                        _ => tok.push(c),
+                    }
+                }
+                match pending.take() {
+                    None => pending = Some(tok),
+                    Some(key) => {
+                        // key/value pair
+                        let n = stack.len();
+                        if n >= 2 && stack[n - 2].eq_ignore_ascii_case("InstalledDepots") && key == "manifest" {
+                            if let (Ok(d), Ok(m)) = (stack[n - 1].parse(), tok.parse()) {
+                                out.insert(d, m);
+                            }
+                        }
+                    }
+                }
+            }
+            '{' => stack.push(pending.take().unwrap_or_default()),
+            '}' => { stack.pop(); pending = None; }
+            _ => {}
+        }
+    }
+    out
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+struct Marker {
+    version: String,
+    depots: Vec<(u32, String)>,
+    files: Vec<(String, u64, u64)>,
+}
+
+/// The files that change between builds: the executable and the base game data.
+fn fingerprint(game_dir: &Path) -> Vec<(String, u64, u64)> {
+    let mut names = vec![GAME_EXE.to_string()];
+    if let Ok(rd) = std::fs::read_dir(game_dir.join("Data")) {
+        let mut data: Vec<String> = rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| {
+                let l = n.to_ascii_lowercase();
+                l.ends_with(".bsa") || l.ends_with(".esm") || l == "skyrim.ccc"
+            })
+            .map(|n| format!("Data/{n}"))
+            .collect();
+        data.sort();
+        names.extend(data);
+    }
+    names
+        .into_iter()
+        .filter_map(|n| {
+            let md = std::fs::metadata(game_dir.join(&n)).ok()?;
+            let mtime = md.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_secs();
+            Some((n, md.len(), mtime))
+        })
+        .collect()
+}
+
+fn spec_depots(spec: &GameSpec) -> Vec<(u32, String)> {
+    spec.depots.iter().map(|d| (d.depot, d.manifest.clone())).collect()
+}
+
+/// Notes that the game folder now holds the build the server wants, so later
+/// checks can trust it even though Steam's own record says otherwise.
+pub fn record(game_dir: &Path, spec: &GameSpec) -> Result<()> {
+    let m = Marker {
+        version: spec.version.clone().unwrap_or_default(),
+        depots: spec_depots(spec),
+        files: fingerprint(game_dir),
+    };
+    let path = game_dir.join(MARKER);
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    std::fs::write(path, serde_json::to_vec_pretty(&m)?)?;
+    Ok(())
+}
+
+fn marker_holds(game_dir: &Path, spec: &GameSpec) -> bool {
+    let Ok(bytes) = std::fs::read(game_dir.join(MARKER)) else { return false };
+    let Ok(m) = serde_json::from_slice::<Marker>(&bytes) else { return false };
+    m.version == spec.version.clone().unwrap_or_default() && m.depots == spec_depots(spec) && !m.files.is_empty() && m.files == fingerprint(game_dir)
+}
+
+pub fn check(game_dir: &Path, spec: Option<&GameSpec>) -> GameCheck {
+    let installed = exe_version(&game_dir.join(GAME_EXE));
+    let mut c = GameCheck { installed: installed.map(show), skse_ok: true, ..Default::default() };
+    let Some(spec) = spec else { return c };
+    let Some(target) = spec.version.as_deref().and_then(parse_version) else { return c };
+    c.target = Some(show(target));
+    c.can_downgrade = !spec.depots.is_empty();
+    c.skse_version = spec.skse_version.clone();
+    let dll = format!("skse64_{}_{}_{}.dll", target[0], target[1], target[2]);
+    c.skse_ok = game_dir.join(&dll).is_file();
+    c.skse_dll = Some(dll);
+
+    match installed {
+        None => {
+            c.needed = true;
+            c.reason = Some(format!("The launcher couldn't read your Skyrim version. Aetherial Dawn needs {}.", short(target)));
+        }
+        Some(v) if v != target => {
+            c.needed = true;
+            c.reason = Some(format!("Your Skyrim is {}. Aetherial Dawn needs {}.", short(v), short(target)));
+        }
+        Some(_) if spec.depots.is_empty() || marker_holds(game_dir, spec) => {}
+        Some(_) => {
+            // Same executable; make sure Steam hasn't swapped the game data underneath it.
+            let acf = acf_path(game_dir, spec.app).and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+            let have = installed_depots(&acf);
+            let stale = spec.depots.iter().any(|d| matches!(have.get(&d.depot), Some(m) if m.to_string() != d.manifest));
+            if stale {
+                c.needed = true;
+                c.reason = Some(format!("Steam has updated your game data past {}. Aetherial Dawn needs {}.", short(target), short(target)));
+            }
+        }
+    }
+    c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::manifest::Depot;
+
+    const ACF: &str = r#"
+"AppState"
+{
+	"appid"		"489830"
+	"InstalledDepots"
+	{
+		"489831"
+		{
+			"manifest"		"8442952117333549665"
+			"size"		"7351706128"
+		}
+		"489833"
+		{
+			"manifest"		"1914580699073641964"
+			"size"		"37568512"
+		}
+	}
+	"UserConfig" { "language"		"english" }
+}"#;
+
+    fn spec() -> GameSpec {
+        GameSpec {
+            version: Some("1.6.1170.0".into()),
+            skse_version: Some("2.2.6".into()),
+            app: 489830,
+            depots: vec![
+                Depot { depot: 489831, manifest: "8442952117333549665".into() },
+                Depot { depot: 489833, manifest: "1914580699073641964".into() },
+            ],
+            tool: None,
+        }
+    }
+
+    /// Smallest file with a VS_FIXEDFILEINFO the reader will find.
+    fn fake_exe(v: [u16; 4]) -> Vec<u8> {
+        let mut b = vec![0u8; 64];
+        b.extend([0xBD, 0x04, 0xEF, 0xFE, 0, 0, 1, 0]);
+        b.extend((((v[0] as u32) << 16) | v[1] as u32).to_le_bytes());
+        b.extend((((v[2] as u32) << 16) | v[3] as u32).to_le_bytes());
+        b.extend([0u8; 40]);
+        b
+    }
+
+    fn game(v: [u16; 4], acf: &str) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("steamapps/common/Skyrim Special Edition");
+        std::fs::create_dir_all(dir.join("Data")).unwrap();
+        std::fs::write(dir.join(GAME_EXE), fake_exe(v)).unwrap();
+        std::fs::write(dir.join("Data/Skyrim.esm"), b"esm").unwrap();
+        std::fs::write(root.path().join("steamapps/appmanifest_489830.acf"), acf).unwrap();
+        root
+    }
+    fn dir(root: &tempfile::TempDir) -> PathBuf {
+        root.path().join("steamapps/common/Skyrim Special Edition")
+    }
+
+    #[test]
+    fn reads_versions_and_depots() {
+        assert_eq!(parse_version("1.6.1170"), Some([1, 6, 1170, 0]));
+        let d = installed_depots(ACF);
+        assert_eq!(d.get(&489831), Some(&8442952117333549665));
+        assert_eq!(d.get(&489833), Some(&1914580699073641964));
+        assert_eq!(d.len(), 2);
+    }
+
+    #[test]
+    fn matching_build_is_fine() {
+        let g = game([1, 6, 1170, 0], ACF);
+        let c = check(&dir(&g), Some(&spec()));
+        assert!(!c.needed, "{c:?}");
+        assert_eq!(c.installed.as_deref(), Some("1.6.1170.0"));
+        assert!(!c.skse_ok);
+        assert_eq!(c.skse_dll.as_deref(), Some("skse64_1_6_1170.dll"));
+    }
+
+    #[test]
+    fn other_exe_needs_downgrade() {
+        let g = game([1, 6, 1179, 0], ACF);
+        let c = check(&dir(&g), Some(&spec()));
+        assert!(c.needed && c.can_downgrade);
+        assert!(c.reason.unwrap().contains("1.6.1179"));
+    }
+
+    #[test]
+    fn newer_data_under_same_exe_needs_downgrade_until_recorded() {
+        let g = game([1, 6, 1170, 0], &ACF.replace("8442952117333549665", "1111"));
+        let d = dir(&g);
+        assert!(check(&d, Some(&spec())).needed);
+        record(&d, &spec()).unwrap();
+        assert!(!check(&d, Some(&spec())).needed);
+        // Steam rewrites the data afterwards: the record no longer holds.
+        std::fs::write(d.join("Data/Skyrim.esm"), b"newer esm").unwrap();
+        assert!(check(&d, Some(&spec())).needed);
+    }
+
+    #[test]
+    fn no_target_means_no_check() {
+        let g = game([1, 7, 0, 0], ACF);
+        assert!(!check(&dir(&g), None).needed);
+    }
+}

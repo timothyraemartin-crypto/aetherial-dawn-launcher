@@ -1,7 +1,7 @@
 // Hides the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use launcher_core::{game, manifest::Manifest, settings, sync, Error};
+use launcher_core::{downgrade, game, manifest::Manifest, settings, sync, version, Error};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -137,6 +137,7 @@ struct CheckResult {
     files: usize,
     remove: usize,
     bytes: u64,
+    game: version::GameCheck,
 }
 
 async fn game_dir(state: &AppState) -> CmdResult<PathBuf> {
@@ -156,6 +157,7 @@ async fn check(state: State<'_, AppState>, verify_all: bool) -> CmdResult<CheckR
         files: plan.download.len(),
         remove: plan.remove.len(),
         bytes: plan.download_bytes,
+        game: version::check(&dir, m.game.as_ref()),
     };
     *state.manifest.lock().await = Some(m);
     Ok(result)
@@ -186,6 +188,10 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     let config = state.config.lock().await.clone();
     let dir = config.game_dir.clone().ok_or("Pick your Skyrim folder first.")?;
     let m = state.manifest.lock().await.clone().ok_or("Check for updates before playing.")?;
+    let gc = version::check(&dir, m.game.as_ref());
+    if gc.needed {
+        return Err(gc.reason.unwrap_or_else(|| "Your Skyrim version doesn't match the server.".into()));
+    }
     settings::write(
         &dir,
         &settings::ClientSettings {
@@ -201,6 +207,59 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
         app.exit(0);
     }
     Ok(())
+}
+
+/// Is the player's Skyrim the build the server needs?
+#[tauri::command]
+async fn game_check(state: State<'_, AppState>) -> CmdResult<version::GameCheck> {
+    let dir = game_dir(&state).await?;
+    let m = state.manifest.lock().await.clone();
+    Ok(version::check(&dir, m.as_ref().and_then(|m| m.game.as_ref())))
+}
+
+/// Downloads the server's Skyrim build from Steam with the player's own
+/// account, through DepotDownloader in its own window. Sends
+/// `downgrade-stage` events ("tool", "steam", "verify") to the UI.
+#[tauri::command]
+async fn downgrade(app: AppHandle, state: State<'_, AppState>, username: Option<String>) -> CmdResult<version::GameCheck> {
+    let dir = game_dir(&state).await?;
+    let m = state.manifest.lock().await.clone().ok_or("Check for updates first.")?;
+    let spec = m.game.clone().ok_or("The server doesn't ask for a particular Skyrim version.")?;
+    let login = match username.as_deref().map(str::trim) {
+        Some(u) if !u.is_empty() => downgrade::Login::User(u.to_string()),
+        _ => downgrade::Login::Qr,
+    };
+    let args = downgrade::args(&spec, &dir, &login).map_err(err)?;
+    let tools = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("tools");
+    let _ = app.emit("downgrade-stage", "tool");
+    let tool = downgrade::ensure_tool(&state.http, &tools, spec.tool.as_ref()).await.map_err(err)?;
+    let _ = app.emit("downgrade-stage", "steam");
+    downgrade::run(&tool, &args, &tools).await.map_err(err)?;
+    let _ = app.emit("downgrade-stage", "verify");
+    finish_downgrade(&dir, &spec)
+}
+
+/// For players who already put the right build in place themselves.
+#[tauri::command]
+async fn mark_game_ok(state: State<'_, AppState>) -> CmdResult<version::GameCheck> {
+    let dir = game_dir(&state).await?;
+    let m = state.manifest.lock().await.clone().ok_or("Check for updates first.")?;
+    let spec = m.game.clone().ok_or("The server doesn't ask for a particular Skyrim version.")?;
+    finish_downgrade(&dir, &spec)
+}
+
+fn finish_downgrade(dir: &std::path::Path, spec: &launcher_core::manifest::GameSpec) -> CmdResult<version::GameCheck> {
+    let want = spec.version.as_deref().and_then(version::parse_version);
+    let have = version::exe_version(&dir.join(game::GAME_EXE));
+    if want.is_some() && have != want {
+        return Err(format!(
+            "SkyrimSE.exe is still {}, not {}.",
+            have.map(version::short).unwrap_or_else(|| "unreadable".into()),
+            want.map(version::short).unwrap_or_default()
+        ));
+    }
+    version::record(dir, spec).map_err(err)?;
+    Ok(version::check(dir, Some(spec)))
 }
 
 /// The client files in the current server build, for the Game files page.
@@ -243,7 +302,7 @@ fn main() {
             app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status])
+        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }

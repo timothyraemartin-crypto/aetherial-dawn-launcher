@@ -12,8 +12,9 @@
   let state = null;       // get_state
   let pending = null;     // check
   let status = null;      // status.json
+  let gameCheck = null;   // check().game: is Skyrim the build the server needs?
   let busy = false;
-  let playMode = 'wait';  // wait | play | update | retry
+  let playMode = 'wait';  // wait | play | update | retry | downgrade
   let page = 'home';
 
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
@@ -65,6 +66,7 @@
   function showSheet(id) {
     $('first').hidden = id !== 'first';
     $('settings').hidden = id !== 'settings';
+    $('downgrade').hidden = id !== 'downgrade';
     if (id === 'settings') {
       for (const nav of Object.values(PAGES)) $(nav).removeAttribute('aria-current');
       $('nav-settings').setAttribute('aria-current', 'page');
@@ -88,10 +90,25 @@
     const gameRow = [!!g, g ? 'Skyrim Special Edition' : 'Skyrim not found', g ? g.dir : (state.gameError || 'Pick the folder that has SkyrimSE.exe in it.')];
     const skseRow = [!!(g && g.hasSkse), g && g.hasSkse ? 'SKSE installed' : 'SKSE is missing', g && g.hasSkse ? 'skse64_loader.exe' : 'skse64_loader.exe was not found in the game folder'];
     renderRow($('g-game'), ...gameRow); renderRow($('g-skse'), ...skseRow);
+    renderVersion();
     renderRow($('c-game'), ...gameRow); renderRow($('c-skse'), ...skseRow);
     $('c-game-pick').textContent = g ? 'Change' : 'Choose folder';
     $('c-skse-recheck').hidden = !!(g && g.hasSkse);
     $('f-go').disabled = !ready_();
+  }
+
+  const shortVer = v => (v || '').split('.').slice(0, 3).join('.');
+  function renderVersion() {
+    const c = gameCheck, g = state && state.game;
+    const row = $('g-ver');
+    if (!c || !g) { renderRow(row, true, 'Skyrim version', 'Checked after the server file list loads.'); $('g-downgrade').hidden = true; return; }
+    const have = c.installed ? 'Skyrim ' + shortVer(c.installed) : 'Skyrim version unknown';
+    renderRow(row, !c.needed, have, c.needed ? c.reason : c.target ? `Matches the server (${shortVer(c.target)}).` : 'The server accepts any version.');
+    $('g-downgrade').hidden = !(c.needed && c.canDowngrade);
+    if (g.hasSkse && c.target && !c.skseOk) {
+      const skse = [false, "SKSE doesn't match", `Install SKSE ${c.skseVersion || ''} for Skyrim ${shortVer(c.target)}. ${c.skseDll} is missing.`.replace('  ', ' ')];
+      renderRow($('g-skse'), ...skse); renderRow($('c-skse'), ...skse);
+    }
   }
 
   async function refreshState() {
@@ -135,6 +152,8 @@
     setStatus('Checking for updates…');
     try {
       pending = await invoke('check', { verifyAll });
+      gameCheck = pending.game;
+      renderGame();
       $('srv-name').textContent = pending.server.name;
       $('srv-addr').textContent = `${pending.server.ip}:${pending.server.port}`;
       $('srv-build').textContent = pending.build;
@@ -199,16 +218,65 @@
 
   function ready() {
     pending = { ...pending, files: 0, remove: 0 };
-    setPlay('play', 'PLAY');
     setChip('ok', 'Up to date');
-    setStatus(null);
     loadFiles();
+    renderGame();
+    const c = gameCheck;
+    if (c && c.needed) {
+      if (c.canDowngrade) { setPlay('downgrade', 'FIX VERSION'); setStatus(c.reason + ' Click Fix version to download it from Steam.', true); }
+      else { setPlay('wait', 'WRONG VERSION'); setStatus(c.reason, true); }
+      return;
+    }
+    setPlay('play', 'PLAY');
+    if (c && c.target && !c.skseOk) setStatus(`SKSE for Skyrim ${shortVer(c.target)} is missing. Install SKSE ${c.skseVersion || ''} from skse.silverlock.org.`, true);
+    else setStatus(null);
+  }
+
+  // ---------- game version ----------
+  function openDowngrade() {
+    const c = gameCheck || {};
+    $('dg-lead').textContent = `${c.reason || ''} The launcher downloads Skyrim ${shortVer(c.target)} from Steam with your own account, then checks it.`;
+    $('dg-error').hidden = true;
+    $('dg-progress').hidden = true;
+    showSheet('downgrade');
+  }
+  function dgBusy(on) { for (const id of ['dg-go', 'dg-cancel', 'dg-skip']) $(id).disabled = on; busy = on; }
+  function dgDone(c) {
+    gameCheck = c;
+    dgBusy(false);
+    showPage(page);
+    ready();
+    if (!gameCheck.needed && !statusMsg) setStatus(`Skyrim ${shortVer(gameCheck.installed)} is ready for Aetherial Dawn.`);
+  }
+  function dgFail(e) {
+    dgBusy(false);
+    $('dg-progress').hidden = true;
+    $('dg-error').textContent = String(e);
+    $('dg-error').hidden = false;
+  }
+  const STAGES = {
+    tool: 'Getting the Steam download tool…',
+    steam: 'Sign in to Steam in the window that just opened. The download runs there, so keep it open until it finishes.',
+    verify: 'Checking your game…',
+  };
+  async function runDowngrade() {
+    const user = document.querySelector('input[name="dg-login"]:checked').value === 'user' ? $('dg-user').value.trim() : null;
+    if (user === '') { dgFail('Type your Steam account name, or choose the Steam mobile app.'); return; }
+    dgBusy(true);
+    $('dg-error').hidden = true;
+    $('dg-progress').hidden = false;
+    $('dg-stage').textContent = STAGES.tool;
+    const off = await T.event.listen('downgrade-stage', ({ payload }) => { $('dg-stage').textContent = STAGES[payload] || ''; });
+    try { dgDone(await invoke('downgrade', { username: user })); }
+    catch (e) { dgFail(e); }
+    finally { off(); }
   }
 
   async function onPlay() {
     if (busy) return;
     if (playMode === 'retry') return check();
     if (playMode === 'update') return update();
+    if (playMode === 'downgrade') return openDowngrade();
     if (playMode !== 'play') return;
     setPlay('wait', 'LAUNCHING');
     setStatus('Starting Skyrim through SKSE…');
@@ -305,6 +373,13 @@
     Object.assign(state.config, prefs);
   });
   $('c-game-pick').onclick = pickFolder;
+  $('g-downgrade').onclick = openDowngrade;
+  $('dg-go').onclick = runDowngrade;
+  $('dg-cancel').onclick = () => showPage(page);
+  $('dg-skip').onclick = async () => { dgBusy(true); try { dgDone(await invoke('mark_game_ok')); } catch (e) { dgFail(e); } };
+  document.querySelectorAll('input[name="dg-login"]').forEach(r => r.onchange = () => {
+    $('dg-user-field').hidden = document.querySelector('input[name="dg-login"]:checked').value !== 'user';
+  });
   $('c-skse-recheck').onclick = refreshState;
   $('f-go').onclick = () => { showPage('home'); check(); };
 

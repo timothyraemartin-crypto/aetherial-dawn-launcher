@@ -70,6 +70,7 @@
       <div class="rows">
         <div class="row" id="g-game"><svg viewBox="0 0 24 24"></svg><div><b></b><small></small></div><button class="btn" id="g-change">Change folder</button></div>
         <div class="row" id="g-skse"><svg viewBox="0 0 24 24"></svg><div><b></b><small></small></div><span></span></div>
+        <div class="row" id="g-ver"><svg viewBox="0 0 24 24"></svg><div><b></b><small></small></div><button class="btn" id="g-downgrade" hidden>Fix version</button></div>
       </div>
     </div>
     <div class="section">
@@ -139,6 +140,35 @@
       <div class="actions">
         <button class="btn primary" id="f-go" disabled>CONTINUE</button>
         <span class="note">SKSE comes from skse.silverlock.org. Install the build that matches your Skyrim version.</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== game version ===== -->
+  <div class="sheet" id="downgrade" hidden>
+    <div class="panel">
+      <div class="eyebrow">GAME VERSION</div>
+      <h2>Match the server's Skyrim</h2>
+      <p class="lead" id="dg-lead"></p>
+      <div class="choice" role="radiogroup" aria-label="How to sign in to Steam">
+        <label class="opt"><input type="radio" name="dg-login" value="qr" checked><div><b>Steam mobile app</b><small>Scan a QR code with your phone. Nothing to type.</small></div></label>
+        <label class="opt"><input type="radio" name="dg-login" value="user"><div><b>Steam account name</b><small>You type your password in Steam's sign-in window, not here.</small></div></label>
+      </div>
+      <div class="field" id="dg-user-field" hidden>
+        <label for="dg-user">Steam account name</label>
+        <div class="line"><input id="dg-user" autocomplete="username" spellcheck="false" maxlength="64"></div>
+      </div>
+      <ul class="notes">
+        <li>A separate window opens where you sign in to Steam. The launcher never sees your password.</li>
+        <li>Only the game files that differ are downloaded, up to about 15 GB. Your saves and mods stay.</li>
+        <li>In Steam, set Skyrim to <i>Only update this game when I launch it</i>, and start the game from this launcher.</li>
+      </ul>
+      <div class="dg-progress" id="dg-progress" hidden><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg><span id="dg-stage"></span></div>
+      <span class="error" id="dg-error" hidden></span>
+      <div class="actions">
+        <button class="btn primary" id="dg-go">DOWNGRADE</button>
+        <button class="btn" id="dg-cancel">Not now</button>
+        <button class="linkish" id="dg-skip">My game is already on this version</button>
       </div>
     </div>
   </div>
