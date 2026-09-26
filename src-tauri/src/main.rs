@@ -1045,6 +1045,11 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest) -> CmdResult<
     }
     restore_crash_logger(dir);
     clear_browser_cache();
+    match game::ensure_platform_folders(dir) {
+        Ok(made) if !made.is_empty() => log::line(&format!("play: made missing Skyrim Platform plugin folder(s): {}", made.join(", "))),
+        Ok(_) => {}
+        Err(e) => log::line(&format!("play: couldn't make Skyrim Platform's plugin folders: {e}")),
+    }
     match game::prefer_fast_gpu(dir) {
         Ok(true) => log::line(&format!("play: set Windows to run {} on the high-performance graphics card", game::gpu_pref_path(dir))),
         Ok(false) => {}

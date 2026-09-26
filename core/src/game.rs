@@ -96,6 +96,40 @@ pub fn launch(dir: &Path) -> Result<std::process::Child> {
     Ok(cmd.spawn()?)
 }
 
+/// Skyrim Platform watches every folder named by PluginFolders in
+/// Data/SKSE/Plugins/SkyrimPlatform.ini (by default Data/Platform/Plugins and
+/// Data/Platform/PluginsDev). A folder that doesn't exist makes it throw
+/// "DirectoryMonitor(...) failed with code 2", and the SkyMP client then
+/// never shows its login or connects (seen 2026-09-26). Makes any missing
+/// folder, empty. Returns the folders made.
+pub fn ensure_platform_folders(dir: &Path) -> Result<Vec<String>> {
+    let ini = std::fs::read_to_string(dir.join("Data/SKSE/Plugins/SkyrimPlatform.ini")).unwrap_or_default();
+    let mut folders = vec!["Data/Platform/Plugins".to_string(), "Data/Platform/PluginsDev".to_string()];
+    for line in ini.lines() {
+        let line = line.trim();
+        if let Some((k, v)) = line.split_once('=') {
+            if k.trim().eq_ignore_ascii_case("PluginFolders") {
+                folders.extend(v.split(';').map(|f| f.trim().replace('\\', "/")).filter(|f| !f.is_empty()));
+            }
+        }
+    }
+    let mut made = Vec::new();
+    for f in folders {
+        // Only folders inside the game folder, never absolute paths or "..".
+        if f.contains(':') || f.starts_with('/') || f.split('/').any(|c| c == "..") {
+            continue;
+        }
+        let p = dir.join(&f);
+        if !p.is_dir() {
+            std::fs::create_dir_all(&p)?;
+            made.push(f);
+        }
+    }
+    made.sort();
+    made.dedup();
+    Ok(made)
+}
+
 /// Google sign-in settings some Chromium guides and tools put in the Windows
 /// environment. Skyrim Platform's browser (CEF 108) reads them, turns on
 /// Google sign-in code it doesn't support, and crashes about 5 seconds in
@@ -155,6 +189,17 @@ pub fn gpu_pref_path(game_dir: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn makes_missing_platform_folders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let g = tmp.path();
+        std::fs::create_dir_all(g.join("Data/SKSE/Plugins")).unwrap();
+        std::fs::write(g.join("Data/SKSE/Plugins/SkyrimPlatform.ini"), "[Main]\nPluginFolders = Data/Platform/Plugins;Data/Platform/PluginsDev;C:/evil;../up\n").unwrap();
+        let made = super::ensure_platform_folders(g).unwrap();
+        assert_eq!(made, ["Data/Platform/Plugins", "Data/Platform/PluginsDev"]);
+        assert!(g.join("Data/Platform/PluginsDev").is_dir());
+        assert!(super::ensure_platform_folders(g).unwrap().is_empty());
+    }
     use super::*;
 
     #[test]
