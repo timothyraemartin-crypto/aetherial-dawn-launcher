@@ -91,6 +91,21 @@ pub fn imgui_icons_ok(game_dir: &Path) -> bool {
     game_dir.join("Data").join("Interface").join(IMGUI_ICONS_DIR).is_dir()
 }
 
+/// Removes half-written copies (`<file>.part`) of the launcher's own mod
+/// files left in Data/SKSE/Plugins by an install that was cut short, such
+/// as EngineFixes.toml.part. Only names from the launcher's lists.
+pub fn clean_partials(game_dir: &Path) -> Vec<String> {
+    let dir = plugins_dir(game_dir);
+    let mut out = Vec::new();
+    for f in CRASH_LOGGER_FILES.iter().chain(SOULS_FILES.iter()).chain(ENGINE_FIXES_FILES.iter()) {
+        let p = dir.join(format!("{f}.part"));
+        if p.is_file() && std::fs::remove_file(&p).is_ok() {
+            out.push(format!("{f}.part"));
+        }
+    }
+    out
+}
+
 /// The Nexus-only required mods that aren't installed yet, in the order the
 /// player should get them.
 pub fn missing_nexus_mods(game_dir: &Path, game_version: Option<&str>) -> Vec<NexusMod> {
@@ -403,6 +418,17 @@ mod tests {
         std::fs::write(plugins_dir(d).join("EngineFixes_preload.txt"), b"x").unwrap();
         std::fs::write(d.join("Data").join(USSEP_PLUGIN), b"x").unwrap();
         assert!(missing_nexus_mods(d, Some("1.6.1170.0")).is_empty());
+    }
+
+    #[test]
+    fn cleans_only_its_own_partials() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = plugins_dir(tmp.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("EngineFixes.toml.part"), b"x").unwrap();
+        std::fs::write(dir.join("Other.dll.part"), b"x").unwrap();
+        assert_eq!(clean_partials(tmp.path()), ["EngineFixes.toml.part"]);
+        assert!(dir.join("Other.dll.part").is_file());
     }
 
     #[test]

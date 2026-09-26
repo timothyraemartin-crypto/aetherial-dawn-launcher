@@ -230,8 +230,14 @@
       <p class="lead">Aetherial Dawn needs these mods. <b>Download all</b> fetches and installs every missing one for you.</p>
       <div class="rq-nexus" id="rq-nexus">
         <div id="rq-nx-out">
+          <div id="rq-sso" hidden>
+            <p class="note">Most mods come from Nexus Mods, so sign in with your free Nexus account first. Nexus opens in your browser: click <b>Authorise</b> there and come back.</p>
+            <div class="line"><button class="btn primary" id="rq-sso-go">Sign in with Nexus</button><button class="btn" id="rq-sso-stop" hidden>Cancel</button><button class="linkish" id="rq-usekey">Use an API key instead</button></div>
+          </div>
+          <div id="rq-keybox">
           <p class="note">Most mods come from Nexus Mods, so sign in with your free Nexus account first. Click <b>Get my key</b>, copy your <i>Personal API Key</i> from the bottom of that page, paste it here and click <b>Sign in</b>. It stays on this PC.</p>
           <div class="line"><input id="rq-key" type="password" placeholder="Nexus API key" autocomplete="off" spellcheck="false"><button class="btn" id="rq-getkey">Get my key</button><button class="btn" id="rq-signin">Sign in</button></div>
+          </div>
         </div>
         <div id="rq-nx-in" hidden><span id="rq-nx-who"></span> <button class="linkish" id="rq-signout">Sign out</button></div>
         <p class="note" id="rq-nx-free" hidden>Nexus only lets Premium members download without visiting the site. After you click <b>Download all</b>, the launcher opens each mod's page in turn: press <b>Mod manager download</b> there (then <b>Slow download</b>) and the launcher does the rest.</p>

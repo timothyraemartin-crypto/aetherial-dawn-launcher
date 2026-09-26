@@ -24,6 +24,8 @@ pub struct ModsState {
     cancel: std::sync::Mutex<Option<Arc<AtomicBool>>>,
     /// Where caught nxm:// links go while a free queue waits for them.
     nxm_tx: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<nexus::Nxm>>>,
+    /// Stops a "Sign in with Nexus" that's waiting.
+    sso_stop: std::sync::Mutex<Option<Arc<AtomicBool>>>,
     /// The server's mods.json, once fetched.
     server_list: tokio::sync::Mutex<Option<modlist::ModList>>,
 }
@@ -123,6 +125,8 @@ pub struct ModsView {
     nexus: Option<nexus::User>,
     vortex: bool,
     running: bool,
+    /// "Sign in with Nexus" works (Nexus has registered the launcher).
+    sso: bool,
 }
 
 #[tauri::command]
@@ -130,12 +134,59 @@ pub async fn mods_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult
     let dir = state.config.lock().await.game_dir.clone().ok_or("Pick your Skyrim folder first.")?;
     let list = full_list(&state).await;
     let user = if nexus_key(&app).is_some() { state.config.lock().await.nexus_user.clone() } else { None };
+    let sso = nexus_app(&state).await.is_some();
+    let running = state.mods.cancel.lock().unwrap().is_some();
     Ok(ModsView {
         mods: list.iter().map(|m| row(m, &dir)).collect(),
         nexus: user,
         vortex: modlist::vortex_manages(&dir),
-        running: state.mods.cancel.lock().unwrap().is_some(),
+        running,
+        sso,
     })
+}
+
+/// The application name Nexus registered for the launcher's SSO: from the
+/// server's mods.json, or built in with AD_NEXUS_APP.
+async fn nexus_app(state: &AppState) -> Option<String> {
+    let from_server = server_list(state).await.and_then(|l| l.nexus_app).filter(|a| !a.trim().is_empty());
+    from_server.or_else(|| option_env!("AD_NEXUS_APP").map(str::to_string))
+}
+
+async fn keep_key(app: &AppHandle, state: &AppState, key: &str) -> CmdResult<nexus::User> {
+    let version = app.package_info().version.to_string();
+    let user = nexus::Client { http: &state.http, key, app_version: &version }.validate().await.map_err(|e| e.to_string())?;
+    let path = key_path(app).ok_or("Couldn't find the launcher's settings folder.")?;
+    auth::save_token(&path, key).map_err(|e| e.to_string())?;
+    let mut c = state.config.lock().await;
+    c.nexus_user = Some(user.clone());
+    crate::save_config(app, &c)?;
+    log::line(&format!("mods: signed in to Nexus as {} ({})", user.name, if user.is_premium { "Premium" } else { "free" }));
+    Ok(user)
+}
+
+/// "Sign in with Nexus": opens the Nexus page where the player approves the
+/// launcher; Nexus sends their key back and it's kept encrypted here.
+#[tauri::command]
+pub async fn nexus_sso(app: AppHandle, state: State<'_, AppState>) -> CmdResult<nexus::User> {
+    let slug = nexus_app(&state).await.ok_or("NEXUS_SSO_UNAVAILABLE")?;
+    let stop = Arc::new(AtomicBool::new(false));
+    *state.mods.sso_stop.lock().unwrap() = Some(stop.clone());
+    log::line("mods: waiting for the player to approve the launcher on Nexus");
+    let app2 = app.clone();
+    let r = nexus::sso(&slug, move |url| open_url(&app2, url).map_err(Error::Game), &stop).await;
+    *state.mods.sso_stop.lock().unwrap() = None;
+    let key = r.map_err(|e| {
+        log::line(&format!("mods: Nexus sign-in didn't finish: {e}"));
+        e.to_string()
+    })?;
+    keep_key(&app, &state, &key).await
+}
+
+#[tauri::command]
+pub fn nexus_sso_cancel(state: State<'_, AppState>) {
+    if let Some(s) = state.mods.sso_stop.lock().unwrap().as_ref() {
+        s.store(true, Ordering::SeqCst);
+    }
 }
 
 /// Checks a personal API key with Nexus and keeps it, encrypted, on this PC.
@@ -145,15 +196,7 @@ pub async fn nexus_sign_in(app: AppHandle, state: State<'_, AppState>, key: Stri
     if key.len() < 20 || key.chars().any(char::is_whitespace) {
         return Err("That doesn't look like a Nexus API key. Copy the whole key from the Nexus page.".into());
     }
-    let version = app.package_info().version.to_string();
-    let user = nexus::Client { http: &state.http, key: &key, app_version: &version }.validate().await.map_err(|e| e.to_string())?;
-    let path = key_path(&app).ok_or("Couldn't find the launcher's settings folder.")?;
-    auth::save_token(&path, &key).map_err(|e| e.to_string())?;
-    let mut c = state.config.lock().await;
-    c.nexus_user = Some(user.clone());
-    crate::save_config(&app, &c)?;
-    log::line(&format!("mods: signed in to Nexus as {} ({})", user.name, if user.is_premium { "Premium" } else { "free" }));
-    Ok(user)
+    keep_key(&app, &state, &key).await
 }
 
 #[tauri::command]

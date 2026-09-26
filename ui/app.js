@@ -628,6 +628,7 @@
 
   // ---------- mods: the server's list, Nexus sign-in and Download all ----------
   let modsRunning = false;
+  let useKey = false;
   let modsOff = null;
   const rqError = (e) => { $('rq-error').textContent = e ? String(e) : ''; $('rq-error').hidden = !e; };
 
@@ -637,6 +638,8 @@
     $('rq-nx-in').hidden = !nx;
     $('rq-nx-who').textContent = nx ? `Signed in to Nexus as ${nx.name} (${nx.is_premium ? 'Premium' : 'free account'}).` : '';
     $('rq-nx-free').hidden = !nx || nx.is_premium;
+    $('rq-sso').hidden = !view.sso;
+    $('rq-keybox').hidden = view.sso && !useKey;
     $('rq-vortex').hidden = !view.vortex;
     const list = $('rq-list');
     list.replaceChildren();
@@ -936,6 +939,17 @@ async function onPlay() {
     try { await invoke('nexus_sign_in', { key: $('rq-key').value }); $('rq-key').value = ''; await refreshMods(); }
     catch (e) { rqError(e); }
     finally { $('rq-signin').disabled = false; }
+  };
+  $('rq-usekey').onclick = () => { useKey = true; $('rq-keybox').hidden = false; };
+  $('rq-sso-stop').onclick = () => invoke('nexus_sso_cancel');
+  $('rq-sso-go').onclick = async () => {
+    rqError(null);
+    $('rq-sso-go').disabled = true;
+    $('rq-sso-go').textContent = 'Waiting for Nexus…';
+    $('rq-sso-stop').hidden = false;
+    try { await invoke('nexus_sso'); await refreshMods(); }
+    catch (e) { if (!String(e).includes('cancelled')) rqError(e); }
+    finally { $('rq-sso-go').disabled = false; $('rq-sso-go').textContent = 'Sign in with Nexus'; $('rq-sso-stop').hidden = true; }
   };
   $('rq-signout').onclick = async () => { await invoke('nexus_sign_out').catch(rqError); await refreshMods(); };
   $('files-mods').onclick = () => showRequiredMods();

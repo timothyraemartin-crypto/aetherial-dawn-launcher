@@ -167,6 +167,85 @@ pub fn parse_nxm(url: &str) -> Option<Nxm> {
     Some(Nxm { game: parts[0].to_ascii_lowercase(), mod_id: parts[2].parse().ok()?, file_id: parts[4].parse().ok()?, key: key.filter(|k| !k.is_empty())?, expires: expires? })
 }
 
+// ---------- signing in on the Nexus site (SSO) ----------
+
+/// Nexus Mods' single sign-on for mod managers: the launcher opens a
+/// websocket, the player approves the launcher on the Nexus site in their
+/// browser, and Nexus sends the player's API key back over the socket. It
+/// needs an application name ("slug") Nexus has registered for the launcher.
+const SSO_SOCKET: &str = "wss://sso.nexusmods.com";
+
+fn new_id() -> String {
+    let b: [u8; 16] = rand::random();
+    let h = hex::encode(b);
+    format!("{}-{}-4{}-a{}-{}", &h[0..8], &h[8..12], &h[13..16], &h[17..20], &h[20..32])
+}
+
+/// The page the player approves the launcher on.
+pub fn sso_page(id: &str, app: &str) -> String {
+    format!("https://www.nexusmods.com/sso?id={id}&application={}", enc(app))
+}
+
+/// Runs the sign-in and returns the player's API key. `open` is called with
+/// the Nexus page to show; `stop` ends the wait early.
+pub async fn sso(app: &str, open: impl FnOnce(&str) -> Result<()>, stop: &std::sync::atomic::AtomicBool) -> Result<String> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+    let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+    let tls = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| Error::Game(e.to_string()))?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = tokio_tungstenite::Connector::Rustls(std::sync::Arc::new(tls));
+    let (mut ws, _) = tokio_tungstenite::connect_async_tls_with_config(SSO_SOCKET, None, false, Some(connector))
+        .await
+        .map_err(|e| Error::Game(format!("couldn't reach Nexus sign-in: {e}")))?;
+    let id = new_id();
+    ws.send(Message::text(serde_json::json!({ "id": id, "token": null, "protocol": 2 }).to_string()))
+        .await
+        .map_err(|e| Error::Game(format!("Nexus sign-in: {e}")))?;
+    let mut opened = Some(open);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10 * 60);
+    let mut ping = tokio::time::interval(std::time::Duration::from_secs(20));
+    loop {
+        if stop.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = ws.close(None).await;
+            return Err(Error::Game("sign-in cancelled".into()));
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(Error::Game("the Nexus sign-in page wasn't approved in time".into()));
+        }
+        tokio::select! {
+            _ = ping.tick() => {
+                let _ = ws.send(Message::Ping(Vec::new().into())).await;
+            }
+            msg = tokio::time::timeout(std::time::Duration::from_millis(500), ws.next()) => {
+                let Ok(msg) = msg else { continue };
+                let Some(msg) = msg else { return Err(Error::Game("Nexus closed the sign-in".into())) };
+                let msg = msg.map_err(|e| Error::Game(format!("Nexus sign-in: {e}")))?;
+                let Message::Text(text) = msg else { continue };
+                let v: serde_json::Value = serde_json::from_str(text.as_str()).unwrap_or_default();
+                if v.get("success").and_then(|s| s.as_bool()) == Some(false) {
+                    let why = v.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error");
+                    return Err(Error::Game(format!("Nexus refused the sign-in: {why}")));
+                }
+                let data = v.get("data");
+                if let Some(key) = data.and_then(|d| d.get("api_key")).and_then(|k| k.as_str()) {
+                    let _ = ws.close(None).await;
+                    return Ok(key.to_string());
+                }
+                if data.and_then(|d| d.get("connection_token")).is_some() {
+                    if let Some(open) = opened.take() {
+                        open(&sso_page(&id, app))?;
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ---------- the nxm:// handler ----------
 
 /// Registers the launcher as the nxm:// handler for this Windows user and
@@ -217,6 +296,14 @@ mod tests {
 
     fn f(id: u64, name: &str, cat: &str, t: u64) -> NexusFile {
         NexusFile { file_id: id, name: name.into(), version: None, category_name: Some(cat.into()), uploaded_timestamp: t, file_name: format!("{name}.7z"), size_in_bytes: None }
+    }
+
+    #[test]
+    fn makes_sso_ids_and_pages() {
+        let id = new_id();
+        assert_eq!(id.len(), 36);
+        assert_eq!(id.matches('-').count(), 4);
+        assert_eq!(sso_page("abc", "aetherial dawn"), "https://www.nexusmods.com/sso?id=abc&application=aetherial%20dawn");
     }
 
     #[test]

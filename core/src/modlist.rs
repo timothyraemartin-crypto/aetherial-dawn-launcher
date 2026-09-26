@@ -95,6 +95,10 @@ impl ModEntry {
 pub struct ModList {
     #[serde(default)]
     pub mods: Vec<ModEntry>,
+    /// The application name Nexus Mods registered for the launcher's
+    /// "Sign in with Nexus" (SSO). Without one players paste an API key.
+    #[serde(default)]
+    pub nexus_app: Option<String>,
 }
 
 /// The mods the launcher requires on its own (Skyrim Souls RE's
@@ -666,6 +670,7 @@ mod tests {
                 ModEntry { id: "plain".into(), name: "Plain http".into(), url: Some("http://x/y.zip".into()), ..Default::default() },
                 ModEntry { id: "new".into(), name: "New".into(), url: Some("https://github.com/a/b.zip".into()), check: vec!["Data/new.esp".into()], ..Default::default() },
             ],
+            nexus_app: None,
         };
         let m = merged(Some("1.6.1170.0"), Some(&s));
         assert_eq!(m.iter().find(|e| e.id == "ussep").unwrap().nexus.as_ref().unwrap().file, Some(9));
