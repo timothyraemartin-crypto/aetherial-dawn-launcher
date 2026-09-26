@@ -14,7 +14,6 @@ const CRASH_LOGGER_URL: &str = "https://github.com/alandtse/CrashLoggerSSE/relea
 const CRASH_LOGGER_SHA256: &str = "ce8592d60a2394bc05874d4cc759d3513686c3e26f841fe831a98c9d66fa979c";
 /// Crash Logger's files; tidying never moves them.
 pub const CRASH_LOGGER_FILES: [&str; 3] = ["CrashLogger.dll", "CrashLogger.pdb", "msdia140.dll"];
-pub const ADDRESS_LIBRARY_PAGE: &str = "https://www.nexusmods.com/skyrimspecialedition/mods/32444?tab=files";
 
 /// Skyrim Souls RE (unpaused menus), Timothy's requirement 2026-09-26.
 /// 2.4.0 is the newest release built for 1.6.1170; 3.x targets 1.7.x.
@@ -24,6 +23,172 @@ const SOULS_URL: &str = "https://github.com/Vermunds/SkyrimSoulsRE/releases/down
 const SOULS_SHA256: &str = "a5295783c6cab3e766bdd6306896910f61fe5f97122997dea0bbb9bf76f735fc";
 /// Skyrim Souls RE's files; tidying never moves them.
 pub const SOULS_FILES: [&str; 4] = ["SkyrimSoulsRE.dll", "SkyrimSoulsRE.ini", "SkyrimSoulsRE.pdb", "CombatAlertOverlayMenu.swf"];
+
+/// SSE Engine Fixes, required by Skyrim Souls RE (Timothy, 2026-09-26).
+/// Part 1 (the SKSE plugin) is on GitHub, so the launcher installs it; the
+/// AE build is the one for 1.6.1170. Part 2 (the preloader and memory
+/// allocator next to SkyrimSE.exe) is only on Nexus Mods.
+pub const ENGINE_FIXES_VERSION: &str = "7.0.20";
+const ENGINE_FIXES_URL: &str = "https://github.com/aers/EngineFixesSkyrim64/releases/download/7.0.20/EngineFixes.FOMOD.Installer.7z";
+const ENGINE_FIXES_SHA256: &str = "21330c95011f41859139635b43ce95ffb5fbadd3cd375d2f4358abcc3cb99407";
+/// Engine Fixes' files in Data/SKSE/Plugins; tidying never moves them.
+pub const ENGINE_FIXES_FILES: [&str; 5] = ["EngineFixes.dll", "EngineFixes.pdb", "EngineFixes.toml", "EngineFixes_SNCT.ini", "EngineFixes_preload.txt"];
+/// Engine Fixes part 2, next to SkyrimSE.exe.
+pub const ENGINE_FIXES_PRELOAD: [&str; 3] = ["d3dx9_42.dll", "tbb.dll", "tbbmalloc.dll"];
+/// SKSE Menu Framework's plugin; tidying never moves it.
+pub const MENU_FRAMEWORK_DLL: &str = "SKSEMenuFramework.dll";
+/// ImGui Icons' folder in Data/Interface; tidying never moves it.
+pub const IMGUI_ICONS_DIR: &str = "ImGuiIcons";
+/// The Unofficial Skyrim Special Edition Patch's plugin.
+pub const USSEP_PLUGIN: &str = "Unofficial Skyrim Special Edition Patch.esp";
+
+/// A required mod players download from Nexus Mods themselves, because Nexus
+/// doesn't let other sites hand its files out.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct NexusMod {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub page: &'static str,
+    /// Which file on the Files tab to pick.
+    pub pick: String,
+    /// What the launcher looks for, in the player's words.
+    pub looks_for: String,
+}
+
+/// Nexus Mods pages the launcher may open.
+pub const NEXUS_PAGES: [(&str, &str); 5] = [
+    ("address-library", "https://www.nexusmods.com/skyrimspecialedition/mods/32444?tab=files"),
+    ("engine-fixes", "https://www.nexusmods.com/skyrimspecialedition/mods/17230?tab=files"),
+    ("ussep", "https://www.nexusmods.com/skyrimspecialedition/mods/266?tab=files"),
+    ("menu-framework", "https://www.nexusmods.com/skyrimspecialedition/mods/120352?tab=files"),
+    ("imgui-icons", "https://www.nexusmods.com/skyrimspecialedition/mods/114790?tab=files"),
+];
+
+fn page(id: &str) -> &'static str {
+    NEXUS_PAGES.iter().find(|(i, _)| *i == id).map(|(_, p)| *p).unwrap_or("")
+}
+
+pub fn engine_fixes_ok(game_dir: &Path) -> bool {
+    plugins_dir(game_dir).join("EngineFixes.dll").is_file()
+}
+
+pub fn engine_fixes_preload_ok(game_dir: &Path) -> bool {
+    ENGINE_FIXES_PRELOAD.iter().all(|f| game_dir.join(f).is_file())
+}
+
+pub fn ussep_ok(game_dir: &Path) -> bool {
+    game_dir.join("Data").join(USSEP_PLUGIN).is_file()
+}
+
+pub fn menu_framework_ok(game_dir: &Path) -> bool {
+    plugins_dir(game_dir).join(MENU_FRAMEWORK_DLL).is_file()
+}
+
+pub fn imgui_icons_ok(game_dir: &Path) -> bool {
+    game_dir.join("Data").join("Interface").join(IMGUI_ICONS_DIR).is_dir()
+}
+
+/// The Nexus-only required mods that aren't installed yet, in the order the
+/// player should get them.
+pub fn missing_nexus_mods(game_dir: &Path, game_version: Option<&str>) -> Vec<NexusMod> {
+    let mut out = Vec::new();
+    if let Some(v) = game_version {
+        if !address_library_ok(game_dir, v) {
+            out.push(NexusMod {
+                id: "address-library",
+                name: "Address Library for SKSE Plugins",
+                page: page("address-library"),
+                pick: "All in one (Anniversary Edition)".into(),
+                looks_for: format!("{} in Data\\SKSE\\Plugins", address_library_file(v)),
+            });
+        }
+    }
+    if !engine_fixes_preload_ok(game_dir) {
+        out.push(NexusMod {
+            id: "engine-fixes",
+            name: "SSE Engine Fixes (part 2)",
+            page: page("engine-fixes"),
+            pick: "Part 2 - Engine Fixes - skse64 Preloader and TBB Lib. Put its files next to SkyrimSE.exe, not in Data. The launcher installs part 1 itself".into(),
+            looks_for: format!("{} next to SkyrimSE.exe", ENGINE_FIXES_PRELOAD.join(", ")),
+        });
+    }
+    if !ussep_ok(game_dir) {
+        out.push(NexusMod {
+            id: "ussep",
+            name: "Unofficial Skyrim Special Edition Patch",
+            page: page("ussep"),
+            pick: "the version the server uses (for Skyrim 1.6.1170)".into(),
+            looks_for: format!("{USSEP_PLUGIN} in Data"),
+        });
+    }
+    if !menu_framework_ok(game_dir) {
+        out.push(NexusMod {
+            id: "menu-framework",
+            name: "SKSE Menu Framework",
+            page: page("menu-framework"),
+            pick: "the main file".into(),
+            looks_for: format!("{MENU_FRAMEWORK_DLL} in Data\\SKSE\\Plugins"),
+        });
+    }
+    if !imgui_icons_ok(game_dir) {
+        out.push(NexusMod {
+            id: "imgui-icons",
+            name: "ImGui Icons",
+            page: page("imgui-icons"),
+            pick: "the main file".into(),
+            looks_for: format!("the {IMGUI_ICONS_DIR} folder in Data\\Interface"),
+        });
+    }
+    out
+}
+
+/// Downloads SSE Engine Fixes part 1 from its GitHub release, checks it, and
+/// puts the AE plugin and its settings in Data/SKSE/Plugins, keeping settings
+/// the player already has.
+pub async fn install_engine_fixes(client: &reqwest::Client, game_dir: &Path) -> Result<()> {
+    let bytes = client.get(ENGINE_FIXES_URL).header("User-Agent", "AetherialDawnLauncher").send().await?.error_for_status()?.bytes().await?;
+    use sha2::{Digest, Sha256};
+    let got = hex::encode(Sha256::digest(&bytes));
+    if !got.eq_ignore_ascii_case(ENGINE_FIXES_SHA256) {
+        return Err(Error::HashMismatch { path: "SSE Engine Fixes".into(), expected: ENGINE_FIXES_SHA256.into(), actual: got });
+    }
+    let dir = plugins_dir(game_dir);
+    std::fs::create_dir_all(&dir)?;
+    unpack_engine_fixes(&bytes, &dir)
+}
+
+fn unpack_engine_fixes(archive: &[u8], dir: &Path) -> Result<()> {
+    let mut reader = sevenz_rust2::ArchiveReader::new(std::io::Cursor::new(archive), sevenz_rust2::Password::empty())
+        .map_err(|e| Error::Game(format!("SSE Engine Fixes download is damaged: {e}")))?;
+    let mut dll = false;
+    reader
+        .for_each_entries(|entry, data| {
+            let name = entry.name().replace('\\', "/");
+            let Some((_, rel)) = name.split_once('/') else { return Ok(true) };
+            let file = rel.strip_prefix("AE/SKSE/Plugins/").or_else(|| rel.strip_prefix("Required/SKSE/Plugins/"));
+            let Some(file) = file else { return Ok(true) };
+            if entry.is_directory() || !ENGINE_FIXES_FILES.iter().any(|f| f.eq_ignore_ascii_case(file)) {
+                return Ok(true);
+            }
+            let dest = dir.join(file);
+            let settings = !file.to_ascii_lowercase().ends_with(".dll") && !file.to_ascii_lowercase().ends_with(".pdb");
+            if settings && dest.is_file() {
+                return Ok(true);
+            }
+            let tmp = dir.join(format!("{file}.part"));
+            let mut out = std::fs::File::create(&tmp)?;
+            std::io::copy(data, &mut out)?;
+            drop(out);
+            std::fs::rename(&tmp, &dest)?;
+            dll |= file.eq_ignore_ascii_case("EngineFixes.dll");
+            Ok(true)
+        })
+        .map_err(|e| Error::Game(format!("couldn't unpack SSE Engine Fixes: {e}")))?;
+    if !dll {
+        return Err(Error::Game("the SSE Engine Fixes download didn't contain EngineFixes.dll".into()));
+    }
+    Ok(())
+}
 
 pub const SKSE_VERSION: &str = "2.2.6";
 const SKSE_URL: &str = "https://github.com/ianpatt/skse64/releases/download/v2.2.6/skse64_2_02_06.7z";
@@ -203,6 +368,39 @@ mod tests {
         assert!(tmp.path().join("Data/Interface/CombatAlertOverlayMenu.swf").is_file());
         assert!(tmp.path().join("Data/Scripts/uimenubase.pex").is_file());
         assert!(!tmp.path().join("Data/Scripts/Source").exists());
+    }
+
+    #[test]
+    fn unpacks_engine_fixes_when_available() {
+        let Ok(p) = std::env::var("AD_EF_7Z") else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = plugins_dir(tmp.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("EngineFixes.toml"), b"mine").unwrap();
+        unpack_engine_fixes(&std::fs::read(p).unwrap(), &dir).unwrap();
+        assert!(engine_fixes_ok(tmp.path()));
+        assert!(dir.join("EngineFixes_preload.txt").is_file());
+        assert_eq!(std::fs::read(dir.join("EngineFixes.toml")).unwrap(), b"mine");
+        assert!(!tmp.path().join("SE").exists());
+    }
+
+    #[test]
+    fn lists_missing_nexus_mods() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ids: Vec<&str> = missing_nexus_mods(tmp.path(), Some("1.6.1170.0")).iter().map(|m| m.id).collect();
+        assert_eq!(ids, ["address-library", "engine-fixes", "ussep", "menu-framework", "imgui-icons"]);
+        assert!(missing_nexus_mods(tmp.path(), Some("1.6.1170.0")).iter().all(|m| m.page.starts_with("https://www.nexusmods.com/")));
+        let d = tmp.path();
+        std::fs::create_dir_all(plugins_dir(d)).unwrap();
+        std::fs::create_dir_all(d.join("Data/Interface/ImGuiIcons")).unwrap();
+        for f in ["versionlib-1-6-1170-0.bin", MENU_FRAMEWORK_DLL] {
+            std::fs::write(plugins_dir(d).join(f), b"x").unwrap();
+        }
+        for f in ENGINE_FIXES_PRELOAD {
+            std::fs::write(d.join(f), b"x").unwrap();
+        }
+        std::fs::write(d.join("Data").join(USSEP_PLUGIN), b"x").unwrap();
+        assert!(missing_nexus_mods(d, Some("1.6.1170.0")).is_empty());
     }
 
     #[test]

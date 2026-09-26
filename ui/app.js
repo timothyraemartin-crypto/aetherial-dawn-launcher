@@ -626,7 +626,35 @@
     finally { $('st-move').disabled = false; }
   }
 
-  async function onPlay() {
+  // Required mods only on Nexus Mods: one row per mod with its Open button.
+function showRequiredMods(mods) {
+  const list = $('rq-list');
+  list.replaceChildren();
+  for (const m of mods) {
+    const row = document.createElement('div');
+    row.className = 'rq-row';
+    const text = document.createElement('div');
+    const name = document.createElement('b');
+    name.textContent = m.name;
+    const pick = document.createElement('div');
+    pick.className = 'rq-sub';
+    pick.textContent = `Get: ${m.pick}.`;
+    const looks = document.createElement('div');
+    looks.className = 'rq-sub';
+    looks.textContent = `The launcher looks for ${m.looks_for}.`;
+    text.append(name, pick, looks);
+    const open = document.createElement('button');
+    open.className = 'btn';
+    open.textContent = 'Open';
+    open.onclick = () => invoke('open_mod_page', { id: m.id }).catch(e => { $('rq-error').textContent = String(e); $('rq-error').hidden = false; });
+    row.append(text, open);
+    list.append(row);
+  }
+  $('rq-error').hidden = true;
+  showSheet('reqs');
+}
+
+async function onPlay() {
     if (busy) return;
     if (playMode === 'strays') return openStrays();
     if (playMode === 'retry') return check();
@@ -642,12 +670,12 @@
       setTimeout(() => { if (playMode === 'wait' && !busy) ready(); }, 8000);
     } catch (e) {
       const msg = String(e);
-      if (msg.startsWith('NEEDS_ADDRESS_LIBRARY:')) {
+      if (msg.startsWith('NEEDS_NEXUS_MODS:')) {
         setPlay('play', 'PLAY');
-        setStatus('Install the Address Library, then press Play.', true);
-        $('rq-file').textContent = `The launcher looks for ${msg.slice(22)} in Data\\SKSE\\Plugins.`;
-        $('rq-error').hidden = true;
-        showSheet('reqs');
+        let mods = [];
+        try { mods = JSON.parse(msg.slice(17)); } catch (_) {}
+        setStatus(`Install ${mods.length === 1 ? mods[0].name : `${mods.length} required mods`}, then press Play.`, true);
+        showRequiredMods(mods);
         return;
       }
       if (msg.startsWith('SIGNED_OUT:')) {
@@ -842,7 +870,6 @@
     catch { $('cr-note').textContent = "Couldn't copy. Open the log folder and send the newest game-….txt file."; }
     $('cr-note').hidden = false;
   };
-  $('rq-open').onclick = () => invoke('open_address_library_page').catch(e => { $('rq-error').textContent = String(e); $('rq-error').hidden = false; });
   $('rq-close').onclick = () => showPage(page);
   $('rq-again').onclick = () => { showPage(page); onPlay(); };
   $('cr-logs').onclick = () => invoke('open_log_folder').catch(() => {});

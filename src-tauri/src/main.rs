@@ -1105,10 +1105,9 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest) -> CmdResult<
     Ok(())
 }
 
-/// Required mods (Timothy, 2026-09-26): Crash Logger is installed here from
-/// its GitHub release when missing; the Address Library can only come from
-/// Nexus Mods, so Play stops with "NEEDS_ADDRESS_LIBRARY:" and the UI walks
-/// the player through it.
+/// Required mods (Timothy, 2026-09-26): the ones on GitHub are installed here
+/// when missing; the ones only on Nexus Mods stop Play with
+/// "NEEDS_NEXUS_MODS:<json list>" and the UI walks the player through them.
 /// Installs SKSE 2.2.6 and Crash Logger from their official GitHub releases
 /// when they're missing.
 async fn install_missing_mods(http: &reqwest::Client, dir: &std::path::Path) -> CmdResult<()> {
@@ -1133,25 +1132,33 @@ async fn install_missing_mods(http: &reqwest::Client, dir: &std::path::Path) -> 
             Err(e) => log::line(&format!("couldn't install Skyrim Souls RE: {e}")),
         }
     }
-    Ok(())
-}
-
-async fn ensure_requirements(http: &reqwest::Client, dir: &std::path::Path, m: &Manifest) -> CmdResult<()> {
-    install_missing_mods(http, dir).await?;
-    if let Some(v) = m.game.as_ref().and_then(|g| g.version.as_deref()) {
-        if !requirements::address_library_ok(dir, v) {
-            let file = requirements::address_library_file(v);
-            log::line(&format!("play: stopped, the Address Library file {file} is missing"));
-            return Err(format!("NEEDS_ADDRESS_LIBRARY:{file}"));
+    if !requirements::engine_fixes_ok(dir) {
+        match requirements::install_engine_fixes(http, dir).await {
+            Ok(()) => log::line(&format!("installed SSE Engine Fixes {} (part 1)", requirements::ENGINE_FIXES_VERSION)),
+            Err(e) => log::line(&format!("couldn't install SSE Engine Fixes: {e}")),
         }
     }
     Ok(())
 }
 
+async fn ensure_requirements(http: &reqwest::Client, dir: &std::path::Path, m: &Manifest) -> CmdResult<()> {
+    install_missing_mods(http, dir).await?;
+    let version = m.game.as_ref().and_then(|g| g.version.as_deref());
+    let missing = requirements::missing_nexus_mods(dir, version);
+    if !missing.is_empty() {
+        let names: Vec<&str> = missing.iter().map(|n| n.name).collect();
+        log::line(&format!("play: stopped, required mods from Nexus Mods are missing: {}", names.join(", ")));
+        return Err(format!("NEEDS_NEXUS_MODS:{}", serde_json::to_string(&missing).unwrap_or_default()));
+    }
+    Ok(())
+}
+
+/// Opens a required mod's Nexus Mods page. Only the pages the launcher knows.
 #[tauri::command]
-fn open_address_library_page(app: AppHandle) -> CmdResult<()> {
+fn open_mod_page(app: AppHandle, id: String) -> CmdResult<()> {
     use tauri_plugin_opener::OpenerExt;
-    app.opener().open_url(requirements::ADDRESS_LIBRARY_PAGE, None::<&str>).map_err(|e| e.to_string())
+    let url = requirements::NEXUS_PAGES.iter().find(|(i, _)| *i == id).map(|(_, u)| *u).ok_or("unknown mod")?;
+    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
 /// Skyrim Platform's built-in browser (CEF) keeps its profile in
@@ -1737,7 +1744,7 @@ fn main() {
             app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http, steam_child: Default::default(), steam_input: Default::default() });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report, health_check, steam_login_answer, steam_login_cancel, open_address_library_page, patch_game, build_patches])
+        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report, health_check, steam_login_answer, steam_login_cancel, open_mod_page, patch_game, build_patches])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }

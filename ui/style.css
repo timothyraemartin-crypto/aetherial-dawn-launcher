@@ -274,3 +274,7 @@ html.animated .nav { background: linear-gradient(180deg, rgba(6,10,15,.9), rgba(
 #dg-ask .hint { color: var(--faint); font-size: 12px; line-height: 1.4; }
 #dg-bar { width: 100%; }
 #cr-staff { color: var(--frost); }
+
+.rq-list { display: grid; gap: 8px; margin: 12px 0; }
+.rq-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--line, rgba(255,255,255,.12)); border-radius: 8px; font-size: 13px; }
+.rq-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }

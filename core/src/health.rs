@@ -378,7 +378,7 @@ fn steam_updates(i: &Inputs) -> Check {
 }
 
 /// The mods every player needs: SKSE64, the Address Library with the file for
-/// the server's build, and Crash Logger.
+/// the server's build, Crash Logger, Skyrim Souls RE and its dependencies.
 fn crash_logger(i: &Inputs) -> Check {
     let dir = i.game_dir.join("Data").join("SKSE").join("Plugins");
     let target = i.manifest.and_then(|m| m.game.as_ref()).and_then(|g| g.version.clone());
@@ -401,6 +401,24 @@ fn crash_logger(i: &Inputs) -> Check {
     } else {
         missing.push("Skyrim Souls RE: not installed (the launcher installs it before Play)".to_string());
     }
+    if requirements::engine_fixes_ok(i.game_dir) {
+        have.push("SSE Engine Fixes");
+    } else {
+        missing.push("SSE Engine Fixes: not installed (the launcher installs it before Play)".to_string());
+    }
+    for m in requirements::missing_nexus_mods(i.game_dir, None) {
+        missing.push(format!("{}: {} is missing", m.name, m.looks_for));
+    }
+    for (ok, name) in [
+        (requirements::engine_fixes_preload_ok(i.game_dir), "SSE Engine Fixes part 2"),
+        (requirements::ussep_ok(i.game_dir), "Unofficial Skyrim Special Edition Patch"),
+        (requirements::menu_framework_ok(i.game_dir), "SKSE Menu Framework"),
+        (requirements::imgui_icons_ok(i.game_dir), "ImGui Icons"),
+    ] {
+        if ok {
+            have.push(name);
+        }
+    }
     if i.game_dir.join("skse64_loader.exe").is_file() {
         have.push("SKSE64");
     } else {
@@ -409,8 +427,14 @@ fn crash_logger(i: &Inputs) -> Check {
     if missing.is_empty() {
         check("requirements", "Required mods", Status::Ok, format!("{} installed.", have.join(", ")), vec![])
     } else {
-        let fail = missing.iter().any(|m| !m.starts_with("Crash Logger") && !m.starts_with("Skyrim Souls RE"));
-        check("requirements", "Required mods", if fail { Status::Fail } else { Status::Warn }, "Aetherial Dawn needs SKSE64 2.2.6, the Address Library, Crash Logger and Skyrim Souls RE.", missing)
+        let fail = missing.iter().any(|m| !m.contains("(the launcher installs it before Play)"));
+        check(
+            "requirements",
+            "Required mods",
+            if fail { Status::Fail } else { Status::Warn },
+            "Aetherial Dawn needs SKSE64 2.2.6, the Address Library, Crash Logger, Skyrim Souls RE, SSE Engine Fixes (both parts), the Unofficial Skyrim Special Edition Patch, SKSE Menu Framework and ImGui Icons.",
+            missing,
+        )
     }
 }
 

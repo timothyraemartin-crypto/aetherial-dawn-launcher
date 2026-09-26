@@ -225,20 +225,19 @@
   <!-- ===== required mods ===== -->
   <div class="sheet" id="reqs" hidden>
     <div class="panel">
-      <div class="eyebrow">REQUIRED MOD</div>
-      <h2>Install the Address Library</h2>
-      <p class="lead">Aetherial Dawn needs <b>Address Library for SKSE Plugins</b>. It's free on Nexus Mods, and Nexus doesn't let the launcher download it for you. It takes about a minute.</p>
+      <div class="eyebrow">REQUIRED MODS</div>
+      <h2>Install these from Nexus Mods</h2>
+      <p class="lead">Aetherial Dawn needs a few free mods that are only on Nexus Mods, and Nexus doesn't let the launcher download them for you. Each takes about a minute.</p>
       <ol class="notes">
-        <li>Click <b>Open download page</b>. Nexus Mods opens on the Files tab.</li>
-        <li>Under <i>All in one (Anniversary Edition)</i>, click <b>Mod manager download</b> (Vortex installs it) or <b>Manual download</b>.</li>
-        <li>If you downloaded it by hand, open the zip and copy the <code>SKSE</code> folder into your Skyrim <code>Data</code> folder.</li>
-        <li>Come back here and click <b>Check again</b>.</li>
+        <li>Click <b>Open</b> next to a mod. Nexus Mods opens on its Files tab.</li>
+        <li>Pick the file named below it and click <b>Mod manager download</b> (Vortex installs it) or <b>Manual download</b>.</li>
+        <li>If you downloaded it by hand, open the archive and copy its folders into your Skyrim <code>Data</code> folder (Engine Fixes part 2 goes next to <code>SkyrimSE.exe</code> instead).</li>
+        <li>When they're all in, click <b>Check again</b>.</li>
       </ol>
-      <p class="note" id="rq-file"></p>
+      <div class="rq-list" id="rq-list"></div>
       <span class="error" id="rq-error" hidden></span>
       <div class="actions">
-        <button class="btn primary" id="rq-open">OPEN DOWNLOAD PAGE</button>
-        <button class="btn" id="rq-again">Check again</button>
+        <button class="btn primary" id="rq-again">CHECK AGAIN</button>
         <button class="btn" id="rq-close">Not now</button>
       </div>
     </div>

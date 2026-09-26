@@ -118,6 +118,8 @@ pub fn with_archives(game_dir: &Path, plugin: &str) -> Vec<String> {
 
 fn allowed(game_dir: &Path, manifest: &Manifest) -> Vec<String> {
     let mut ok: Vec<String> = BASE.iter().map(|s| s.to_string()).collect();
+    // A required mod (Skyrim Souls RE's dependency), from Nexus Mods.
+    ok.push(crate::requirements::USSEP_PLUGIN.to_ascii_lowercase());
     for ccc in [game_dir.join("Data").join("Skyrim.ccc"), game_dir.join("Skyrim.ccc")] {
         if let Ok(t) = std::fs::read_to_string(ccc) {
             ok.extend(t.lines().map(|l| l.trim().to_ascii_lowercase()).filter(|l| !l.is_empty()));

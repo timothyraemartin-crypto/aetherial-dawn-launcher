@@ -40,8 +40,9 @@ pub fn find(game_dir: &Path, m: &Manifest) -> Vec<String> {
             if only_dll && !name.to_ascii_lowercase().ends_with(".dll") {
                 continue;
             }
-            // Crash loggers only write a log when the game dies; keep them.
-            if CRASH_LOGGERS.iter().chain(crate::requirements::CRASH_LOGGER_FILES.iter()).chain(crate::requirements::SOULS_FILES.iter()).any(|c| c.eq_ignore_ascii_case(&name)) {
+            // Crash loggers only write a log when the game dies, and required
+            // mods (Skyrim Souls RE and its dependencies) must stay; keep them.
+            if CRASH_LOGGERS.iter().chain(crate::requirements::CRASH_LOGGER_FILES.iter()).chain(crate::requirements::SOULS_FILES.iter()).chain(crate::requirements::ENGINE_FIXES_FILES.iter()).chain([crate::requirements::MENU_FRAMEWORK_DLL].iter()).any(|c| c.eq_ignore_ascii_case(&name)) {
                 continue;
             }
             if rel.eq_ignore_ascii_case(crate::settings::SETTINGS_PATH) || listed(m, &rel) {
@@ -52,8 +53,11 @@ pub fn find(game_dir: &Path, m: &Manifest) -> Vec<String> {
     }
     let mut loose = Vec::new();
     walk(&game_dir.join(INTERFACE), INTERFACE, &mut loose);
-    // Required mods' menus (Skyrim Souls RE) stay.
-    let required = |rel: &str| crate::requirements::SOULS_FILES.iter().any(|f| rel.eq_ignore_ascii_case(&format!("{INTERFACE}/{f}")));
+    // Required mods' menus (Skyrim Souls RE) and ImGui Icons' fonts stay.
+    let icons = format!("{INTERFACE}/{}/", crate::requirements::IMGUI_ICONS_DIR).to_ascii_lowercase();
+    let required = |rel: &str| {
+        crate::requirements::SOULS_FILES.iter().any(|f| rel.eq_ignore_ascii_case(&format!("{INTERFACE}/{f}"))) || rel.to_ascii_lowercase().starts_with(&icons)
+    };
     out.extend(loose.into_iter().filter(|rel| !listed(m, rel) && !rel.ends_with(VORTEX_MARKER) && !required(rel)));
     out.sort();
     out
