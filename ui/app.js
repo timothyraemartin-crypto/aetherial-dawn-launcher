@@ -284,7 +284,9 @@
     catch { label.textContent = addr; }
     setTimeout(() => { label.textContent = 'Copy address'; }, 1800);
   };
-  document.querySelectorAll('.switch').forEach(s => s.onclick = async () => {
+  $('set-anim').setAttribute('aria-checked', Ambient.enabled);
+  $('set-anim').onclick = () => { Ambient.set(!Ambient.enabled); $('set-anim').setAttribute('aria-checked', Ambient.enabled); };
+  document.querySelectorAll('.switch:not(#set-anim)').forEach(s => s.onclick = async () => {
     s.setAttribute('aria-checked', s.getAttribute('aria-checked') !== 'true');
     const prefs = { closeOnLaunch: $('set-close').getAttribute('aria-checked') === 'true', backgroundUpdates: $('set-bg').getAttribute('aria-checked') === 'true' };
     await invoke('set_prefs', { prefs });
