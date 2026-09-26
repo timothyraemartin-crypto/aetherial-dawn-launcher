@@ -1,7 +1,7 @@
 // Hides the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use launcher_core::{auth, downgrade, game, gameini, loadorder, manifest::Manifest, settings, steamapp, strays, sync, version, watch, Error};
+use launcher_core::{auth, downgrade, game, gameini, health, loadorder, manifest::Manifest, settings, steamapp, strays, sync, version, watch, Error};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,6 +38,8 @@ struct Config {
     last_auth_ok: Option<u64>,
     close_on_launch: bool,
     background_updates: bool,
+    /// Send game health reports to the server's staff (players can turn it off).
+    share_health: bool,
 }
 
 impl Default for Config {
@@ -49,6 +51,7 @@ impl Default for Config {
             last_auth_ok: None,
             close_on_launch: true,
             background_updates: true,
+            share_health: true,
         }
     }
 }
@@ -134,6 +137,12 @@ async fn set_game_dir(app: AppHandle, state: State<'_, AppState>, dir: PathBuf) 
 struct Prefs {
     close_on_launch: bool,
     background_updates: bool,
+    #[serde(default = "yes")]
+    share_health: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[tauri::command]
@@ -141,6 +150,7 @@ async fn set_prefs(app: AppHandle, state: State<'_, AppState>, prefs: Prefs) -> 
     let mut config = state.config.lock().await;
     config.close_on_launch = prefs.close_on_launch;
     config.background_updates = prefs.background_updates;
+    config.share_health = prefs.share_health;
     save_config(&app, &config)
 }
 
@@ -218,6 +228,11 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     }
     game::inspect(&dir).map_err(err)?;
     tidy_game(&app, &dir, &m)?;
+    let report = run_health(&app, &state.http, &config.base_url, &dir, Some(&m)).await;
+    log::line(&format!("health before play: worst={:?}\n{}", report.worst, report.text()));
+    if report.worst >= health::Status::Warn && config.share_health {
+        send_health(&app, &state.http, &config, &m.build, "before play", None, &report).await;
+    }
     let token = token(&app).ok_or("SIGNED_OUT:Sign in with Discord to play.")?;
     let session = match auth::play(&state.http, AUTH_URL, &token).await {
         auth::Answer::Ok(p) => {
@@ -316,6 +331,17 @@ async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::
         app.package_info().version,
         log::timestamp()
     );
+    let (http, config, build, manifest) = {
+        let st = app.state::<AppState>();
+        let m = st.manifest.lock().await.clone();
+        let c = st.config.lock().await.clone();
+        (st.http.clone(), c, m.as_ref().map(|m| m.build.clone()).unwrap_or_default(), m)
+    };
+    let health = run_health(&app, &http, &config.base_url, &game_dir, manifest.as_ref()).await;
+    report.push_str(&format!("\n===== game health =====\n{}", health.text()));
+    if crashed && config.share_health {
+        send_health(&app, &http, &config, &build, "after a crash", Some(&summary), &health).await;
+    }
     report.push_str(&format!("\n===== game data =====\n{}", game_data_report(&app, &game_dir)));
     report.push_str(&watch::collect(&skse_logs, &std::env::temp_dir(), started));
     report.push_str(&format!("\n===== launcher log (last 40 lines) =====\n{}\n", log::tail(40)));
@@ -675,6 +701,91 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest) -> CmdResult<
     Ok(())
 }
 
+/// Staff endpoint for health reports. Not set up on the server yet, so
+/// reports are only shown and logged.
+const HEALTH_REPORT_URL: Option<&str> = None;
+
+async fn run_health(app: &AppHandle, http: &reqwest::Client, base: &str, dir: &std::path::Path, m: Option<&Manifest>) -> health::Report {
+    let url = format!("{}/masters.json", base.trim_end_matches('/'));
+    let masters = match http.get(&url).timeout(std::time::Duration::from_secs(8)).send().await.and_then(|r| r.error_for_status()) {
+        Ok(r) => r.json::<serde_json::Value>().await.ok(),
+        Err(e) => {
+            log::line(&format!("health: couldn't load {url}: {e}"));
+            None
+        }
+    };
+    let appdata = app.path().local_data_dir().ok().map(|d| d.join("Skyrim Special Edition"));
+    let docs = app.path().document_dir().or_else(|_| app.path().home_dir().map(|h| h.join("Documents"))).ok();
+    let cache = app.path().app_local_data_dir().ok().map(|d| health::cache_path(&d));
+    let home = app.path().home_dir().ok();
+    let (dir, m) = (dir.to_path_buf(), m.cloned());
+    tauri::async_runtime::spawn_blocking(move || {
+        health::run(&health::Inputs {
+            game_dir: &dir,
+            manifest: m.as_ref(),
+            masters: masters.as_ref(),
+            appdata: appdata.as_deref(),
+            documents: docs.as_deref(),
+            hash_cache: cache.as_deref(),
+            home: home.as_deref(),
+        })
+    })
+    .await
+    .unwrap_or_else(|_| health::Report { checks: vec![], worst: health::Status::Info })
+}
+
+/// What staff receive. Same text the player sees; never the settings file,
+/// tokens or sessions.
+fn health_payload(app: &AppHandle, config: &Config, build: &str, when: &str, crash: Option<&str>, r: &health::Report) -> serde_json::Value {
+    serde_json::json!({
+        "kind": if crash.is_some() { "crash" } else { "health" },
+        "when": when,
+        "launcher": app.package_info().version.to_string(),
+        "build": build,
+        "discordId": config.account.as_ref().and_then(|a| a.discord_id.clone()),
+        "discordUsername": config.account.as_ref().and_then(|a| a.discord_username.clone()),
+        "crash": crash,
+        "worst": r.worst,
+        "checks": r.checks,
+        "text": r.text(),
+    })
+}
+
+async fn send_health(app: &AppHandle, http: &reqwest::Client, config: &Config, build: &str, when: &str, crash: Option<&str>, r: &health::Report) {
+    let Some(url) = HEALTH_REPORT_URL else {
+        log::line(&format!("health: report {when} not sent: the staff endpoint isn't set up yet"));
+        return;
+    };
+    let body = health_payload(app, config, build, when, crash, r);
+    match http.post(url).json(&body).timeout(std::time::Duration::from_secs(10)).send().await.and_then(|r| r.error_for_status()) {
+        Ok(_) => log::line(&format!("health: report {when} sent to staff")),
+        Err(e) => log::line(&format!("health: report {when} not sent: {e}")),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HealthOut {
+    report: health::Report,
+    text: String,
+    /// Exactly what would be sent to staff, as JSON.
+    payload: String,
+    endpoint: bool,
+    share: bool,
+}
+
+/// Runs the checks for the Settings screen.
+#[tauri::command]
+async fn health_check(app: AppHandle, state: State<'_, AppState>) -> CmdResult<HealthOut> {
+    let config = state.config.lock().await.clone();
+    let dir = config.game_dir.clone().ok_or("Pick your Skyrim folder first.")?;
+    let m = state.manifest.lock().await.clone();
+    let report = run_health(&app, &state.http, &config.base_url, &dir, m.as_ref()).await;
+    log::line(&format!("health (settings): worst={:?}", report.worst));
+    let payload = serde_json::to_string_pretty(&health_payload(&app, &config, m.as_ref().map(|m| m.build.as_str()).unwrap_or(""), "example", None, &report)).unwrap_or_default();
+    Ok(HealthOut { text: report.text(), report, payload, endpoint: HEALTH_REPORT_URL.is_some(), share: config.share_health })
+}
+
 /// The player's load order file (Vortex and the game both use it).
 fn plugins_txt(app: &AppHandle) -> Option<PathBuf> {
     app.path().local_data_dir().ok().map(|d| d.join("Skyrim Special Edition").join("plugins.txt"))
@@ -930,7 +1041,7 @@ fn main() {
             app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report])
+        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report, health_check])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }

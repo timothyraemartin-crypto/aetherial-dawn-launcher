@@ -230,6 +230,22 @@
     </div>
   </div>
 
+  <div class="sheet" id="health" hidden>
+    <div class="panel">
+      <div class="eyebrow">GAME HEALTH</div>
+      <h2 id="hl-title">Checking your game…</h2>
+      <p class="lead" id="hl-lead">The launcher checks your Skyrim folder for the problems that most often crash SkyMP before the main menu.</p>
+      <ul class="health-list" id="hl-list"></ul>
+      <details class="hl-sent"><summary id="hl-sent-sum">What gets sent to staff</summary><pre class="report" id="hl-payload"></pre></details>
+      <span class="note" id="hl-note" hidden></span>
+      <div class="actions">
+        <button class="btn primary" id="hl-again">CHECK AGAIN</button>
+        <button class="btn" id="hl-copy">Copy</button>
+        <button class="btn" id="hl-close">Close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ===== settings ===== -->
   <div class="sheet" id="settings" hidden>
     <div class="panel">
@@ -244,10 +260,11 @@
         <div class="toggle"><div>Close launcher when the game starts<small>Keeps the launcher out of the way while you play.</small></div><button class="switch" id="set-close" role="switch" aria-checked="true" aria-label="Close launcher when the game starts"></button></div>
         <div class="toggle"><div>Animated background<small>Snow, northern lights, castle lights and waterfalls. Turn off to save power on older PCs.</small></div><button class="switch" id="set-anim" role="switch" aria-checked="true" aria-label="Animated background"></button></div>
         <div class="toggle"><div>Update automatically<small>Downloads new files as soon as the launcher opens.</small></div><button class="switch" id="set-bg" role="switch" aria-checked="true" aria-label="Update automatically"></button></div>
+        <div class="toggle"><div>Send game health reports to staff<small>Before Play when something is wrong, and after a crash. Never your password, login or settings file. See exactly what's sent under Check my game.</small></div><button class="switch" id="set-share" role="switch" aria-checked="true" aria-label="Send game health reports to staff"></button></div>
       </div>
       <div class="field">
         <label>Problems?</label>
-        <div class="line"><button class="btn" id="set-diag">Copy diagnostics</button><button class="btn" id="set-logs">Open log folder</button></div>
+        <div class="line"><button class="btn" id="set-health">Check my game</button><button class="btn" id="set-diag">Copy diagnostics</button><button class="btn" id="set-logs">Open log folder</button></div>
         <small class="note" id="set-diag-note" hidden></small>
       </div>
       <div class="actions"><button class="btn primary" id="set-done">DONE</button><span class="note" id="set-version"></span></div>

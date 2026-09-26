@@ -13,6 +13,9 @@ const PLATFORM_PLUGINS: &str = "Data/Platform/Plugins";
 /// Loose menus here replace the game's own (RaceMenu, map and HUD mods).
 /// Vanilla Skyrim keeps its interface in BSAs, so nothing loose belongs here.
 const INTERFACE: &str = "Data/Interface";
+/// SKSE crash loggers the launcher leaves in place so crash reports name the
+/// module that failed.
+pub const CRASH_LOGGERS: [&str; 3] = ["CrashLogger.dll", "TrainwreckSKSE.dll", "NetScriptFramework.Runtime.dll"];
 const VORTEX_MARKER: &str = "__folder_managed_by_vortex";
 /// Where moved files go, inside the game folder, keeping their paths.
 pub const DISABLED_DIR: &str = ".aetherial-dawn/disabled";
@@ -35,6 +38,10 @@ pub fn find(game_dir: &Path, m: &Manifest) -> Vec<String> {
             let name = e.file_name().to_string_lossy().into_owned();
             let rel = format!("{folder}/{name}");
             if only_dll && !name.to_ascii_lowercase().ends_with(".dll") {
+                continue;
+            }
+            // Crash loggers only write a log when the game dies; keep them.
+            if CRASH_LOGGERS.iter().any(|c| c.eq_ignore_ascii_case(&name)) {
                 continue;
             }
             if rel.eq_ignore_ascii_case(crate::settings::SETTINGS_PATH) || listed(m, &rel) {

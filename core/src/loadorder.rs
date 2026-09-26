@@ -28,11 +28,12 @@ impl Extra {
 
 /// Checks a plugin file's header. None means it looks like a real plugin.
 pub fn broken(path: &Path) -> Option<String> {
-    let bytes = match std::fs::read(path) {
-        Ok(b) => b,
-        Err(_) => return Some("missing from Data".into()),
-    };
-    if bytes.len() < 24 || &bytes[..4] != b"TES4" {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else { return Some("missing from Data".into()) };
+    let len = f.metadata().map(|m| m.len() as usize).unwrap_or(0);
+    // Only the header: masters can be hundreds of MB.
+    let mut bytes = vec![0u8; 64.min(len)];
+    if f.read_exact(&mut bytes).is_err() || bytes.len() < 24 || &bytes[..4] != b"TES4" {
         return Some("not a Skyrim plugin".into());
     }
     let size = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
@@ -44,8 +45,8 @@ pub fn broken(path: &Path) -> Option<String> {
     if !(0.9..=2.0).contains(&version) {
         return Some(format!("header version {version:.2}"));
     }
-    if bytes.len() <= 24 + size {
-        return Some(format!("only {} bytes, no records", bytes.len()));
+    if len <= 24 + size {
+        return Some(format!("only {len} bytes, no records"));
     }
     None
 }

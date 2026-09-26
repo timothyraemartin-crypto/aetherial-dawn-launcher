@@ -76,6 +76,22 @@ Players don't click anything for this. Before each launch, the launcher:
 
 Everything it changes is written to the log. In the first live test, Skyrim.ini still named 43 BSAs from uninstalled mods.
 
+## Game health checks
+
+The checks Claude ran by hand on the first tester's PC run for every player: before each Play, after a crash, and from **Settings, Check my game**. They cover:
+- the SkyrimSE.exe version
+- the five masters against `<base>/masters.json` from the server (size and SHA-256, cached by size and date)
+- plugins switched on in plugins.txt, and loadorder.txt sanity
+- stub or broken plugin files
+- Skyrim.ini archive lines that point at missing BSAs
+- stray SKSE plugins, Platform scripts and loose menus
+- injector DLLs next to the exe
+- known overlays that are running
+- Steam's auto-update setting and hold
+- whether a crash logger is installed
+
+Each check shows OK, INFO, WARN or FAIL. The crash report includes the results. Reports go to staff before Play when something is at WARN or worse, and after every crash. The player can turn this off in Settings, and the Check my game screen shows the exact JSON that is sent. The report has the Discord id and name, the launcher and server build, and the check results. It never includes the settings file, tokens or sessions, and the home folder is written as %USERPROFILE%. The staff endpoint is `HEALTH_REPORT_URL` in main.rs; until it's set, reports are only shown and logged. Crash loggers (CrashLogger.dll, TrainwreckSKSE.dll, NetScriptFramework) are never moved aside.
+
 ## Launcher updates
 
 The launcher installs new releases by itself, without asking. It checks at startup and every 15 minutes, but never while Skyrim is running or a download is in progress.

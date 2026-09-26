@@ -92,6 +92,7 @@
     $('signin').hidden = id !== 'signin';
     $('strays').hidden = id !== 'strays';
     $('crash').hidden = id !== 'crash';
+    $('health').hidden = id !== 'health';
     if (id === 'settings') {
       for (const nav of Object.values(PAGES)) $(nav).removeAttribute('aria-current');
       $('nav-settings').setAttribute('aria-current', 'page');
@@ -147,6 +148,7 @@
     $('set-path').value = state.config.gameDir || '';
     $('set-close').setAttribute('aria-checked', state.config.closeOnLaunch);
     $('set-bg').setAttribute('aria-checked', state.config.backgroundUpdates);
+    $('set-share').setAttribute('aria-checked', state.config.shareHealth !== false);
     $('set-version').textContent = 'Launcher ' + state.launcherVersion;
     $('ver').textContent = 'Launcher v' + state.launcherVersion;
     renderGame();
@@ -557,6 +559,40 @@
   }
   setInterval(checkSelfUpdate, 15 * 60 * 1000);
 
+  // ---------- game health ----------
+  const HL_TAG = { ok: 'OK', info: 'INFO', warn: 'WARN', fail: 'FAIL' };
+  let healthText = '';
+  async function openHealth() {
+    showSheet('health');
+    $('hl-title').textContent = 'Checking your game…';
+    $('hl-list').innerHTML = '';
+    $('hl-note').hidden = true;
+    $('hl-again').disabled = true;
+    try {
+      const h = await invoke('health_check');
+      healthText = h.text;
+      const bad = h.report.checks.filter(c => c.status === 'warn' || c.status === 'fail').length;
+      $('hl-title').textContent = bad ? `${plural(bad, 'thing')} to look at` : 'Your game looks healthy';
+      $('hl-list').innerHTML = h.report.checks.map(c => `<li><span class="hl-tag ${c.status}">${HL_TAG[c.status]}</span><div><b>${esc(c.title)}</b><small>${esc(c.detail)}</small>${c.items && c.items.length ? `<ul>${c.items.map(i => `<li>${esc(i)}</li>`).join('')}</ul>` : ''}</div></li>`).join('');
+      $('hl-sent-sum').textContent = !h.share ? 'Sending to staff is off (Settings). This is what would be sent:'
+        : h.endpoint ? 'What gets sent to staff (before Play when something is wrong, and after a crash)'
+        : 'What will be sent to staff once reporting is switched on at the server';
+      $('hl-payload').textContent = h.payload;
+    } catch (e) {
+      $('hl-title').textContent = "Couldn't check your game";
+      $('hl-note').textContent = String(e);
+      $('hl-note').hidden = false;
+    } finally { $('hl-again').disabled = false; }
+  }
+  $('set-health').onclick = openHealth;
+  $('hl-again').onclick = openHealth;
+  $('hl-close').onclick = () => showSheet('settings');
+  $('hl-copy').onclick = async () => {
+    try { await navigator.clipboard.writeText(healthText); $('hl-note').textContent = 'Copied. Paste it with Ctrl+V.'; }
+    catch { $('hl-note').textContent = "Couldn't copy. Use Copy diagnostics instead."; }
+    $('hl-note').hidden = false;
+  };
+
   // ---------- wiring ----------
   const win = T.window.getCurrentWindow();
   $('w-min').onclick = () => win.minimize();
@@ -581,7 +617,7 @@
   $('set-anim').onclick = () => { Ambient.set(!Ambient.enabled); $('set-anim').setAttribute('aria-checked', Ambient.enabled); };
   document.querySelectorAll('.switch:not(#set-anim)').forEach(s => s.onclick = async () => {
     s.setAttribute('aria-checked', s.getAttribute('aria-checked') !== 'true');
-    const prefs = { closeOnLaunch: $('set-close').getAttribute('aria-checked') === 'true', backgroundUpdates: $('set-bg').getAttribute('aria-checked') === 'true' };
+    const prefs = { closeOnLaunch: $('set-close').getAttribute('aria-checked') === 'true', backgroundUpdates: $('set-bg').getAttribute('aria-checked') === 'true', shareHealth: $('set-share').getAttribute('aria-checked') === 'true' };
     await invoke('set_prefs', { prefs });
     Object.assign(state.config, prefs);
   });
