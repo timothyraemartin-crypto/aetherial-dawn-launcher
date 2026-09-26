@@ -197,6 +197,20 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     Ok(())
 }
 
+/// The client files in the current server build, for the Game files page.
+#[tauri::command]
+async fn files(state: State<'_, AppState>) -> CmdResult<Vec<launcher_core::manifest::FileEntry>> {
+    let m = state.manifest.lock().await;
+    m.as_ref().map(|m| m.files.clone()).ok_or_else(|| "The file list hasn't loaded yet.".to_string())
+}
+
+#[tauri::command]
+async fn open_game_folder(state: State<'_, AppState>) -> CmdResult<()> {
+    let dir = game_dir(&state).await?;
+    let opener = if cfg!(windows) { "explorer" } else { "xdg-open" };
+    std::process::Command::new(opener).arg(dir).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// Optional `status.json` for the side panel. Missing or broken is fine.
 #[tauri::command]
 async fn server_status(state: State<'_, AppState>) -> CmdResult<Option<serde_json::Value>> {
@@ -223,7 +237,7 @@ fn main() {
             app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, server_status])
+        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }
