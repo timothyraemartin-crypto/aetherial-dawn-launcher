@@ -199,8 +199,10 @@ pub fn wanted(game_dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Switches plugins on in plugins.txt (adds the `*`, or the line when it's
-/// missing). Returns the ones it changed; the old file is kept next to it.
+/// Switches plugins on in plugins.txt by adding the line when it's missing
+/// (the launcher's own installs). A plugin listed there switched off stays
+/// off: the player or Vortex chose that. Returns the ones it added; the old
+/// file is kept next to it.
 pub fn switch_on(plugins_txt: &Path, names: &[String]) -> Result<Vec<String>> {
     let text = std::fs::read_to_string(plugins_txt).unwrap_or_default();
     let nl = if text.contains("\r\n") || text.is_empty() { "\r\n" } else { "\n" };
@@ -209,11 +211,7 @@ pub fn switch_on(plugins_txt: &Path, names: &[String]) -> Result<Vec<String>> {
     for n in names {
         let l = n.to_ascii_lowercase();
         match lines.iter_mut().find(|x| x.trim().trim_start_matches('*').trim().to_ascii_lowercase() == l) {
-            Some(x) if x.trim().starts_with('*') => {}
-            Some(x) => {
-                *x = format!("*{}", x.trim());
-                changed.push(n.clone());
-            }
+            Some(_) => {}
             None => {
                 lines.push(format!("*{n}"));
                 changed.push(n.clone());
@@ -334,9 +332,13 @@ mod tests {
         std::fs::write(data.join("SkyUI_SE.esp"), plugin(1.7, true)).unwrap();
         assert_eq!(wanted(tmp.path()), ["SkyUI_SE.esp"]);
         let txt = tmp.path().join("plugins.txt");
+        // Switched off in Vortex: stays off.
         std::fs::write(&txt, "# Vortex\r\nSkyUI_SE.esp\r\n*Good.esp\r\n").unwrap();
+        assert!(switch_on(&txt, &wanted(tmp.path())).unwrap().is_empty());
+        // Not listed at all (the launcher installed it): added, switched on.
+        std::fs::write(&txt, "# Vortex\r\n*Good.esp\r\n").unwrap();
         assert_eq!(switch_on(&txt, &wanted(tmp.path())).unwrap(), ["SkyUI_SE.esp"]);
-        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "# Vortex\r\n*SkyUI_SE.esp\r\n*Good.esp\r\n");
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "# Vortex\r\n*Good.esp\r\n*SkyUI_SE.esp\r\n");
         assert!(switch_on(&txt, &wanted(tmp.path())).unwrap().is_empty());
         std::fs::remove_file(&txt).unwrap();
         switch_on(&txt, &["SkyUI_SE.esp".into()]).unwrap();
