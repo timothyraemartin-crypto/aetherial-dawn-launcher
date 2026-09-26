@@ -79,7 +79,7 @@ pub fn state(root: &Path, spec: &GameSpec) -> Vec<DepotState> {
             let mut files = Vec::new();
             walk(&dir, &mut files);
             let mut bytes = 0;
-            let mut newest = std::fs::metadata(&dir).and_then(|m| m.modified()).ok();
+            let mut newest: Option<SystemTime> = None;
             for f in &files {
                 if let Ok(m) = std::fs::metadata(f) {
                     bytes += m.len();
@@ -176,9 +176,6 @@ mod tests {
         let old = std::fs::FileTimes::new().set_modified(SystemTime::now() - std::time::Duration::from_secs(60));
         for p in [d1.join("Data/Skyrim.esm"), d3.join("SkyrimSE.exe")] {
             std::fs::File::options().write(true).open(&p).unwrap().set_times(old).unwrap();
-        }
-        for p in [d1.join("Data"), d1.clone(), d3.clone()] {
-            std::fs::File::open(&p).unwrap().set_times(old).ok();
         }
         let st = state(&root, &s);
         assert!(st.iter().all(|d| d.present && d.quiet_secs >= SETTLE_SECS), "{st:?}");
