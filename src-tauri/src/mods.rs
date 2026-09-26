@@ -375,13 +375,33 @@ async fn install(m: &ModEntry, archive: &Path, game_dir: &Path, file_id: Option<
         }
         let rec = modlist::apply(&m, &copies, &game_dir, file_id, version)?;
         let _ = std::fs::remove_dir_all(&work);
+        // Only call it installed when the files really are in Data.
+        if !m.installed(&game_dir) {
+            let gone: Vec<&str> = m.check.iter().map(String::as_str).filter(|c| !m.clone_with_check(c).installed(&game_dir)).collect();
+            log::line(&format!("mods: {} unpacked but {} isn't in the game folder (copied {}, left {})", m.name, gone.join(", "), rec.files.join(", "), rec.skipped.join(", ")));
+            return Err(Error::Game(format!("{} downloaded, but {} didn't end up in your Skyrim folder", m.name, gone.join(" and "))));
+        }
         let _ = std::fs::remove_file(&archive);
+        // And switch its plugins on, as Vortex would.
+        if let Some(txt) = plugins_txt() {
+            let names: Vec<String> = m.check.iter().filter_map(|c| c.strip_prefix("Data/")).filter(|n| !n.contains('/') && [".esp", ".esm", ".esl"].iter().any(|x| n.to_ascii_lowercase().ends_with(x))).map(str::to_string).collect();
+            match launcher_core::loadorder::switch_on(&txt, &names) {
+                Ok(on) if !on.is_empty() => log::line(&format!("mods: switched on in plugins.txt: {}", on.join(", "))),
+                Ok(_) => {}
+                Err(e) => log::line(&format!("mods: couldn't switch {} on in plugins.txt: {e}", names.join(", "))),
+            }
+        }
         log::line(&format!("mods: installed {} ({} files, {} left to Vortex or kept)", m.name, rec.files.len(), rec.skipped.len()));
         Ok(Outcome::Installed)
     })
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())
+}
+
+/// Skyrim's load order, %LOCALAPPDATA%\\Skyrim Special Edition\\plugins.txt.
+fn plugins_txt() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Skyrim Special Edition").join("plugins.txt"))
 }
 
 fn archive_path(game_dir: &Path, m: &ModEntry, file: &str) -> PathBuf {

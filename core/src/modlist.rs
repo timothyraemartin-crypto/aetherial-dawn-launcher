@@ -79,7 +79,12 @@ pub struct ModEntry {
 
 impl ModEntry {
     pub fn installed(&self, game_dir: &Path) -> bool {
-        !self.check.is_empty() && self.check.iter().all(|c| safe_rel(c).map(|r| game_dir.join(r).exists()).unwrap_or(false))
+        !self.check.is_empty() && self.check.iter().all(|c| safe_rel(c).map(|r| present(&game_dir.join(r))).unwrap_or(false))
+    }
+
+    /// A copy that checks for one file only.
+    pub fn clone_with_check(&self, c: &str) -> ModEntry {
+        ModEntry { check: vec![c.to_string()], ..self.clone() }
     }
 
     pub fn page(&self) -> Option<String> {
@@ -187,6 +192,17 @@ pub fn merged(game_version: Option<&str>, server: Option<&ModList>) -> Vec<ModEn
         }
     }
     out
+}
+
+/// A file or folder that's really there; a plugin must also be a sound one,
+/// not an empty stub like the SkyUI_SE.esp from the first live test.
+fn present(p: &Path) -> bool {
+    p.exists() && !(is_plugin(p) && crate::loadorder::broken(p).is_some())
+}
+
+fn is_plugin(p: &Path) -> bool {
+    let l = p.to_string_lossy().to_ascii_lowercase();
+    l.ends_with(".esp") || l.ends_with(".esm") || l.ends_with(".esl")
 }
 
 pub fn missing<'a>(list: &'a [ModEntry], game_dir: &Path) -> Vec<&'a ModEntry> {
@@ -576,7 +592,8 @@ pub fn apply(entry: &ModEntry, copies: &[Copy], game_dir: &Path, file_id: Option
     for c in copies {
         let dest = game_dir.join(&c.to);
         let rel = c.to.to_string_lossy().replace('\\', "/");
-        if dest.exists() && (vortex || is_settings(&c.to)) {
+        // Vortex's own copy of a file wins, unless it's a broken plugin.
+        if dest.exists() && (vortex || is_settings(&c.to)) && present(&dest) {
             skipped.push(rel);
             continue;
         }
@@ -798,5 +815,26 @@ mod tests {
         let to: Vec<String> = plan(&e, &t.path().join("u")).unwrap().iter().map(|c| c.to.to_string_lossy().replace('\\', "/")).collect();
         assert!(to.contains(&"Data/SKSE/Plugins/EngineFixes.dll".to_string()), "{to:?}");
         assert!(to.contains(&"Data/SKSE/Plugins/EngineFixes.toml".to_string()), "{to:?}");
+    }
+
+    #[test]
+    fn replaces_a_broken_stub_even_under_vortex() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        std::fs::create_dir_all(g.join("Data")).unwrap();
+        std::fs::write(g.join("Data/__folder_managed_by_vortex"), b"").unwrap();
+        std::fs::write(g.join("Data/SkyUI_SE.esp"), crate::loadorder::test_plugin(0.0, false)).unwrap();
+        std::fs::write(g.join("Data/SkyUI_SE.bsa"), b"old").unwrap();
+        let m = builtin(None).into_iter().find(|m| m.id == "skyui").unwrap();
+        assert!(!m.installed(g));
+        let src = g.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("SkyUI_SE.esp"), crate::loadorder::test_plugin(1.7, true)).unwrap();
+        std::fs::write(src.join("SkyUI_SE.bsa"), b"new").unwrap();
+        let copies: Vec<Copy> = ["SkyUI_SE.esp", "SkyUI_SE.bsa"].iter().map(|n| Copy { from: src.join(n), to: PathBuf::from("Data").join(n) }).collect();
+        let rec = apply(&m, &copies, g, None, None).unwrap();
+        assert_eq!(rec.files, ["Data/SkyUI_SE.esp"]);
+        assert_eq!(rec.skipped, ["Data/SkyUI_SE.bsa"]);
+        assert!(m.installed(g));
     }
 }
