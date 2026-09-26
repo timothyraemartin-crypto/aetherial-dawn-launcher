@@ -314,6 +314,7 @@ async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::
         app.package_info().version,
         log::timestamp()
     );
+    report.push_str(&format!("\n===== game data =====\n{}", game_data_report(&app, &game_dir)));
     report.push_str(&watch::collect(&skse_logs, &std::env::temp_dir(), started));
     report.push_str(&format!("\n===== launcher log (last 40 lines) =====\n{}\n", log::tail(40)));
     if let Some(dir) = reports_dir() {
@@ -334,6 +335,56 @@ async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::
     } else {
         let _ = app.emit("game-ended", GameEnded { crashed, summary, report });
     }
+}
+
+/// What's in the game folder that can crash Skyrim before the main menu:
+/// every master, plugin and archive in Data (Creation Club content included),
+/// the Creation Club list, the player's load order, and DLLs next to the exe.
+fn game_data_report(app: &AppHandle, dir: &std::path::Path) -> String {
+    let mut o = String::new();
+    let mut files: Vec<(String, u64, String)> = std::fs::read_dir(dir.join("Data"))
+        .map(|r| {
+            r.flatten()
+                .filter_map(|e| {
+                    let n = e.file_name().to_string_lossy().into_owned();
+                    let l = n.to_ascii_lowercase();
+                    if !(l.ends_with(".esm") || l.ends_with(".esl") || l.ends_with(".esp") || l.ends_with(".bsa") || l == "skyrim.ccc") {
+                        return None;
+                    }
+                    let md = e.metadata().ok()?;
+                    Some((n, md.len(), md.modified().map(log::stamp).unwrap_or_default()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort_by_key(|f| f.0.to_ascii_lowercase());
+    let cc = files.iter().filter(|f| f.0.to_ascii_lowercase().starts_with("cc")).count();
+    o.push_str(&format!("Data folder: {} masters/plugins/archives, {cc} of them Creation Club (cc*)\n", files.len()));
+    for (n, len, when) in &files {
+        o.push_str(&format!("  {n}  {len} bytes  {when}\n"));
+    }
+    let ccc = std::fs::read_to_string(dir.join("Data").join("Skyrim.ccc")).or_else(|_| std::fs::read_to_string(dir.join("Skyrim.ccc")));
+    match ccc {
+        Ok(t) => {
+            let listed: Vec<&str> = t.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+            let missing: Vec<&str> = listed.iter().copied().filter(|l| !files.iter().any(|f| f.0.eq_ignore_ascii_case(l))).collect();
+            o.push_str(&format!("Skyrim.ccc lists {} Creation Club files; {} of them are not in Data (the game skips those)\n", listed.len(), missing.len()));
+        }
+        Err(_) => o.push_str("Skyrim.ccc: not found\n"),
+    }
+    let plugins = app.path().local_data_dir().ok().map(|d| d.join("Skyrim Special Edition").join("plugins.txt"));
+    match plugins.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
+        Some(t) => {
+            let on: Vec<&str> = t.lines().map(str::trim).filter(|l| l.starts_with('*')).collect();
+            o.push_str(&format!("plugins.txt: {} enabled: {}\n", on.len(), if on.is_empty() { "none".into() } else { on.join(", ") }));
+        }
+        None => o.push_str("plugins.txt: not found (only the base game and Creation Club load)\n"),
+    }
+    let dlls: Vec<String> = std::fs::read_dir(dir)
+        .map(|r| r.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.to_ascii_lowercase().ends_with(".dll")).collect())
+        .unwrap_or_default();
+    o.push_str(&format!("DLLs next to SkyrimSE.exe: {}\n", if dlls.is_empty() { "none".into() } else { dlls.join(", ") }));
+    o
 }
 
 /// The newest game session report, for the crash screen and diagnostics.
@@ -710,6 +761,7 @@ async fn diagnostics(app: AppHandle, state: State<'_, AppState>) -> CmdResult<St
             }
             let settings = dir.join(settings::SETTINGS_PATH);
             let _ = writeln!(o, "skymp5-client-settings.txt: {}", if settings.exists() { "present" } else { "not written yet" });
+            o.push_str(&game_data_report(&app, dir));
         }
     }
     let _ = writeln!(o, "\n[Server]");

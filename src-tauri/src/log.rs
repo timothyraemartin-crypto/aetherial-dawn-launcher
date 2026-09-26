@@ -26,7 +26,11 @@ pub fn path() -> Option<PathBuf> {
 
 /// UTC "YYYY-MM-DD HH:MM:SS" without pulling in a date library.
 pub fn timestamp() -> String {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
+    stamp(std::time::SystemTime::now())
+}
+
+pub fn stamp(t: std::time::SystemTime) -> String {
+    let secs = t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     // Civil-from-days (Howard Hinnant).
     let z = days + 719_468;
