@@ -118,6 +118,8 @@ SkyUI (Timothy, 2026-09-26) is required too: SkyUI 5.2SE from Nexus (skyrimspeci
 
 SSE Display Tweaks (Nexus 34705, the Anniversary Edition file; `SSEDisplayTweaks.dll`) and the Black Screen and Startup Fix (Nexus 176509, a ready-made `SSEDisplayTweaks.ini` for 1080p or 1440p) are required too (Timothy, 2026-09-26). Display Tweaks is listed first so the fix's ini lands over the default one. The launcher doesn't change that ini.
 
+SmoothCam (Nexus 41252), True Directional Movement (51614), TrueHUD (62775) and MCM Helper (53000, which their menus need) are required too (Timothy, 2026-09-26). The Anniversary Edition files are picked where a page has several. Each counts as installed when its DLL is in `Data\SKSE\Plugins`, and their plugins are switched on before Play like SkyUI's. They are client-only and change no world records.
+
 ## Plugin names the game client can't load
 
 SkyMP's client checks the load order by calling Skyrim Platform's `getFileInfo` for every plugin, and that rejects names with spaces: on 2026-09-26 Timothy's `skyrim-platform.log` ended with "'unofficial skyrim special edition patch.esp' is not a valid argument for 'filename'", and the game sat on a black screen after loading in.

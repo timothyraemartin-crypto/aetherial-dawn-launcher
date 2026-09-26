@@ -70,7 +70,7 @@ pub fn vortex_files(game_dir: &Path) -> Vec<VortexFile> {
 
 /// Names of required mods as they appear in Vortex's mod folder names, for
 /// folders that don't carry the Nexus id (a manual install).
-const REQUIRED_NAMES: [&str; 12] = [
+const REQUIRED_NAMES: [&str; 16] = [
     "skse64",
     "skyrim script extender",
     "address library",
@@ -83,6 +83,10 @@ const REQUIRED_NAMES: [&str; 12] = [
     "crash logger",
     "display tweaks",
     "black screen",
+    "smoothcam",
+    "true directional movement",
+    "truehud",
+    "mcm helper",
 ];
 
 fn listed_source(source: &str, ids: &[u64]) -> bool {
@@ -102,11 +106,13 @@ pub fn required_file(rel: &str) -> bool {
     let l = rel.replace('\\', "/").to_ascii_lowercase();
     let plugins = "data/skse/plugins/";
     if let Some(n) = l.strip_prefix(plugins) {
-        return ["sksemenuframework", "fonts/", "enginefixes", "skyrimsoulsre", "crashlogger", "version-", "versionlib-", "ssedisplaytweaks"].iter().any(|p| n.starts_with(p));
+        return ["sksemenuframework", "fonts/", "enginefixes", "skyrimsoulsre", "crashlogger", "version-", "versionlib-", "ssedisplaytweaks", "smoothcam", "truedirectionalmovement", "truehud", "mcmhelper"].iter().any(|p| n.starts_with(p));
     }
     let Some(n) = l.strip_prefix("data/") else { return false };
     let patch = "unofficial skyrim special edition patch";
     n.starts_with("skyui_se.")
+        || ["mcmhelper.", "smoothcam.", "truedirectionalmovement.", "truehud."].iter().any(|p| n.starts_with(p))
+        || n.starts_with("mcm/config/smoothcam") || n.starts_with("mcm/config/truedirectionalmovement") || n.starts_with("mcm/config/truehud")
         || n.starts_with(patch)
         || n.starts_with(&format!("bashtags/{patch}"))
         || n.starts_with(&format!("docs/{patch}"))

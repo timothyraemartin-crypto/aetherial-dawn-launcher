@@ -129,8 +129,14 @@ pub fn with_archives(game_dir: &Path, plugin: &str) -> Vec<String> {
     out
 }
 
+/// Plugins of required SKSE mods, switched on when they're in Data
+/// (Timothy, 2026-09-26: SmoothCam, True Directional Movement, TrueHUD and
+/// MCM Helper, which they need).
+pub const COMPANION_PLUGINS: [&str; 4] = ["MCMHelper.esp", "SmoothCam.esp", "TrueDirectionalMovement.esp", "TrueHUD.esp"];
+
 fn allowed(game_dir: &Path, manifest: &Manifest) -> Vec<String> {
     let mut ok: Vec<String> = BASE.iter().map(|s| s.to_string()).collect();
+    ok.extend(COMPANION_PLUGINS.iter().map(|p| p.to_ascii_lowercase()));
     // A required mod, from Nexus Mods.
     ok.push(crate::requirements::USSEP_PLUGIN.to_ascii_lowercase());
     ok.push(crate::requirements::SKYUI_PLUGIN.to_ascii_lowercase());
@@ -198,6 +204,7 @@ pub fn switch_off(plugins_txt: &Path, names: &[String]) -> Result<()> {
 /// archive, which only loads with its plugin).
 pub fn wanted(game_dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = vec![crate::requirements::USSEP_PLUGIN.into(), crate::requirements::SKYUI_PLUGIN.into()];
+    names.extend(COMPANION_PLUGINS.iter().map(|p| p.to_string()));
     for m in crate::allowlist::listed(game_dir) {
         for c in &m.check {
             if let Some(n) = c.replace('\\', "/").strip_prefix("Data/") {

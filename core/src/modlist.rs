@@ -185,6 +185,42 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
         hint: Some("the file for your screen (1080p or 1440p)".into()),
         ..Default::default()
     });
+    // Timothy, 2026-09-26: "These mods need added". Client-only camera,
+    // movement and HUD mods, plus MCM Helper, which TDM and TrueHUD's menus
+    // need. Checked by DLL; their plugins are switched on when present
+    // (loadorder::COMPANION_PLUGINS).
+    out.push(ModEntry {
+        id: "mcm-helper".into(),
+        name: "MCM Helper".into(),
+        nexus: Some(NexusRef { mod_id: 53000, file: None, pick: None }),
+        check: vec!["Data/SKSE/Plugins/MCMHelper.dll".into()],
+        hint: Some("the main file".into()),
+        ..Default::default()
+    });
+    out.push(ModEntry {
+        id: "smoothcam".into(),
+        name: "SmoothCam".into(),
+        nexus: Some(NexusRef { mod_id: 41252, file: None, pick: Some("AE".into()) }),
+        check: vec!["Data/SKSE/Plugins/SmoothCam.dll".into()],
+        hint: Some("the main file for Anniversary Edition (1.6)".into()),
+        ..Default::default()
+    });
+    out.push(ModEntry {
+        id: "true-directional-movement".into(),
+        name: "True Directional Movement".into(),
+        nexus: Some(NexusRef { mod_id: 51614, file: None, pick: Some("AE".into()) }),
+        check: vec!["Data/SKSE/Plugins/TrueDirectionalMovement.dll".into()],
+        hint: Some("the main file for Anniversary Edition (1.6)".into()),
+        ..Default::default()
+    });
+    out.push(ModEntry {
+        id: "truehud".into(),
+        name: "TrueHUD".into(),
+        nexus: Some(NexusRef { mod_id: 62775, file: None, pick: None }),
+        check: vec!["Data/SKSE/Plugins/TrueHUD.dll".into()],
+        hint: Some("the main file".into()),
+        ..Default::default()
+    });
     out
 }
 
