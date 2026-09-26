@@ -499,7 +499,6 @@ fn crash_logger(i: &Inputs) -> Check {
     }
     for (ok, name) in [
         (requirements::engine_fixes_ok(i.game_dir) && requirements::engine_fixes_preload_ok(i.game_dir), "SSE Engine Fixes"),
-        (requirements::ussep_ok(i.game_dir), "Unofficial Skyrim Special Edition Patch"),
         (requirements::menu_framework_ok(i.game_dir), "SKSE Menu Framework"),
         (requirements::imgui_icons_ok(i.game_dir), "ImGui Icons"),
         (requirements::skyui_ok(i.game_dir), "SkyUI"),

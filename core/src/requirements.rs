@@ -42,7 +42,9 @@ pub const ENGINE_FIXES_PRELOAD: [&str; 3] = ["d3dx9_42.dll", "tbb.dll", "tbbmall
 pub const MENU_FRAMEWORK_DLL: &str = "SKSEMenuFramework.dll";
 /// ImGui Icons' folder in Data/Interface; tidying never moves it.
 pub const IMGUI_ICONS_DIR: &str = "ImGuiIcons";
-/// The Unofficial Skyrim Special Edition Patch's plugin.
+/// The Unofficial Skyrim Special Edition Patch's plugin. No longer required
+/// (2026-09-26): the server can't load it, and it crashed the game drawing
+/// land it changes, so it's switched off before Play.
 pub const USSEP_PLUGIN: &str = "Unofficial Skyrim Special Edition Patch.esp";
 /// SkyUI SE's plugin and archive (Timothy, 2026-09-26: "lets add skyui").
 pub const SKYUI_PLUGIN: &str = "SkyUI_SE.esp";
@@ -66,10 +68,9 @@ pub struct NexusMod {
 }
 
 /// Nexus Mods pages the launcher may open.
-pub const NEXUS_PAGES: [(&str, &str); 6] = [
+pub const NEXUS_PAGES: [(&str, &str); 5] = [
     ("address-library", "https://www.nexusmods.com/skyrimspecialedition/mods/32444?tab=files"),
     ("engine-fixes", "https://www.nexusmods.com/skyrimspecialedition/mods/17230?tab=files"),
-    ("ussep", "https://www.nexusmods.com/skyrimspecialedition/mods/266?tab=files"),
     ("menu-framework", "https://www.nexusmods.com/skyrimspecialedition/mods/120352?tab=files"),
     ("imgui-icons", "https://www.nexusmods.com/skyrimspecialedition/mods/114790?tab=files"),
     ("skyui", "https://www.nexusmods.com/skyrimspecialedition/mods/12604?tab=files"),
@@ -85,10 +86,6 @@ pub fn engine_fixes_ok(game_dir: &Path) -> bool {
 
 pub fn engine_fixes_preload_ok(game_dir: &Path) -> bool {
     plugins_dir(game_dir).join("EngineFixes_preload.txt").is_file()
-}
-
-pub fn ussep_ok(game_dir: &Path) -> bool {
-    game_dir.join("Data").join(USSEP_PLUGIN).is_file()
 }
 
 /// A real SkyUI SE install: its plugin (not the empty stub an old setup left
@@ -144,15 +141,6 @@ pub fn missing_nexus_mods(game_dir: &Path, game_version: Option<&str>) -> Vec<Ne
             page: page("engine-fixes"),
             pick: "Engine Fixes (All-In-One) for 1.6.1170 and newer".into(),
             looks_for: "EngineFixes.dll and EngineFixes_preload.txt in Data\\SKSE\\Plugins".into(),
-        });
-    }
-    if !ussep_ok(game_dir) {
-        out.push(NexusMod {
-            id: "ussep",
-            name: "Unofficial Skyrim Special Edition Patch",
-            page: page("ussep"),
-            pick: "the version the server uses (for Skyrim 1.6.1170)".into(),
-            looks_for: format!("{USSEP_PLUGIN} in Data"),
         });
     }
     if !menu_framework_ok(game_dir) {
@@ -432,7 +420,7 @@ mod tests {
     fn lists_missing_nexus_mods() {
         let tmp = tempfile::tempdir().unwrap();
         let ids: Vec<&str> = missing_nexus_mods(tmp.path(), Some("1.6.1170.0")).iter().map(|m| m.id).collect();
-        assert_eq!(ids, ["address-library", "engine-fixes", "ussep", "menu-framework", "imgui-icons", "skyui"]);
+        assert_eq!(ids, ["address-library", "engine-fixes", "menu-framework", "imgui-icons", "skyui"]);
         assert!(missing_nexus_mods(tmp.path(), Some("1.6.1170.0")).iter().all(|m| m.page.starts_with("https://www.nexusmods.com/")));
         let d = tmp.path();
         std::fs::create_dir_all(plugins_dir(d)).unwrap();
@@ -441,7 +429,6 @@ mod tests {
             std::fs::write(plugins_dir(d).join(f), b"x").unwrap();
         }
         std::fs::write(plugins_dir(d).join("EngineFixes_preload.txt"), b"x").unwrap();
-        std::fs::write(d.join("Data").join(USSEP_PLUGIN), b"x").unwrap();
         // The 59-byte stub from the first live test isn't SkyUI.
         std::fs::write(d.join("Data").join(SKYUI_ARCHIVE), b"x").unwrap();
         std::fs::write(d.join("Data").join(SKYUI_PLUGIN), crate::loadorder::test_plugin(0.0, false)).unwrap();

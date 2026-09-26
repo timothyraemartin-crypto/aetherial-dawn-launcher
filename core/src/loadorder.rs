@@ -118,11 +118,16 @@ pub fn with_archives(game_dir: &Path, plugin: &str) -> Vec<String> {
 
 fn allowed(game_dir: &Path, manifest: &Manifest) -> Vec<String> {
     let mut ok: Vec<String> = BASE.iter().map(|s| s.to_string()).collect();
-    // A required mod (Skyrim Souls RE's dependency), from Nexus Mods.
-    ok.push(crate::requirements::USSEP_PLUGIN.to_ascii_lowercase());
+    // Not the Unofficial Patch: the server can't load it, and with it the
+    // game crashed drawing land it changes (2026-09-26), so it's switched off.
     ok.push(crate::requirements::SKYUI_PLUGIN.to_ascii_lowercase());
     // Plugins of other mods on the server's list.
     ok.extend(crate::allowlist::kept_plugins(&crate::allowlist::keep_set(game_dir)));
+    let ussep = crate::requirements::USSEP_PLUGIN.to_ascii_lowercase();
+    let server_lists_ussep = crate::allowlist::listed(game_dir).iter().any(|m| m.check.iter().any(|c| c.to_ascii_lowercase().ends_with(&ussep)));
+    if !server_lists_ussep {
+        ok.retain(|p| *p != ussep);
+    }
     for ccc in [game_dir.join("Data").join("Skyrim.ccc"), game_dir.join("Skyrim.ccc")] {
         if let Ok(t) = std::fs::read_to_string(ccc) {
             ok.extend(t.lines().map(|l| l.trim().to_ascii_lowercase()).filter(|l| !l.is_empty()));
@@ -177,7 +182,7 @@ pub fn switch_off(plugins_txt: &Path, names: &[String]) -> Result<()> {
 /// must be switched on for the mod to work (SkyUI's menus live in its
 /// archive, which only loads with its plugin).
 pub fn wanted(game_dir: &Path) -> Vec<String> {
-    let mut names: Vec<String> = vec![crate::requirements::USSEP_PLUGIN.into(), crate::requirements::SKYUI_PLUGIN.into()];
+    let mut names: Vec<String> = vec![crate::requirements::SKYUI_PLUGIN.into()];
     for m in crate::allowlist::listed(game_dir) {
         for c in &m.check {
             if let Some(n) = c.replace('\\', "/").strip_prefix("Data/") {
@@ -312,6 +317,26 @@ mod tests {
         let after = std::fs::read_to_string(&txt).unwrap();
         assert_eq!(after, "# Vortex\r\nSkyUI_SE.esp\r\n*ccBGSSSE001-Fish.esm\r\nGood.esp\r\nOff.esp\r\n");
         assert!(extras(tmp.path(), &txt, &m).is_empty());
+    }
+
+    #[test]
+    fn switches_the_unofficial_patch_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("Unofficial Skyrim Special Edition Patch.esp"), plugin(1.71, true)).unwrap();
+        std::fs::write(data.join("SkyUI_SE.esp"), plugin(1.7, true)).unwrap();
+        let dep = serde_json::json!({"files": [{"relPath": "Unofficial Skyrim Special Edition Patch.esp", "source": "Unofficial Skyrim Special Edition Patch-266-4-3-9c-1"}]});
+        std::fs::write(data.join("vortex.deployment.json"), serde_json::to_vec(&dep).unwrap()).unwrap();
+        let txt = tmp.path().join("plugins.txt");
+        std::fs::write(&txt, "*unofficial skyrim special edition patch.esp\r\n*SkyUI_SE.esp\r\n").unwrap();
+        let m: Manifest = serde_json::from_value(serde_json::json!({
+            "schema": 1, "build": "b", "server": {"name": "t", "ip": "1.2.3.4", "port": 7777}, "files": []
+        }))
+        .unwrap();
+        let ex = extras(tmp.path(), &txt, &m);
+        assert_eq!(ex.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["unofficial skyrim special edition patch.esp"]);
+        assert_eq!(wanted(tmp.path()), ["SkyUI_SE.esp"]);
     }
 
     #[test]

@@ -118,6 +118,8 @@ SkyUI (Timothy, 2026-09-26) is required too: SkyUI 5.2SE from Nexus (skyrimspeci
 
 SSE Display Tweaks (Nexus 34705, the Anniversary Edition file; `SSEDisplayTweaks.dll`) and the Black Screen and Startup Fix (Nexus 176509, a ready-made `SSEDisplayTweaks.ini` for 1080p or 1440p) are required too (Timothy, 2026-09-26). Display Tweaks is listed first so the fix's ini lands over the default one. The launcher doesn't change that ini.
 
+Since 0.1.47 the Unofficial Skyrim Special Edition Patch is no longer required, and Play switches it off in plugins.txt unless the server's mods.json lists it. The server can't load it (SkyMP's plugin reader has no light-plugin support), and on 2026-09-26 the game crashed drawing land it changes, 19 seconds after loading in; with it off, the game worked. Its files stay in Data.
+
 ## Game health checks
 
 The checks Claude ran by hand on the first tester's PC run for every player: before each Play, after a crash, and from **Settings, Check my game**. They cover:
