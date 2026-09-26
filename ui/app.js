@@ -31,6 +31,7 @@
   let pending = null;     // check
   let status = null;      // status.json
   let gameCheck = null;
+  let skipArmed = false;
   let auth = null;        // auth_status: Discord sign-in   // check().game: is Skyrim the build the server needs?
   let busy = false;
   let playMode = 'wait';  // wait | play | update | retry | downgrade | signin
@@ -128,7 +129,10 @@
     if (!c || !g) { renderRow(row, true, 'Skyrim version', 'Checked after the server file list loads.'); $('g-downgrade').hidden = true; return; }
     const have = c.installed ? 'Skyrim ' + shortVer(c.installed) : 'Skyrim version unknown';
     renderRow(row, !c.needed, have, c.needed ? c.reason : c.target ? `Matches the server (${shortVer(c.target)}).` : 'The server accepts any version.');
-    $('g-downgrade').hidden = !(c.needed && c.canDowngrade);
+    // Always reachable, so a player can re-download the right build even after
+    // the check was satisfied (for example by "already on this version").
+    $('g-downgrade').hidden = !c.canDowngrade;
+    $('g-downgrade').textContent = c.needed ? 'Fix version' : 'Re-download';
     if (g.hasSkse && c.target && !c.skseOk) {
       const skse = [false, "SKSE doesn't match", `Install SKSE ${c.skseVersion || ''} for Skyrim ${shortVer(c.target)}. ${c.skseDll} is missing.`.replace('  ', ' ')];
       renderRow($('g-skse'), ...skse); renderRow($('c-skse'), ...skse);
@@ -334,6 +338,9 @@
     $('dg-lead').textContent = `${c.reason || ''} The launcher downloads Skyrim ${shortVer(c.target)} from Steam with your own account, then checks it.`;
     $('dg-error').hidden = true;
     $('dg-progress').hidden = true;
+    skipArmed = false;
+    $('dg-skip').textContent = 'My game is already on this version';
+    $('dg-skip').hidden = !c.needed;
     dgMode(false);
     showSheet('downgrade');
     invoke('steam_app_state').then(st => {
@@ -582,6 +589,7 @@
     $('cr-report').textContent = g.report;
     $('cr-note').hidden = true;
     showSheet('crash');
+    invoke('game_check').then(c => { gameCheck = c; renderVersion(); ready(); }).catch(() => {});
     ready();
     setStatus('Skyrim closed unexpectedly. Copy diagnostics in Settings includes the crash report.', true);
   });
@@ -594,7 +602,19 @@
   $('cr-close').onclick = () => showPage(page);
   $('st-cancel').onclick = () => showPage(page);
   $('st-ignore').onclick = () => { ignoreStrays = true; logUi('player chose to keep other plugins: ' + strays().join(', ')); showPage(page); ready(); };
-  $('dg-skip').onclick = async () => { dgBusy(true); try { dgDone(await invoke('mark_game_ok')); } catch (e) { dgFail(e); } };
+  // Two clicks, because saying yes here when Steam has swapped the game data
+  // makes Skyrim crash on start.
+  $('dg-skip').onclick = async () => {
+    if (!skipArmed) {
+      skipArmed = true;
+      $('dg-error').textContent = "Only do this if you downgraded Skyrim yourself. If Steam has updated your game, Skyrim will crash on start. Click the link again to confirm.";
+      $('dg-error').hidden = false;
+      $('dg-skip').textContent = 'Yes, my game is already on this version';
+      return;
+    }
+    dgBusy(true);
+    try { dgDone(await invoke('mark_game_ok')); } catch (e) { dgFail(e); }
+  };
   document.querySelectorAll('input[name="dg-login"]').forEach(r => r.onchange = () => {
     $('dg-user-field').hidden = document.querySelector('input[name="dg-login"]:checked').value !== 'user';
   });

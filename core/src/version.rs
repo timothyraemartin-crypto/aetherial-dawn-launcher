@@ -116,6 +116,10 @@ struct Marker {
     version: String,
     depots: Vec<(u32, String)>,
     files: Vec<(String, u64, u64)>,
+    /// True when the player said "already on this version" rather than the
+    /// launcher putting the files in place itself.
+    #[serde(default)]
+    manual: bool,
 }
 
 /// The files that change between builds: the executable and the base game data.
@@ -150,16 +154,69 @@ fn spec_depots(spec: &GameSpec) -> Vec<(u32, String)> {
 
 /// Notes that the game folder now holds the build the server wants, so later
 /// checks can trust it even though Steam's own record says otherwise.
-pub fn record(game_dir: &Path, spec: &GameSpec) -> Result<()> {
+pub fn record(game_dir: &Path, spec: &GameSpec, manual: bool) -> Result<()> {
     let m = Marker {
         version: spec.version.clone().unwrap_or_default(),
         depots: spec_depots(spec),
         files: fingerprint(game_dir),
+        manual,
     };
     let path = game_dir.join(MARKER);
     std::fs::create_dir_all(path.parent().unwrap())?;
     std::fs::write(path, serde_json::to_vec_pretty(&m)?)?;
     Ok(())
+}
+
+/// After a crash: drops a marker the player set by hand, so the version check
+/// looks at Steam's record again. Returns true when one was removed.
+pub fn forget_manual(game_dir: &Path) -> bool {
+    let path = game_dir.join(MARKER);
+    let manual = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Marker>(&b).ok()).map(|m| m.manual).unwrap_or(false);
+    manual && std::fs::remove_file(path).is_ok()
+}
+
+/// Stops Steam updating Skyrim past the build the launcher just put in place:
+/// sets "Only update this game when I launch it" in the app manifest and makes
+/// the file read-only, as the SkyMP and modding downgrade guides do.
+/// The launcher starts the game through SKSE, never through Steam.
+pub fn hold_updates(game_dir: &Path, app: u32) -> Result<PathBuf> {
+    let path = acf_path(game_dir, app).ok_or_else(|| crate::Error::Game("Couldn't find Steam's appmanifest file.".into()))?;
+    let text = std::fs::read_to_string(&path)?;
+    let text = set_auto_update(&text);
+    let mut perm = std::fs::metadata(&path)?.permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perm.set_readonly(false);
+    std::fs::set_permissions(&path, perm.clone())?;
+    std::fs::write(&path, text)?;
+    perm.set_readonly(true);
+    std::fs::set_permissions(&path, perm)?;
+    Ok(path)
+}
+
+/// Sets "AutoUpdateBehavior" to "1" in the top-level AppState block.
+fn set_auto_update(acf: &str) -> String {
+    let mut out = Vec::new();
+    let mut done = false;
+    for line in acf.lines() {
+        if !done && line.trim_start().starts_with("\"AutoUpdateBehavior\"") {
+            let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+            out.push(format!("{indent}\"AutoUpdateBehavior\"\t\t\"1\""));
+            done = true;
+        } else {
+            out.push(line.to_string());
+        }
+    }
+    if !done {
+        // Put it right after the opening brace of AppState.
+        if let Some(i) = out.iter().position(|l| l.trim() == "{") {
+            out.insert(i + 1, "\t\"AutoUpdateBehavior\"\t\t\"1\"".into());
+        }
+    }
+    let mut s = out.join("\n");
+    if acf.ends_with('\n') {
+        s.push('\n');
+    }
+    s
 }
 
 fn marker_holds(game_dir: &Path, spec: &GameSpec) -> bool {
@@ -208,6 +265,28 @@ pub fn check(game_dir: &Path, spec: Option<&GameSpec>) -> GameCheck {
 mod tests {
     use super::*;
     use crate::manifest::Depot;
+
+    #[test]
+    fn holds_updates_and_forgets_manual_marker() {
+        let d = game([1, 6, 1170, 0], ACF);
+        let dir = d.path().join("steamapps/common/Skyrim Special Edition");
+        let acf = hold_updates(&dir, 489830).unwrap();
+        let text = std::fs::read_to_string(&acf).unwrap();
+        assert!(text.contains("\"AutoUpdateBehavior\"\t\t\"1\""));
+        assert_eq!(installed_depots(&text).len(), 2);
+        assert!(std::fs::metadata(&acf).unwrap().permissions().readonly());
+        // Running it again (file now read-only) replaces the value, no duplicate.
+        hold_updates(&dir, 489830).unwrap();
+        assert_eq!(std::fs::read_to_string(&acf).unwrap().matches("AutoUpdateBehavior").count(), 1);
+        let edited = set_auto_update("\"AppState\"\n{\n\t\"AutoUpdateBehavior\"\t\t\"0\"\n}\n");
+        assert!(edited.contains("\"1\"") && !edited.contains("\"0\""));
+
+        record(&dir, &spec(), false).unwrap();
+        assert!(!forget_manual(&dir));
+        record(&dir, &spec(), true).unwrap();
+        assert!(forget_manual(&dir));
+        assert!(!dir.join(MARKER).exists());
+    }
 
     const ACF: &str = r#"
 "AppState"
@@ -297,7 +376,7 @@ mod tests {
         let g = game([1, 6, 1170, 0], &ACF.replace("8442952117333549665", "1111"));
         let d = dir(&g);
         assert!(check(&d, Some(&spec())).needed);
-        record(&d, &spec()).unwrap();
+        record(&d, &spec(), false).unwrap();
         assert!(!check(&d, Some(&spec())).needed);
         // Steam rewrites the data afterwards: the record no longer holds.
         std::fs::write(d.join("Data/Skyrim.esm"), b"newer esm").unwrap();

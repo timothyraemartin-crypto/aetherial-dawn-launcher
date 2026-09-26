@@ -254,7 +254,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
             let _ = w.hide();
         }
     }
-    tauri::async_runtime::spawn(watch_game(app.clone(), started, config.close_on_launch));
+    tauri::async_runtime::spawn(watch_game(app.clone(), dir.clone(), started, config.close_on_launch));
     Ok(())
 }
 
@@ -272,7 +272,7 @@ fn reports_dir() -> Option<PathBuf> {
 
 /// Follows Skyrim from launch to exit. Every session leaves a report in the
 /// log folder; a crash brings the launcher back with that report on screen.
-async fn watch_game(app: AppHandle, started: std::time::SystemTime, close_on_launch: bool) {
+async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::time::SystemTime, close_on_launch: bool) {
     // skse64_loader starts SkyrimSE.exe and exits, so look for the game itself.
     let mut pid = None;
     for _ in 0..90 {
@@ -297,6 +297,12 @@ async fn watch_game(app: AppHandle, started: std::time::SystemTime, close_on_lau
     };
     let crashed = pid.is_none() || watch::crashed(code, ran);
     log::line(&format!("game: {summary}{}", if crashed { " Treated as a crash." } else { "" }));
+    let mut summary = summary;
+    if crashed && version::forget_manual(&game_dir) {
+        // A wrong game build is the usual reason Skyrim dies within seconds.
+        log::line("game: removed the hand-set \"already on this version\" mark so the version check runs again");
+        summary.push_str(" Your game files may not be the version Aetherial Dawn needs, so the launcher is checking them again.");
+    }
     let docs = app
         .path()
         .document_dir()
@@ -522,7 +528,7 @@ async fn downgrade(app: AppHandle, state: State<'_, AppState>, username: Option<
     downgrade::run(&tool, &args, &tools).await.map_err(err)?;
     log::line("downgrade: Steam download window closed");
     let _ = app.emit("downgrade-stage", "verify");
-    finish_downgrade(&dir, &spec)
+    finish_downgrade(&dir, &spec, false)
 }
 
 #[derive(Serialize)]
@@ -574,7 +580,7 @@ async fn steam_app_install(state: State<'_, AppState>) -> CmdResult<version::Gam
     let (dir2, spec2) = (dir.clone(), spec.clone());
     let n = tokio::task::spawn_blocking(move || steamapp::install(&root, &spec2, &dir2)).await.map_err(|e| e.to_string())?.map_err(err)?;
     log::line(&format!("downgrade (Steam app): copied {n} files into {}", dir.display()));
-    finish_downgrade(&dir, &spec)
+    finish_downgrade(&dir, &spec, false)
 }
 
 /// Moves plugins the server didn't ship into .aetherial-dawn/disabled/<time>/
@@ -596,10 +602,12 @@ async fn mark_game_ok(state: State<'_, AppState>) -> CmdResult<version::GameChec
     let dir = game_dir(&state).await?;
     let m = state.manifest.lock().await.clone().ok_or("Check for updates first.")?;
     let spec = m.game.clone().ok_or("The server doesn't ask for a particular Skyrim version.")?;
-    finish_downgrade(&dir, &spec)
+    let before = version::check(&dir, Some(&spec));
+    log::line(&format!("player says Skyrim is already on the server's version (check said: {})", before.reason.as_deref().unwrap_or("ok")));
+    finish_downgrade(&dir, &spec, true)
 }
 
-fn finish_downgrade(dir: &std::path::Path, spec: &launcher_core::manifest::GameSpec) -> CmdResult<version::GameCheck> {
+fn finish_downgrade(dir: &std::path::Path, spec: &launcher_core::manifest::GameSpec, manual: bool) -> CmdResult<version::GameCheck> {
     let want = spec.version.as_deref().and_then(version::parse_version);
     let have = version::exe_version(&dir.join(game::GAME_EXE));
     if want.is_some() && have != want {
@@ -609,7 +617,13 @@ fn finish_downgrade(dir: &std::path::Path, spec: &launcher_core::manifest::GameS
             want.map(version::short).unwrap_or_default()
         ));
     }
-    version::record(dir, spec).map_err(err)?;
+    version::record(dir, spec, manual).map_err(err)?;
+    if !manual {
+        match version::hold_updates(dir, spec.app) {
+            Ok(p) => log::line(&format!("downgrade: set Steam to update Skyrim only when launched and made {} read-only", p.display())),
+            Err(e) => log::line(&format!("downgrade: couldn't stop Steam updating Skyrim: {e}")),
+        }
+    }
     Ok(version::check(dir, Some(spec)))
 }
 

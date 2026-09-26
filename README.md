@@ -65,6 +65,10 @@ After Play the launcher hides instead of closing and watches `SkyrimSE.exe`. Whe
 
 After each check, the launcher lists every `.dll` in `Data/SKSE/Plugins` and every file in `Data/Platform/Plugins` that isn't in the server's file list (the SkyMP settings file aside). Leftover plugins like these crashed the game before the main menu in the first live test. Play turns into **Check mods**, which shows the list and moves the files to `.aetherial-dawn/disabled/<time>/` inside the game folder, keeping their paths. Nothing is deleted. Players can also choose to play with them anyway, which is logged.
 
+## Keeping the game on the right build
+
+After a downgrade (either way), the launcher sets `"AutoUpdateBehavior" "1"` (only update when launched) in `steamapps/appmanifest_489830.acf` and makes that file read-only, so Steam doesn't swap the game data back to the newer build. The game is always started through SKSE, never through Steam. Server Info always offers **Fix version** / **Re-download** when the server lists depots. **My game is already on this version** needs a second click, and the mark it leaves is removed automatically if Skyrim then crashes, so the version check runs again. In the first live test, a player used it over updated game data and Skyrim crashed with an access violation after 4 seconds.
+
 ## Reporting problems
 
 The launcher keeps a log at `%LOCALAPPDATA%\gg.aetherialdawn.launcher\logs\launcher.log` (the previous one is kept as `launcher.old.log` once it passes 2 MB). It records startup, every command and how it ended, sign-in results, the downgrade steps and DepotDownloader arguments, and script errors. It never records the Discord token, passwords or game sessions. **Settings, Copy diagnostics** puts a report on the clipboard: launcher version, Skyrim exe version, SKSE files, Steam depots, the version check, server build, sign-in state and the last 80 log lines. **Open log folder** opens the log folder.
