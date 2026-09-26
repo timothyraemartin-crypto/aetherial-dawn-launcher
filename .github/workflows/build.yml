@@ -1,0 +1,39 @@
+name: Build launcher
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      # Where the server publishes launcher files, e.g. https://play.example.org/launcher
+      AD_BASE_URL: ${{ vars.AD_BASE_URL }}
+      # Private key for signed launcher updates. Without it the build still
+      # works but produces no update signature.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test -p launcher-core
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+      - name: Build installer
+        shell: bash
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            cargo tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          else
+            cargo tauri build
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aetherial-dawn-launcher-windows
+          path: target/release/bundle/nsis/*
