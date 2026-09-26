@@ -165,8 +165,7 @@
       <h2>Match the server's Skyrim</h2>
       <p class="lead" id="dg-lead"></p>
       <div class="choice" role="radiogroup" aria-label="How to sign in to Steam">
-        <label class="opt wide"><input type="radio" name="dg-login" value="patch" checked><div><b>Patch my game files <em class="tag">Recommended</em></b><small>The launcher changes your own Skyrim files into the right version. No Steam, nothing to type.</small></div></label>
-        <label class="opt other" hidden><input type="radio" name="dg-login" value="build"><div><b>Make the patches (staff, one time)</b><small>Downloads the server's version with your Steam sign-in into a separate folder, never your game, and builds the patches every player uses.</small></div></label>
+        <label class="opt wide"><input type="radio" name="dg-login" value="patch" checked><div><b>Patch my game files <em class="tag">Recommended</em></b><small>The launcher downloads free patches and changes your own Skyrim files into the right version. No Steam, nothing to type.</small></div></label>
         <label class="opt other" hidden><input type="radio" name="dg-login" value="here"><div><b>Sign in to Steam here</b><small>Download the right version with your Steam account, inside the launcher.</small></div></label>
         <label class="opt other" hidden><input type="radio" name="dg-login" value="app"><div><b>Steam app on this PC</b><small id="dg-app-note">You paste three lines into Steam's console.</small></div></label>
         <label class="opt other" hidden><input type="radio" name="dg-login" value="qr"><div><b>Steam mobile app</b><small>Scan a QR code in a separate window.</small></div></label>
@@ -192,7 +191,7 @@
       </div>
       <ul class="notes" id="dg-notes">
         <li>The launcher only changes Skyrim's own game files, and checks each one before swapping it in. Your saves and mods stay.</li>
-        <li>It takes a few minutes, mostly checking the big game archives.</li>
+        <li>It downloads about 1.2 GB of patches from MulderLoad's free Skyrim downgrader, so it takes a few minutes.</li>
         <li>Afterwards the launcher keeps a copy of these files. If Steam ever updates Skyrim again, the launcher puts the right files back by itself before you play.</li>
       </ul>
       <div class="dg-progress" id="dg-progress" hidden><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg><span id="dg-stage"></span></div>

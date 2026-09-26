@@ -778,9 +778,36 @@ struct PatchProgress {
 /// build no patch was made from yet.
 #[tauri::command]
 async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<version::GameCheck> {
-    use launcher_core::patcher;
+    use launcher_core::{community, patcher};
     let dir = game_dir(&state).await?;
     let spec = game_spec(&state).await?;
+    // Steam's current build: MulderLoad's public patches, no Steam sign-in.
+    if spec.version.as_deref() == Some(community::TARGET) && community::supported(&dir) {
+        if watch::find_process(watch::GAME_PROCESS).is_some() {
+            return Err("Close Skyrim first.".into());
+        }
+        let (lang, _) = community::language(&dir);
+        log::line(&format!("patch: Steam {} ({lang}) found, using the MulderLoad patches", community::FROM_VERSION));
+        let app2 = app.clone();
+        let mut report = move |stage: &str, file: &str, done: u64, total: u64| {
+            let stage = match stage {
+                "download" => "fetch",
+                "unpack" => "unpack",
+                "patch" => "apply",
+                _ => "swap",
+            };
+            let _ = app2.emit("patch-progress", PatchProgress { stage, file: file.to_string(), done: done as usize, total: total as usize });
+        };
+        let changed = community::downgrade(&state.http, &dir, &mut report).await.map_err(|e| {
+            log::line(&format!("patch: MulderLoad patches failed: {e}"));
+            format!("Couldn't patch the game: {e}")
+        })?;
+        log::line(&format!("patch: {} file(s) changed: {}", changed.len(), changed.join(", ")));
+        let _ = app.emit("patch-progress", PatchProgress { stage: "verify", file: String::new(), done: 1, total: 1 });
+        let gc = finish_downgrade(&dir, &spec, false)?;
+        install_missing_mods(&state.http, &dir).await?;
+        return Ok(gc);
+    }
     let base = state.config.lock().await.base_url.clone();
     let url = format!("{}/{}", base.trim_end_matches('/'), patcher::INDEX);
     // Patches made on this PC (staff, see build_patches) are used directly.

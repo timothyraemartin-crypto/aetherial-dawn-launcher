@@ -517,6 +517,9 @@
     apply: (p) => `Patching ${p.file} (${p.done + 1} of ${p.total})…`,
     verify: () => 'Checking your game…',
     build: (p) => `Building patches… ${p.file}`,
+    fetch: (p) => `Downloading the patches (${p.file})… ${p.total ? Math.round(100 * p.done / p.total) + '%' : gb(p.done)}`,
+    unpack: () => 'Unpacking the patches…',
+    swap: () => 'Putting the new files in place…',
   };
   async function patchGame() {
     dgBusy(true);
@@ -527,14 +530,15 @@
     $('dg-stage').textContent = 'Getting the patch list…';
     const off = await T.event.listen('patch-progress', ({ payload: p }) => {
       $('dg-stage').textContent = (PATCH_STAGES[p.stage] || (() => ''))(p);
-      const share = p.stage === 'check' ? 0.3 * p.done / Math.max(1, p.total) : 0.3 + 0.7 * p.done / Math.max(1, p.total);
+      const f = p.done / Math.max(1, p.total);
+      const share = { check: 0.3 * f, fetch: 0.6 * f, unpack: 0.6, apply: 0.6 + 0.35 * f, swap: 0.95 + 0.05 * f, verify: 1 }[p.stage] ?? 0.3 + 0.7 * f;
       $('dg-bar-i').style.width = Math.round(share * 100) + '%';
     });
     try { dgDone(await invoke('patch_game')); }
     catch (e) {
       const msg = String(e);
       if (msg.startsWith('NO_PATCH:')) {
-        dgFail(msg.slice(9) + ' Staff can make the patches once with "Make the patches", or you can download the right version with Steam below.');
+        dgFail(msg.slice(9) + ' You can download the right version with Steam below.');
         document.querySelectorAll('#downgrade .opt.other').forEach(o => { o.hidden = false; });
         $('dg-other').hidden = true;
       } else dgFail(msg);
