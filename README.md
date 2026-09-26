@@ -136,7 +136,7 @@ Each check shows OK, INFO, WARN or FAIL. The crash report includes the results. 
 
 ## Launcher updates
 
-The launcher installs new releases by itself, without asking. It checks at startup and every 15 minutes, but never while Skyrim is running or a download is in progress.
+The launcher installs new releases by itself, without asking. It checks at startup and every minute (and from the Check for updates button in Settings), but never while Skyrim is running or a download is in progress.
 
 ## Keeping the game on the right build
 
