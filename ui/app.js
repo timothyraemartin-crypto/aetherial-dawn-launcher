@@ -629,6 +629,7 @@
   // ---------- mods: the server's list, Nexus sign-in and Download all ----------
   let modsRunning = false;
   let useKey = false;
+  let ssoReady = false;
   let modsOff = null;
   const rqError = (e) => { $('rq-error').textContent = e ? String(e) : ''; $('rq-error').hidden = !e; };
 
@@ -638,8 +639,9 @@
     $('rq-nx-in').hidden = !nx;
     $('rq-nx-who').textContent = nx ? `Signed in to Nexus as ${nx.name} (${nx.is_premium ? 'Premium' : 'free account'}).` : '';
     $('rq-nx-free').hidden = !nx || nx.is_premium;
-    $('rq-sso').hidden = !view.sso;
-    $('rq-keybox').hidden = view.sso && !useKey;
+    ssoReady = !!view.sso;
+    $('rq-sso').hidden = false;
+    $('rq-keybox').hidden = !useKey;
     $('rq-vortex').hidden = !view.vortex;
     const list = $('rq-list');
     list.replaceChildren();
@@ -947,7 +949,10 @@ async function onPlay() {
     $('rq-sso-go').disabled = true;
     $('rq-sso-go').textContent = 'Waiting for Nexus…';
     $('rq-sso-stop').hidden = false;
-    try { await invoke('nexus_sso'); await refreshMods(); }
+    $('rq-sso-note').innerHTML = ssoReady
+      ? 'Nexus opened in your browser. Click <b>Authorise</b> there and come back.'
+      : 'Nexus opened your API keys page in your browser. Copy your <i>Personal API Key</i> at the bottom (its Copy button, or select it and press Ctrl+C) and the launcher signs you in by itself.';
+    try { await invoke(ssoReady ? 'nexus_sso' : 'nexus_copy_sign_in'); await refreshMods(); }
     catch (e) { if (!String(e).includes('cancelled')) rqError(e); }
     finally { $('rq-sso-go').disabled = false; $('rq-sso-go').textContent = 'Sign in with Nexus'; $('rq-sso-stop').hidden = true; }
   };

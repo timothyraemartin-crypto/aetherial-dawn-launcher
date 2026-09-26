@@ -182,6 +182,59 @@ pub async fn nexus_sso(app: AppHandle, state: State<'_, AppState>) -> CmdResult<
     keep_key(&app, &state, &key).await
 }
 
+/// A Nexus personal API key: one long token of base64-style characters.
+fn looks_like_key(s: &str) -> bool {
+    let s = s.trim();
+    (30..=400).contains(&s.len()) && s.chars().all(|c| c.is_ascii_alphanumeric() || "+/=_-".contains(c))
+}
+
+/// Sign-in until Nexus registers the launcher for SSO: opens the player's
+/// own API key page in their browser (where they're already logged in) and
+/// waits for them to press Nexus's Copy button. Only clipboard text shaped
+/// like a key is tried, it's checked with Nexus before it's kept, never
+/// logged, and cleared from the clipboard afterwards.
+#[tauri::command]
+pub async fn nexus_copy_sign_in(app: AppHandle, state: State<'_, AppState>) -> CmdResult<nexus::User> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    let stop = Arc::new(AtomicBool::new(false));
+    *state.mods.sso_stop.lock().unwrap() = Some(stop.clone());
+    let result = async {
+        let before = app.clipboard().read_text().unwrap_or_default();
+        open_url(&app, nexus::API_KEY_PAGE)?;
+        log::line("mods: opened the Nexus key page; waiting for the player to copy their key");
+        let mut tried: Vec<String> = vec![before];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10 * 60);
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                return Err("sign-in cancelled".to_string());
+            }
+            if std::time::Instant::now() > deadline {
+                return Err("No key was copied. Click Sign in with Nexus to try again.".to_string());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            let text = app.clipboard().read_text().unwrap_or_default();
+            let key = text.trim().to_string();
+            if tried.contains(&text) || !looks_like_key(&key) {
+                continue;
+            }
+            tried.push(text);
+            match keep_key(&app, &state, &key).await {
+                Ok(user) => {
+                    let _ = app.clipboard().write_text(String::new());
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.set_focus();
+                    }
+                    return Ok(user);
+                }
+                Err(e) => log::line(&format!("mods: copied text wasn't a working Nexus key: {e}")),
+            }
+        }
+    }
+    .await;
+    *state.mods.sso_stop.lock().unwrap() = None;
+    result
+}
+
 #[tauri::command]
 pub fn nexus_sso_cancel(state: State<'_, AppState>) {
     if let Some(s) = state.mods.sso_stop.lock().unwrap().as_ref() {
@@ -525,4 +578,14 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
     *state.mods.cancel.lock().unwrap() = None;
     log::line(&format!("mods: done, {} installed, {} failed{}", result.installed.len(), result.failed.len(), if result.cancelled { ", stopped by the player" } else { "" }));
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn spots_keys() {
+        assert!(super::looks_like_key("abcDEF123+/=abcDEF123+/=abcDEF123--xyz--QQ=="));
+        assert!(!super::looks_like_key("hello world, this is not a key at all"));
+        assert!(!super::looks_like_key("short"));
+    }
 }
