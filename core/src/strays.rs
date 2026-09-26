@@ -41,7 +41,7 @@ pub fn find(game_dir: &Path, m: &Manifest) -> Vec<String> {
                 continue;
             }
             // Crash loggers only write a log when the game dies; keep them.
-            if CRASH_LOGGERS.iter().chain(crate::requirements::CRASH_LOGGER_FILES.iter()).any(|c| c.eq_ignore_ascii_case(&name)) {
+            if CRASH_LOGGERS.iter().chain(crate::requirements::CRASH_LOGGER_FILES.iter()).chain(crate::requirements::SOULS_FILES.iter()).any(|c| c.eq_ignore_ascii_case(&name)) {
                 continue;
             }
             if rel.eq_ignore_ascii_case(crate::settings::SETTINGS_PATH) || listed(m, &rel) {
@@ -52,7 +52,9 @@ pub fn find(game_dir: &Path, m: &Manifest) -> Vec<String> {
     }
     let mut loose = Vec::new();
     walk(&game_dir.join(INTERFACE), INTERFACE, &mut loose);
-    out.extend(loose.into_iter().filter(|rel| !listed(m, rel) && !rel.ends_with(VORTEX_MARKER)));
+    // Required mods' menus (Skyrim Souls RE) stay.
+    let required = |rel: &str| crate::requirements::SOULS_FILES.iter().any(|f| rel.eq_ignore_ascii_case(&format!("{INTERFACE}/{f}")));
+    out.extend(loose.into_iter().filter(|rel| !listed(m, rel) && !rel.ends_with(VORTEX_MARKER) && !required(rel)));
     out.sort();
     out
 }

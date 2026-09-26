@@ -396,6 +396,11 @@ fn crash_logger(i: &Inputs) -> Check {
     } else {
         missing.push("Crash Logger: not installed (the launcher installs it before Play)".to_string());
     }
+    if requirements::souls_ok(i.game_dir) {
+        have.push("Skyrim Souls RE");
+    } else {
+        missing.push("Skyrim Souls RE: not installed (the launcher installs it before Play)".to_string());
+    }
     if i.game_dir.join("skse64_loader.exe").is_file() {
         have.push("SKSE64");
     } else {
@@ -404,8 +409,8 @@ fn crash_logger(i: &Inputs) -> Check {
     if missing.is_empty() {
         check("requirements", "Required mods", Status::Ok, format!("{} installed.", have.join(", ")), vec![])
     } else {
-        let fail = missing.iter().any(|m| !m.starts_with("Crash Logger"));
-        check("requirements", "Required mods", if fail { Status::Fail } else { Status::Warn }, "Aetherial Dawn needs SKSE64 2.2.6, the Address Library and Crash Logger.", missing)
+        let fail = missing.iter().any(|m| !m.starts_with("Crash Logger") && !m.starts_with("Skyrim Souls RE"));
+        check("requirements", "Required mods", if fail { Status::Fail } else { Status::Warn }, "Aetherial Dawn needs SKSE64 2.2.6, the Address Library, Crash Logger and Skyrim Souls RE.", missing)
     }
 }
 

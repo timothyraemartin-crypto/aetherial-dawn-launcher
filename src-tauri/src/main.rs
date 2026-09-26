@@ -1095,6 +1095,12 @@ async fn install_missing_mods(http: &reqwest::Client, dir: &std::path::Path) -> 
             Err(e) => log::line(&format!("couldn't install Crash Logger: {e}")),
         }
     }
+    if !requirements::souls_ok(dir) {
+        match requirements::install_souls(http, dir).await {
+            Ok(()) => log::line(&format!("installed Skyrim Souls RE {}", requirements::SOULS_VERSION)),
+            Err(e) => log::line(&format!("couldn't install Skyrim Souls RE: {e}")),
+        }
+    }
     Ok(())
 }
 
