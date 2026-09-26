@@ -1,7 +1,7 @@
 // Hides the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use launcher_core::{auth, downgrade, game, manifest::Manifest, settings, sync, version, Error};
+use launcher_core::{auth, downgrade, game, manifest::Manifest, settings, steamapp, sync, version, Error};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -424,6 +424,58 @@ async fn downgrade(app: AppHandle, state: State<'_, AppState>, username: Option<
     finish_downgrade(&dir, &spec)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SteamApp {
+    running: bool,
+    depots: Vec<steamapp::DepotState>,
+}
+
+async fn game_spec(state: &AppState) -> CmdResult<launcher_core::manifest::GameSpec> {
+    let m = state.manifest.lock().await.clone().ok_or("Check for updates first.")?;
+    m.game.ok_or_else(|| "The server doesn't ask for a particular Skyrim version.".into())
+}
+
+fn steam_root() -> CmdResult<PathBuf> {
+    steamapp::steam_root().ok_or_else(|| "Steam wasn't found on this PC. Use the Steam mobile app option instead.".into())
+}
+
+/// Is Steam open, and how far along is each depot download?
+#[tauri::command]
+async fn steam_app_state(state: State<'_, AppState>) -> CmdResult<SteamApp> {
+    let spec = game_spec(&state).await?;
+    let depots = steamapp::steam_root().map(|r| steamapp::state(&r, &spec)).unwrap_or_default();
+    Ok(SteamApp { running: steamapp::steam_running(), depots })
+}
+
+/// Clears old depot downloads and opens Steam's console, where the player
+/// pastes the download lines.
+#[tauri::command]
+async fn steam_app_begin(app: AppHandle, state: State<'_, AppState>) -> CmdResult<SteamApp> {
+    use tauri_plugin_opener::OpenerExt;
+    let spec = game_spec(&state).await?;
+    let root = steam_root()?;
+    if !steamapp::steam_running() {
+        return Err("Steam isn't open. Start Steam, sign in, then try again.".into());
+    }
+    steamapp::clear(&root, &spec);
+    log::line(&format!("downgrade (Steam app): opening the console, Steam at {}, lines: {}", root.display(), steamapp::commands(&spec).join(" / ")));
+    app.opener().open_url("steam://open/console", None::<&str>).map_err(|e| format!("Couldn't open Steam's console ({e}). Press Windows+R, type steam://open/console and press Enter."))?;
+    Ok(SteamApp { running: true, depots: steamapp::state(&root, &spec) })
+}
+
+/// Copies what Steam downloaded into the game folder and checks the version.
+#[tauri::command]
+async fn steam_app_install(state: State<'_, AppState>) -> CmdResult<version::GameCheck> {
+    let dir = game_dir(&state).await?;
+    let spec = game_spec(&state).await?;
+    let root = steam_root()?;
+    let (dir2, spec2) = (dir.clone(), spec.clone());
+    let n = tokio::task::spawn_blocking(move || steamapp::install(&root, &spec2, &dir2)).await.map_err(|e| e.to_string())?.map_err(err)?;
+    log::line(&format!("downgrade (Steam app): copied {n} files into {}", dir.display()));
+    finish_downgrade(&dir, &spec)
+}
+
 /// For players who already put the right build in place themselves.
 #[tauri::command]
 async fn mark_game_ok(state: State<'_, AppState>) -> CmdResult<version::GameCheck> {
@@ -586,7 +638,7 @@ fn main() {
             app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics])
+        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }

@@ -247,3 +247,15 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 html.animated .plate, html.animated .nav, html.animated .dock-panel, html.animated .page { backdrop-filter: none; }
 html.animated .dock-panel, html.animated .page { background: rgba(8, 13, 19, 0.9); }
 html.animated .nav { background: linear-gradient(180deg, rgba(6,10,15,.9), rgba(6,10,15,.8)); }
+
+.opt.wide { grid-column: 1 / -1; }
+.tag { font-style: normal; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--frost); border: 1px solid rgba(169,214,242,.4); border-radius: 3px; padding: 1px 5px; margin-left: 6px; vertical-align: 1px; }
+.steamapp { display: grid; gap: 12px; }
+.steamapp code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--frost); }
+.depots { display: grid; gap: 8px; }
+.depot { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; padding: 9px 11px; border: 1px solid var(--line); border-radius: 6px; background: rgba(0,0,0,.25); }
+.depot code { user-select: all; overflow-wrap: anywhere; }
+.depot small { grid-column: 1 / -1; color: var(--faint); font-size: 12px; }
+.depot small.done { color: #8fd6a4; }
+.depot small.going { color: var(--frost); }
+.depot .btn { padding: 5px 12px; font-size: 12px; }

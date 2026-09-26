@@ -7,6 +7,7 @@ pub mod downgrade;
 pub mod game;
 pub mod manifest;
 pub mod settings;
+pub mod steamapp;
 pub mod sync;
 pub mod version;
 

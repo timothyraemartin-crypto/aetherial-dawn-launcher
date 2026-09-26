@@ -53,7 +53,7 @@ pub fn library_paths(vdf: &str) -> Vec<PathBuf> {
 }
 
 #[cfg(windows)]
-fn steam_roots() -> Vec<PathBuf> {
+pub fn steam_roots() -> Vec<PathBuf> {
     use winreg::{enums::*, RegKey};
     let mut roots = Vec::new();
     let keys = [
@@ -74,7 +74,7 @@ fn steam_roots() -> Vec<PathBuf> {
 }
 
 #[cfg(not(windows))]
-fn steam_roots() -> Vec<PathBuf> {
+pub fn steam_roots() -> Vec<PathBuf> {
     std::env::var_os("HOME")
         .map(|h| {
             let h = PathBuf::from(h);

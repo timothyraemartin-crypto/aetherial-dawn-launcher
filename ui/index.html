@@ -165,22 +165,32 @@
       <h2>Match the server's Skyrim</h2>
       <p class="lead" id="dg-lead"></p>
       <div class="choice" role="radiogroup" aria-label="How to sign in to Steam">
-        <label class="opt"><input type="radio" name="dg-login" value="qr" checked><div><b>Steam mobile app</b><small>Scan a QR code with your phone. Nothing to type.</small></div></label>
+        <label class="opt wide"><input type="radio" name="dg-login" value="app" checked><div><b>Steam app on this PC <em class="tag">Recommended</em></b><small id="dg-app-note">Uses the Steam account you're already signed into. You paste three lines into Steam's console.</small></div></label>
+        <label class="opt"><input type="radio" name="dg-login" value="qr"><div><b>Steam mobile app</b><small>Scan a QR code with your phone. Nothing to type.</small></div></label>
         <label class="opt"><input type="radio" name="dg-login" value="user"><div><b>Steam account name</b><small>You type your password in Steam's sign-in window, not here.</small></div></label>
       </div>
       <div class="field" id="dg-user-field" hidden>
         <label for="dg-user">Steam account name</label>
         <div class="line"><input id="dg-user" autocomplete="username" spellcheck="false" maxlength="64"></div>
       </div>
-      <ul class="notes">
-        <li>A separate window opens where you sign in to Steam. The launcher never sees your password.</li>
-        <li>Only the game files that differ are downloaded, up to about 15 GB. Your saves and mods stay.</li>
+      <div class="steamapp" id="dg-steam" hidden>
+        <ol class="notes">
+          <li>Steam's console has opened. If it didn't, press Windows+R, type <code>steam://open/console</code> and press Enter.</li>
+          <li>Copy each line below, paste it into the box at the bottom of Steam's console and press Enter. Steam downloads them one after another.</li>
+          <li>When the console has said <i>Depot download complete</i> for every line, click Install.</li>
+        </ol>
+        <div class="depots" id="dg-depots"></div>
+      </div>
+      <ul class="notes" id="dg-notes">
+        <li>Steam does the download with your own account. The launcher never sees your Steam password.</li>
+        <li>The download is up to about 15 GB. Your saves and mods stay.</li>
         <li>In Steam, set Skyrim to <i>Only update this game when I launch it</i>, and start the game from this launcher.</li>
       </ul>
       <div class="dg-progress" id="dg-progress" hidden><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg><span id="dg-stage"></span></div>
       <span class="error" id="dg-error" hidden></span>
       <div class="actions">
         <button class="btn primary" id="dg-go">DOWNGRADE</button>
+        <button class="btn primary" id="dg-install" hidden disabled>INSTALL</button>
         <button class="btn" id="dg-cancel">Not now</button>
         <button class="linkish" id="dg-skip">My game is already on this version</button>
       </div>
