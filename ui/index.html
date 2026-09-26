@@ -94,7 +94,7 @@
     <div class="ftable-wrap">
       <table class="ftable"><thead><tr><th>FILE</th><th>SIZE</th></tr></thead><tbody id="files-body"></tbody></table>
     </div>
-    <div class="page-foot"><span class="note">Installed into your Skyrim folder. Your saves and other mods are left alone.</span><button class="btn" id="files-verify">Verify all files</button></div>
+    <div class="page-foot"><span class="note">Installed into your Skyrim folder. Your saves and other mods are left alone.</span><span class="line"><button class="btn primary" id="files-mods">Download all mods</button><button class="btn" id="files-verify">Verify all files</button></span></div>
   </section>
 
   <!-- ===== news ===== -->
@@ -225,19 +225,24 @@
   <!-- ===== required mods ===== -->
   <div class="sheet" id="reqs" hidden>
     <div class="panel">
-      <div class="eyebrow">REQUIRED MODS</div>
-      <h2>Install these from Nexus Mods</h2>
-      <p class="lead">Aetherial Dawn needs a few free mods that are only on Nexus Mods, and Nexus doesn't let the launcher download them for you. Each takes about a minute.</p>
-      <ol class="notes">
-        <li>Click <b>Open</b> next to a mod. Nexus Mods opens on its Files tab.</li>
-        <li>Pick the file named below it and click <b>Mod manager download</b> (Vortex installs it) or <b>Manual download</b>.</li>
-        <li>If you downloaded it by hand, open the archive and copy its folders into your Skyrim <code>Data</code> folder (Engine Fixes part 2 goes next to <code>SkyrimSE.exe</code> instead).</li>
-        <li>When they're all in, click <b>Check again</b>.</li>
-      </ol>
+      <div class="eyebrow">MODS</div>
+      <h2>The server's mods</h2>
+      <p class="lead">Aetherial Dawn needs these mods. <b>Download all</b> fetches and installs every missing one for you.</p>
+      <div class="rq-nexus" id="rq-nexus">
+        <div id="rq-nx-out">
+          <p class="note">Most mods come from Nexus Mods, so sign in with your free Nexus account first. Click <b>Get my key</b>, copy your <i>Personal API Key</i> from the bottom of that page, paste it here and click <b>Sign in</b>. It stays on this PC.</p>
+          <div class="line"><input id="rq-key" type="password" placeholder="Nexus API key" autocomplete="off" spellcheck="false"><button class="btn" id="rq-getkey">Get my key</button><button class="btn" id="rq-signin">Sign in</button></div>
+        </div>
+        <div id="rq-nx-in" hidden><span id="rq-nx-who"></span> <button class="linkish" id="rq-signout">Sign out</button></div>
+        <p class="note" id="rq-nx-free" hidden>Nexus only lets Premium members download without visiting the site. After you click <b>Download all</b>, the launcher opens each mod's page in turn: press <b>Mod manager download</b> there (then <b>Slow download</b>) and the launcher does the rest.</p>
+        <p class="note" id="rq-vortex" hidden>Vortex manages your mods too. The launcher adds what's missing next to Vortex's files and never changes or removes Vortex's own.</p>
+      </div>
       <div class="rq-list" id="rq-list"></div>
       <span class="error" id="rq-error" hidden></span>
       <div class="actions">
-        <button class="btn primary" id="rq-again">CHECK AGAIN</button>
+        <button class="btn primary" id="rq-all">DOWNLOAD ALL</button>
+        <button class="btn" id="rq-stop" hidden>Stop</button>
+        <button class="btn" id="rq-again">Check again</button>
         <button class="btn" id="rq-close">Not now</button>
       </div>
     </div>

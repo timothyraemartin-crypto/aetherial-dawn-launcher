@@ -139,3 +139,22 @@ The launcher keeps a log at `%LOCALAPPDATA%\gg.aetherialdawn.launcher\logs\launc
 - **Game detection:** only Steam installs are found automatically. GOG and other installs use the folder picker.
 
 Fonts are Cinzel, Hanken Grotesk and JetBrains Mono, all under the SIL Open Font License.
+
+## Download all mods
+
+Timothy (2026-09-26): the server will run a lot of mods, so the launcher has one-click **Download all mods** (Mods page, and the screen Play shows when mods are missing). The list is `core/src/modlist.rs`'s built-in required mods, overlaid by the server's optional `<base>/mods.json`:
+
+```json
+{"mods": [
+  {"id": "ussep", "name": "Unofficial Skyrim Special Edition Patch",
+   "nexus": {"mod": 266, "file": 123456, "pick": "text in the file name"},
+   "check": ["Data/Unofficial Skyrim Special Edition Patch.esp"],
+   "hint": "which file to pick on Nexus"},
+  {"id": "some-github-mod", "name": "Some Mod", "url": "https://github.com/o/r/releases/download/v1/mod.7z",
+   "sha256": "…", "check": ["Data/SKSE/Plugins/Some.dll"]}
+]}
+```
+
+Other fields: `target` ("data", default, or "game" with `include` file names for files next to SkyrimSE.exe), `game_files` (names from a Data package that go next to SkyrimSE.exe instead), `fomod` (FOMOD option names to pick). A server entry with the same `id` replaces the built-in one. `check` paths must all exist for a mod to count as installed; entries without https sources or with unsafe paths are ignored.
+
+Players sign in with their own Nexus personal API key (kept DPAPI-encrypted in the launcher's settings folder, never logged). Premium members get every file from the Nexus API with one click; without a pinned `file`, the newest main file (or the one matching `pick`) is used, falling back to older files when a plugin is made for a newer Skyrim than the game's masters. Free members can't download without visiting Nexus: the launcher opens each mod's page in turn, holds the nxm:// handler (HKCU\Software\Classes\nxm) while it waits, catches the "Mod manager download" link through the single-instance hook, and gives nxm:// back to Vortex (or whoever had it) afterwards, even after a crash. Archives (zip, 7z; not RAR) are unpacked by the launcher: FOMOD installers are answered from `fomod` or their Required/Recommended options, otherwise the folder holding game data is found automatically. Installs are recorded in `<game>/.aetherial-dawn/mods/installed.json`. When Vortex manages Data, files already there are left alone; players' existing ini/toml/json settings are always kept.

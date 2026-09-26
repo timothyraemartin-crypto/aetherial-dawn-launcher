@@ -401,16 +401,11 @@ fn crash_logger(i: &Inputs) -> Check {
     } else {
         missing.push("Skyrim Souls RE: not installed (the launcher installs it before Play)".to_string());
     }
-    if requirements::engine_fixes_ok(i.game_dir) {
-        have.push("SSE Engine Fixes");
-    } else {
-        missing.push("SSE Engine Fixes: not installed (the launcher installs it before Play)".to_string());
-    }
     for m in requirements::missing_nexus_mods(i.game_dir, None) {
         missing.push(format!("{}: {} is missing", m.name, m.looks_for));
     }
     for (ok, name) in [
-        (requirements::engine_fixes_preload_ok(i.game_dir), "SSE Engine Fixes part 2"),
+        (requirements::engine_fixes_ok(i.game_dir) && requirements::engine_fixes_preload_ok(i.game_dir), "SSE Engine Fixes"),
         (requirements::ussep_ok(i.game_dir), "Unofficial Skyrim Special Edition Patch"),
         (requirements::menu_framework_ok(i.game_dir), "SKSE Menu Framework"),
         (requirements::imgui_icons_ok(i.game_dir), "ImGui Icons"),
@@ -432,7 +427,7 @@ fn crash_logger(i: &Inputs) -> Check {
             "requirements",
             "Required mods",
             if fail { Status::Fail } else { Status::Warn },
-            "Aetherial Dawn needs SKSE64 2.2.6, the Address Library, Crash Logger, Skyrim Souls RE, SSE Engine Fixes (both parts), the Unofficial Skyrim Special Edition Patch, SKSE Menu Framework and ImGui Icons.",
+            "Aetherial Dawn needs SKSE64 2.2.6, the Address Library, Crash Logger, Skyrim Souls RE, SSE Engine Fixes (All-In-One), the Unofficial Skyrim Special Edition Patch, SKSE Menu Framework and ImGui Icons.",
             missing,
         )
     }

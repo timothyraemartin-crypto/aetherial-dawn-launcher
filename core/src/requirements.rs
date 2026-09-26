@@ -24,10 +24,10 @@ const SOULS_SHA256: &str = "a5295783c6cab3e766bdd6306896910f61fe5f97122997dea0bb
 /// Skyrim Souls RE's files; tidying never moves them.
 pub const SOULS_FILES: [&str; 4] = ["SkyrimSoulsRE.dll", "SkyrimSoulsRE.ini", "SkyrimSoulsRE.pdb", "CombatAlertOverlayMenu.swf"];
 
-/// SSE Engine Fixes, required by Skyrim Souls RE (Timothy, 2026-09-26).
-/// Part 1 (the SKSE plugin) is on GitHub, so the launcher installs it; the
-/// AE build is the one for 1.6.1170. Part 2 (the preloader and memory
-/// allocator next to SkyrimSE.exe) is only on Nexus Mods.
+/// SSE Engine Fixes, required by Skyrim Souls RE (Timothy, 2026-09-26). He
+/// chose the All-In-One package from Nexus (20:19), which holds the SKSE
+/// plugin and the preloader files next to SkyrimSE.exe. The GitHub part 1
+/// installer stays for reference but isn't run before Play any more.
 pub const ENGINE_FIXES_VERSION: &str = "7.0.20";
 const ENGINE_FIXES_URL: &str = "https://github.com/aers/EngineFixesSkyrim64/releases/download/7.0.20/EngineFixes.FOMOD.Installer.7z";
 const ENGINE_FIXES_SHA256: &str = "21330c95011f41859139635b43ce95ffb5fbadd3cd375d2f4358abcc3cb99407";
@@ -103,13 +103,13 @@ pub fn missing_nexus_mods(game_dir: &Path, game_version: Option<&str>) -> Vec<Ne
             });
         }
     }
-    if !engine_fixes_preload_ok(game_dir) {
+    if !engine_fixes_ok(game_dir) || !engine_fixes_preload_ok(game_dir) {
         out.push(NexusMod {
             id: "engine-fixes",
-            name: "SSE Engine Fixes (part 2)",
+            name: "SSE Engine Fixes (All-In-One)",
             page: page("engine-fixes"),
-            pick: "Part 2 - Engine Fixes - skse64 Preloader and TBB Lib. Put its files next to SkyrimSE.exe, not in Data. The launcher installs part 1 itself".into(),
-            looks_for: format!("{} next to SkyrimSE.exe", ENGINE_FIXES_PRELOAD.join(", ")),
+            pick: "Engine Fixes (All-In-One) for 1.6.1170 and newer".into(),
+            looks_for: format!("EngineFixes.dll in Data\\SKSE\\Plugins and {} next to SkyrimSE.exe", ENGINE_FIXES_PRELOAD.join(", ")),
         });
     }
     if !ussep_ok(game_dir) {
@@ -145,6 +145,7 @@ pub fn missing_nexus_mods(game_dir: &Path, game_version: Option<&str>) -> Vec<Ne
 /// Downloads SSE Engine Fixes part 1 from its GitHub release, checks it, and
 /// puts the AE plugin and its settings in Data/SKSE/Plugins, keeping settings
 /// the player already has.
+#[allow(dead_code)]
 pub async fn install_engine_fixes(client: &reqwest::Client, game_dir: &Path) -> Result<()> {
     let bytes = client.get(ENGINE_FIXES_URL).header("User-Agent", "AetherialDawnLauncher").send().await?.error_for_status()?.bytes().await?;
     use sha2::{Digest, Sha256};
@@ -393,7 +394,7 @@ mod tests {
         let d = tmp.path();
         std::fs::create_dir_all(plugins_dir(d)).unwrap();
         std::fs::create_dir_all(d.join("Data/Interface/ImGuiIcons")).unwrap();
-        for f in ["versionlib-1-6-1170-0.bin", MENU_FRAMEWORK_DLL] {
+        for f in ["versionlib-1-6-1170-0.bin", MENU_FRAMEWORK_DLL, "EngineFixes.dll"] {
             std::fs::write(plugins_dir(d).join(f), b"x").unwrap();
         }
         for f in ENGINE_FIXES_PRELOAD {

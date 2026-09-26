@@ -18,6 +18,7 @@ rand = "0.9"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 sevenz-rust2 = { version = "0.23", default-features = false }
 zstd = "0.13"
+roxmltree = "0.20"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

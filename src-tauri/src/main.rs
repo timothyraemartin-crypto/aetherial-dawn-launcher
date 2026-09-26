@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
 mod log;
+mod mods;
 
 /// Where the server publishes the launcher files. Set AD_BASE_URL when
 /// building to point a release at the real server.
@@ -40,6 +41,9 @@ struct Config {
     background_updates: bool,
     /// Send game health reports to the server's staff (players can turn it off).
     share_health: bool,
+    /// The Nexus Mods account the player signed in with (the key itself is
+    /// kept separately, encrypted).
+    nexus_user: Option<launcher_core::nexus::User>,
 }
 
 impl Default for Config {
@@ -52,6 +56,7 @@ impl Default for Config {
             close_on_launch: true,
             background_updates: true,
             share_health: true,
+            nexus_user: None,
         }
     }
 }
@@ -64,6 +69,7 @@ struct AppState {
     /// player's password or Steam Guard code.
     steam_child: std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>,
     steam_input: std::sync::Mutex<Option<std::process::ChildStdin>>,
+    mods: mods::ModsState,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -240,7 +246,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     if report.worst >= health::Status::Warn && config.share_health {
         send_health(&app, &state.http, &config, &m.build, "before play", None, &report).await;
     }
-    ensure_requirements(&state.http, &dir, &m).await?;
+    ensure_requirements(&state, &dir).await?;
     let token = token(&app).ok_or("SIGNED_OUT:Sign in with Discord to play.")?;
     let session = match auth::play(&state.http, AUTH_URL, &token).await {
         auth::Answer::Ok(p) => {
@@ -1132,33 +1138,18 @@ async fn install_missing_mods(http: &reqwest::Client, dir: &std::path::Path) -> 
             Err(e) => log::line(&format!("couldn't install Skyrim Souls RE: {e}")),
         }
     }
-    if !requirements::engine_fixes_ok(dir) {
-        match requirements::install_engine_fixes(http, dir).await {
-            Ok(()) => log::line(&format!("installed SSE Engine Fixes {} (part 1)", requirements::ENGINE_FIXES_VERSION)),
-            Err(e) => log::line(&format!("couldn't install SSE Engine Fixes: {e}")),
-        }
-    }
     Ok(())
 }
 
-async fn ensure_requirements(http: &reqwest::Client, dir: &std::path::Path, m: &Manifest) -> CmdResult<()> {
-    install_missing_mods(http, dir).await?;
-    let version = m.game.as_ref().and_then(|g| g.version.as_deref());
-    let missing = requirements::missing_nexus_mods(dir, version);
+async fn ensure_requirements(state: &AppState, dir: &std::path::Path) -> CmdResult<()> {
+    install_missing_mods(&state.http, dir).await?;
+    let list = mods::full_list(state).await;
+    let missing: Vec<mods::Row> = launcher_core::modlist::missing(&list, dir).into_iter().map(|m| mods::row(m, dir)).collect();
     if !missing.is_empty() {
-        let names: Vec<&str> = missing.iter().map(|n| n.name).collect();
-        log::line(&format!("play: stopped, required mods from Nexus Mods are missing: {}", names.join(", ")));
+        log::line(&format!("play: stopped, {} mod(s) from the mod list are missing", missing.len()));
         return Err(format!("NEEDS_NEXUS_MODS:{}", serde_json::to_string(&missing).unwrap_or_default()));
     }
     Ok(())
-}
-
-/// Opens a required mod's Nexus Mods page. Only the pages the launcher knows.
-#[tauri::command]
-fn open_mod_page(app: AppHandle, id: String) -> CmdResult<()> {
-    use tauri_plugin_opener::OpenerExt;
-    let url = requirements::NEXUS_PAGES.iter().find(|(i, _)| *i == id).map(|(_, u)| *u).ok_or("unknown mod")?;
-    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
 /// Skyrim Platform's built-in browser (CEF) keeps its profile in
@@ -1719,6 +1710,9 @@ fn main() {
         std::process::exit(code);
     }
     tauri::Builder::default()
+        // Windows starts the launcher again for each nxm:// link; hand the
+        // link to the running one.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| mods::on_second_launch(app, &args)))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -1741,10 +1735,11 @@ fn main() {
                 .user_agent(concat!("AetherialDawnLauncher/", env!("CARGO_PKG_VERSION")))
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .build()?;
-            app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http, steam_child: Default::default(), steam_input: Default::default() });
+            app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http, steam_child: Default::default(), steam_input: Default::default(), mods: Default::default() });
+            mods::restore_left_handler(app.handle());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report, health_check, steam_login_answer, steam_login_cancel, open_mod_page, patch_game, build_patches])
+        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report, health_check, steam_login_answer, steam_login_cancel, patch_game, build_patches, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }

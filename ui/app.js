@@ -626,33 +626,89 @@
     finally { $('st-move').disabled = false; }
   }
 
-  // Required mods only on Nexus Mods: one row per mod with its Open button.
-function showRequiredMods(mods) {
-  const list = $('rq-list');
-  list.replaceChildren();
-  for (const m of mods) {
-    const row = document.createElement('div');
-    row.className = 'rq-row';
-    const text = document.createElement('div');
-    const name = document.createElement('b');
-    name.textContent = m.name;
-    const pick = document.createElement('div');
-    pick.className = 'rq-sub';
-    pick.textContent = `Get: ${m.pick}.`;
-    const looks = document.createElement('div');
-    looks.className = 'rq-sub';
-    looks.textContent = `The launcher looks for ${m.looks_for}.`;
-    text.append(name, pick, looks);
-    const open = document.createElement('button');
-    open.className = 'btn';
-    open.textContent = 'Open';
-    open.onclick = () => invoke('open_mod_page', { id: m.id }).catch(e => { $('rq-error').textContent = String(e); $('rq-error').hidden = false; });
-    row.append(text, open);
-    list.append(row);
+  // ---------- mods: the server's list, Nexus sign-in and Download all ----------
+  let modsRunning = false;
+  let modsOff = null;
+  const rqError = (e) => { $('rq-error').textContent = e ? String(e) : ''; $('rq-error').hidden = !e; };
+
+  function renderMods(view) {
+    const nx = view.nexus;
+    $('rq-nx-out').hidden = !!nx;
+    $('rq-nx-in').hidden = !nx;
+    $('rq-nx-who').textContent = nx ? `Signed in to Nexus as ${nx.name} (${nx.is_premium ? 'Premium' : 'free account'}).` : '';
+    $('rq-nx-free').hidden = !nx || nx.is_premium;
+    $('rq-vortex').hidden = !view.vortex;
+    const list = $('rq-list');
+    list.replaceChildren();
+    for (const m of view.mods) {
+      const row = document.createElement('div');
+      row.className = 'rq-row';
+      const text = document.createElement('div');
+      const name = document.createElement('b');
+      name.textContent = m.name;
+      const sub = document.createElement('div');
+      sub.className = 'rq-sub';
+      sub.id = `rq-st-${m.id}`;
+      sub.textContent = m.installed ? 'Installed' : (m.hint ? `Needs: ${m.hint}` : 'Not installed');
+      text.append(name, sub);
+      row.append(text);
+      if (m.page && !m.installed) {
+        const open = document.createElement('button');
+        open.className = 'btn';
+        open.textContent = 'Open';
+        open.onclick = () => invoke('open_mod_page', { url: m.page }).catch(rqError);
+        row.append(open);
+      }
+      if (m.installed) row.classList.add('ok');
+      list.append(row);
+    }
+    const missing = view.mods.filter(m => !m.installed).length;
+    $('rq-all').disabled = modsRunning || missing === 0;
+    $('rq-all').textContent = missing === 0 ? 'ALL INSTALLED' : `DOWNLOAD ALL (${missing})`;
+    $('rq-stop').hidden = !modsRunning;
   }
-  $('rq-error').hidden = true;
-  showSheet('reqs');
-}
+
+  async function refreshMods() {
+    try { renderMods(await invoke('mods_state')); } catch (e) { rqError(e); }
+  }
+
+  async function showRequiredMods() {
+    rqError(null);
+    showSheet('reqs');
+    await refreshMods();
+  }
+
+  const MOD_STAGE = { queued: 'Waiting its turn', waiting: '', download: 'Downloading', install: 'Installing', done: 'Installed', failed: '' };
+  function modProgress(p) {
+    const el = $(`rq-st-${p.id}`);
+    if (!el) return;
+    let t = MOD_STAGE[p.stage] ?? p.stage;
+    if (p.stage === 'download' && p.total > 0) t += ` ${Math.floor(p.done * 100 / p.total)}%`;
+    if (p.stage === 'waiting') t = p.message;
+    if (p.stage === 'failed') t = `Didn't install: ${p.message}`;
+    el.textContent = t;
+    el.parentElement.parentElement.classList.toggle('bad', p.stage === 'failed');
+  }
+
+  async function downloadAll() {
+    if (modsRunning) return;
+    rqError(null);
+    modsRunning = true;
+    $('rq-all').disabled = true;
+    $('rq-stop').hidden = false;
+    if (!modsOff) modsOff = await T.event.listen('mods-progress', ({ payload }) => modProgress(payload));
+    try {
+      const r = await invoke('download_all_mods');
+      if (r.failed.length) rqError(`Couldn't install: ${r.failed.map(f => `${f[0]} (${f[1]})`).join('; ')}`);
+      else if (r.cancelled) rqError('Stopped. Click Download all to carry on.');
+    } catch (e) {
+      if (String(e) === 'NEEDS_NEXUS_SIGN_IN') { rqError('Sign in to Nexus first (above).'); $('rq-key').focus(); }
+      else rqError(e);
+    } finally {
+      modsRunning = false;
+      await refreshMods();
+    }
+  }
 
 async function onPlay() {
     if (busy) return;
@@ -675,7 +731,7 @@ async function onPlay() {
         let mods = [];
         try { mods = JSON.parse(msg.slice(17)); } catch (_) {}
         setStatus(`Install ${mods.length === 1 ? mods[0].name : `${mods.length} required mods`}, then press Play.`, true);
-        showRequiredMods(mods);
+        showRequiredMods();
         return;
       }
       if (msg.startsWith('SIGNED_OUT:')) {
@@ -871,6 +927,18 @@ async function onPlay() {
     $('cr-note').hidden = false;
   };
   $('rq-close').onclick = () => showPage(page);
+  $('rq-all').onclick = downloadAll;
+  $('rq-stop').onclick = () => invoke('cancel_mods');
+  $('rq-getkey').onclick = () => invoke('open_nexus_key_page').catch(rqError);
+  $('rq-signin').onclick = async () => {
+    rqError(null);
+    $('rq-signin').disabled = true;
+    try { await invoke('nexus_sign_in', { key: $('rq-key').value }); $('rq-key').value = ''; await refreshMods(); }
+    catch (e) { rqError(e); }
+    finally { $('rq-signin').disabled = false; }
+  };
+  $('rq-signout').onclick = async () => { await invoke('nexus_sign_out').catch(rqError); await refreshMods(); };
+  $('files-mods').onclick = () => showRequiredMods();
   $('rq-again').onclick = () => { showPage(page); onPlay(); };
   $('cr-logs').onclick = () => invoke('open_log_folder').catch(() => {});
   $('cr-close').onclick = () => showPage(page);
