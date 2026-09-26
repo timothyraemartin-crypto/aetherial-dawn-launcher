@@ -118,11 +118,11 @@ SkyUI (Timothy, 2026-09-26) is required too: SkyUI 5.2SE from Nexus (skyrimspeci
 
 SSE Display Tweaks (Nexus 34705, the Anniversary Edition file; `SSEDisplayTweaks.dll`) and the Black Screen and Startup Fix (Nexus 176509, a ready-made `SSEDisplayTweaks.ini` for 1080p or 1440p) are required too (Timothy, 2026-09-26). Display Tweaks is listed first so the fix's ini lands over the default one. The launcher doesn't change that ini.
 
-Since 0.1.47 the Unofficial Skyrim Special Edition Patch is no longer required, and Play switches it off in plugins.txt unless the server's mods.json lists it. The server can't load it (SkyMP's plugin reader has no light-plugin support), and on 2026-09-26 the game crashed drawing land it changes, 19 seconds after loading in; with it off, the game worked. Its files stay in Data.
-
 ## Plugin names the game client can't load
 
-SkyMP's client checks the load order by calling Skyrim Platform's `getFileInfo` for every plugin, and that rejects names with spaces: on 2026-09-26 Timothy's `skyrim-platform.log` ended with "'unofficial skyrim special edition patch.esp' is not a valid argument for 'filename'", and the game sat on a black screen after loading in. Since 0.1.48, any plugin switched on whose name has anything but letters, digits, `_`, `-` and `.` is switched off before Play and listed under Load order with that reason. Files are never renamed (Vortex owns them), and a mods.json entry whose plugin has such a name is ignored, so it's never installed as required.
+SkyMP's client checks the load order by calling Skyrim Platform's `getFileInfo` for every plugin, and that rejects names with spaces: on 2026-09-26 Timothy's `skyrim-platform.log` ended with "'unofficial skyrim special edition patch.esp' is not a valid argument for 'filename'", and the game sat on a black screen after loading in.
+
+Since 0.1.49 (Timothy: correct it, don't switch it off), before every Play `aliases::ensure` gives each plugin whose name has anything but letters, digits, `_`, `-` and `.` a hard link (a copy if linking fails) under a dash-joined name, `Unofficial-Skyrim-Special-Edition-Patch.esp`, together with the files keyed to its name: `<name>.bsa`, `<name> - Textures.bsa`, `<name>.ini`, `Strings/<name>_*` and `Interface/Translations/<name>_*`. plugins.txt and loadorder.txt name the copy where the original was, switched on or off as the original was. The original is never renamed or moved (Vortex owns it); a copy whose original is gone is removed, and a copy is refreshed when its original changes. The links are recorded in `.aetherial-dawn/mods/aliases.json` and count as the original mod's files for tidying. The game check lists them under Plugin names as information. A plugin that names such a plugin as a master would still look for the original name; none of the server's mods do.
 
 ## Game health checks
 

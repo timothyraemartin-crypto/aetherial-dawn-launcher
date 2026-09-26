@@ -143,6 +143,8 @@ pub fn keep_set(game_dir: &Path) -> HashSet<String> {
             keep.extend(rec.files.iter().chain(rec.skipped.iter()).map(|f| f.to_ascii_lowercase()));
         }
     }
+    // The launcher's dash-named copies of plugins go with their originals.
+    keep.extend(crate::aliases::links(game_dir).into_iter().map(|l| l.to.to_ascii_lowercase()));
     let ids = ids(&list);
     let files = vortex_files(game_dir);
     let sources = kept_sources(&files, &ids, &keep);

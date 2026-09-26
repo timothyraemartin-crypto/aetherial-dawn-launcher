@@ -85,6 +85,7 @@ pub fn run(i: &Inputs) -> Report {
         masters(i),
         required_files(i),
         load_order(i),
+        plugin_names(i),
         load_order_file(i),
         stub_plugins(i),
         newer_plugins(i),
@@ -232,6 +233,27 @@ fn load_order(i: &Inputs) -> Check {
         check("loadorder", "Load order", Status::Ok, "Only the base game, Creation Club and Aetherial Dawn's plugins are switched on.", vec![])
     } else {
         check("loadorder", "Load order", Status::Warn, "The launcher switches extra plugins off before Play.", items)
+    }
+}
+
+/// Plugins running under a dash-named copy because the SkyMP client can't
+/// load their own names (aliases.rs). Information, not a fault.
+fn plugin_names(i: &Inputs) -> Check {
+    let mut items: Vec<String> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(i.game_dir.join("Data")) {
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            let l = n.to_ascii_lowercase();
+            if (l.ends_with(".esp") || l.ends_with(".esm") || l.ends_with(".esl")) && !loadorder::client_can_load_name(&n) {
+                items.push(format!("{n} loads as {} so the game accepts it", crate::aliases::alias_name(&n)));
+            }
+        }
+    }
+    items.sort();
+    if items.is_empty() {
+        check("pluginnames", "Plugin names", Status::Ok, "Every plugin's name is one the game client accepts.", vec![])
+    } else {
+        check("pluginnames", "Plugin names", Status::Info, "The SkyMP client can't load plugin names with spaces, so before Play the launcher gives these a copy under a name it accepts. Nothing is renamed.", items)
     }
 }
 
@@ -499,6 +521,7 @@ fn crash_logger(i: &Inputs) -> Check {
     }
     for (ok, name) in [
         (requirements::engine_fixes_ok(i.game_dir) && requirements::engine_fixes_preload_ok(i.game_dir), "SSE Engine Fixes"),
+        (requirements::ussep_ok(i.game_dir), "Unofficial Skyrim Special Edition Patch"),
         (requirements::menu_framework_ok(i.game_dir), "SKSE Menu Framework"),
         (requirements::imgui_icons_ok(i.game_dir), "ImGui Icons"),
         (requirements::skyui_ok(i.game_dir), "SkyUI"),

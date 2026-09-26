@@ -135,9 +135,14 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
         hint: Some("Engine Fixes (All-In-One) for 1.6.1170 and newer".into()),
         ..Default::default()
     });
-    // The Unofficial Patch was required until 2026-09-26. The server can't
-    // load it, and it crashed the game drawing land it changes, so it's off
-    // the list and the load order switches it off (loadorder::allowed).
+    out.push(ModEntry {
+        id: "ussep".into(),
+        name: "Unofficial Skyrim Special Edition Patch".into(),
+        nexus: Some(NexusRef { mod_id: 266, file: None, pick: None }),
+        check: vec![format!("Data/{}", r::USSEP_PLUGIN)],
+        hint: Some("the version for Skyrim 1.6.1170".into()),
+        ..Default::default()
+    });
     out.push(ModEntry {
         id: "menu-framework".into(),
         name: "SKSE Menu Framework".into(),
@@ -191,14 +196,6 @@ pub fn merged(game_version: Option<&str>, server: Option<&ModList>) -> Vec<ModEn
     if let Some(s) = server {
         for m in &s.mods {
             if m.id.is_empty() || (m.nexus.is_none() && m.url.is_none()) || m.check.iter().any(|c| safe_rel(c).is_none()) {
-                continue;
-            }
-            // A required plugin the SkyMP client can't load by name would
-            // leave every player on a black screen.
-            if m.check.iter().any(|c| {
-                let n = c.rsplit(['/', '\\']).next().unwrap_or(c);
-                is_plugin(Path::new(n)) && !crate::loadorder::client_can_load_name(n)
-            }) {
                 continue;
             }
             if let Some(url) = &m.url {

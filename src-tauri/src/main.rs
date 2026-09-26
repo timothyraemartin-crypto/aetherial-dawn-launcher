@@ -1087,6 +1087,13 @@ async fn steam_app_install(state: State<'_, AppState>) -> CmdResult<version::Gam
 /// names but that no longer exist are dropped (the ini is backed up first).
 /// Nothing is deleted.
 fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_mods: bool) -> CmdResult<()> {
+    // Plugins whose names the SkyMP client can't load run under a
+    // dash-named copy (Timothy 2026-09-26: correct it, don't switch it off).
+    match launcher_core::aliases::ensure(dir, plugins_txt(app).as_deref()) {
+        Ok(v) if !v.is_empty() => log::line(&format!("play: plugins loading under a name the game accepts: {}", v.iter().map(|(a, b)| format!("{a} as {b}")).collect::<Vec<_>>().join(", "))),
+        Ok(_) => {}
+        Err(e) => log::line(&format!("play: couldn't give plugins a name the game accepts: {e}")),
+    }
     let list = strays::find(dir, m);
     if !list.is_empty() {
         let stamp = log::timestamp().replace([':', ' '], "-");
