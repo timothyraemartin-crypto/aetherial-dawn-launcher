@@ -1,7 +1,7 @@
 // Hides the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use launcher_core::{auth, downgrade, game, manifest::Manifest, settings, steamapp, sync, version, Error};
+use launcher_core::{auth, downgrade, game, manifest::Manifest, settings, steamapp, strays, sync, version, Error};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -152,6 +152,8 @@ struct CheckResult {
     remove: usize,
     bytes: u64,
     game: version::GameCheck,
+    /// Plugins in the game folder that the server didn't ship.
+    strays: Vec<String>,
 }
 
 async fn game_dir(state: &AppState) -> CmdResult<PathBuf> {
@@ -172,7 +174,11 @@ async fn check(state: State<'_, AppState>, verify_all: bool) -> CmdResult<CheckR
         remove: plan.remove.len(),
         bytes: plan.download_bytes,
         game: version::check(&dir, m.game.as_ref()),
+        strays: strays::find(&dir, &m),
     };
+    if !result.strays.is_empty() {
+        log::line(&format!("check: plugins not from the server: {}", result.strays.join(", ")));
+    }
     *state.manifest.lock().await = Some(m);
     Ok(result)
 }
@@ -476,6 +482,19 @@ async fn steam_app_install(state: State<'_, AppState>) -> CmdResult<version::Gam
     finish_downgrade(&dir, &spec)
 }
 
+/// Moves plugins the server didn't ship into .aetherial-dawn/disabled/<time>/
+/// in the game folder, so they can be put back by hand.
+#[tauri::command]
+async fn move_strays(state: State<'_, AppState>) -> CmdResult<String> {
+    let dir = game_dir(&state).await?;
+    let m = state.manifest.lock().await.clone().ok_or("Check for updates first.")?;
+    let list = strays::find(&dir, &m);
+    let stamp = log::timestamp().replace([':', ' '], "-");
+    let dest = strays::move_aside(&dir, &list, &stamp).map_err(|e| format!("Couldn't move the plugins ({e}). Close Skyrim and try again."))?;
+    log::line(&format!("moved {} plugin(s) to {}: {}", list.len(), dest.display(), list.join(", ")));
+    Ok(dest.display().to_string())
+}
+
 /// For players who already put the right build in place themselves.
 #[tauri::command]
 async fn mark_game_ok(state: State<'_, AppState>) -> CmdResult<version::GameCheck> {
@@ -576,6 +595,10 @@ async fn diagnostics(app: AppHandle, state: State<'_, AppState>) -> CmdResult<St
             let _ = writeln!(o, "Downgrade marker: {}", if marker.exists() { "present" } else { "none" });
             let gc = version::check(dir, manifest.as_ref().and_then(|m| m.game.as_ref()));
             let _ = writeln!(o, "Version check: {}", serde_json::to_string(&gc).unwrap_or_default());
+            if let Some(m) = &manifest {
+                let st = strays::find(dir, m);
+                let _ = writeln!(o, "Plugins not from the server: {}", if st.is_empty() { "none".into() } else { st.join(", ") });
+            }
             let settings = dir.join(settings::SETTINGS_PATH);
             let _ = writeln!(o, "skymp5-client-settings.txt: {}", if settings.exists() { "present" } else { "not written yet" });
         }
@@ -638,7 +661,7 @@ fn main() {
             app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install])
+        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }

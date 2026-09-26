@@ -259,3 +259,4 @@ html.animated .nav { background: linear-gradient(180deg, rgba(6,10,15,.9), rgba(
 .depot small.done { color: #8fd6a4; }
 .depot small.going { color: var(--frost); }
 .depot .btn { padding: 5px 12px; font-size: 12px; }
+.files-list { font: 400 12px var(--mono); max-height: 180px; overflow: auto; }

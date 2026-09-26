@@ -8,6 +8,7 @@ pub mod game;
 pub mod manifest;
 pub mod settings;
 pub mod steamapp;
+pub mod strays;
 pub mod sync;
 pub mod version;
 

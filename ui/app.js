@@ -87,6 +87,7 @@
     $('settings').hidden = id !== 'settings';
     $('downgrade').hidden = id !== 'downgrade';
     $('signin').hidden = id !== 'signin';
+    $('strays').hidden = id !== 'strays';
     if (id === 'settings') {
       for (const nav of Object.values(PAGES)) $(nav).removeAttribute('aria-current');
       $('nav-settings').setAttribute('aria-current', 'page');
@@ -249,6 +250,7 @@
       else { setPlay('wait', 'WRONG VERSION'); setStatus(c.reason, true); }
       return;
     }
+    if (strays().length && !ignoreStrays) { setPlay('strays', 'CHECK MODS'); setStatus(`${plural(strays().length, 'plugin')} from other mods can crash the game. Click Check mods.`, true); return; }
     if (!signedIn()) { setPlay('signin', 'SIGN IN'); setStatus('Sign in with Discord to play.', true); return; }
     if (auth.locked) { setPlay('wait', 'OFFLINE'); setStatus(auth.message, true); return; }
     setPlay('play', 'PLAY');
@@ -427,8 +429,29 @@
     finally { off(); }
   }
 
+  // ---------- plugins the server didn't ship ----------
+  let ignoreStrays = false;
+  const strays = () => (pending && pending.strays) || [];
+  function openStrays() {
+    $('st-list').innerHTML = strays().map(f => `<li>${esc(f)}</li>`).join('');
+    $('st-error').hidden = true;
+    showSheet('strays');
+  }
+  async function moveStrays() {
+    $('st-move').disabled = true;
+    try {
+      const dest = await invoke('move_strays');
+      pending = { ...pending, strays: [] };
+      showPage(page);
+      ready();
+      if (playMode === 'play') setStatus(`Moved them to ${dest}. You're ready to play.`);
+    } catch (e) { $('st-error').textContent = String(e); $('st-error').hidden = false; }
+    finally { $('st-move').disabled = false; }
+  }
+
   async function onPlay() {
     if (busy) return;
+    if (playMode === 'strays') return openStrays();
     if (playMode === 'retry') return check();
     if (playMode === 'update') return update();
     if (playMode === 'downgrade') return openDowngrade();
@@ -548,6 +571,9 @@
   $('dg-go').onclick = runDowngrade;
   $('dg-cancel').onclick = () => { dgMode(false); showPage(page); };
   $('dg-install').onclick = steamInstall;
+  $('st-move').onclick = moveStrays;
+  $('st-cancel').onclick = () => showPage(page);
+  $('st-ignore').onclick = () => { ignoreStrays = true; logUi('player chose to keep other plugins: ' + strays().join(', ')); showPage(page); ready(); };
   $('dg-skip').onclick = async () => { dgBusy(true); try { dgDone(await invoke('mark_game_ok')); } catch (e) { dgFail(e); } };
   document.querySelectorAll('input[name="dg-login"]').forEach(r => r.onchange = () => {
     $('dg-user-field').hidden = document.querySelector('input[name="dg-login"]:checked').value !== 'user';
