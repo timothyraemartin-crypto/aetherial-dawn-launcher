@@ -10,6 +10,16 @@ use crate::Result;
 
 pub const SETTINGS_PATH: &str = "Data/Platform/Plugins/skymp5-client-settings.txt";
 
+/// The server's public key for its signed gamemode scripts (SkyMP
+/// serverJsVerificationService). The client skips the serverinfo request
+/// because server-info-ignore is on, so the key has to be in the settings
+/// file, or every signed server script (the F3 menus) is rejected. Public, so
+/// it's fine to ship.
+pub const SERVER_PUBLIC_KEYS: [(&str, &str); 1] = [(
+    "CPPad1",
+    "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAv/MvitoXZ+ISkm41BttNZEVf1bcw7xbq2NBAEtRn2cY=\n-----END PUBLIC KEY-----\n",
+)];
+
 pub struct ClientSettings<'a> {
     pub server_ip: &'a str,
     pub server_port: u16,
@@ -33,6 +43,8 @@ pub fn merge(existing: Option<&str>, s: &ClientSettings) -> String {
     root.insert("master".into(), json!(s.master));
     root.insert("server-master-key".into(), json!(s.server_master_key));
     root.insert("server-info-ignore".into(), json!(true));
+    let keys: Map<String, Value> = SERVER_PUBLIC_KEYS.iter().map(|(id, pem)| (id.to_string(), json!(pem))).collect();
+    root.insert("server-public-keys".into(), Value::Object(keys));
     let game_data = root.entry("gameData").or_insert_with(|| Value::Object(Map::new()));
     if !game_data.is_object() {
         *game_data = Value::Object(Map::new());
@@ -107,6 +119,7 @@ mod tests {
         assert_eq!(v["master"], "https://h/ad");
         assert_eq!(v["server-master-key"], "aetherial-dawn");
         assert_eq!(v["server-info-ignore"], true);
+        assert!(v["server-public-keys"]["CPPad1"].as_str().unwrap().starts_with("-----BEGIN PUBLIC KEY-----\nMCow"));
         assert_eq!(v["gameData"]["session"], "abc");
     }
 
