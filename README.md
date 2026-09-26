@@ -39,6 +39,8 @@ Windows installers are built by `.github/workflows/build.yml`. Before a real rel
 
 To build locally on Windows, run `cargo install tauri-cli --version "^2"`, then `cargo tauri build`.
 
+To cross-build the Windows installer from Linux, as used for the first test build, install `gcc-mingw-w64-x86-64`, `nsis` and `cargo install tauri-cli`. Then run `rustup target add x86_64-pc-windows-gnu` and `AD_BASE_URL=<url> cargo tauri build --target x86_64-pc-windows-gnu --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'`. Tauri calls this cross-build experimental, and the installer isn't code-signed.
+
 To test the file sync against any server, run `cargo run -p launcher-core --example sync -- <base-url> <skyrim-folder>`.
 
 ## Known gaps
