@@ -48,6 +48,9 @@ struct Config {
     /// Menu music: None until the player answers the Keep music / Mute
     /// question, then their answer.
     music: Option<bool>,
+    /// Only the server's mods: other mods' files Vortex put in Data are set
+    /// aside before Play (Timothy, 2026-09-26). Players can turn it off.
+    only_server_mods: bool,
 }
 
 impl Default for Config {
@@ -62,6 +65,7 @@ impl Default for Config {
             share_health: true,
             nexus_user: None,
             music: None,
+            only_server_mods: true,
         }
     }
 }
@@ -155,6 +159,8 @@ struct Prefs {
     background_updates: bool,
     #[serde(default = "yes")]
     share_health: bool,
+    #[serde(default = "yes")]
+    only_server_mods: bool,
 }
 
 fn yes() -> bool {
@@ -167,7 +173,17 @@ async fn set_prefs(app: AppHandle, state: State<'_, AppState>, prefs: Prefs) -> 
     config.close_on_launch = prefs.close_on_launch;
     config.background_updates = prefs.background_updates;
     config.share_health = prefs.share_health;
+    config.only_server_mods = prefs.only_server_mods;
     save_config(&app, &config)
+}
+
+/// Puts back every file the launcher set aside (other mods, old plugins).
+#[tauri::command]
+async fn restore_set_aside(state: State<'_, AppState>) -> CmdResult<usize> {
+    let dir = game_dir(&state).await?;
+    let n = launcher_core::allowlist::restore_all(&dir).map_err(|e| format!("Couldn't put the files back ({e}). Close Skyrim and Vortex, then try again."))?;
+    log::line(&format!("restored {n} set-aside file(s)"));
+    Ok(n)
 }
 
 #[derive(Serialize)]
@@ -246,7 +262,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
         install_missing_mods(&state.http, &dir).await?;
     }
     game::inspect(&dir).map_err(err)?;
-    tidy_game(&app, &dir, &m)?;
+    tidy_game(&app, &dir, &m, config.only_server_mods)?;
     let report = run_health(&app, &state.http, &config.base_url, &dir, Some(&m)).await;
     log::line(&format!("health before play: worst={:?}\n{}", report.worst, report.text()));
     if report.worst >= health::Status::Warn && config.share_health {
@@ -1070,12 +1086,25 @@ async fn steam_app_install(state: State<'_, AppState>) -> CmdResult<version::Gam
 /// extra plugins are switched off in plugins.txt, and archives Skyrim.ini
 /// names but that no longer exist are dropped (the ini is backed up first).
 /// Nothing is deleted.
-fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest) -> CmdResult<()> {
+fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_mods: bool) -> CmdResult<()> {
     let list = strays::find(dir, m);
     if !list.is_empty() {
         let stamp = log::timestamp().replace([':', ' '], "-");
         let dest = strays::move_aside(dir, &list, &stamp).map_err(|e| format!("Couldn't move old mod files out of the way ({e}). Close Skyrim and try again."))?;
         log::line(&format!("play: moved {} file(s) from other mods to {}: {}", list.len(), dest.display(), list.join(", ")));
+    }
+    let mut set_aside = list.len();
+    if only_server_mods {
+        let others = launcher_core::allowlist::unlisted_vortex_files(dir, m);
+        if !others.is_empty() {
+            let stamp = format!("{}-other-mods", log::timestamp().replace([':', ' '], "-"));
+            let dest = strays::move_aside(dir, &others, &stamp).map_err(|e| format!("Couldn't set your other mods aside ({e}). Close Skyrim and Vortex, then try again."))?;
+            log::line(&format!("play: server's mods only, set aside {} file(s) from other Vortex mods to {}: {}", others.len(), dest.display(), others.join(", ")));
+            set_aside += others.len();
+        }
+    }
+    if set_aside > 0 {
+        let _ = app.emit("mods-set-aside", set_aside);
     }
     if let Some(txt) = plugins_txt(app) {
         let extras = loadorder::extras(dir, &txt, m);
@@ -1782,7 +1811,7 @@ fn main() {
             mods::restore_left_handler(app.handle());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report, health_check, steam_login_answer, steam_login_cancel, patch_game, build_patches, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods])
+        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report, health_check, steam_login_answer, steam_login_cancel, patch_game, build_patches, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }

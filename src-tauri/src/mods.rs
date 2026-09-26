@@ -93,6 +93,9 @@ pub async fn server_list(state: &AppState) -> Option<modlist::ModList> {
 pub async fn full_list(state: &AppState) -> Vec<ModEntry> {
     let version = state.manifest.lock().await.as_ref().and_then(|m| m.game.as_ref()).and_then(|g| g.version.clone());
     let server = server_list(state).await;
+    if let (Some(l), Some(dir)) = (&server, state.config.lock().await.game_dir.clone()) {
+        launcher_core::allowlist::save_server_list(&dir, l);
+    }
     modlist::merged(version.as_deref(), server.as_ref())
 }
 

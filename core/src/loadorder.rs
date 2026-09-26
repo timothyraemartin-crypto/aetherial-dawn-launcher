@@ -120,6 +120,8 @@ fn allowed(game_dir: &Path, manifest: &Manifest) -> Vec<String> {
     let mut ok: Vec<String> = BASE.iter().map(|s| s.to_string()).collect();
     // A required mod (Skyrim Souls RE's dependency), from Nexus Mods.
     ok.push(crate::requirements::USSEP_PLUGIN.to_ascii_lowercase());
+    // Plugins of other mods on the server's list.
+    ok.extend(crate::allowlist::kept_plugins(&crate::allowlist::keep_set(game_dir)));
     for ccc in [game_dir.join("Data").join("Skyrim.ccc"), game_dir.join("Skyrim.ccc")] {
         if let Ok(t) = std::fs::read_to_string(ccc) {
             ok.extend(t.lines().map(|l| l.trim().to_ascii_lowercase()).filter(|l| !l.is_empty()));

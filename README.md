@@ -94,6 +94,14 @@ Players don't click anything for this. Before each launch, the launcher:
 
 Everything it changes is written to the log. In the first live test, Skyrim.ini still named 43 BSAs from uninstalled mods.
 
+## Only the server's mods
+
+Settings has an **Only the server's mods** switch, on by default (0.1.38). A mod counts as the server's when it is required (SKSE, Address Library, Crash Logger, Skyrim Souls RE and its dependencies) or listed in the server's `/launcher/mods.json`. The launcher keeps the last list it downloaded in `.aetherial-dawn/mods/server-list.json`, so tidying works offline.
+
+A file belongs to a listed mod when the list's `check` names it, the launcher installed it (`installed.json`), or Vortex deployed it from a mod folder whose Nexus id is on the list (`Data/vortex.deployment.json`, folder names like `SKSE Menu Framework-120352-3-18-...`). Those files are never moved and their plugins are never switched off, even when Vortex installed them.
+
+With the switch on, Play also moves every other file Vortex deployed (meshes, textures, scripts, DLLs) to `.aetherial-dawn/disabled/<time>-other-mods/`. Their plugins are switched off in plugins.txt as before. Loose files that no tool recorded can't be traced to a mod, so they're left alone. **Put my other mods back** turns the switch off and moves everything in `.aetherial-dawn/disabled/` back where nothing has replaced it. The next Vortex deploy also puts its files back, so players who switch between servers are better off with a separate Vortex profile for Aetherial Dawn.
+
 ## Plugins for a newer Skyrim
 
 Steam updates Creation Club downloads separately from the game, so after a downgrade they can stay on the newer build. Before every Play, `loadorder::too_new` compares each plugin's header version and form version with the five base masters. Any plugin that is newer, and any broken stub plugin, is moved with its archives to `.aetherial-dawn/disabled/<time>-plugins/`. The game skips Creation Club files that aren't in Data. The version record and the kept copy are then refreshed. Skyrim Platform's browser cache (`%TEMP%\\Skyrim Platform`) is cleared, because a stale profile there crashed libcef.dll 5 seconds in. A crash logger that launchers before 0.1.20 moved aside is put back, so the next crash names the failing module. Crash reports to staff go out in the background and are retried once when the staff service asks for a short wait.

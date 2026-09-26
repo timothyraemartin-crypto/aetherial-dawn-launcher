@@ -288,3 +288,6 @@ html.animated .nav { background: linear-gradient(180deg, rgba(6,10,15,.9), rgba(
 .music-ask small { display: block; color: var(--muted); margin-top: 3px; font-size: 12px; }
 .music-ask .line { display: flex; gap: 8px; }
 .music-ask[hidden] { display: none; }
+#aside-line { display: flex; gap: 10px; align-items: center; justify-content: space-between; margin-top: 10px; }
+#aside-line small { opacity: .75; }
+#aside-line .btn { flex: none; }

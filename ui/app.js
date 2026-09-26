@@ -153,6 +153,7 @@
     $('set-bg').setAttribute('aria-checked', state.config.backgroundUpdates);
     $('set-share').setAttribute('aria-checked', state.config.shareHealth !== false);
     $('set-music').setAttribute('aria-checked', state.config.music !== false);
+    $('set-only').setAttribute('aria-checked', state.config.onlyServerMods !== false);
     $('set-version').textContent = 'Launcher ' + state.launcherVersion;
     $('ver').textContent = 'Launcher v' + state.launcherVersion;
     renderGame();
@@ -888,7 +889,7 @@ async function onPlay() {
   $('mu-mute').onclick = () => setMusic(false);
   document.querySelectorAll('.switch:not(#set-anim):not(#set-music)').forEach(s => s.onclick = async () => {
     s.setAttribute('aria-checked', s.getAttribute('aria-checked') !== 'true');
-    const prefs = { closeOnLaunch: $('set-close').getAttribute('aria-checked') === 'true', backgroundUpdates: $('set-bg').getAttribute('aria-checked') === 'true', shareHealth: $('set-share').getAttribute('aria-checked') === 'true' };
+    const prefs = { closeOnLaunch: $('set-close').getAttribute('aria-checked') === 'true', backgroundUpdates: $('set-bg').getAttribute('aria-checked') === 'true', shareHealth: $('set-share').getAttribute('aria-checked') === 'true', onlyServerMods: $('set-only').getAttribute('aria-checked') === 'true' };
     await invoke('set_prefs', { prefs });
     Object.assign(state.config, prefs);
   });
@@ -908,6 +909,31 @@ async function onPlay() {
   try { $('dg-user').value = localStorage.getItem('ad-steam-user') || ''; } catch {}
   $('dg-install').onclick = steamInstall;
   $('st-move').onclick = moveStrays;
+  // ---------- other mods set aside before Play ----------
+  const asideNote = n => {
+    $('aside-note').textContent = n ? `Last time you pressed Play, ${n} file${n === 1 ? '' : 's'} from other mods ${n === 1 ? 'was' : 'were'} set aside (in your Skyrim folder under .aetherial-dawn\\disabled).` : 'Nothing has been set aside.';
+  };
+  try { asideNote(+localStorage.getItem('ad-set-aside') || 0); } catch { asideNote(0); }
+  T.event.listen('mods-set-aside', ({ payload: n }) => {
+    try { localStorage.setItem('ad-set-aside', String(n)); } catch {}
+    asideNote(n);
+    logUi(`set aside ${n} file(s) from other mods before Play`);
+  });
+  $('aside-restore').onclick = async () => {
+    const b = $('aside-restore');
+    b.disabled = true;
+    try {
+      // Turn the switch off first, or the next Play would set them aside again.
+      $('set-only').setAttribute('aria-checked', 'false');
+      const prefs = { closeOnLaunch: $('set-close').getAttribute('aria-checked') === 'true', backgroundUpdates: $('set-bg').getAttribute('aria-checked') === 'true', shareHealth: $('set-share').getAttribute('aria-checked') === 'true', onlyServerMods: false };
+      await invoke('set_prefs', { prefs });
+      Object.assign(state.config, prefs);
+      const n = await invoke('restore_set_aside');
+      try { localStorage.setItem('ad-set-aside', '0'); } catch {}
+      $('aside-note').textContent = n ? `Put ${n} file${n === 1 ? '' : 's'} back. "Only the server's mods" is now off.` : `Nothing needed putting back. "Only the server's mods" is now off.`;
+    } catch (e) { $('aside-note').textContent = String(e); }
+    b.disabled = false;
+  };
   // ---------- after the game closes ----------
   let lastReport = '';
   T.event.listen('game-ended', ({ payload: g }) => {

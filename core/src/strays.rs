@@ -28,6 +28,8 @@ fn listed(m: &Manifest, rel: &str) -> bool {
 /// didn't ship: every .dll in SKSE's plugin folder, and every file in
 /// SkyrimPlatform's plugin folder except the settings file the launcher writes.
 pub fn find(game_dir: &Path, m: &Manifest) -> Vec<String> {
+    // Files of mods on the server's list (however they were installed) stay.
+    let keep = crate::allowlist::keep_set(game_dir);
     let mut out = Vec::new();
     for (folder, only_dll) in [(SKSE_PLUGINS, true), (PLATFORM_PLUGINS, false)] {
         let Ok(rd) = std::fs::read_dir(game_dir.join(folder)) else { continue };
@@ -45,7 +47,7 @@ pub fn find(game_dir: &Path, m: &Manifest) -> Vec<String> {
             if CRASH_LOGGERS.iter().chain(crate::requirements::CRASH_LOGGER_FILES.iter()).chain(crate::requirements::SOULS_FILES.iter()).chain(crate::requirements::ENGINE_FIXES_FILES.iter()).chain([crate::requirements::MENU_FRAMEWORK_DLL].iter()).any(|c| c.eq_ignore_ascii_case(&name)) {
                 continue;
             }
-            if rel.eq_ignore_ascii_case(crate::settings::SETTINGS_PATH) || listed(m, &rel) {
+            if rel.eq_ignore_ascii_case(crate::settings::SETTINGS_PATH) || listed(m, &rel) || keep.contains(&rel.to_ascii_lowercase()) {
                 continue;
             }
             out.push(rel);
@@ -58,7 +60,7 @@ pub fn find(game_dir: &Path, m: &Manifest) -> Vec<String> {
     let required = |rel: &str| {
         crate::requirements::SOULS_FILES.iter().any(|f| rel.eq_ignore_ascii_case(&format!("{INTERFACE}/{f}"))) || rel.to_ascii_lowercase().starts_with(&icons)
     };
-    out.extend(loose.into_iter().filter(|rel| !listed(m, rel) && !rel.ends_with(VORTEX_MARKER) && !required(rel)));
+    out.extend(loose.into_iter().filter(|rel| !listed(m, rel) && !rel.ends_with(VORTEX_MARKER) && !required(rel) && !keep.contains(&rel.to_ascii_lowercase())));
     out.sort();
     out
 }
