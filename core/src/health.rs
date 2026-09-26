@@ -83,7 +83,9 @@ pub fn run(i: &Inputs) -> Report {
     let mut checks = vec![
         exe(i),
         masters(i),
+        required_files(i),
         load_order(i),
+        load_order_file(i),
         stub_plugins(i),
         newer_plugins(i),
         ini_archives(i),
@@ -221,12 +223,26 @@ fn load_order(i: &Inputs) -> Check {
         return check("loadorder", "Load order", Status::Info, "Couldn't find the load order folder.", vec![]);
     };
     let mut items = Vec::new();
-    let data = i.game_dir.join("Data");
     if let Some(m) = i.manifest {
         for e in loadorder::extras(i.game_dir, &dir.join("plugins.txt"), m) {
             items.push(format!("switched on: {}", e.describe()));
         }
     }
+    if items.is_empty() {
+        check("loadorder", "Load order", Status::Ok, "Only the base game, Creation Club and Aetherial Dawn's plugins are switched on.", vec![])
+    } else {
+        check("loadorder", "Load order", Status::Warn, "The launcher switches extra plugins off before Play.", items)
+    }
+}
+
+/// loadorder.txt only records the order; the game loads the five masters
+/// first whatever it says, so this is kept apart from plugins switched on.
+fn load_order_file(i: &Inputs) -> Check {
+    let Some(dir) = i.appdata else {
+        return check("loadorderfile", "Load order file", Status::Info, "Couldn't find the load order folder.", vec![]);
+    };
+    let mut items = Vec::new();
+    let data = i.game_dir.join("Data");
     if let Ok(t) = std::fs::read_to_string(dir.join("loadorder.txt")) {
         let names: Vec<&str> = t.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
         let lower: Vec<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
@@ -241,10 +257,87 @@ fn load_order(i: &Inputs) -> Check {
         }
     }
     if items.is_empty() {
-        check("loadorder", "Load order", Status::Ok, "Only the base game, Creation Club and Aetherial Dawn's plugins are switched on.", vec![])
+        check("loadorderfile", "Load order file", Status::Ok, "loadorder.txt starts with the five base masters.", vec![])
     } else {
-        check("loadorder", "Load order", Status::Warn, "The launcher switches extra plugins off before Play.", items)
+        check("loadorderfile", "Load order file", Status::Info, "loadorder.txt is out of date. The launcher puts the five base masters first before Play; this doesn't crash the game.", items)
     }
+}
+
+/// Support files a required mod can't start without, and required mods'
+/// files sitting in the launcher's backup folder (2026-09-26: 0.1.38 moved
+/// SKSE Menu Framework's fonts and settings, and the game crashed 3 s in).
+pub fn missing_required_files(game_dir: &Path) -> Vec<String> {
+    let plugins = game_dir.join("Data/SKSE/Plugins");
+    let mut items = Vec::new();
+    let has_ext = |d: &Path, ext: &str| std::fs::read_dir(d).map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().to_ascii_lowercase().ends_with(ext))).unwrap_or(false);
+    if plugins.join(requirements::MENU_FRAMEWORK_DLL).is_file() {
+        if !plugins.join("SKSEMenuFrameworkStrings_EN.json").is_file() && !plugins.join("SKSEMenuFrameworkStrings.json").is_file() {
+            items.push("SKSE Menu Framework: its strings file (SKSEMenuFrameworkStrings_EN.json) is missing".to_string());
+        }
+        if !has_ext(&plugins.join("fonts"), ".ttf") {
+            items.push("SKSE Menu Framework: its fonts (Data\\SKSE\\Plugins\\fonts) are missing".to_string());
+        }
+        if !has_ext(&plugins.join("SKSEMenuFrameworkThemes"), ".json") {
+            items.push("SKSE Menu Framework: its themes (SKSEMenuFrameworkThemes) are missing".to_string());
+        }
+    }
+    if plugins.join("EngineFixes.dll").is_file() && !plugins.join("EngineFixes.toml").is_file() {
+        items.push("SSE Engine Fixes: EngineFixes.toml is missing".to_string());
+    }
+    let root = game_dir.join(strays::DISABLED_DIR);
+    let mut aside = std::collections::BTreeSet::new();
+    let mut stack = vec![root.clone()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            // <stamp>/Data/...
+            let Ok(rel) = p.strip_prefix(&root) else { continue };
+            let rel: PathBuf = rel.components().skip(1).collect();
+            let rel_s = rel.to_string_lossy().replace('\\', "/");
+            if crate::allowlist::required_file(&rel_s) && !game_dir.join(&rel).exists() {
+                aside.insert(rel_s);
+            }
+        }
+    }
+    items.extend(aside.into_iter().map(|r| format!("a required mod's file is in the launcher's backup folder: {r}")));
+    items
+}
+
+fn required_files(i: &Inputs) -> Check {
+    let items = missing_required_files(i.game_dir);
+    if items.is_empty() {
+        check("requiredfiles", "Required mods' files", Status::Ok, "Every required mod has its support files.", vec![])
+    } else {
+        check("requiredfiles", "Required mods' files", Status::Fail, "A required mod is missing files it needs to start, which crashes the game a few seconds in. The launcher puts files it set aside back before Play; otherwise reinstall the mod.", items)
+    }
+}
+
+/// The launcher's own best guess at a crash's cause, from the checks, most
+/// specific first. None when nothing points anywhere.
+pub fn likely_cause(r: &Report) -> Option<String> {
+    let failed = |id: &str, st: Status| r.checks.iter().find(|c| c.id == id && c.status >= st);
+    if let Some(c) = failed("requiredfiles", Status::Fail) {
+        return Some(format!("A required mod is missing its support files: {}", c.items.first().cloned().unwrap_or_default()));
+    }
+    for (id, why) in [
+        ("exe", "Wrong Skyrim version"),
+        ("masters", "Game masters don't match the server"),
+        ("newer", "Plugins made for a newer Skyrim"),
+        ("strays", "SKSE plugins or loose menus from other mods"),
+    ] {
+        if failed(id, Status::Warn).is_some() {
+            return Some(why.to_string());
+        }
+    }
+    if failed("loadorder", Status::Warn).is_some() {
+        return Some("Plugins from other mods are switched on".to_string());
+    }
+    None
 }
 
 fn stub_plugins(i: &Inputs) -> Check {
@@ -495,5 +588,26 @@ mod tests {
         assert!(cache.exists());
         assert_eq!(r.worst, Status::Fail);
         assert!(!r.text().contains(&tmp.path().display().to_string()));
+    }
+
+    #[test]
+    fn names_menu_framework_files_as_the_cause() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        let pl = g.join("Data/SKSE/Plugins");
+        std::fs::create_dir_all(pl.join("fonts")).unwrap();
+        std::fs::write(pl.join("SKSEMenuFramework.dll"), b"x").unwrap();
+        std::fs::write(pl.join("fonts/fa-solid-900.ttf"), b"x").unwrap();
+        crate::strays::move_aside(g, &["Data/SKSE/Plugins/fonts/fa-solid-900.ttf".into()], "s-other-mods").unwrap();
+        let items = missing_required_files(g);
+        assert_eq!(items.len(), 4, "{items:?}");
+        assert!(items[3].ends_with("Data/SKSE/Plugins/fonts/fa-solid-900.ttf"));
+        let r = Report { checks: vec![check("loadorder", "Load order", Status::Warn, "", vec![]), check("requiredfiles", "Required mods' files", Status::Fail, "", items)], worst: Status::Fail };
+        assert!(likely_cause(&r).unwrap().starts_with("A required mod is missing"));
+        crate::allowlist::restore_kept(g).unwrap();
+        std::fs::create_dir_all(pl.join("SKSEMenuFrameworkThemes")).unwrap();
+        std::fs::write(pl.join("SKSEMenuFrameworkThemes/modern.json"), b"{}").unwrap();
+        std::fs::write(pl.join("SKSEMenuFrameworkStrings_EN.json"), b"{}").unwrap();
+        assert!(missing_required_files(g).is_empty());
     }
 }

@@ -1340,6 +1340,8 @@ fn health_payload(app: &AppHandle, config: &Config, build: &str, when: &str, cra
         "discordUsername": config.account.as_ref().and_then(|a| a.discord_username.clone()),
         "crash": crash,
         "worst": r.worst,
+        // The launcher's own guess, from the checks, for staff to prefer.
+        "likelyCause": health::likely_cause(r),
         "checks": r.checks,
         "text": r.text(),
     })
@@ -1405,7 +1407,14 @@ async fn send_health(app: &AppHandle, http: &reqwest::Client, config: &Config, b
     let body = fit_report(body);
     for attempt in 0..2 {
         match post_report(http, &url, &token, &body, when).await {
-            Posted::Filed(f) => return f,
+            Posted::Filed(mut f) => {
+                // The checks know more than the staff service's guess (it
+                // blamed plugins for a Menu Framework crash on 2026-09-26).
+                if let Some(c) = health::likely_cause(r) {
+                    f.likely_cause = Some(c);
+                }
+                return f;
+            }
             Posted::RetryAfter(secs) if attempt == 0 && secs <= 90 => {
                 log::line(&format!("health: sending report {when} again in {secs}s"));
                 tokio::time::sleep(std::time::Duration::from_secs(secs + 1)).await;
