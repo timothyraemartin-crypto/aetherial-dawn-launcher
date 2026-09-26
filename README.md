@@ -25,7 +25,7 @@ It's built with [Tauri 2](https://tauri.app). The UI is plain HTML, CSS and JS i
 The server serves static files under one base URL, for example `https://vps-d38c928e.vps.ovh.us/launcher`. The full format is in `skymp-setup/launcher/launcher-spec.md` in the project files.
 
 - `client/manifest.json` and `client/files/<sha256>`. Build these with `make-manifest.py` from the SkyMP client build folder.
-- `app/latest.json` and the installer, used for launcher self-updates.
+- `app/latest.json` and the installer (optional): a second source for launcher self-updates. The first is the latest GitHub release of this public repo.
 - `status.json` (optional), which feeds the side panel: `{ "online": true, "players": 7, "maxPlayers": 100, "sinceReset": "1d", "news": [{ "date": "26 Sep 2026", "title": "…", "body": "…" }] }`
 
 ## Building
@@ -34,7 +34,7 @@ Windows installers are built by `.github/workflows/build.yml`. Before a real rel
 
 1. Set the repository variable `AD_BASE_URL` to the server's launcher URL.
 2. Create an update signing key on your own PC by running `cargo tauri signer generate -w ~/.tauri/aetherial.key`. Put the private key and its password in the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Never paste them into chat.
-3. Put the public key in `src-tauri/tauri.conf.json` under `plugins.updater.pubkey`. Point `endpoints` at `<AD_BASE_URL>/app/latest.json`.
+3. Put the public key in `src-tauri/tauri.conf.json` under `plugins.updater.pubkey`. `endpoints` lists this repo's latest GitHub release first and `<AD_BASE_URL>/app/latest.json` second. CI attaches a signed `latest.json` to every release when the signing secrets are set.
 4. Replace the placeholder icons in `src-tauri/icons/`, then run `cargo tauri icon your-logo.png`.
 
 To build locally on Windows, run `cargo install tauri-cli --version "^2"`, then `cargo tauri build`.

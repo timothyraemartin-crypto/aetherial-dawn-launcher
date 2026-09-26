@@ -54,13 +54,14 @@ jobs:
             out="AetherialDawn-Launcher-$v-setup.exe"
             cp "$f" "dist/$out"
             echo "VERSION=$v" >> "$GITHUB_ENV"
-            # Signed builds also get the self-update feed. Copy latest.json and the
-            # installer to <server>/launcher/app/ on the VPS to roll the update out.
+            # Signed builds also get the self-update feed, latest.json. The launcher
+            # reads it from this repo's latest release (the repo is public for this),
+            # or from <server>/launcher/app/latest.json if it's copied there.
             if [ -f "$f.sig" ]; then
               cp "$f.sig" "dist/$out.sig"
               sig=$(cat "$f.sig")
-              printf '{\n  "version": "%s",\n  "notes": "Aetherial Dawn launcher %s",\n  "pub_date": "%s",\n  "platforms": {\n    "windows-x86_64": {\n      "signature": "%s",\n      "url": "%s/app/%s"\n    }\n  }\n}\n' \
-                "$v" "$v" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$sig" "$AD_BASE_URL" "$out" > dist/latest.json
+              printf '{\n  "version": "%s",\n  "notes": "Aetherial Dawn launcher %s",\n  "pub_date": "%s",\n  "platforms": {\n    "windows-x86_64": {\n      "signature": "%s",\n      "url": "%s/%s"\n    }\n  }\n}\n' \
+                "$v" "$v" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$sig" "https://github.com/$GITHUB_REPOSITORY/releases/download/v$v" "$out" > dist/latest.json
             fi
           done
           ls -la dist
