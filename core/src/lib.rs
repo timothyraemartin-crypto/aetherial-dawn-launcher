@@ -11,6 +11,7 @@ pub mod steamapp;
 pub mod strays;
 pub mod sync;
 pub mod version;
+pub mod watch;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

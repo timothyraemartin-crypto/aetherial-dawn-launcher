@@ -213,6 +213,23 @@
     </div>
   </div>
 
+  <!-- ===== game crashed ===== -->
+  <div class="sheet" id="crash" hidden>
+    <div class="panel">
+      <div class="eyebrow">GAME CLOSED</div>
+      <h2>Skyrim closed unexpectedly</h2>
+      <p class="lead" id="cr-summary"></p>
+      <p class="note">The launcher saved a report with the game's logs. Click <b>Copy report</b> and paste it to staff (or in the launcher thread) so we can see what went wrong.</p>
+      <pre class="report" id="cr-report"></pre>
+      <span class="note" id="cr-note" hidden></span>
+      <div class="actions">
+        <button class="btn primary" id="cr-copy">COPY REPORT</button>
+        <button class="btn" id="cr-logs">Open log folder</button>
+        <button class="btn" id="cr-close">Close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ===== settings ===== -->
   <div class="sheet" id="settings" hidden>
     <div class="panel">

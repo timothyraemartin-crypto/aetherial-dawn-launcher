@@ -1,7 +1,7 @@
 // Hides the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use launcher_core::{auth, downgrade, game, manifest::Manifest, settings, steamapp, strays, sync, version, Error};
+use launcher_core::{auth, downgrade, game, manifest::Manifest, settings, steamapp, strays, sync, version, watch, Error};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -248,10 +248,105 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     log::line("play: wrote skymp5-client-settings.txt and auth data");
     game::launch(&dir).map_err(err)?;
     log::line("play: started skse64_loader.exe");
+    let started = std::time::SystemTime::now();
     if config.close_on_launch {
-        app.exit(0);
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.hide();
+        }
     }
+    tauri::async_runtime::spawn(watch_game(app.clone(), started, config.close_on_launch));
     Ok(())
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GameEnded {
+    crashed: bool,
+    summary: String,
+    report: String,
+}
+
+fn reports_dir() -> Option<PathBuf> {
+    log::path().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+}
+
+/// Follows Skyrim from launch to exit. Every session leaves a report in the
+/// log folder; a crash brings the launcher back with that report on screen.
+async fn watch_game(app: AppHandle, started: std::time::SystemTime, close_on_launch: bool) {
+    // skse64_loader starts SkyrimSE.exe and exits, so look for the game itself.
+    let mut pid = None;
+    for _ in 0..90 {
+        if let Some(p) = watch::find_process(watch::GAME_PROCESS) {
+            pid = Some(p);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    let (code, ran, summary) = match pid {
+        None => (None, std::time::Duration::ZERO, "Skyrim didn't start: SKSE's loader ran, but SkyrimSE.exe never appeared within 90 seconds.".to_string()),
+        Some(pid) => {
+            log::line(&format!("game: SkyrimSE.exe running as process {pid}"));
+            let code = tokio::task::spawn_blocking(move || watch::wait_exit(pid)).await.ok().flatten();
+            let ran = started.elapsed().unwrap_or_default();
+            let summary = match code {
+                None => format!("Skyrim closed after {} seconds (Windows gave no exit code).", ran.as_secs()),
+                Some(_) => format!("Skyrim {} after {} seconds.", watch::describe(code), ran.as_secs()),
+            };
+            (code, ran, summary)
+        }
+    };
+    let crashed = pid.is_none() || watch::crashed(code, ran);
+    log::line(&format!("game: {summary}{}", if crashed { " Treated as a crash." } else { "" }));
+    let docs = app
+        .path()
+        .document_dir()
+        .or_else(|_| app.path().home_dir().map(|h| h.join("Documents")))
+        .unwrap_or_default();
+    let skse_logs = docs.join("My Games").join("Skyrim Special Edition").join("SKSE");
+    let mut report = format!(
+        "Aetherial Dawn game session report\nLauncher {} · {}\n{summary}\n",
+        app.package_info().version,
+        log::timestamp()
+    );
+    report.push_str(&watch::collect(&skse_logs, &std::env::temp_dir(), started));
+    report.push_str(&format!("\n===== launcher log (last 40 lines) =====\n{}\n", log::tail(40)));
+    if let Some(dir) = reports_dir() {
+        let name = format!("game-{}.txt", log::timestamp().replace([':', ' '], "-"));
+        if std::fs::write(dir.join(&name), &report).is_ok() {
+            log::line(&format!("game: saved session report {name}"));
+        }
+    }
+    if crashed {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.show();
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+        }
+        let _ = app.emit("game-ended", GameEnded { crashed, summary, report });
+    } else if close_on_launch {
+        app.exit(0);
+    } else {
+        let _ = app.emit("game-ended", GameEnded { crashed, summary, report });
+    }
+}
+
+/// The newest game session report, for the crash screen and diagnostics.
+fn last_report() -> Option<(String, String)> {
+    let dir = reports_dir()?;
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("game-") && n.ends_with(".txt"))
+        .collect();
+    names.sort();
+    let name = names.pop()?;
+    Some((name.clone(), std::fs::read_to_string(dir.join(name)).ok()?))
+}
+
+#[tauri::command]
+fn last_game_report() -> CmdResult<String> {
+    last_report().map(|(_, text)| text).ok_or_else(|| "No game session has been recorded yet.".into())
 }
 
 // ---------- Discord sign-in ----------
@@ -629,6 +724,14 @@ async fn diagnostics(app: AppHandle, state: State<'_, AppState>) -> CmdResult<St
     }
     let _ = writeln!(o, "Saved login: {}", if token(&app).is_some() { "yes" } else { "no" });
     let _ = writeln!(o, "Last confirmed: {}", config.last_auth_ok.map(|t| format!("{} min ago", now().saturating_sub(t) / 60)).unwrap_or_else(|| "never".into()));
+    match last_report() {
+        Some((name, text)) => {
+            let _ = writeln!(o, "\n[Last game session: {name}]\n{}", text.lines().take(150).collect::<Vec<_>>().join("\n"));
+        }
+        None => {
+            let _ = writeln!(o, "\n[Last game session: none recorded]");
+        }
+    }
     let _ = writeln!(o, "\n[Log: {}]", log::path().map(|p| p.display().to_string()).unwrap_or_default());
     let _ = writeln!(o, "{}", log::tail(80));
     Ok(o)
@@ -661,7 +764,7 @@ fn main() {
             app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays])
+        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }

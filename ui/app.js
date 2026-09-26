@@ -88,6 +88,7 @@
     $('downgrade').hidden = id !== 'downgrade';
     $('signin').hidden = id !== 'signin';
     $('strays').hidden = id !== 'strays';
+    $('crash').hidden = id !== 'crash';
     if (id === 'settings') {
       for (const nav of Object.values(PAGES)) $(nav).removeAttribute('aria-current');
       $('nav-settings').setAttribute('aria-current', 'page');
@@ -572,6 +573,25 @@
   $('dg-cancel').onclick = () => { dgMode(false); showPage(page); };
   $('dg-install').onclick = steamInstall;
   $('st-move').onclick = moveStrays;
+  // ---------- after the game closes ----------
+  let lastReport = '';
+  T.event.listen('game-ended', ({ payload: g }) => {
+    lastReport = g.report;
+    if (!g.crashed) { setStatus(g.summary); ready(); return; }
+    $('cr-summary').textContent = g.summary;
+    $('cr-report').textContent = g.report;
+    $('cr-note').hidden = true;
+    showSheet('crash');
+    ready();
+    setStatus('Skyrim closed unexpectedly. Copy diagnostics in Settings includes the crash report.', true);
+  });
+  $('cr-copy').onclick = async () => {
+    try { await navigator.clipboard.writeText(lastReport); $('cr-note').textContent = 'Copied. Paste it with Ctrl+V.'; }
+    catch { $('cr-note').textContent = "Couldn't copy. Open the log folder and send the newest game-….txt file."; }
+    $('cr-note').hidden = false;
+  };
+  $('cr-logs').onclick = () => invoke('open_log_folder').catch(() => {});
+  $('cr-close').onclick = () => showPage(page);
   $('st-cancel').onclick = () => showPage(page);
   $('st-ignore').onclick = () => { ignoreStrays = true; logUi('player chose to keep other plugins: ' + strays().join(', ')); showPage(page); ready(); };
   $('dg-skip').onclick = async () => { dgBusy(true); try { dgDone(await invoke('mark_game_ok')); } catch (e) { dgFail(e); } };
