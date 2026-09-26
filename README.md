@@ -59,6 +59,8 @@ Fix version patches the player's own Skyrim files into the server's build, with 
 
 To make patches, run the launcher as `AetherialDawn.exe --make-patches <newer game folder> <server-build game folder> <out folder> [1.6.1170.0]`. This writes the `.zst` files and `index.json` to the out folder. It proves each patch round-trips, logs to `make-patches.log`, and merges with an existing index, so one folder can serve several Steam builds. Upload the folder to the server's `launcher/patches/`.
 
+Staff can also do this inside the launcher: when no patch fits, **Other ways to download > Make the patches (staff, one time)** signs in to Steam in the launcher, downloads the server's build into `<game>/.aetherial-dawn/patch-build/<version>` (never over the game), builds the patches into `patch-build/out` and patches the game from them. Upload `patch-build/out` to the server's `launcher/patches/` so no other player needs Steam. Fix version on that PC uses `patch-build/out` directly when its target matches the server.
+
 ## Signing in to Steam inside the launcher
 
 One of the other ways to download (the default in 0.1.21 to 0.1.25) runs DepotDownloader with no window of its own (`downgrade::spawn_piped`, `-remember-password`). `downgrade::Scanner` reads its output and turns the password prompt, Steam Guard code prompts (authenticator or email), the phone-approval notice and the download percentage into `steam-login` events. The Fix version window shows a password or code box when Steam asks, and `steam_login_answer` writes the answer to DepotDownloader's input. The answer is never logged or kept. Steam gives DepotDownloader a sign-in token, stored in the launcher's tools folder, so later downloads usually need no password. The older options (Steam console, QR code window, separate sign-in window) sit under **Other ways to download**.
@@ -96,7 +98,7 @@ Steam updates Creation Club downloads separately from the game, so after a downg
 
 ## Required mods
 
-Every player needs SKSE64 2.2.6, Address Library for SKSE Plugins (the `versionlib-1-6-1170-0.bin` file for the server's build) and Crash Logger SSE AE VR 1.25.0 (Timothy's requirement, 2026-09-26). Before Play, the launcher installs Crash Logger itself when it's missing, from the pinned GitHub release (`core/src/requirements.rs`, SHA-256 checked). Nexus Mods doesn't allow other sites to hand out the Address Library, so when its file is missing Play stops and a screen walks the player through downloading it from Nexus. Tidying never moves the Address Library files or Crash Logger's DLL, PDB and msdia140.dll. The health report's "Required mods" check covers all three.
+Every player needs SKSE64 2.2.6, Address Library for SKSE Plugins (the `versionlib-1-6-1170-0.bin` file for the server's build) and Crash Logger SSE AE VR 1.25.0 (Timothy's requirement, 2026-09-26). Before Play (and after patching), the launcher installs SKSE 2.2.6 and Crash Logger itself when they're missing, from their pinned GitHub releases (`core/src/requirements.rs`, SHA-256 checked). SKSE's loader, DLL and Data/Scripts are the only files taken from its archive. Nexus Mods doesn't allow other sites to hand out the Address Library, so when its file is missing Play stops and a screen walks the player through downloading it from Nexus. Tidying never moves the Address Library files or Crash Logger's DLL, PDB and msdia140.dll. The health report's "Required mods" check covers all three.
 
 ## Game health checks
 

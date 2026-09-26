@@ -230,6 +230,9 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     if gc.needed {
         return Err(gc.reason.unwrap_or_else(|| "Your Skyrim version doesn't match the server.".into()));
     }
+    if gc.installed.is_some() {
+        install_missing_mods(&state.http, &dir).await?;
+    }
     game::inspect(&dir).map_err(err)?;
     tidy_game(&app, &dir, &m)?;
     let report = run_health(&app, &state.http, &config.base_url, &dir, Some(&m)).await;
@@ -780,7 +783,14 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
     let spec = game_spec(&state).await?;
     let base = state.config.lock().await.base_url.clone();
     let url = format!("{}/{}", base.trim_end_matches('/'), patcher::INDEX);
-    let index: patcher::Index = state
+    // Patches made on this PC (staff, see build_patches) are used directly.
+    let local_dir = patch_build_dir(&dir).join("out");
+    let local: Option<patcher::Index> = std::fs::read(local_dir.join("index.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    let index: patcher::Index = if let Some(ix) = local.filter(|ix| Some(ix.target.as_str()) == spec.version.as_deref()) {
+        log::line(&format!("patch: using patches made on this PC in {}", local_dir.display()));
+        ix
+    } else {
+        state
         .http
         .get(&url)
         .timeout(std::time::Duration::from_secs(15))
@@ -790,7 +800,8 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
         .map_err(|e| format!("NO_PATCH:The server's patches aren't available ({e})."))?
         .json()
         .await
-        .map_err(|e| format!("NO_PATCH:The server's patch list is damaged ({e})."))?;
+        .map_err(|e| format!("NO_PATCH:The server's patch list is damaged ({e})."))?
+    };
     if Some(index.target.as_str()) != spec.version.as_deref() {
         return Err(format!("NO_PATCH:The server's patches make {}, but it needs {}.", index.target, spec.version.as_deref().unwrap_or("?")));
     }
@@ -824,7 +835,8 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
         let patch = step.patch.as_ref().expect("checked");
         let _ = app.emit("patch-progress", PatchProgress { stage: "download", file: step.file.path.clone(), done: i, total });
         let purl = format!("{}/patches/{}", base.trim_end_matches('/'), patch.file);
-        let local = tmp.join(&patch.file);
+        let made_here = local_dir.join(&patch.file);
+        let local = if made_here.is_file() { made_here } else { tmp.join(&patch.file) };
         let have = local.is_file() && patcher::sha256_file(&local).ok().is_some_and(|h| h.eq_ignore_ascii_case(&patch.sha256));
         if !have {
             let bytes = state.http.get(&purl).send().await.and_then(|r| r.error_for_status()).map_err(|e| format!("Couldn't download the patch for {} ({e}).", step.file.path))?.bytes().await.map_err(|e| e.to_string())?;
@@ -840,11 +852,57 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
             .await
             .map_err(|e| e.to_string())?
             .map_err(|e| format!("Couldn't patch {} ({e}). Close Skyrim, Steam and Vortex, then try again.", step.file.path))?;
-        let _ = std::fs::remove_file(&local);
+        if local.starts_with(&tmp) {
+            let _ = std::fs::remove_file(&local);
+        }
         log::line(&format!("patch: patched {}", step.file.path));
     }
     let _ = app.emit("patch-progress", PatchProgress { stage: "verify", file: String::new(), done: total, total });
-    finish_downgrade(&dir, &spec, false)
+    let gc = finish_downgrade(&dir, &spec, false)?;
+    install_missing_mods(&state.http, &dir).await?;
+    Ok(gc)
+}
+
+fn patch_build_dir(game_dir: &std::path::Path) -> PathBuf {
+    game_dir.join(".aetherial-dawn").join("patch-build")
+}
+
+/// Staff, once per Steam build: downloads the server's build with Steam into
+/// a separate folder (never the game folder), then makes patches from the
+/// game as Steam has it now to that build. The patches are used on this PC
+/// right away, and the folder `<game>\.aetherial-dawn\patch-build\out` is
+/// what goes on the server at launcher/patches/. Sends the same events as
+/// the Steam sign-in, then `patch-progress` with stage "build".
+#[tauri::command]
+async fn build_patches(app: AppHandle, state: State<'_, AppState>, username: String) -> CmdResult<String> {
+    let dir = game_dir(&state).await?;
+    let spec = game_spec(&state).await?;
+    let version = spec.version.clone().ok_or("The server doesn't name a Skyrim version.")?;
+    let build = patch_build_dir(&dir);
+    let target = build.join(&version);
+    let out = build.join("out");
+    let login = downgrade::Login::User(username.trim().to_string());
+    let args = downgrade::args(&spec, &target, &login).map_err(err)?;
+    log::line(&format!("patch build: downloading {version} into {} to make patches", target.display()));
+    let tools = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("tools");
+    let _ = app.emit("downgrade-stage", "tool");
+    let tool = downgrade::ensure_tool(&state.http, &tools, spec.tool.as_ref()).await.map_err(err)?;
+    let _ = app.emit("downgrade-stage", "steam");
+    run_inline(&app, &state, &tool, &args, &tools).await?;
+    log::line("patch build: download finished, making patches");
+    let (from, app2, out2, target2) = (dir.clone(), app.clone(), out.clone(), target.clone());
+    let index = tokio::task::spawn_blocking(move || {
+        launcher_core::patcher::build(&from, &target2, &version, &out2, |m| {
+            log::line(&format!("patch build: {m}"));
+            let _ = app2.emit("patch-progress", PatchProgress { stage: "build", file: m.to_string(), done: 0, total: 0 });
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| format!("Couldn't make the patches ({e})."))?;
+    let n: usize = index.files.iter().map(|f| f.patches.len()).sum();
+    log::line(&format!("patch build: {n} patches for {} files in {}", index.files.len(), out.display()));
+    Ok(out.display().to_string())
 }
 
 #[derive(Serialize)]
@@ -983,13 +1041,29 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest) -> CmdResult<
 /// its GitHub release when missing; the Address Library can only come from
 /// Nexus Mods, so Play stops with "NEEDS_ADDRESS_LIBRARY:" and the UI walks
 /// the player through it.
-async fn ensure_requirements(http: &reqwest::Client, dir: &std::path::Path, m: &Manifest) -> CmdResult<()> {
-    if !requirements::crash_logger_ok(dir) {
-        match requirements::install_crash_logger(http, dir).await {
-            Ok(()) => log::line(&format!("play: installed Crash Logger {}", requirements::CRASH_LOGGER_VERSION)),
-            Err(e) => log::line(&format!("play: couldn't install Crash Logger: {e}")),
+/// Installs SKSE 2.2.6 and Crash Logger from their official GitHub releases
+/// when they're missing.
+async fn install_missing_mods(http: &reqwest::Client, dir: &std::path::Path) -> CmdResult<()> {
+    if !requirements::skse_ok(dir) {
+        match requirements::install_skse(http, dir).await {
+            Ok(()) => log::line(&format!("installed SKSE {}", requirements::SKSE_VERSION)),
+            Err(e) => {
+                log::line(&format!("couldn't install SKSE: {e}"));
+                return Err(format!("Couldn't install SKSE {} ({e}). Check your internet connection and try again.", requirements::SKSE_VERSION));
+            }
         }
     }
+    if !requirements::crash_logger_ok(dir) {
+        match requirements::install_crash_logger(http, dir).await {
+            Ok(()) => log::line(&format!("installed Crash Logger {}", requirements::CRASH_LOGGER_VERSION)),
+            Err(e) => log::line(&format!("couldn't install Crash Logger: {e}")),
+        }
+    }
+    Ok(())
+}
+
+async fn ensure_requirements(http: &reqwest::Client, dir: &std::path::Path, m: &Manifest) -> CmdResult<()> {
+    install_missing_mods(http, dir).await?;
     if let Some(v) = m.game.as_ref().and_then(|g| g.version.as_deref()) {
         if !requirements::address_library_ok(dir, v) {
             let file = requirements::address_library_file(v);
@@ -1589,7 +1663,7 @@ fn main() {
             app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http, steam_child: Default::default(), steam_input: Default::default() });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report, health_check, steam_login_answer, steam_login_cancel, open_address_library_page, patch_game])
+        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report, health_check, steam_login_answer, steam_login_cancel, open_address_library_page, patch_game, build_patches])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }

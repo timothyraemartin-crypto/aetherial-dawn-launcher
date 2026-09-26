@@ -16,6 +16,61 @@ const CRASH_LOGGER_SHA256: &str = "ce8592d60a2394bc05874d4cc759d3513686c3e26f841
 pub const CRASH_LOGGER_FILES: [&str; 3] = ["CrashLogger.dll", "CrashLogger.pdb", "msdia140.dll"];
 pub const ADDRESS_LIBRARY_PAGE: &str = "https://www.nexusmods.com/skyrimspecialedition/mods/32444?tab=files";
 
+pub const SKSE_VERSION: &str = "2.2.6";
+const SKSE_URL: &str = "https://github.com/ianpatt/skse64/releases/download/v2.2.6/skse64_2_02_06.7z";
+const SKSE_SHA256: &str = "d7297f1a1d613e5265e1af4dbbfe8bd37a32719c1ccef363fc6187fa6eba0848";
+
+/// SKSE for the server's build: its loader, its DLL for 1.6.1170, and its
+/// scripts in Data\Scripts.
+pub fn skse_ok(game_dir: &Path) -> bool {
+    game_dir.join("skse64_loader.exe").is_file() && game_dir.join("skse64_1_6_1170.dll").is_file()
+}
+
+/// Downloads SKSE 2.2.6 from its official GitHub release, checks it, and puts
+/// the loader, DLL and scripts in the game folder (readme files are skipped).
+pub async fn install_skse(client: &reqwest::Client, game_dir: &Path) -> Result<()> {
+    let bytes = client.get(SKSE_URL).header("User-Agent", "AetherialDawnLauncher").send().await?.error_for_status()?.bytes().await?;
+    use sha2::{Digest, Sha256};
+    let got = hex::encode(Sha256::digest(&bytes));
+    if !got.eq_ignore_ascii_case(SKSE_SHA256) {
+        return Err(Error::HashMismatch { path: "SKSE".into(), expected: SKSE_SHA256.into(), actual: got });
+    }
+    unpack_skse(&bytes, game_dir)
+}
+
+fn unpack_skse(archive: &[u8], game_dir: &Path) -> Result<()> {
+    let mut reader = sevenz_rust2::ArchiveReader::new(std::io::Cursor::new(archive), sevenz_rust2::Password::empty())
+        .map_err(|e| Error::Game(format!("SKSE download is damaged: {e}")))?;
+    let mut wrote = 0;
+    reader
+        .for_each_entries(|entry, data| {
+            let name = entry.name().replace('\\', "/");
+            let Some((_, rel)) = name.split_once('/') else { return Ok(true) };
+            let keep = !entry.is_directory()
+                && !rel.contains("..")
+                && (rel.starts_with("Data/Scripts/") || (!rel.contains('/') && (rel.ends_with(".exe") || rel.ends_with(".dll"))));
+            if !keep {
+                return Ok(true);
+            }
+            let dest = game_dir.join(rel);
+            if let Some(p) = dest.parent() {
+                std::fs::create_dir_all(p)?;
+            }
+            let tmp = dest.with_extension("part");
+            let mut out = std::fs::File::create(&tmp)?;
+            std::io::copy(data, &mut out)?;
+            drop(out);
+            std::fs::rename(&tmp, &dest)?;
+            wrote += 1;
+            Ok(true)
+        })
+        .map_err(|e| Error::Game(format!("couldn't unpack SKSE: {e}")))?;
+    if wrote == 0 {
+        return Err(Error::Game("the SKSE download was empty".into()));
+    }
+    Ok(())
+}
+
 fn plugins_dir(game_dir: &Path) -> PathBuf {
     game_dir.join("Data").join("SKSE").join("Plugins")
 }
@@ -86,6 +141,16 @@ mod tests {
         std::fs::create_dir_all(plugins_dir(tmp.path())).unwrap();
         std::fs::write(plugins_dir(tmp.path()).join("versionlib-1-6-1170-0.bin"), b"x").unwrap();
         assert!(address_library_ok(tmp.path(), "1.6.1170.0"));
+    }
+
+    #[test]
+    fn unpacks_skse() {
+        let Ok(p) = std::env::var("AD_SKSE_7Z") else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        unpack_skse(&std::fs::read(p).unwrap(), tmp.path()).unwrap();
+        assert!(skse_ok(tmp.path()));
+        assert!(tmp.path().join("Data/Scripts/actor.pex").is_file());
+        assert!(!tmp.path().join("skse64_readme.txt").exists());
     }
 
     /// Runs against the real release when it's been downloaded to

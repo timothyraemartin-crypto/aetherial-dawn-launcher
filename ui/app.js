@@ -99,7 +99,9 @@
       $('nav-settings').setAttribute('aria-current', 'page');
     }
   }
-  const ready_ = () => state.game && state.game.hasSkse;
+  // SKSE, Crash Logger and the right game version are the launcher's job, so
+  // a Skyrim folder is all a player needs to get going.
+  const ready_ = () => !!state.game;
   const signedIn = () => !!(auth && auth.signedIn);
   function leaveSheet() {
     if (!ready_()) { renderGame(); showSheet('first'); return; }
@@ -117,7 +119,7 @@
   function renderGame() {
     const g = state.game;
     const gameRow = [!!g, g ? 'Skyrim Special Edition' : 'Skyrim not found', g ? g.dir : (state.gameError || 'Pick the folder that has SkyrimSE.exe in it.')];
-    const skseRow = [!!(g && g.hasSkse), g && g.hasSkse ? 'SKSE installed' : 'SKSE is missing', g && g.hasSkse ? 'skse64_loader.exe' : 'skse64_loader.exe was not found in the game folder'];
+    const skseRow = [!!(g && g.hasSkse), g && g.hasSkse ? 'SKSE installed' : 'SKSE is missing', g && g.hasSkse ? 'skse64_loader.exe' : 'The launcher installs it for you when you press Play.'];
     renderRow($('g-game'), ...gameRow); renderRow($('g-skse'), ...skseRow);
     renderVersion();
     renderRow($('c-game'), ...gameRow); renderRow($('c-skse'), ...skseRow);
@@ -265,8 +267,8 @@
     if (auth.locked) { setPlay('wait', 'OFFLINE'); setStatus(auth.message, true); return; }
     setPlay('play', 'PLAY');
     if (c && c.warning) setStatus(c.warning, true);
-    if (c && c.target && !c.skseOk) setStatus(`SKSE for Skyrim ${shortVer(c.target)} is missing. Install SKSE ${c.skseVersion || ''} from skse.silverlock.org.`, true);
-    else setStatus(null);
+    if (c && c.target && !c.skseOk) setStatus(`The launcher installs SKSE ${c.skseVersion || ''} for you when you press Play.`);
+    else if (!(c && c.warning)) setStatus(null);
   }
 
   // ---------- discord sign-in ----------
@@ -364,7 +366,7 @@
     document.querySelector('#downgrade .choice').hidden = steam;
     $('dg-notes').hidden = steam;
     const how = document.querySelector('input[name="dg-login"]:checked').value;
-    $('dg-user-field').hidden = steam || (how !== 'user' && how !== 'here');
+    $('dg-user-field').hidden = steam || !['user', 'here', 'build'].includes(how);
     $('dg-other').hidden = steam || !document.querySelector('#downgrade .opt.other[hidden]');
     if (!steam && steamPoll) { clearInterval(steamPoll); steamPoll = null; }
   }
@@ -514,6 +516,7 @@
     download: (p) => `Downloading the patch for ${p.file} (${p.done + 1} of ${p.total})…`,
     apply: (p) => `Patching ${p.file} (${p.done + 1} of ${p.total})…`,
     verify: () => 'Checking your game…',
+    build: (p) => `Building patches… ${p.file}`,
   };
   async function patchGame() {
     dgBusy(true);
@@ -531,16 +534,60 @@
     catch (e) {
       const msg = String(e);
       if (msg.startsWith('NO_PATCH:')) {
-        dgFail(msg.slice(9) + ' You can download the right version with Steam under Other ways to download.');
+        dgFail(msg.slice(9) + ' Staff can make the patches once with "Make the patches", or you can download the right version with Steam below.');
         document.querySelectorAll('#downgrade .opt.other').forEach(o => { o.hidden = false; });
         $('dg-other').hidden = true;
       } else dgFail(msg);
     }
     finally { off(); $('dg-bar').hidden = true; }
   }
+  // Staff, once per Skyrim update: download the server's version into a
+  // separate folder with a Steam sign-in, build the patches, then patch.
+  async function buildPatches() {
+    const user = $('dg-user').value.trim();
+    if (!user) { dgFail('Type your Steam account name.'); return; }
+    try { localStorage.setItem('ad-steam-user', user); } catch {}
+    dgBusy(true);
+    inlineRun = true;
+    $('dg-cancel').disabled = false;
+    $('dg-cancel').textContent = 'Stop';
+    $('dg-error').hidden = true;
+    $('dg-notes').hidden = true;
+    document.querySelector('#downgrade .choice').hidden = true;
+    $('dg-other').hidden = true;
+    $('dg-progress').hidden = false;
+    $('dg-stage').textContent = STAGES.tool;
+    const offStage = await T.event.listen('downgrade-stage', ({ payload }) => {
+      $('dg-stage').textContent = payload === 'steam' ? 'Connecting to Steam…' : (STAGES[payload] || '');
+    });
+    const offLogin = await T.event.listen('steam-login', ({ payload }) => steamEvent(payload));
+    const offBuild = await T.event.listen('patch-progress', ({ payload: p }) => {
+      $('dg-ask').hidden = true;
+      $('dg-bar').hidden = true;
+      $('dg-stage').textContent = (PATCH_STAGES[p.stage] || (() => ''))(p);
+    });
+    let built = false;
+    try { await invoke('build_patches', { username: user }); built = true; }
+    catch (e) { dgFail(e); }
+    finally {
+      offStage(); offLogin(); offBuild();
+      inlineRun = false;
+      $('dg-ask').hidden = true;
+      $('dg-bar').hidden = true;
+      $('dg-cancel').textContent = 'Not now';
+      $('dg-notes').hidden = false;
+      document.querySelector('#downgrade .choice').hidden = false;
+      dgMode(false);
+    }
+    if (built) {
+      document.querySelector('input[name="dg-login"][value="patch"]').checked = true;
+      await patchGame();
+    }
+  }
   async function runDowngrade() {
     const how = document.querySelector('input[name="dg-login"]:checked').value;
     if (how === 'patch') return patchGame();
+    if (how === 'build') return buildPatches();
     if (how === 'here') return inlineDowngrade();
     if (how === 'app') return steamBegin();
     const user = how === 'user' ? $('dg-user').value.trim() : null;
@@ -813,7 +860,7 @@
   };
   document.querySelectorAll('input[name="dg-login"]').forEach(r => r.onchange = () => {
     const how = document.querySelector('input[name="dg-login"]:checked').value;
-    $('dg-user-field').hidden = how !== 'user' && how !== 'here';
+    $('dg-user-field').hidden = !['user', 'here', 'build'].includes(how);
   });
   $('c-skse-recheck').onclick = refreshState;
   $('f-go').onclick = () => { if (!signedIn()) { showSignIn(); return; } showPage('home'); check(); };
