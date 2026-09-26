@@ -793,13 +793,17 @@ async function onPlay() {
 
   // ---------- launcher self-update ----------
   // Installs every new launcher release by itself: on start and every
-  // 15 minutes, never while Skyrim is running or a download is in progress.
+  // minute, never while Skyrim is running or a download is in progress.
   let gameRunning = false, updating = false;
-  async function checkSelfUpdate() {
-    if (updating || gameRunning || busy) return;
+  let lastUpToDateLog = 0;
+  async function checkSelfUpdate(byHand) {
+    if (updating || gameRunning || busy) return byHand ? 'busy' : undefined;
     try {
       const upd = await T.updater.check();
-      if (!upd) { logUi('launcher is up to date'); return; }
+      if (!upd) {
+        if (byHand || Date.now() - lastUpToDateLog > 30 * 60 * 1000) { logUi('launcher is up to date'); lastUpToDateLog = Date.now(); }
+        return 'latest';
+      }
       updating = true;
       $('self-update-text').textContent = `Updating the launcher to ${upd.version}…`;
       $('self-update').hidden = false;
@@ -818,9 +822,19 @@ async function onPlay() {
       }
     } catch (e) {
       logUi('launcher self-update check failed: ' + e);
+      return 'failed';
     }
   }
-  setInterval(checkSelfUpdate, 15 * 60 * 1000);
+  setInterval(() => checkSelfUpdate(false), 60 * 1000);
+  $('set-update').onclick = async () => {
+    const b = $('set-update');
+    b.disabled = true;
+    b.textContent = 'Checking…';
+    const r = await checkSelfUpdate(true);
+    b.disabled = false;
+    b.textContent = r === 'latest' ? 'Up to date' : r === 'busy' ? 'Try again after the game or download' : r === 'failed' ? "Couldn't check, try again" : 'Check for updates';
+    setTimeout(() => { b.textContent = 'Check for updates'; }, 4000);
+  };
 
   // ---------- game health ----------
   const HL_TAG = { ok: 'OK', info: 'INFO', warn: 'WARN', fail: 'FAIL' };
