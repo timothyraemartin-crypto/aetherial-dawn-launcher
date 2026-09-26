@@ -233,6 +233,32 @@ pub fn switch_on(plugins_txt: &Path, names: &[String]) -> Result<Vec<String>> {
     Ok(changed)
 }
 
+/// Puts the five base masters first in loadorder.txt, in their own order,
+/// keeping everything else as it was (Vortex had the Unofficial Patch ahead
+/// of Skyrim.esm on 2026-09-26). Returns whether it changed the file.
+pub fn fix_order(loadorder_txt: &Path) -> Result<bool> {
+    let Ok(text) = std::fs::read_to_string(loadorder_txt) else { return Ok(false) };
+    let masters = &BASE[..5];
+    let lines: Vec<&str> = text.lines().collect();
+    let is_master = |l: &str| masters.contains(&l.trim().to_ascii_lowercase().as_str());
+    let (comments, rest): (Vec<&str>, Vec<&str>) = lines.iter().partition(|l| l.trim_start().starts_with('#'));
+    let mut first: Vec<&str> = rest.iter().copied().filter(|l| is_master(l)).collect();
+    first.sort_by_key(|l| masters.iter().position(|m| *m == l.trim().to_ascii_lowercase()));
+    let entries: Vec<&str> = rest.iter().copied().filter(|l| !l.trim().is_empty()).collect();
+    let mut want: Vec<&str> = first.clone();
+    want.extend(entries.iter().copied().filter(|l| !is_master(l)));
+    if want == entries {
+        return Ok(false);
+    }
+    std::fs::write(loadorder_txt.with_extension("txt.aetherial-dawn-backup"), &text)?;
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut out: Vec<&str> = comments;
+    out.extend(want);
+    out.push("");
+    std::fs::write(loadorder_txt, out.join(nl))?;
+    Ok(true)
+}
+
 /// A minimal plugin file for tests elsewhere in the crate.
 #[cfg(test)]
 pub fn test_plugin(version: f32, records: bool) -> Vec<u8> {
@@ -288,6 +314,16 @@ mod tests {
         let after = std::fs::read_to_string(&txt).unwrap();
         assert_eq!(after, "# Vortex\r\nSkyUI_SE.esp\r\n*ccBGSSSE001-Fish.esm\r\nGood.esp\r\nOff.esp\r\n");
         assert!(extras(tmp.path(), &txt, &m).is_empty());
+    }
+
+    #[test]
+    fn puts_the_masters_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("loadorder.txt");
+        std::fs::write(&p, "# Vortex\r\nunofficial skyrim special edition patch.esp\r\nSkyrim.esm\r\nUpdate.esm\r\nDawnguard.esm\r\nHearthFires.esm\r\nDragonborn.esm\r\nSkyUI_SE.esp\r\n").unwrap();
+        assert!(fix_order(&p).unwrap());
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "# Vortex\r\nSkyrim.esm\r\nUpdate.esm\r\nDawnguard.esm\r\nHearthFires.esm\r\nDragonborn.esm\r\nunofficial skyrim special edition patch.esp\r\nSkyUI_SE.esp\r\n");
+        assert!(!fix_order(&p).unwrap());
     }
 
     #[test]

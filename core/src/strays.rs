@@ -47,7 +47,7 @@ pub fn find(game_dir: &Path, m: &Manifest) -> Vec<String> {
             if CRASH_LOGGERS.iter().chain(crate::requirements::CRASH_LOGGER_FILES.iter()).chain(crate::requirements::SOULS_FILES.iter()).chain(crate::requirements::ENGINE_FIXES_FILES.iter()).chain([crate::requirements::MENU_FRAMEWORK_DLL].iter()).any(|c| c.eq_ignore_ascii_case(&name)) {
                 continue;
             }
-            if rel.eq_ignore_ascii_case(crate::settings::SETTINGS_PATH) || listed(m, &rel) || keep.contains(&rel.to_ascii_lowercase()) {
+            if rel.eq_ignore_ascii_case(crate::settings::SETTINGS_PATH) || listed(m, &rel) || keep.contains(&rel.to_ascii_lowercase()) || crate::allowlist::required_file(&rel) {
                 continue;
             }
             out.push(rel);
@@ -60,7 +60,7 @@ pub fn find(game_dir: &Path, m: &Manifest) -> Vec<String> {
     let required = |rel: &str| {
         crate::requirements::SOULS_FILES.iter().any(|f| rel.eq_ignore_ascii_case(&format!("{INTERFACE}/{f}"))) || rel.to_ascii_lowercase().starts_with(&icons)
     };
-    out.extend(loose.into_iter().filter(|rel| !listed(m, rel) && !rel.ends_with(VORTEX_MARKER) && !required(rel) && !keep.contains(&rel.to_ascii_lowercase())));
+    out.extend(loose.into_iter().filter(|rel| !listed(m, rel) && !rel.ends_with(VORTEX_MARKER) && !required(rel) && !keep.contains(&rel.to_ascii_lowercase()) && !crate::allowlist::required_file(rel)));
     out.sort();
     out
 }

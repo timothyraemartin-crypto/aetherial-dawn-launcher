@@ -1094,6 +1094,12 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_m
         log::line(&format!("play: moved {} file(s) from other mods to {}: {}", list.len(), dest.display(), list.join(", ")));
     }
     let mut set_aside = list.len();
+    // Files of mods it must keep that 0.1.38's sweep moved go back first.
+    match launcher_core::allowlist::restore_kept(dir) {
+        Ok(back) if !back.is_empty() => log::line(&format!("play: put back {} file(s) of required or listed mods that were set aside: {}", back.len(), back.join(", "))),
+        Ok(_) => {}
+        Err(e) => log::line(&format!("play: couldn't put set-aside files back: {e}")),
+    }
     if only_server_mods {
         let others = launcher_core::allowlist::unlisted_vortex_files(dir, m);
         if !others.is_empty() {
@@ -1155,6 +1161,11 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_m
             Ok(on) if !on.is_empty() => log::line(&format!("play: switched on in {}: {}", txt.display(), on.join(", "))),
             Ok(_) => {}
             Err(e) => log::line(&format!("play: couldn't switch plugins on: {e}")),
+        }
+        match loadorder::fix_order(&txt.with_file_name("loadorder.txt")) {
+            Ok(true) => log::line("play: put the five base masters first in loadorder.txt"),
+            Ok(false) => {}
+            Err(e) => log::line(&format!("play: couldn't fix loadorder.txt: {e}")),
         }
     }
     restore_crash_logger(dir);

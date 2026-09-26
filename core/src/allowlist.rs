@@ -68,10 +68,57 @@ pub fn vortex_files(game_dir: &Path) -> Vec<VortexFile> {
         .unwrap_or_default()
 }
 
+/// Names of required mods as they appear in Vortex's mod folder names, for
+/// folders that don't carry the Nexus id (a manual install).
+const REQUIRED_NAMES: [&str; 10] = [
+    "skse64",
+    "skyrim script extender",
+    "address library",
+    "engine fixes",
+    "unofficial skyrim special edition patch",
+    "skse menu framework",
+    "imgui icons",
+    "skyui",
+    "skyrim souls",
+    "crash logger",
+];
+
 fn listed_source(source: &str, ids: &[u64]) -> bool {
     let s = source.to_ascii_lowercase();
-    // Vortex names mod folders "<name>-<nexus id>-<version>-<time>".
-    ids.iter().any(|id| s.contains(&format!("-{id}-"))) || s.starts_with("skse64") || s.contains("skyrim script extender")
+    // Vortex names mod folders "<name>-<nexus id>-<version>-<time>", or with
+    // spaces ("SKSE Menu Framework 120352 3.18 ..."), so any number in the
+    // name that equals a listed id counts. A wrong match only keeps a file.
+    let numbers: Vec<&str> = s.split(|c: char| !c.is_ascii_digit()).filter(|t| !t.is_empty()).collect();
+    ids.iter().any(|id| numbers.contains(&id.to_string().as_str())) || REQUIRED_NAMES.iter().any(|n| s.contains(n))
+}
+
+/// Files of required mods by name, however they were installed: the
+/// framework's settings, fonts and themes next to its DLL, the patch's
+/// loose files, and so on. The game can crash at start when a DLL stays and
+/// these go (2026-09-26: SKSE Menu Framework without its fonts).
+pub fn required_file(rel: &str) -> bool {
+    let l = rel.replace('\\', "/").to_ascii_lowercase();
+    let plugins = "data/skse/plugins/";
+    if let Some(n) = l.strip_prefix(plugins) {
+        return ["sksemenuframework", "fonts/", "enginefixes", "skyrimsoulsre", "crashlogger", "version-", "versionlib-"].iter().any(|p| n.starts_with(p));
+    }
+    let Some(n) = l.strip_prefix("data/") else { return false };
+    let patch = "unofficial skyrim special edition patch";
+    n.starts_with("skyui_se.")
+        || n.starts_with(patch)
+        || n.starts_with(&format!("bashtags/{patch}"))
+        || n.starts_with(&format!("docs/{patch}"))
+        || n.starts_with("interface/imguiicons/")
+}
+
+/// Vortex mod folders that must stay whole: listed ones, and any that
+/// deployed a required file.
+fn kept_sources(files: &[VortexFile], ids: &[u64], keep: &HashSet<String>) -> HashSet<String> {
+    files
+        .iter()
+        .filter(|f| listed_source(&f.source, ids) || required_file(&f.rel) || keep.contains(&f.rel.to_ascii_lowercase()))
+        .map(|f| f.source.clone())
+        .collect()
 }
 
 fn ids(list: &[ModEntry]) -> Vec<u64> {
@@ -95,8 +142,10 @@ pub fn keep_set(game_dir: &Path) -> HashSet<String> {
         }
     }
     let ids = ids(&list);
-    for f in vortex_files(game_dir) {
-        if listed_source(&f.source, &ids) {
+    let files = vortex_files(game_dir);
+    let sources = kept_sources(&files, &ids, &keep);
+    for f in files {
+        if sources.contains(&f.source) || required_file(&f.rel) {
             keep.insert(f.rel.to_ascii_lowercase());
         }
     }
@@ -121,22 +170,69 @@ pub fn unlisted_vortex_files(game_dir: &Path, manifest: &Manifest) -> Vec<String
 }
 
 fn unlisted_with(game_dir: &Path, server_file: impl Fn(&str) -> bool) -> Vec<String> {
-    let list = listed(game_dir);
-    let ids = ids(&list);
     let keep = keep_set(game_dir);
-    let mut out: Vec<String> = vortex_files(game_dir)
+    let files = vortex_files(game_dir);
+    // A mod is set aside whole or not at all: if any of its files stays
+    // (kept, a plugin, a server file), all of them stay.
+    let mut staying: HashSet<String> = HashSet::new();
+    for f in &files {
+        let l = f.rel.to_ascii_lowercase();
+        let plugin_or_archive = [".esp", ".esm", ".esl", ".bsa"].iter().any(|x| l.ends_with(x));
+        if keep.contains(&l) || plugin_or_archive || server_file(&f.rel) || required_file(&f.rel) {
+            staying.insert(f.source.clone());
+        }
+    }
+    let mut out: Vec<String> = files
         .into_iter()
-        .filter(|f| !listed_source(&f.source, &ids))
+        .filter(|f| !staying.contains(&f.source))
         .map(|f| f.rel)
-        .filter(|rel| {
-            let l = rel.to_ascii_lowercase();
-            let plugin_or_archive = [".esp", ".esm", ".esl", ".bsa"].iter().any(|x| l.ends_with(x));
-            !plugin_or_archive && !keep.contains(&l) && !server_file(rel) && game_dir.join(rel).is_file()
-        })
+        .filter(|rel| game_dir.join(rel).is_file())
         .collect();
     out.sort();
     out.dedup();
     out
+}
+
+/// Puts back files an earlier "Only the server's mods" sweep set aside that
+/// belong to mods it must keep (0.1.38 moved SKSE Menu Framework's fonts and
+/// settings and the Unofficial Patch's loose files). Returns them.
+pub fn restore_kept(game_dir: &Path) -> std::io::Result<Vec<String>> {
+    let root = game_dir.join(crate::strays::DISABLED_DIR);
+    let Ok(rd) = std::fs::read_dir(&root) else { return Ok(Vec::new()) };
+    let keep = keep_set(game_dir);
+    let mut stamps: Vec<std::path::PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir() && p.to_string_lossy().ends_with("-other-mods")).collect();
+    stamps.sort();
+    stamps.reverse();
+    let mut back = Vec::new();
+    for stamp in stamps {
+        let mut stack = vec![stamp.clone()];
+        while let Some(d) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                    continue;
+                }
+                let Ok(rel) = p.strip_prefix(&stamp) else { continue };
+                let rel_s = rel.to_string_lossy().replace('\\', "/");
+                if !(keep.contains(&rel_s.to_ascii_lowercase()) || required_file(&rel_s)) {
+                    continue;
+                }
+                let to = game_dir.join(rel);
+                if to.exists() {
+                    continue;
+                }
+                if let Some(parent) = to.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::rename(&p, &to)?;
+                back.push(rel_s);
+            }
+        }
+    }
+    back.sort();
+    Ok(back)
 }
 
 /// Puts everything the launcher set aside back where it was, unless
@@ -202,7 +298,44 @@ mod tests {
         assert!(keep.contains("data/skse/plugins/skseMenuFramework.dll".to_ascii_lowercase().as_str()));
         assert!(keep.contains("data/scripts/uimenubase.pex"));
         assert!(!keep.contains("data/meshes/armor/x.nif"));
-        assert_eq!(unlisted_with(g, |_| false), ["Data/Meshes/armor/x.nif", "Data/SKSE/Plugins/Other.dll"]);
+        // Other's plugin stays (switched off in the load order instead), so
+        // its files stay together; the SKSE sweep still moves its DLL alone,
+        // which only leaves harmless support files.
+        assert_eq!(unlisted_with(g, |_| false), ["Data/Meshes/armor/x.nif"]);
+    }
+
+    /// Timothy's PC, 2026-09-26: Vortex folder names with spaces, a manual
+    /// Unofficial Patch, and a mod whose plugin stays.
+    #[test]
+    fn keeps_menu_framework_fonts_and_whole_mods() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        let data = g.join("Data");
+        let files = [
+            ("SKSE\\Plugins\\SKSEMenuFramework.dll", "SKSE Menu Framework 120352 3.18 2026-09-17T16-36Z cE8hkAlOT"),
+            ("SKSE\\Plugins\\SKSEMenuFramework.ini", "SKSE Menu Framework 120352 3.18 2026-09-17T16-36Z cE8hkAlOT"),
+            ("SKSE\\Plugins\\fonts\\fa-solid-900.ttf", "Some Other Name"),
+            ("SKSE\\Plugins\\SKSEMenuFrameworkThemes\\modern.json", "SKSE Menu Framework 120352 3.18 2026-09-17T16-36Z cE8hkAlOT"),
+            ("unofficial skyrim special edition patch.ini", "USSEP manual"),
+            ("Docs\\Unofficial Skyrim Special Edition Patch Readme + Credits.html", "USSEP manual"),
+            ("Textures\\a.dds", "Armor 77777 1.0"),
+            ("Armor.esp", "Armor 77777 1.0"),
+            ("Meshes\\b.nif", "Junk 55555 2.0"),
+        ];
+        for (p, _) in files {
+            let f = data.join(p.replace('\\', "/"));
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, b"x").unwrap();
+        }
+        let dep = serde_json::json!({"files": files.iter().map(|(p, s)| serde_json::json!({"relPath": p, "source": s})).collect::<Vec<_>>()});
+        std::fs::write(data.join("vortex.deployment.json"), serde_json::to_vec(&dep).unwrap()).unwrap();
+        // Only the mod with nothing that must stay goes.
+        assert_eq!(unlisted_with(g, |_| false), ["Data/Meshes/b.nif"]);
+        // What 0.1.38 moved comes back; other mods' files stay set aside.
+        crate::strays::move_aside(g, &["Data/SKSE/Plugins/SKSEMenuFramework.ini".into(), "Data/SKSE/Plugins/fonts/fa-solid-900.ttf".into(), "Data/unofficial skyrim special edition patch.ini".into(), "Data/Meshes/b.nif".into()], "2026-09-26-21-55-53-UTC-other-mods").unwrap();
+        assert_eq!(restore_kept(g).unwrap(), ["Data/SKSE/Plugins/SKSEMenuFramework.ini", "Data/SKSE/Plugins/fonts/fa-solid-900.ttf", "Data/unofficial skyrim special edition patch.ini"]);
+        assert!(data.join("SKSE/Plugins/fonts/fa-solid-900.ttf").is_file());
+        assert!(!data.join("Meshes/b.nif").exists());
     }
 
     #[test]
