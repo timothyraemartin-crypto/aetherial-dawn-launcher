@@ -5,6 +5,7 @@
 pub mod auth;
 pub mod downgrade;
 pub mod game;
+pub mod gameini;
 pub mod loadorder;
 pub mod manifest;
 pub mod settings;

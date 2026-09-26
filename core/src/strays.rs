@@ -10,6 +10,10 @@ use crate::Result;
 
 const SKSE_PLUGINS: &str = "Data/SKSE/Plugins";
 const PLATFORM_PLUGINS: &str = "Data/Platform/Plugins";
+/// Loose menus here replace the game's own (RaceMenu, map and HUD mods).
+/// Vanilla Skyrim keeps its interface in BSAs, so nothing loose belongs here.
+const INTERFACE: &str = "Data/Interface";
+const VORTEX_MARKER: &str = "__folder_managed_by_vortex";
 /// Where moved files go, inside the game folder, keeping their paths.
 pub const DISABLED_DIR: &str = ".aetherial-dawn/disabled";
 
@@ -39,8 +43,24 @@ pub fn find(game_dir: &Path, m: &Manifest) -> Vec<String> {
             out.push(rel);
         }
     }
+    let mut loose = Vec::new();
+    walk(&game_dir.join(INTERFACE), INTERFACE, &mut loose);
+    out.extend(loose.into_iter().filter(|rel| !listed(m, rel) && !rel.ends_with(VORTEX_MARKER)));
     out.sort();
     out
+}
+
+fn walk(dir: &Path, rel: &str, out: &mut Vec<String>) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let r = format!("{rel}/{name}");
+        if e.path().is_dir() {
+            walk(&e.path(), &r, out);
+        } else {
+            out.push(r);
+        }
+    }
 }
 
 /// Moves the given files into `.aetherial-dawn/disabled/<stamp>/`, keeping
@@ -77,6 +97,9 @@ mod tests {
             "Data/Platform/Plugins/skymp5-client.js",
             "Data/Platform/Plugins/skymp5-client-settings.txt",
             "Data/Platform/Plugins/rp-portrait.js",
+            "Data/Interface/racesex_menu.swf",
+            "Data/Interface/racemenu/buttonart.swf",
+            "Data/Interface/__folder_managed_by_vortex",
         ] {
             let p = tmp.join(f);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -93,7 +116,15 @@ mod tests {
             game: None,
         };
         let s = find(&tmp, &m);
-        assert_eq!(s, ["Data/Platform/Plugins/rp-portrait.js", "Data/SKSE/Plugins/OldProbe.dll"]);
+        assert_eq!(
+            s,
+            [
+                "Data/Interface/racemenu/buttonart.swf",
+                "Data/Interface/racesex_menu.swf",
+                "Data/Platform/Plugins/rp-portrait.js",
+                "Data/SKSE/Plugins/OldProbe.dll"
+            ]
+        );
         let dest = move_aside(&tmp, &s, "t1").unwrap();
         assert!(dest.join("Data/SKSE/Plugins/OldProbe.dll").is_file());
         assert!(find(&tmp, &m).is_empty());

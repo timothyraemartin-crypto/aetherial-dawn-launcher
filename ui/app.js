@@ -258,7 +258,6 @@
       else { setPlay('wait', 'WRONG VERSION'); setStatus(c.reason, true); }
       return;
     }
-    if (strays().length && !ignoreStrays) { setPlay('strays', 'CHECK MODS'); setStatus(`${plural(strays().length, 'plugin')} from other mods can crash the game. Click Check mods.`, true); return; }
     if (!signedIn()) { setPlay('signin', 'SIGN IN'); setStatus('Sign in with Discord to play.', true); return; }
     if (auth.locked) { setPlay('wait', 'OFFLINE'); setStatus(auth.message, true); return; }
     setPlay('play', 'PLAY');
@@ -473,6 +472,7 @@
     setStatus('Starting Skyrim through SKSE…');
     try {
       await invoke('play');
+      gameRunning = true;
       setTimeout(() => { if (playMode === 'wait' && !busy) ready(); }, 8000);
     } catch (e) {
       const msg = String(e);
@@ -527,29 +527,35 @@
   }
 
   // ---------- launcher self-update ----------
+  // Installs every new launcher release by itself: on start and every
+  // 15 minutes, never while Skyrim is running or a download is in progress.
+  let gameRunning = false, updating = false;
   async function checkSelfUpdate() {
+    if (updating || gameRunning || busy) return;
     try {
       const upd = await T.updater.check();
       if (!upd) { logUi('launcher is up to date'); return; }
-      $('self-update-text').textContent = `Launcher ${upd.version} is ready to install.`;
+      updating = true;
+      $('self-update-text').textContent = `Updating the launcher to ${upd.version}…`;
       $('self-update').hidden = false;
-      $('self-update-go').onclick = async () => {
-        $('self-update-go').disabled = true;
-        $('self-update-text').textContent = 'Downloading the new launcher…';
-        logUi(`installing launcher ${upd.version}`);
-        try {
-          await upd.downloadAndInstall();
-          await T.process.relaunch();
-        } catch (e) {
-          logUi('launcher self-update failed: ' + e);
-          $('self-update-go').disabled = false;
-          $('self-update-text').textContent = "The launcher update didn't install. Click to try again." ;
-        }
-      };
+      $('self-update-go').hidden = true;
+      logUi(`installing launcher ${upd.version} automatically`);
+      try {
+        await upd.downloadAndInstall();
+        await T.process.relaunch();
+      } catch (e) {
+        updating = false;
+        logUi('launcher self-update failed: ' + e);
+        $('self-update-go').hidden = false;
+        $('self-update-go').disabled = false;
+        $('self-update-text').textContent = "The launcher update didn't install. Click to try again.";
+        $('self-update-go').onclick = () => { $('self-update-go').disabled = true; checkSelfUpdate(); };
+      }
     } catch (e) {
       logUi('launcher self-update check failed: ' + e);
     }
   }
+  setInterval(checkSelfUpdate, 15 * 60 * 1000);
 
   // ---------- wiring ----------
   const win = T.window.getCurrentWindow();
@@ -588,6 +594,7 @@
   // ---------- after the game closes ----------
   let lastReport = '';
   T.event.listen('game-ended', ({ payload: g }) => {
+    gameRunning = false;
     lastReport = g.report;
     if (!g.crashed) { setStatus(g.summary); ready(); return; }
     $('cr-summary').textContent = g.summary;

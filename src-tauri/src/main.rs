@@ -1,7 +1,7 @@
 // Hides the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use launcher_core::{auth, downgrade, game, loadorder, manifest::Manifest, settings, steamapp, strays, sync, version, watch, Error};
+use launcher_core::{auth, downgrade, game, gameini, loadorder, manifest::Manifest, settings, steamapp, strays, sync, version, watch, Error};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -217,6 +217,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
         return Err(gc.reason.unwrap_or_else(|| "Your Skyrim version doesn't match the server.".into()));
     }
     game::inspect(&dir).map_err(err)?;
+    tidy_game(&app, &dir, &m)?;
     let token = token(&app).ok_or("SIGNED_OUT:Sign in with Discord to play.")?;
     let session = match auth::play(&state.http, AUTH_URL, &token).await {
         auth::Answer::Ok(p) => {
@@ -633,6 +634,45 @@ async fn steam_app_install(state: State<'_, AppState>) -> CmdResult<version::Gam
     let n = tokio::task::spawn_blocking(move || steamapp::install(&root, &spec2, &dir2)).await.map_err(|e| e.to_string())?.map_err(err)?;
     log::line(&format!("downgrade (Steam app): copied {n} files into {}", dir.display()));
     finish_downgrade(&dir, &spec, false)
+}
+
+/// Before every Play: puts leftovers from other mod setups out of the game's
+/// way, so players never have to. SKSE/Platform plugins and loose Interface
+/// files the server didn't ship go to .aetherial-dawn/disabled/<time>/,
+/// extra plugins are switched off in plugins.txt, and archives Skyrim.ini
+/// names but that no longer exist are dropped (the ini is backed up first).
+/// Nothing is deleted.
+fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest) -> CmdResult<()> {
+    let list = strays::find(dir, m);
+    if !list.is_empty() {
+        let stamp = log::timestamp().replace([':', ' '], "-");
+        let dest = strays::move_aside(dir, &list, &stamp).map_err(|e| format!("Couldn't move old mod files out of the way ({e}). Close Skyrim and try again."))?;
+        log::line(&format!("play: moved {} file(s) from other mods to {}: {}", list.len(), dest.display(), list.join(", ")));
+    }
+    if let Some(txt) = plugins_txt(app) {
+        let extras = loadorder::extras(dir, &txt, m);
+        if !extras.is_empty() {
+            let names: Vec<String> = extras.iter().map(|e| e.name.clone()).collect();
+            loadorder::switch_off(&txt, &names).map_err(|e| format!("Couldn't change your load order ({e}). Close Skyrim and Vortex, then try again."))?;
+            log::line(&format!("play: switched off in {}: {}", txt.display(), extras.iter().map(|e| e.describe()).collect::<Vec<_>>().join(", ")));
+        }
+    }
+    let docs = app.path().document_dir().or_else(|_| app.path().home_dir().map(|h| h.join("Documents"))).unwrap_or_default();
+    for ini in gameini::ini_paths(&docs) {
+        match gameini::repair(&ini, &dir.join("Data")) {
+            Ok(r) if !r.is_empty() => log::line(&format!(
+                "play: cleaned {}: dropped {} missing archive(s) [{}] and {} repeat(s) [{}]",
+                ini.display(),
+                r.missing.len(),
+                r.missing.join(", "),
+                r.duplicates.len(),
+                r.duplicates.join(", ")
+            )),
+            Ok(_) => {}
+            Err(e) => log::line(&format!("play: couldn't clean {}: {e}", ini.display())),
+        }
+    }
+    Ok(())
 }
 
 /// The player's load order file (Vortex and the game both use it).

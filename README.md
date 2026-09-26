@@ -67,6 +67,19 @@ After each check, the launcher lists every `.dll` in `Data/SKSE/Plugins` and eve
 
 Check mods also reads the load order (`%LOCALAPPDATA%\Skyrim Special Edition\plugins.txt`). Any plugin switched on there that isn't the base game, `_ResourcePack.esl`, listed in `Skyrim.ccc` (Creation Club) or shipped by the server is listed, and so is a broken plugin file (bad header, version 0, no records). **Fix it** switches them off in plugins.txt and keeps a copy of the old file as `plugins.txt.aetherial-dawn-backup`. The plugin files stay in Data. Vortex rewrites plugins.txt when it deploys, so Vortex users also switch the plugin off in Vortex's Plugins tab. In the first live test, a 59-byte `SkyUI_SE.esp` stub from an old setup was the only active plugin.
 
+## Tidying before every Play
+
+Players don't click anything for this. Before each launch, the launcher:
+- moves SKSE/Platform plugins and loose `Data/Interface` files the server didn't ship (old RaceMenu, map and HUD menus) to `.aetherial-dawn/disabled/<time>/`;
+- switches extra or broken plugins off in plugins.txt;
+- drops archives from `sResourceArchiveList`/`sResourceArchiveList2` in Skyrim.ini, SkyrimPrefs.ini and SkyrimCustom.ini that no longer exist in Data, plus repeated ones. The original ini is kept once as `<name>.aetherial-dawn-backup`.
+
+Everything it changes is written to the log. In the first live test, Skyrim.ini still named 43 BSAs from uninstalled mods.
+
+## Launcher updates
+
+The launcher installs new releases by itself, without asking. It checks at startup and every 15 minutes, but never while Skyrim is running or a download is in progress.
+
 ## Keeping the game on the right build
 
 After a downgrade (either way), the launcher sets `"AutoUpdateBehavior" "1"` (only update when launched) in `steamapps/appmanifest_489830.acf` and makes that file read-only, so Steam doesn't swap the game data back to the newer build. The game is always started through SKSE, never through Steam. Server Info always offers **Fix version** / **Re-download** when the server lists depots. **My game is already on this version** needs a second click, and the mark it leaves is removed automatically if Skyrim then crashes, so the version check runs again. In the first live test, a player used it over updated game data and Skyrim crashed with an access violation after 4 seconds.
