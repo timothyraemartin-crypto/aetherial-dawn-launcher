@@ -49,9 +49,13 @@ The server's `manifest.json` names the Skyrim build it needs (`game.version`, no
 
 To test without Steam, point `game.tool.url` at a zip holding a stand-in `DepotDownloader`. `cargo run -p launcher-core --example gamever -- SkyrimSE.exe` prints an exe's version.
 
+## Discord sign-in
+
+The launcher signs players in through the login service at `AD_AUTH_URL` (default `https://vps-d38c928e.vps.ovh.us/ad`), following `aetherial-dawn-discord/CONTRACT.md` in the project files. The token is saved encrypted for the Windows user (DPAPI) and checked at start and every 10 minutes. A ban, or leaving the Discord, signs the player out. Each Play asks for a fresh game session and writes it into the SkyMP client settings, along with the client's remembered login in `Data/Platform/PluginsNoLoad`.
+
 ## Known gaps
 
-- **Player identity:** the launcher sends a random `profileId` saved on the player's PC. SkyMP's offline mode trusts that number, so players aren't truly authenticated yet. The plan is Discord sign-in checked by the server.
+- **Discord sign-in:** built to aetherial-dawn-discord/CONTRACT.md and tested against a stand-in service, not yet the live one. The file name of the game's remembered login (`auth-data-no-load.js`) is inferred from the SkyMP client source and needs checking on the first real test.
 - **Downgrader:** tested end to end with a stand-in for DepotDownloader, not yet against real Steam. Players on non-Steam copies can't use it.
 - **Game detection:** only Steam installs are found automatically. GOG and other installs use the folder picker.
 

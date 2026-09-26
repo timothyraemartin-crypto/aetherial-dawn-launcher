@@ -1,7 +1,7 @@
 // Hides the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use launcher_core::{downgrade, game, manifest::Manifest, settings, sync, version, Error};
+use launcher_core::{auth, downgrade, game, manifest::Manifest, settings, sync, version, Error};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -14,14 +14,25 @@ const DEFAULT_BASE_URL: &str = match option_env!("AD_BASE_URL") {
     None => "https://vps-d38c928e.vps.ovh.us/launcher",
 };
 
+/// The Discord login service. Set AD_AUTH_URL when building to change it.
+const AUTH_URL: &str = match option_env!("AD_AUTH_URL") {
+    Some(u) => u,
+    None => "https://vps-d38c928e.vps.ovh.us/ad",
+};
+
+/// How long the launcher trusts a sign-in it couldn't re-check (service down).
+const OFFLINE_GRACE_SECS: u64 = 24 * 3600;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct Config {
     game_dir: Option<PathBuf>,
     base_url: String,
-    /// SkyMP offline-mode profile. A placeholder until Discord sign-in exists:
-    /// the server trusts whatever number the client sends.
-    profile_id: i64,
+    /// The signed-in Discord account, shown in the launcher. The token itself
+    /// is kept separately, encrypted (see auth::save_token).
+    account: Option<auth::Profile>,
+    /// Unix time of the last time the login service accepted the token.
+    last_auth_ok: Option<u64>,
     close_on_launch: bool,
     background_updates: bool,
 }
@@ -31,7 +42,8 @@ impl Default for Config {
         Self {
             game_dir: None,
             base_url: DEFAULT_BASE_URL.into(),
-            profile_id: rand::random_range(1..i32::MAX as i64),
+            account: None,
+            last_auth_ok: None,
             close_on_launch: true,
             background_updates: true,
         }
@@ -182,7 +194,9 @@ async fn update(app: AppHandle, state: State<'_, AppState>, verify_all: bool) ->
     Ok(m.build)
 }
 
-/// Writes the SkyMP client settings and starts Skyrim through SKSE.
+/// Gets a game session from the login service, writes the SkyMP client
+/// settings and remembered login, and starts Skyrim through SKSE.
+/// Errors that start with "SIGNED_OUT:" mean the player must sign in again.
 #[tauri::command]
 async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     let config = state.config.lock().await.clone();
@@ -192,20 +206,162 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     if gc.needed {
         return Err(gc.reason.unwrap_or_else(|| "Your Skyrim version doesn't match the server.".into()));
     }
+    game::inspect(&dir).map_err(err)?;
+    let token = token(&app).ok_or("SIGNED_OUT:Sign in with Discord to play.")?;
+    let session = match auth::play(&state.http, AUTH_URL, &token).await {
+        auth::Answer::Ok(p) => p.session,
+        auth::Answer::SignedOut(msg) => {
+            sign_out(&app, &state).await;
+            return Err(format!("SIGNED_OUT:{msg}"));
+        }
+        auth::Answer::Refused { message, .. } => {
+            sign_out(&app, &state).await;
+            return Err(format!("SIGNED_OUT:{message}"));
+        }
+        auth::Answer::Offline(msg) => return Err(format!("Couldn't get you into the game: {msg}. Try again in a minute.")),
+        auth::Answer::Pending => return Err("The login service didn't answer. Try again.".into()),
+    };
     settings::write(
         &dir,
         &settings::ClientSettings {
             server_ip: &m.server.ip,
             server_port: m.server.port,
-            master: &m.master,
-            profile_id: config.profile_id,
+            master: AUTH_URL,
+            server_master_key: auth::SERVER_KEY,
+            session: &session,
         },
     )
     .map_err(err)?;
+    settings::write_auth_data(&dir, &session, &config.account.clone().unwrap_or_default()).map_err(err)?;
     game::launch(&dir).map_err(err)?;
     if config.close_on_launch {
         app.exit(0);
     }
+    Ok(())
+}
+
+// ---------- Discord sign-in ----------
+
+fn token_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_config_dir().ok().map(|d| d.join("session.bin"))
+}
+
+fn token(app: &AppHandle) -> Option<String> {
+    token_path(app).and_then(|p| auth::load_token(&p))
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+async fn sign_out(app: &AppHandle, state: &AppState) {
+    if let Some(p) = token_path(app) {
+        auth::forget_token(&p);
+    }
+    let mut config = state.config.lock().await;
+    config.account = None;
+    config.last_auth_ok = None;
+    if let Some(dir) = &config.game_dir {
+        settings::clear_login(dir);
+    }
+    let _ = save_config(app, &config);
+}
+
+async fn signed_in(app: &AppHandle, state: &AppState, profile: auth::Profile) -> CmdResult<()> {
+    let mut config = state.config.lock().await;
+    config.account = Some(profile);
+    config.last_auth_ok = Some(now());
+    save_config(app, &config)
+}
+
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct AuthStatus {
+    signed_in: bool,
+    account: Option<auth::Profile>,
+    /// Signed in, but the service couldn't be reached to confirm it.
+    offline: bool,
+    /// Play is locked (offline for too long).
+    locked: bool,
+    message: Option<String>,
+}
+
+/// Re-checks the saved sign-in with the login service. A ban or leaving the
+/// Discord signs the player out here.
+#[tauri::command]
+async fn auth_status(app: AppHandle, state: State<'_, AppState>) -> CmdResult<AuthStatus> {
+    let Some(token) = token(&app) else {
+        return Ok(AuthStatus::default());
+    };
+    match auth::me(&state.http, AUTH_URL, &token).await {
+        auth::Answer::Ok(profile) => {
+            signed_in(&app, &state, profile.clone()).await?;
+            Ok(AuthStatus { signed_in: true, account: Some(profile), ..Default::default() })
+        }
+        auth::Answer::SignedOut(msg) => {
+            sign_out(&app, &state).await;
+            Ok(AuthStatus { message: Some(msg), ..Default::default() })
+        }
+        auth::Answer::Refused { message, .. } => {
+            sign_out(&app, &state).await;
+            Ok(AuthStatus { message: Some(message), ..Default::default() })
+        }
+        auth::Answer::Offline(_) | auth::Answer::Pending => {
+            let config = state.config.lock().await;
+            let fresh = config.last_auth_ok.is_some_and(|t| now().saturating_sub(t) < OFFLINE_GRACE_SECS);
+            Ok(AuthStatus {
+                signed_in: true,
+                account: config.account.clone(),
+                offline: true,
+                locked: !fresh,
+                message: Some(if fresh {
+                    "Couldn't reach the login service. You can still play for now.".into()
+                } else {
+                    "Couldn't confirm your Discord sign-in for over a day. Connect to the internet and try again.".into()
+                }),
+            })
+        }
+    }
+}
+
+/// Opens the Discord sign-in in the browser. Returns the state to poll with.
+#[tauri::command]
+async fn auth_begin(app: AppHandle) -> CmdResult<String> {
+    use tauri_plugin_opener::OpenerExt;
+    let st = auth::new_state();
+    app.opener().open_url(auth::login_url(AUTH_URL, &st), None::<&str>).map_err(|e| e.to_string())?;
+    Ok(st)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PollResult {
+    /// pending | done | refused | expired | offline
+    status: &'static str,
+    message: Option<String>,
+    account: Option<auth::Profile>,
+}
+
+#[tauri::command]
+async fn auth_poll(app: AppHandle, state: State<'_, AppState>, st: String) -> CmdResult<PollResult> {
+    let r = |status, message: Option<String>| PollResult { status, message, account: None };
+    Ok(match auth::poll(&state.http, AUTH_URL, &st).await {
+        auth::Answer::Pending => r("pending", None),
+        auth::Answer::Ok(done) => {
+            let path = token_path(&app).ok_or("No place to save the sign-in.")?;
+            auth::save_token(&path, &done.token).map_err(err)?;
+            signed_in(&app, &state, done.profile.clone()).await?;
+            PollResult { status: "done", message: None, account: Some(done.profile) }
+        }
+        auth::Answer::Refused { message, .. } => r("refused", Some(message)),
+        auth::Answer::SignedOut(message) => r("expired", Some(message)),
+        auth::Answer::Offline(message) => r("offline", Some(message)),
+    })
+}
+
+#[tauri::command]
+async fn auth_sign_out(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+    sign_out(&app, &state).await;
     Ok(())
 }
 
@@ -292,6 +448,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let config = load_config(app.handle());
             save_config(app.handle(), &config)?;
@@ -302,7 +459,7 @@ fn main() {
             app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok])
+        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }

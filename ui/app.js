@@ -12,9 +12,10 @@
   let state = null;       // get_state
   let pending = null;     // check
   let status = null;      // status.json
-  let gameCheck = null;   // check().game: is Skyrim the build the server needs?
+  let gameCheck = null;
+  let auth = null;        // auth_status: Discord sign-in   // check().game: is Skyrim the build the server needs?
   let busy = false;
-  let playMode = 'wait';  // wait | play | update | retry | downgrade
+  let playMode = 'wait';  // wait | play | update | retry | downgrade | signin
   let page = 'home';
 
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
@@ -67,14 +68,17 @@
     $('first').hidden = id !== 'first';
     $('settings').hidden = id !== 'settings';
     $('downgrade').hidden = id !== 'downgrade';
+    $('signin').hidden = id !== 'signin';
     if (id === 'settings') {
       for (const nav of Object.values(PAGES)) $(nav).removeAttribute('aria-current');
       $('nav-settings').setAttribute('aria-current', 'page');
     }
   }
   const ready_ = () => state.game && state.game.hasSkse;
+  const signedIn = () => !!(auth && auth.signedIn);
   function leaveSheet() {
     if (!ready_()) { renderGame(); showSheet('first'); return; }
+    if (!signedIn()) { showSignIn(); return; }
     showPage(page);
     if (!pending && !busy) check();
   }
@@ -227,9 +231,80 @@
       else { setPlay('wait', 'WRONG VERSION'); setStatus(c.reason, true); }
       return;
     }
+    if (!signedIn()) { setPlay('signin', 'SIGN IN'); setStatus('Sign in with Discord to play.', true); return; }
+    if (auth.locked) { setPlay('wait', 'OFFLINE'); setStatus(auth.message, true); return; }
     setPlay('play', 'PLAY');
     if (c && c.target && !c.skseOk) setStatus(`SKSE for Skyrim ${shortVer(c.target)} is missing. Install SKSE ${c.skseVersion || ''} from skse.silverlock.org.`, true);
     else setStatus(null);
+  }
+
+  // ---------- discord sign-in ----------
+  function paintAvatar(el, a) {
+    const name = (a && a.discordUsername) || '?';
+    if (a && a.discordAvatar && /^https:\/\//.test(a.discordAvatar)) {
+      el.style.backgroundImage = `url("${a.discordAvatar.replace(/["\\]/g, '')}")`;
+      el.textContent = '';
+    } else {
+      el.style.backgroundImage = '';
+      el.textContent = name.slice(0, 1).toUpperCase();
+    }
+  }
+  function renderAccount() {
+    const a = signedIn() ? auth.account : null;
+    $('me').hidden = !a;
+    $('set-account').hidden = !a;
+    if (!a) return;
+    $('me-name').textContent = $('acc-name').textContent = a.discordUsername || 'Discord user';
+    $('acc-note').textContent = auth.offline ? 'Signed in with Discord (not re-checked yet)' : 'Signed in with Discord';
+    paintAvatar($('me-avatar'), a); paintAvatar($('acc-avatar'), a);
+  }
+  async function refreshAuth() {
+    try { auth = await invoke('auth_status'); }
+    catch (e) { auth = { signedIn: false, message: String(e) }; }
+    renderAccount();
+    return auth;
+  }
+  // Every 10 minutes: a ban or leaving the Discord signs the player out here.
+  async function recheckAuth() {
+    if (!signedIn() || busy) return;
+    await refreshAuth();
+    if (!signedIn()) { ready(); showSignIn(auth.message); }
+    else if (playMode === 'play' || playMode === 'wait') ready();
+  }
+  function showSignIn(message) {
+    $('si-error').textContent = message || '';
+    $('si-error').hidden = !message;
+    $('si-wait').hidden = true;
+    $('si-go').disabled = false;
+    showSheet('signin');
+  }
+  let signInRun = 0;
+  async function beginSignIn() {
+    const run = ++signInRun;
+    $('si-error').hidden = true;
+    let st;
+    try { st = await invoke('auth_begin'); }
+    catch (e) { showSignIn("Couldn't open your browser. " + e); return; }
+    $('si-go').disabled = true;
+    $('si-wait').hidden = false;
+    const until = Date.now() + 5 * 60 * 1000;
+    while (run === signInRun && Date.now() < until) {
+      await new Promise(r => setTimeout(r, 2000));
+      if (run !== signInRun) return;
+      let r;
+      try { r = await invoke('auth_poll', { st }); } catch (e) { r = { status: 'offline', message: String(e) }; }
+      if (r.status === 'pending' || r.status === 'offline') continue;
+      if (r.status === 'done') {
+        auth = { signedIn: true, account: r.account };
+        renderAccount();
+        showPage('home');
+        if (pending) ready(); else check();
+        return;
+      }
+      showSignIn(r.message || 'Sign-in didn\'t finish. Try again.');
+      return;
+    }
+    if (run === signInRun) showSignIn('Sign-in timed out. Try again.');
   }
 
   // ---------- game version ----------
@@ -277,6 +352,7 @@
     if (playMode === 'retry') return check();
     if (playMode === 'update') return update();
     if (playMode === 'downgrade') return openDowngrade();
+    if (playMode === 'signin') return showSignIn();
     if (playMode !== 'play') return;
     setPlay('wait', 'LAUNCHING');
     setStatus('Starting Skyrim through SKSE…');
@@ -284,8 +360,16 @@
       await invoke('play');
       setTimeout(() => { if (playMode === 'wait' && !busy) ready(); }, 8000);
     } catch (e) {
+      const msg = String(e);
+      if (msg.startsWith('SIGNED_OUT:')) {
+        auth = { signedIn: false };
+        renderAccount();
+        ready();
+        showSignIn(msg.slice(11));
+        return;
+      }
       setPlay('play', 'PLAY');
-      setStatus("Skyrim didn't start. " + e, true);
+      setStatus("Skyrim didn't start. " + msg, true);
     }
   }
 
@@ -350,7 +434,7 @@
   $('w-close').onclick = () => win.close();
   $('w-settings').onclick = $('nav-settings').onclick = $('t-settings').onclick = () => showSheet('settings');
   $('play').onclick = onPlay;
-  for (const [name, nav] of Object.entries(PAGES)) $(nav).onclick = () => { if (ready_()) showPage(name); else leaveSheet(); };
+  for (const [name, nav] of Object.entries(PAGES)) $(nav).onclick = () => { if (ready_() && signedIn()) showPage(name); else leaveSheet(); };
   $('news-all').onclick = () => showPage('news');
   $('set-done').onclick = leaveSheet;
   $('set-browse').onclick = pickFolder;
@@ -381,14 +465,27 @@
     $('dg-user-field').hidden = document.querySelector('input[name="dg-login"]:checked').value !== 'user';
   });
   $('c-skse-recheck').onclick = refreshState;
-  $('f-go').onclick = () => { showPage('home'); check(); };
+  $('f-go').onclick = () => { if (!signedIn()) { showSignIn(); return; } showPage('home'); check(); };
+  $('si-go').onclick = beginSignIn;
+  $('si-cancel').onclick = () => { signInRun++; $('si-wait').hidden = true; $('si-go').disabled = false; };
+  $('acc-signout').onclick = async () => {
+    await invoke('auth_sign_out');
+    auth = { signedIn: false };
+    renderAccount();
+    showSignIn();
+  };
 
   (async () => {
     await refreshState();
     loadStatus();
+    await refreshAuth();
+    setInterval(recheckAuth, 10 * 60 * 1000);
     if (!ready_()) {
       showSheet('first');
       setStatus('Finish setup to play');
+    } else if (!signedIn()) {
+      showSignIn(auth && auth.message);
+      setStatus('Sign in with Discord to play');
     } else {
       await check();
       loadStatus();

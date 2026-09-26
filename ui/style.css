@@ -60,7 +60,7 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
     linear-gradient(90deg, rgba(5,8,12,.55) 0, rgba(5,8,12,0) 40%); }
 
 /* ---------- header plate + title bar ---------- */
-.plate { position: absolute; z-index: 5; top: 0; left: 0; height: var(--head); width: 440px; display: flex; align-items: center; gap: 14px; padding: 0 60px 0 18px;
+.plate { position: absolute; z-index: 16; top: 0; left: 0; height: var(--head); width: 440px; display: flex; align-items: center; gap: 14px; padding: 0 60px 0 18px;
          background: var(--plate); border-bottom: 1px solid var(--line); clip-path: polygon(0 0, 100% 0, calc(100% - 46px) 100%, 0 100%); backdrop-filter: blur(6px); }
 .plate img { width: 62px; height: 62px; object-fit: contain; filter: drop-shadow(0 0 10px rgba(217,194,154,.35)); }
 .plate .wm { font: 500 27px/1 var(--display); letter-spacing: .06em; background: linear-gradient(180deg, #FAF6EE 30%, #C9B48E); -webkit-background-clip: text; background-clip: text; color: transparent; white-space: nowrap; }
@@ -84,6 +84,26 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .nav button[aria-current="page"] { color: var(--text); border-color: rgba(120,180,220,.4); background: linear-gradient(90deg, rgba(74,163,220,.2), rgba(74,163,220,.05)); box-shadow: inset 3px 0 0 var(--glow), 0 0 18px -6px rgba(74,163,220,.5); }
 .nav svg { width: 21px; height: 21px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .nav button[aria-current="page"] svg { color: var(--frost); }
+.me { display: flex; gap: 10px; align-items: center; margin: auto 10px 10px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 6px; background: rgba(255,255,255,.03); min-width: 0; }
+.me b { display: block; font-weight: 500; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.me small { display: block; color: var(--faint); font-size: 11px; }
+.me > div { min-width: 0; }
+.me + .ver { margin-top: 0; }
+.avatar { width: 30px; height: 30px; border-radius: 50%; flex: none; display: grid; place-items: center; background: #5865F2 center/cover no-repeat; color: #fff; font: 600 13px var(--body); box-shadow: 0 0 0 1px rgba(170,196,222,.3); }
+.account { display: flex; gap: 12px; align-items: center; padding: 12px 14px; border: 1px solid var(--line); border-radius: 6px; }
+.account .avatar { width: 38px; height: 38px; font-size: 15px; }
+.account > div { flex: 1; min-width: 0; }
+.account b { display: block; font-weight: 500; }
+.account small { display: block; color: var(--faint); font-size: 12px; }
+.signin { justify-items: center; text-align: center; }
+.signin .lead { margin-top: -6px; }
+.signin-emblem { width: 76px; height: 76px; object-fit: contain; filter: drop-shadow(0 0 18px rgba(169,214,242,.35)); }
+.btn.discord { height: 46px; padding: 0 26px; gap: 12px; background: linear-gradient(180deg, #6571F5, #4752C4); border-color: rgba(200,205,255,.5); font: 600 13px var(--display); letter-spacing: .14em; box-shadow: 0 12px 30px -12px rgba(88,101,242,.7); }
+.btn.discord:hover { background: linear-gradient(180deg, #7580F7, #505BD0); }
+.btn.discord:disabled { opacity: .5; cursor: default; }
+.btn.discord svg { width: 22px; height: 22px; fill: #fff; stroke: none; }
+.signin .dg-progress { justify-content: center; flex-wrap: wrap; }
+.signin .linkish { margin-left: 0; }
 .nav .ver { margin-top: auto; padding: 0 14px 4px; font: 400 11px var(--mono); color: var(--faint); }
 
 /* ---------- home: about text ---------- */
