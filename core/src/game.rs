@@ -88,7 +88,35 @@ pub fn launch(dir: &Path) -> Result<std::process::Child> {
     if !info.has_skse {
         return Err(Error::Game("SKSE isn't installed. Install it from skse.silverlock.org, then try again.".into()));
     }
-    Ok(std::process::Command::new(dir.join(SKSE_LOADER)).current_dir(dir).spawn()?)
+    let mut cmd = std::process::Command::new(dir.join(SKSE_LOADER));
+    cmd.current_dir(dir);
+    for name in GOOGLE_ENV {
+        cmd.env_remove(name);
+    }
+    Ok(cmd.spawn()?)
+}
+
+/// Google sign-in settings some Chromium guides and tools put in the Windows
+/// environment. Skyrim Platform's browser (CEF 108) reads them, turns on
+/// Google sign-in code it doesn't support, and crashes about 5 seconds in
+/// (seen 2026-09-26: a null read in libcef.dll while reading sign-in
+/// preferences). The game never needs them, so they're left out of its
+/// environment. The player's own settings aren't changed.
+pub const GOOGLE_ENV: [&str; 9] = [
+    "GOOGLE_API_KEY",
+    "GOOGLE_DEFAULT_CLIENT_ID",
+    "GOOGLE_DEFAULT_CLIENT_SECRET",
+    "GOOGLE_CLIENT_ID_MAIN",
+    "GOOGLE_CLIENT_SECRET_MAIN",
+    "GOOGLE_CLIENT_ID_REMOTING",
+    "GOOGLE_CLIENT_SECRET_REMOTING",
+    "GOOGLE_CLIENT_ID_REMOTING_HOST",
+    "GOOGLE_CLIENT_SECRET_REMOTING_HOST",
+];
+
+/// Which of those are set on this PC (names only, never values).
+pub fn google_env_present() -> Vec<&'static str> {
+    GOOGLE_ENV.iter().copied().filter(|n| std::env::var_os(n).is_some()).collect()
 }
 
 /// Asks Windows to run Skyrim on the high-performance graphics card (Settings,

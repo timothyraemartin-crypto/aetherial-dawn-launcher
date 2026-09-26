@@ -272,6 +272,10 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     settings::write_auth_data(&dir, &session, &config.account.clone().unwrap_or_default()).map_err(err)?;
     log::line("play: wrote skymp5-client-settings.txt and auth data");
     game::launch(&dir).map_err(err)?;
+    let google = game::google_env_present();
+    if !google.is_empty() {
+        log::line(&format!("play: left Google sign-in settings out of the game's environment: {}", google.join(", ")));
+    }
     log::line("play: started skse64_loader.exe");
     let started = std::time::SystemTime::now();
     if config.close_on_launch {
