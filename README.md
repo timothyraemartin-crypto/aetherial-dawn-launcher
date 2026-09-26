@@ -84,6 +84,10 @@ Players don't click anything for this. Before each launch, the launcher:
 
 Everything it changes is written to the log. In the first live test, Skyrim.ini still named 43 BSAs from uninstalled mods.
 
+## Plugins for a newer Skyrim
+
+Steam updates Creation Club downloads separately from the game, so after a downgrade they can stay on the newer build. Before every Play, `loadorder::too_new` compares each plugin's header version and form version with the five base masters. Any plugin that is newer, and any broken stub plugin, is moved with its archives to `.aetherial-dawn/disabled/<time>-plugins/`. The game skips Creation Club files that aren't in Data. The version record and the kept copy are then refreshed. A crash logger that launchers before 0.1.20 moved aside is put back, so the next crash names the failing module. Crash reports to staff go out in the background and are retried once when the staff service asks for a short wait.
+
 ## Game health checks
 
 The checks Claude ran by hand on the first tester's PC run for every player: before each Play, after a crash, and from **Settings, Check my game**. They cover:

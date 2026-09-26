@@ -51,6 +51,71 @@ pub fn broken(path: &Path) -> Option<String> {
     None
 }
 
+/// The HEDR version and the TES4 record's form version of a plugin.
+pub fn header(path: &Path) -> Option<(f32, u16)> {
+    use std::io::Read;
+    let mut bytes = [0u8; 34];
+    std::fs::File::open(path).ok()?.read_exact(&mut bytes).ok()?;
+    if &bytes[..4] != b"TES4" || &bytes[24..28] != b"HEDR" {
+        return None;
+    }
+    let form = u16::from_le_bytes([bytes[20], bytes[21]]);
+    Some((f32::from_le_bytes(bytes[30..34].try_into().ok()?), form))
+}
+
+/// Plugins in Data made for a newer Skyrim than the game's own masters: their
+/// header or form version is higher than any of the base masters'. Steam
+/// updates Creation Club downloads separately from the game, so after a
+/// downgrade they can be left on the newer build, and the older game can't
+/// load them. Returns the plugin names with their versions.
+pub fn too_new(game_dir: &Path) -> Vec<(String, String)> {
+    let data = game_dir.join("Data");
+    let base: Vec<(f32, u16)> = BASE[..5].iter().filter_map(|n| find(&data, n)).filter_map(|p| header(&p)).collect();
+    if base.len() < 5 {
+        return Vec::new();
+    }
+    let max_v = base.iter().map(|b| b.0).fold(0.0f32, f32::max);
+    let max_f = base.iter().map(|b| b.1).max().unwrap_or(0);
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(&data) else { return out };
+    for e in rd.flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        let l = n.to_ascii_lowercase();
+        if !(l.ends_with(".esm") || l.ends_with(".esl") || l.ends_with(".esp")) || BASE[..5].contains(&l.as_str()) {
+            continue;
+        }
+        if let Some((v, f)) = header(&e.path()) {
+            if v > max_v + 0.001 || f > max_f {
+                out.push((n, format!("header {v:.2}, form {f}; the game's masters are {max_v:.2}, form {max_f}")));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// A file in `dir` by name, ignoring case.
+fn find(dir: &Path, name: &str) -> Option<std::path::PathBuf> {
+    std::fs::read_dir(dir).ok()?.flatten().find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(name)).map(|e| e.path())
+}
+
+/// A plugin and the archives that belong to it (`<name>.bsa`,
+/// `<name> - Textures.bsa`), as paths relative to the game folder.
+pub fn with_archives(game_dir: &Path, plugin: &str) -> Vec<String> {
+    let stem = plugin.rsplit_once('.').map(|(s, _)| s).unwrap_or(plugin).to_ascii_lowercase();
+    let mut out = vec![format!("Data/{plugin}")];
+    if let Ok(rd) = std::fs::read_dir(game_dir.join("Data")) {
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            let l = n.to_ascii_lowercase();
+            if l == format!("{stem}.bsa") || l == format!("{stem} - textures.bsa") {
+                out.push(format!("Data/{n}"));
+            }
+        }
+    }
+    out
+}
+
 fn allowed(game_dir: &Path, manifest: &Manifest) -> Vec<String> {
     let mut ok: Vec<String> = BASE.iter().map(|s| s.to_string()).collect();
     for ccc in [game_dir.join("Data").join("Skyrim.ccc"), game_dir.join("Skyrim.ccc")] {
@@ -105,13 +170,19 @@ mod tests {
     use super::*;
 
     fn plugin(version: f32, records: bool) -> Vec<u8> {
+        plugin_form(version, 44, records)
+    }
+
+    fn plugin_form(version: f32, form: u16, records: bool) -> Vec<u8> {
         let mut sub = b"HEDR".to_vec();
         sub.extend(12u16.to_le_bytes());
         sub.extend(version.to_le_bytes());
         sub.extend([0u8; 8]);
         let mut b = b"TES4".to_vec();
         b.extend((sub.len() as u32).to_le_bytes());
-        b.extend([0u8; 16]);
+        b.extend([0u8; 12]);
+        b.extend(form.to_le_bytes());
+        b.extend([0u8; 2]);
         b.extend(sub);
         if records {
             b.extend(b"GRUP");
@@ -143,5 +214,25 @@ mod tests {
         let after = std::fs::read_to_string(&txt).unwrap();
         assert_eq!(after, "# Vortex\r\nSkyUI_SE.esp\r\n*ccBGSSSE001-Fish.esm\r\nGood.esp\r\nOff.esp\r\n");
         assert!(extras(tmp.path(), &txt, &m).is_empty());
+    }
+
+    #[test]
+    fn finds_plugins_newer_than_the_game() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        for m in ["Skyrim.esm", "Update.esm", "Dawnguard.esm", "HearthFires.esm", "Dragonborn.esm"] {
+            std::fs::write(data.join(m), plugin_form(1.71, 44, true)).unwrap();
+        }
+        std::fs::write(data.join("ccOld.esl"), plugin_form(1.71, 44, true)).unwrap();
+        std::fs::write(data.join("ccNew.esl"), plugin_form(1.72, 44, true)).unwrap();
+        std::fs::write(data.join("ccNewForm.esm"), plugin_form(1.71, 45, true)).unwrap();
+        std::fs::write(data.join("ccNew.bsa"), b"x").unwrap();
+        std::fs::write(data.join("ccNew - Textures.bsa"), b"x").unwrap();
+        let n: Vec<String> = too_new(tmp.path()).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(n, ["ccNew.esl", "ccNewForm.esm"]);
+        let mut a = with_archives(tmp.path(), "ccNew.esl");
+        a.sort();
+        assert_eq!(a, ["Data/ccNew - Textures.bsa", "Data/ccNew.bsa", "Data/ccNew.esl"]);
     }
 }

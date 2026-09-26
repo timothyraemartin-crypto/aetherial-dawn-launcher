@@ -170,6 +170,14 @@ pub fn record(game_dir: &Path, spec: &GameSpec, manual: bool) -> Result<()> {
     Ok(())
 }
 
+/// Updates the record after the launcher itself moved plugin files out of
+/// Data, when the record held just before. Keeps who made it.
+pub fn refresh(game_dir: &Path, spec: &GameSpec) -> Result<bool> {
+    let Some(m) = read_marker(game_dir) else { return Ok(false) };
+    record(game_dir, spec, m.manual != Some(false))?;
+    Ok(true)
+}
+
 /// After a crash: drops a marker the player set by hand, so the version check
 /// looks at Steam's record again. Returns true when one was removed.
 pub fn forget_manual(game_dir: &Path) -> bool {

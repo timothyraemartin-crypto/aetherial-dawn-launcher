@@ -728,14 +728,23 @@
     $('cr-report').textContent = g.report;
     $('cr-note').hidden = true;
     const staff = $('cr-staff');
-    staff.hidden = !g.reportId;
-    staff.textContent = g.reportId
-      ? `Staff already have this report as ${g.reportId}.` + (g.likelyCause ? ` Likely cause: ${g.likelyCause}` : '') + ' Mention the number if you ask for help.'
-      : '';
+    if (Date.now() - crashFiledAt > 60000) {
+      staff.hidden = !g.reportId;
+      staff.textContent = g.reportId
+        ? `Staff already have this report as ${g.reportId}.` + (g.likelyCause ? ` Likely cause: ${g.likelyCause}` : '') + ' Mention the number if you ask for help.'
+        : '';
+    }
     showSheet('crash');
     invoke('game_check').then(c => { gameCheck = c; renderVersion(); ready(); }).catch(() => {});
     ready();
     setStatus('Skyrim closed unexpectedly. Copy diagnostics in Settings includes the crash report.', true);
+  });
+  let crashFiledAt = 0;
+  T.event.listen('crash-filed', ({ payload: f }) => {
+    crashFiledAt = Date.now();
+    const staff = $('cr-staff');
+    staff.textContent = `Staff already have this report as ${f.reportId}.` + (f.likelyCause ? ` Likely cause: ${f.likelyCause}` : '') + ' Mention the number if you ask for help.';
+    staff.hidden = false;
   });
   $('cr-copy').onclick = async () => {
     try { await navigator.clipboard.writeText(lastReport); $('cr-note').textContent = 'Copied. Paste it with Ctrl+V.'; }

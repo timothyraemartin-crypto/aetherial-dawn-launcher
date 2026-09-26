@@ -85,6 +85,7 @@ pub fn run(i: &Inputs) -> Report {
         masters(i),
         load_order(i),
         stub_plugins(i),
+        newer_plugins(i),
         ini_archives(i),
         stray_plugins(i),
         injectors(i),
@@ -264,6 +265,15 @@ fn stub_plugins(i: &Inputs) -> Check {
         check("stubs", "Plugin files", Status::Ok, "No broken plugin files in Data.", vec![])
     } else {
         check("stubs", "Plugin files", Status::Warn, "Broken plugin files in Data. Switched off, they're harmless.", items)
+    }
+}
+
+fn newer_plugins(i: &Inputs) -> Check {
+    let items: Vec<String> = loadorder::too_new(i.game_dir).into_iter().map(|(n, why)| format!("{n}: {why}")).collect();
+    if items.is_empty() {
+        check("newer", "Plugins for a newer Skyrim", Status::Ok, "Every plugin in Data fits this Skyrim version.", vec![])
+    } else {
+        check("newer", "Plugins for a newer Skyrim", Status::Fail, "Plugins made for a newer Skyrim than this one. The launcher takes them out of play before each Play.", items)
     }
 }
 

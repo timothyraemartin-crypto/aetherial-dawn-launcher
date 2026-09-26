@@ -281,6 +281,13 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct CrashFiled {
+    report_id: Option<String>,
+    likely_cause: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GameEnded {
     crashed: bool,
     summary: String,
@@ -353,14 +360,18 @@ async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::
             staff_summary.push_str(&format!("\n\nCrash logger:\n{cl}"));
         }
     }
-    let filed = if crashed && config.share_health {
-        send_health(&app, &http, &config, &build, "after a crash", Some(&staff_summary), &health).await
-    } else {
-        Filed::default()
-    };
-    if let Some(id) = &filed.report_id {
-        report.push_str(&format!("\nSent to staff as {id}.\n"));
+    // Sent in the background: the staff service can ask for a short wait
+    // (one report per 20 s), and the crash window shouldn't wait for it.
+    if crashed && config.share_health {
+        let (app2, http2, health2) = (app.clone(), http.clone(), health.clone());
+        tauri::async_runtime::spawn(async move {
+            let f = send_health(&app2, &http2, &config, &build, "after a crash", Some(&staff_summary), &health2).await;
+            if f.report_id.is_some() {
+                let _ = app2.emit("crash-filed", CrashFiled { report_id: f.report_id, likely_cause: f.likely_cause });
+            }
+        });
     }
+    let filed = Filed::default();
     report.push_str(&format!("\n===== game data =====\n{}", game_data_report(&app, &game_dir)));
     report.push_str(&watch::collect(&skse_logs, &std::env::temp_dir(), started));
     report.push_str(&format!("\n===== launcher log (last 40 lines) =====\n{}\n", log::tail(40)));
@@ -821,6 +832,41 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest) -> CmdResult<
             log::line(&format!("play: switched off in {}: {}", txt.display(), extras.iter().map(|e| e.describe()).collect::<Vec<_>>().join(", ")));
         }
     }
+    // Plugins made for a newer Skyrim (Creation Club downloads Steam updated
+    // after the downgrade) and broken stub plugins crash the game while it
+    // loads data, even switched off. The game skips Creation Club files that
+    // aren't in Data, so they go to the backup folder with their archives.
+    let mut aside: Vec<String> = Vec::new();
+    for (n, why) in loadorder::too_new(dir) {
+        log::line(&format!("play: {n} is for a newer Skyrim ({why})"));
+        aside.extend(loadorder::with_archives(dir, &n));
+    }
+    if let Ok(rd) = std::fs::read_dir(dir.join("Data")) {
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            let l = n.to_ascii_lowercase();
+            if (l.ends_with(".esp") || l.ends_with(".esm") || l.ends_with(".esl")) && loadorder::broken(&e.path()).is_some() {
+                aside.push(format!("Data/{n}"));
+            }
+        }
+    }
+    if !aside.is_empty() {
+        let stamp = format!("{}-plugins", log::timestamp().replace([':', ' '], "-"));
+        let dest = strays::move_aside(dir, &aside, &stamp).map_err(|e| format!("Couldn't move plugins out of the way ({e}). Close Skyrim and Vortex, then try again."))?;
+        log::line(&format!("play: moved {} plugin file(s) to {}: {}", aside.len(), dest.display(), aside.join(", ")));
+        if let Some(spec) = m.game.as_ref() {
+            match version::refresh(dir, spec) {
+                Ok(true) => {
+                    if version::made_by_launcher(dir) {
+                        keep_copy(dir, spec);
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => log::line(&format!("play: couldn't update the version record: {e}")),
+            }
+        }
+    }
+    restore_crash_logger(dir);
     let docs = app.path().document_dir().or_else(|_| app.path().home_dir().map(|h| h.join("Documents"))).unwrap_or_default();
     for ini in gameini::ini_paths(&docs) {
         match gameini::repair(&ini, &dir.join("Data")) {
@@ -837,6 +883,28 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest) -> CmdResult<
         }
     }
     Ok(())
+}
+
+/// Launchers before 0.1.20 moved crash loggers aside with other SKSE plugins.
+/// Puts the newest one back, so the next crash names the module that failed.
+fn restore_crash_logger(dir: &std::path::Path) {
+    let plugins = dir.join("Data").join("SKSE").join("Plugins");
+    if strays::CRASH_LOGGERS.iter().any(|n| plugins.join(n).is_file()) {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir.join(strays::DISABLED_DIR)) else { return };
+    let mut stamps: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+    stamps.sort();
+    for stamp in stamps.iter().rev() {
+        let from = stamp.join("Data").join("SKSE").join("Plugins").join("CrashLogger.dll");
+        if from.is_file() {
+            match std::fs::rename(&from, plugins.join("CrashLogger.dll")) {
+                Ok(()) => log::line(&format!("play: put the crash logger back from {}", stamp.display())),
+                Err(e) => log::line(&format!("play: couldn't put the crash logger back: {e}")),
+            }
+            return;
+        }
+    }
 }
 
 /// Staff reports go to the login service's crash-report endpoint, signed
@@ -961,12 +1029,32 @@ async fn send_health(app: &AppHandle, http: &reqwest::Client, config: &Config, b
     let mut body = health_payload(app, config, build, when, crash, r);
     body["consent"] = true.into();
     let body = fit_report(body);
-    let res = http.post(&url).header("authorization", token).json(&body).timeout(std::time::Duration::from_secs(10)).send().await;
+    for attempt in 0..2 {
+        match post_report(http, &url, &token, &body, when).await {
+            Posted::Filed(f) => return f,
+            Posted::RetryAfter(secs) if attempt == 0 && secs <= 90 => {
+                log::line(&format!("health: sending report {when} again in {secs}s"));
+                tokio::time::sleep(std::time::Duration::from_secs(secs + 1)).await;
+            }
+            _ => return Filed::default(),
+        }
+    }
+    Filed::default()
+}
+
+enum Posted {
+    Filed(Filed),
+    RetryAfter(u64),
+    Failed,
+}
+
+async fn post_report(http: &reqwest::Client, url: &str, token: &str, body: &serde_json::Value, when: &str) -> Posted {
+    let res = http.post(url).header("authorization", token).json(body).timeout(std::time::Duration::from_secs(10)).send().await;
     let res = match res {
         Ok(r) => r,
         Err(e) => {
             log::line(&format!("health: report {when} not sent: {e}"));
-            return Filed::default();
+            return Posted::Failed;
         }
     };
     let status = res.status();
@@ -978,19 +1066,19 @@ async fn send_health(app: &AppHandle, http: &reqwest::Client, config: &Config, b
                 likely_cause: v["likelyCause"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
             };
             log::line(&format!("health: report {when} sent to staff as {} (likely cause: {})", f.report_id.as_deref().unwrap_or("?"), f.likely_cause.as_deref().unwrap_or("none given")));
-            f
+            Posted::Filed(f)
         }
         404 => {
             log::line(&format!("health: report {when} not sent: the staff endpoint isn't on the server yet"));
-            Filed::default()
+            Posted::Failed
         }
         429 => {
-            log::line(&format!("health: report {when} not sent: too many reports, retry after {}s", v["retryAfter"]));
-            Filed::default()
+            log::line(&format!("health: report {when} not sent yet: too many reports, retry after {}s", v["retryAfter"]));
+            Posted::RetryAfter(v["retryAfter"].as_u64().or_else(|| v["retryAfter"].as_f64().map(|f| f.ceil() as u64)).unwrap_or(20))
         }
         code => {
             log::line(&format!("health: report {when} not sent: server answered {code} {}", v["error"].as_str().or(v["message"].as_str()).unwrap_or("")));
-            Filed::default()
+            Posted::Failed
         }
     }
 }
