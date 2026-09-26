@@ -193,6 +193,14 @@ pub fn merged(game_version: Option<&str>, server: Option<&ModList>) -> Vec<ModEn
             if m.id.is_empty() || (m.nexus.is_none() && m.url.is_none()) || m.check.iter().any(|c| safe_rel(c).is_none()) {
                 continue;
             }
+            // A required plugin the SkyMP client can't load by name would
+            // leave every player on a black screen.
+            if m.check.iter().any(|c| {
+                let n = c.rsplit(['/', '\\']).next().unwrap_or(c);
+                is_plugin(Path::new(n)) && !crate::loadorder::client_can_load_name(n)
+            }) {
+                continue;
+            }
             if let Some(url) = &m.url {
                 if !url.starts_with("https://") {
                     continue;

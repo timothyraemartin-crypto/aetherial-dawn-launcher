@@ -120,6 +120,10 @@ SSE Display Tweaks (Nexus 34705, the Anniversary Edition file; `SSEDisplayTweaks
 
 Since 0.1.47 the Unofficial Skyrim Special Edition Patch is no longer required, and Play switches it off in plugins.txt unless the server's mods.json lists it. The server can't load it (SkyMP's plugin reader has no light-plugin support), and on 2026-09-26 the game crashed drawing land it changes, 19 seconds after loading in; with it off, the game worked. Its files stay in Data.
 
+## Plugin names the game client can't load
+
+SkyMP's client checks the load order by calling Skyrim Platform's `getFileInfo` for every plugin, and that rejects names with spaces: on 2026-09-26 Timothy's `skyrim-platform.log` ended with "'unofficial skyrim special edition patch.esp' is not a valid argument for 'filename'", and the game sat on a black screen after loading in. Since 0.1.48, any plugin switched on whose name has anything but letters, digits, `_`, `-` and `.` is switched off before Play and listed under Load order with that reason. Files are never renamed (Vortex owns them), and a mods.json entry whose plugin has such a name is ignored, so it's never installed as required.
+
 ## Game health checks
 
 The checks Claude ran by hand on the first tester's PC run for every player: before each Play, after a crash, and from **Settings, Check my game**. They cover:

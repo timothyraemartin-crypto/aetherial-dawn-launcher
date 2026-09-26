@@ -20,11 +20,24 @@ pub struct Extra {
 impl Extra {
     pub fn describe(&self) -> String {
         match &self.broken {
+            Some(why) if why == BAD_NAME => format!("{} (switched on in your load order; {why})", self.name),
             Some(why) => format!("{} (switched on in your load order; the file is broken: {why})", self.name),
             None => format!("{} (switched on in your load order)", self.name),
         }
     }
 }
+
+/// Whether the SkyMP client can handle this plugin name. Its load-order
+/// check calls Skyrim Platform's getFileInfo for every plugin, which rejects
+/// names with spaces ("'unofficial skyrim special edition patch.esp' is not
+/// a valid argument for 'filename'", 2026-09-26) and stops the client's
+/// update loop: a black screen after loading in. Base game and Creation Club
+/// names only use letters, digits, '_', '-' and '.', so that's what passes.
+pub fn client_can_load_name(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+pub const BAD_NAME: &str = "its name has spaces or other characters the SkyMP game client can't load, which leaves a black screen after loading in";
 
 /// Checks a plugin file's header. None means it looks like a real plugin.
 pub fn broken(path: &Path) -> Option<String> {
@@ -151,10 +164,13 @@ pub fn extras(game_dir: &Path, plugins_txt: &Path, manifest: &Manifest) -> Vec<E
         .filter_map(|l| l.trim().strip_prefix('*'))
         .map(str::trim)
         .filter(|n| !n.is_empty())
-        .map(|n| Extra { name: n.to_string(), broken: broken(&game_dir.join("Data").join(n)) })
+        .map(|n| {
+            let why = if client_can_load_name(n) { broken(&game_dir.join("Data").join(n)) } else { Some(BAD_NAME.to_string()) };
+            Extra { name: n.to_string(), broken: why }
+        })
         // Allowed plugins stay on unless they're broken, like the SkyUI stub
-        // from the first live test.
-        .filter(|e| !ok.contains(&e.name.to_ascii_lowercase()) || (e.broken.is_some() && game_dir.join("Data").join(&e.name).is_file()))
+        // from the first live test, or have a name the client can't load.
+        .filter(|e| !ok.contains(&e.name.to_ascii_lowercase()) || !client_can_load_name(&e.name) || (e.broken.is_some() && game_dir.join("Data").join(&e.name).is_file()))
         .collect()
 }
 
@@ -197,6 +213,7 @@ pub fn wanted(game_dir: &Path) -> Vec<String> {
     names
         .into_iter()
         .filter(|n| seen.insert(n.to_ascii_lowercase()))
+        .filter(|n| client_can_load_name(n))
         .filter(|n| {
             let p = game_dir.join("Data").join(n);
             p.is_file() && broken(&p).is_none()
@@ -337,6 +354,26 @@ mod tests {
         let ex = extras(tmp.path(), &txt, &m);
         assert_eq!(ex.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["unofficial skyrim special edition patch.esp"]);
         assert_eq!(wanted(tmp.path()), ["SkyUI_SE.esp"]);
+    }
+
+    #[test]
+    fn switches_off_names_the_client_cant_load() {
+        assert!(client_can_load_name("ccBGSSSE001-Fish.esm") && client_can_load_name("SkyUI_SE.esp"));
+        assert!(!client_can_load_name("Unofficial Skyrim Special Edition Patch.esp"));
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("My Mod.esp"), plugin(1.71, true)).unwrap();
+        let txt = tmp.path().join("plugins.txt");
+        std::fs::write(&txt, "*My Mod.esp\r\n").unwrap();
+        let m: Manifest = serde_json::from_value(serde_json::json!({
+            "schema": 1, "build": "b", "server": {"name": "t", "ip": "1.2.3.4", "port": 7777},
+            "files": [{"path": "Data/My Mod.esp", "sha256": "00", "size": 1}]
+        }))
+        .unwrap();
+        let ex = extras(tmp.path(), &txt, &m);
+        assert_eq!(ex.len(), 1);
+        assert_eq!(ex[0].broken.as_deref(), Some(BAD_NAME));
     }
 
     #[test]
