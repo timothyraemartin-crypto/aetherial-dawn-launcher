@@ -840,9 +840,9 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest) -> CmdResult<
 }
 
 /// Staff reports go to the login service's crash-report endpoint, signed
-/// with the player's launcher token. Off until the server has it deployed;
-/// until then reports are only shown and logged.
-const HEALTH_REPORTS_ON: bool = false;
+/// with the player's launcher token (live on the server since 2026-09-26).
+/// Set to false to only show and log reports.
+const HEALTH_REPORTS_ON: bool = true;
 /// The endpoint takes at most 60 KB.
 const HEALTH_REPORT_MAX: usize = 58_000;
 
