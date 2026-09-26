@@ -126,17 +126,23 @@ struct Marker {
 }
 
 /// The files that change between builds: the executable and the base game data.
+/// The files the version record watches: Steam's own game files, which a
+/// Steam update replaces. Mod archives, Creation Club downloads (updated by
+/// Steam separately) and plugins are left out, so installing or tidying mods
+/// never reads as "Steam updated your game".
+pub fn is_version_file(rel: &str) -> bool {
+    let l = rel.to_ascii_lowercase();
+    let Some(name) = l.strip_prefix("data/") else { return l == GAME_EXE.to_ascii_lowercase() };
+    matches!(name, "skyrim.esm" | "update.esm" | "dawnguard.esm" | "hearthfires.esm" | "dragonborn.esm") || (name.starts_with("skyrim - ") && name.ends_with(".bsa"))
+}
+
 fn fingerprint(game_dir: &Path) -> Vec<(String, u64, u64)> {
     let mut names = vec![GAME_EXE.to_string()];
     if let Ok(rd) = std::fs::read_dir(game_dir.join("Data")) {
         let mut data: Vec<String> = rd
             .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| {
-                let l = n.to_ascii_lowercase();
-                l.ends_with(".bsa") || l.ends_with(".esm") || l == "skyrim.ccc"
-            })
-            .map(|n| format!("Data/{n}"))
+            .map(|e| format!("Data/{}", e.file_name().to_string_lossy()))
+            .filter(|n| is_version_file(n))
             .collect();
         data.sort();
         names.extend(data);
@@ -242,7 +248,10 @@ pub fn made_by_launcher(game_dir: &Path) -> bool {
 
 fn marker_holds(game_dir: &Path, spec: &GameSpec) -> bool {
     let Some(m) = read_marker(game_dir) else { return false };
-    m.version == spec.version.clone().unwrap_or_default() && m.depots == spec_depots(spec) && !m.files.is_empty() && m.files == fingerprint(game_dir)
+    // Records from launchers before 0.1.26 also listed mod and Creation Club
+    // archives; only the files watched now are compared.
+    let recorded: Vec<_> = m.files.into_iter().filter(|f| is_version_file(&f.0)).collect();
+    m.version == spec.version.clone().unwrap_or_default() && m.depots == spec_depots(spec) && !recorded.is_empty() && recorded == fingerprint(game_dir)
 }
 
 pub fn check(game_dir: &Path, spec: Option<&GameSpec>) -> GameCheck {
@@ -417,9 +426,27 @@ mod tests {
         record(&d, &spec(), false).unwrap();
         let c = check(&d, Some(&spec()));
         assert!(!c.needed && c.warning.is_none());
+        // Mod and Creation Club archives coming and going don't count.
+        std::fs::write(d.join("Data/SomeMod.bsa"), b"mod").unwrap();
+        std::fs::write(d.join("Data/ccBGSSSE001-Fish.esm"), b"cc").unwrap();
+        assert!(!check(&d, Some(&spec())).needed);
         // Steam rewrites the data afterwards: the record no longer holds.
         std::fs::write(d.join("Data/Skyrim.esm"), b"newer esm").unwrap();
         assert!(check(&d, Some(&spec())).needed);
+    }
+
+    #[test]
+    fn old_records_listing_mod_archives_still_hold() {
+        let g = game([1, 6, 1170, 0], &ACF.replace("8442952117333549665", "1111"));
+        let d = dir(&g);
+        std::fs::write(d.join("Data/OldMod.bsa"), b"mod").unwrap();
+        record(&d, &spec(), false).unwrap();
+        // Written the old way, with the mod archive in the list; then the mod goes.
+        let mut m = read_marker(&d).unwrap();
+        m.files.push(("Data/OldMod.bsa".into(), 3, 0));
+        std::fs::write(d.join(MARKER), serde_json::to_vec(&m).unwrap()).unwrap();
+        std::fs::remove_file(d.join("Data/OldMod.bsa")).unwrap();
+        assert!(!check(&d, Some(&spec())).needed);
     }
 
     #[test]

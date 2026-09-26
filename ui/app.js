@@ -257,7 +257,7 @@
     renderGame();
     const c = gameCheck;
     if (c && c.needed) {
-      if (c.canDowngrade) { setPlay('downgrade', 'FIX VERSION'); setStatus(c.reason + ' Click Fix version to download it from Steam.', true); }
+      if (c.canDowngrade) { setPlay('downgrade', 'FIX VERSION'); setStatus(c.reason + ' Click Fix version and the launcher fixes it.', true); }
       else { setPlay('wait', 'WRONG VERSION'); setStatus(c.reason, true); }
       return;
     }
@@ -341,7 +341,7 @@
   // ---------- game version ----------
   function openDowngrade() {
     const c = gameCheck || {};
-    $('dg-lead').textContent = `${c.reason || c.warning || ''} The launcher downloads Skyrim ${shortVer(c.target)} from Steam with your own account, then checks it.`;
+    $('dg-lead').textContent = `${c.reason || c.warning || ''} The launcher changes your game files into Skyrim ${shortVer(c.target)} itself, then checks them.`;
     $('dg-error').hidden = true;
     $('dg-progress').hidden = true;
     skipArmed = false;
@@ -508,8 +508,39 @@
       dgMode(false);
     }
   }
+  // ---------- patching the player's own files (no Steam) ----------
+  const PATCH_STAGES = {
+    check: (p) => `Checking your game files… ${p.done} of ${p.total}${p.file ? ' · ' + p.file : ''}`,
+    download: (p) => `Downloading the patch for ${p.file} (${p.done + 1} of ${p.total})…`,
+    apply: (p) => `Patching ${p.file} (${p.done + 1} of ${p.total})…`,
+    verify: () => 'Checking your game…',
+  };
+  async function patchGame() {
+    dgBusy(true);
+    $('dg-error').hidden = true;
+    $('dg-progress').hidden = false;
+    $('dg-bar').hidden = false;
+    $('dg-bar-i').style.width = '0%';
+    $('dg-stage').textContent = 'Getting the patch list…';
+    const off = await T.event.listen('patch-progress', ({ payload: p }) => {
+      $('dg-stage').textContent = (PATCH_STAGES[p.stage] || (() => ''))(p);
+      const share = p.stage === 'check' ? 0.3 * p.done / Math.max(1, p.total) : 0.3 + 0.7 * p.done / Math.max(1, p.total);
+      $('dg-bar-i').style.width = Math.round(share * 100) + '%';
+    });
+    try { dgDone(await invoke('patch_game')); }
+    catch (e) {
+      const msg = String(e);
+      if (msg.startsWith('NO_PATCH:')) {
+        dgFail(msg.slice(9) + ' You can download the right version with Steam under Other ways to download.');
+        document.querySelectorAll('#downgrade .opt.other').forEach(o => { o.hidden = false; });
+        $('dg-other').hidden = true;
+      } else dgFail(msg);
+    }
+    finally { off(); $('dg-bar').hidden = true; }
+  }
   async function runDowngrade() {
     const how = document.querySelector('input[name="dg-login"]:checked').value;
+    if (how === 'patch') return patchGame();
     if (how === 'here') return inlineDowngrade();
     if (how === 'app') return steamBegin();
     const user = how === 'user' ? $('dg-user').value.trim() : null;

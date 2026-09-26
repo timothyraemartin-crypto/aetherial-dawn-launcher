@@ -760,6 +760,93 @@ fn steam_login_cancel(state: State<'_, AppState>) {
     state.steam_input.lock().unwrap().take();
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PatchProgress {
+    stage: &'static str,
+    file: String,
+    done: usize,
+    total: usize,
+}
+
+/// Puts the server's Skyrim build in place with patches from the server,
+/// on the player's own files: no Steam and no sign-in. Sends `patch-progress`
+/// events. Errors starting with "NO_PATCH:" mean the player's copy is a
+/// build no patch was made from yet.
+#[tauri::command]
+async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<version::GameCheck> {
+    use launcher_core::patcher;
+    let dir = game_dir(&state).await?;
+    let spec = game_spec(&state).await?;
+    let base = state.config.lock().await.base_url.clone();
+    let url = format!("{}/{}", base.trim_end_matches('/'), patcher::INDEX);
+    let index: patcher::Index = state
+        .http
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| format!("NO_PATCH:The server's patches aren't available ({e})."))?
+        .json()
+        .await
+        .map_err(|e| format!("NO_PATCH:The server's patch list is damaged ({e})."))?;
+    if Some(index.target.as_str()) != spec.version.as_deref() {
+        return Err(format!("NO_PATCH:The server's patches make {}, but it needs {}.", index.target, spec.version.as_deref().unwrap_or("?")));
+    }
+    if watch::find_process(watch::GAME_PROCESS).is_some() {
+        return Err("Close Skyrim first.".into());
+    }
+    log::line(&format!("patch: checking {} game files against {url}", index.files.len()));
+    let _ = app.emit("patch-progress", PatchProgress { stage: "check", file: String::new(), done: 0, total: index.files.len() });
+    let (dir2, ix2, app2) = (dir.clone(), index.clone(), app.clone());
+    let steps = tokio::task::spawn_blocking(move || {
+        let mut n = 0;
+        let total = ix2.files.len();
+        patcher::plan(&dir2, &ix2, |p| {
+            n += 1;
+            let _ = app2.emit("patch-progress", PatchProgress { stage: "check", file: p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default(), done: n.min(total), total });
+            patcher::sha256_file(p).ok()
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let missing: Vec<&str> = steps.iter().filter(|s| s.patch.is_none()).map(|s| s.file.path.as_str()).collect();
+    if !missing.is_empty() {
+        log::line(&format!("patch: no patch for this copy of: {}", missing.join(", ")));
+        return Err(format!("NO_PATCH:Your copy of {} is a Skyrim build the server has no patch for yet. Staff have been told.", missing.join(", ")));
+    }
+    log::line(&format!("patch: {} file(s) to patch: {}", steps.len(), steps.iter().map(|s| s.file.path.as_str()).collect::<Vec<_>>().join(", ")));
+    let tmp = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("patches");
+    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    let total = steps.len();
+    for (i, step) in steps.iter().enumerate() {
+        let patch = step.patch.as_ref().expect("checked");
+        let _ = app.emit("patch-progress", PatchProgress { stage: "download", file: step.file.path.clone(), done: i, total });
+        let purl = format!("{}/patches/{}", base.trim_end_matches('/'), patch.file);
+        let local = tmp.join(&patch.file);
+        let have = local.is_file() && patcher::sha256_file(&local).ok().is_some_and(|h| h.eq_ignore_ascii_case(&patch.sha256));
+        if !have {
+            let bytes = state.http.get(&purl).send().await.and_then(|r| r.error_for_status()).map_err(|e| format!("Couldn't download the patch for {} ({e}).", step.file.path))?.bytes().await.map_err(|e| e.to_string())?;
+            let got = patcher::sha256_bytes(&bytes);
+            if !got.eq_ignore_ascii_case(&patch.sha256) {
+                return Err(format!("The patch for {} was damaged while downloading. Try again.", step.file.path));
+            }
+            std::fs::write(&local, &bytes).map_err(|e| e.to_string())?;
+        }
+        let _ = app.emit("patch-progress", PatchProgress { stage: "apply", file: step.file.path.clone(), done: i, total });
+        let (dir2, step2, local2) = (dir.clone(), step.clone(), local.clone());
+        tokio::task::spawn_blocking(move || patcher::apply_step(&dir2, &step2, &local2))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("Couldn't patch {} ({e}). Close Skyrim, Steam and Vortex, then try again.", step.file.path))?;
+        let _ = std::fs::remove_file(&local);
+        log::line(&format!("patch: patched {}", step.file.path));
+    }
+    let _ = app.emit("patch-progress", PatchProgress { stage: "verify", file: String::new(), done: total, total });
+    finish_downgrade(&dir, &spec, false)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SteamApp {
@@ -1436,7 +1523,46 @@ async fn diagnostics(app: AppHandle, state: State<'_, AppState>) -> CmdResult<St
     Ok(o)
 }
 
+/// `--make-patches <from> <to> <out> [version]`: builds game patches from
+/// the Skyrim folder `from` (newer Steam build) to `to` (the server's build)
+/// into `out`, then exits. Progress goes to `<out>/make-patches.log`.
+fn make_patches_cli(args: &[String]) -> Option<i32> {
+    let i = args.iter().position(|a| a == "--make-patches")?;
+    let (Some(from), Some(to), Some(out)) = (args.get(i + 1), args.get(i + 2), args.get(i + 3)) else {
+        eprintln!("usage: --make-patches <from game folder> <to game folder> <out folder> [version]");
+        return Some(2);
+    };
+    let version = args.get(i + 4).cloned().unwrap_or_else(|| "1.6.1170.0".into());
+    let out = PathBuf::from(out);
+    let _ = std::fs::create_dir_all(&out);
+    let log_path = out.join("make-patches.log");
+    let mut logf = std::fs::OpenOptions::new().create(true).append(true).open(&log_path).ok();
+    let mut say = |m: &str| {
+        use std::io::Write;
+        println!("{m}");
+        if let Some(f) = logf.as_mut() {
+            let _ = writeln!(f, "[{}] {m}", log::timestamp());
+        }
+    };
+    say(&format!("making patches from {from} to {to} ({version}) in {}", out.display()));
+    match launcher_core::patcher::build(std::path::Path::new(from), std::path::Path::new(to), &version, &out, &mut say) {
+        Ok(ix) => {
+            let n: usize = ix.files.iter().map(|f| f.patches.len()).sum();
+            say(&format!("done: {} files listed, {n} patches, index.json written", ix.files.len()));
+            Some(0)
+        }
+        Err(e) => {
+            say(&format!("failed: {e}"));
+            Some(1)
+        }
+    }
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(code) = make_patches_cli(&args) {
+        std::process::exit(code);
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -1463,7 +1589,7 @@ fn main() {
             app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http, steam_child: Default::default(), steam_input: Default::default() });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report, health_check, steam_login_answer, steam_login_cancel, open_address_library_page])
+        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report, health_check, steam_login_answer, steam_login_cancel, open_address_library_page, patch_game])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }

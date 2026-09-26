@@ -165,7 +165,8 @@
       <h2>Match the server's Skyrim</h2>
       <p class="lead" id="dg-lead"></p>
       <div class="choice" role="radiogroup" aria-label="How to sign in to Steam">
-        <label class="opt wide"><input type="radio" name="dg-login" value="here" checked><div><b>Sign in to Steam here <em class="tag">Recommended</em></b><small>Type your Steam account name, then your password and Steam Guard code when Steam asks. The launcher does the rest.</small></div></label>
+        <label class="opt wide"><input type="radio" name="dg-login" value="patch" checked><div><b>Patch my game files <em class="tag">Recommended</em></b><small>The launcher changes your own Skyrim files into the right version. No Steam, nothing to type.</small></div></label>
+        <label class="opt other" hidden><input type="radio" name="dg-login" value="here"><div><b>Sign in to Steam here</b><small>Download the right version with your Steam account, inside the launcher.</small></div></label>
         <label class="opt other" hidden><input type="radio" name="dg-login" value="app"><div><b>Steam app on this PC</b><small id="dg-app-note">You paste three lines into Steam's console.</small></div></label>
         <label class="opt other" hidden><input type="radio" name="dg-login" value="qr"><div><b>Steam mobile app</b><small>Scan a QR code in a separate window.</small></div></label>
         <label class="opt other" hidden><input type="radio" name="dg-login" value="user"><div><b>Separate sign-in window</b><small>You type your password in Steam's own window.</small></div></label>
@@ -189,8 +190,8 @@
         <small class="hint" id="dg-ask-note"></small>
       </div>
       <ul class="notes" id="dg-notes">
-        <li>Steam does the download with your own account. Your password goes straight to Steam; the launcher never saves it.</li>
-        <li>The download is up to about 15 GB and only happens once. Your saves and mods stay.</li>
+        <li>The launcher only changes Skyrim's own game files, and checks each one before swapping it in. Your saves and mods stay.</li>
+        <li>It takes a few minutes, mostly checking the big game archives.</li>
         <li>Afterwards the launcher keeps a copy of these files. If Steam ever updates Skyrim again, the launcher puts the right files back by itself before you play.</li>
       </ul>
       <div class="dg-progress" id="dg-progress" hidden><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg><span id="dg-stage"></span></div>

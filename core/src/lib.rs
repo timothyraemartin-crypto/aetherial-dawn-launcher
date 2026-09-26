@@ -9,6 +9,7 @@ pub mod gameini;
 pub mod health;
 pub mod loadorder;
 pub mod manifest;
+pub mod patcher;
 pub mod pristine;
 pub mod requirements;
 pub mod settings;
