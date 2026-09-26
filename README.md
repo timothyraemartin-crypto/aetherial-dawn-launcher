@@ -61,7 +61,7 @@ Fix version patches the player's own Skyrim files into the server's build, with 
 
 To make patches, run the launcher as `AetherialDawn.exe --make-patches <newer game folder> <server-build game folder> <out folder> [1.6.1170.0]`. This writes the `.zst` files and `index.json` to the out folder. It proves each patch round-trips, logs to `make-patches.log`, and merges with an existing index, so one folder can serve several Steam builds. Upload the folder to the server's `launcher/patches/`.
 
-Staff can also call the `build_patches` command signs in to Steam in the launcher, downloads the server's build into `<game>/.aetherial-dawn/patch-build/<version>` (never over the game), builds the patches into `patch-build/out` and patches the game from them. Upload `patch-build/out` to the server's `launcher/patches/` so no other player needs Steam. Fix version on that PC uses `patch-build/out` directly when its target matches the server.
+Staff can also call the `build_patches` command, which signs in to Steam in the launcher, downloads the server's build into `<game>/.aetherial-dawn/patch-build/<version>` (never over the game), builds the patches into `patch-build/out` and patches the game from them. Upload `patch-build/out` to the server's `launcher/patches/` so no other player needs Steam. Fix version on that PC uses `patch-build/out` directly when its target matches the server.
 
 ## Signing in to Steam inside the launcher
 
