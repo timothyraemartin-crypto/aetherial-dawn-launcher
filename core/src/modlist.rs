@@ -167,6 +167,24 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
         hint: Some("SkyUI 5.2SE (main file)".into()),
         ..Default::default()
     });
+    // Timothy, 2026-09-26: "add these two mods" (against a black screen).
+    // Display Tweaks first, so the fix's ini lands over its default one.
+    out.push(ModEntry {
+        id: "display-tweaks".into(),
+        name: "SSE Display Tweaks".into(),
+        nexus: Some(NexusRef { mod_id: 34705, file: None, pick: Some("AE".into()) }),
+        check: vec![format!("Data/SKSE/Plugins/{}", r::DISPLAY_TWEAKS_DLL)],
+        hint: Some("the main file for Anniversary Edition (1.6)".into()),
+        ..Default::default()
+    });
+    out.push(ModEntry {
+        id: "black-screen-fix".into(),
+        name: "Black Screen and Startup Fix".into(),
+        nexus: Some(NexusRef { mod_id: 176509, file: None, pick: Some("1080".into()) }),
+        check: vec![format!("Data/SKSE/Plugins/{}", r::DISPLAY_TWEAKS_INI)],
+        hint: Some("the file for your screen (1080p or 1440p)".into()),
+        ..Default::default()
+    });
     out
 }
 

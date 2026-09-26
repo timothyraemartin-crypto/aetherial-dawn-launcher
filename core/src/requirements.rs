@@ -47,6 +47,10 @@ pub const USSEP_PLUGIN: &str = "Unofficial Skyrim Special Edition Patch.esp";
 /// SkyUI SE's plugin and archive (Timothy, 2026-09-26: "lets add skyui").
 pub const SKYUI_PLUGIN: &str = "SkyUI_SE.esp";
 pub const SKYUI_ARCHIVE: &str = "SkyUI_SE.bsa";
+/// SSE Display Tweaks and its settings file, which the Black Screen and
+/// Startup Fix replaces (Timothy, 2026-09-26).
+pub const DISPLAY_TWEAKS_DLL: &str = "SSEDisplayTweaks.dll";
+pub const DISPLAY_TWEAKS_INI: &str = "SSEDisplayTweaks.ini";
 
 /// A required mod players download from Nexus Mods themselves, because Nexus
 /// doesn't let other sites hand its files out.

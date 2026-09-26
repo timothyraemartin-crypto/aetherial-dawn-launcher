@@ -116,6 +116,8 @@ Skyrim Souls RE's dependencies (Timothy, 2026-09-26, "All four"): SSE Engine Fix
 
 SkyUI (Timothy, 2026-09-26) is required too: SkyUI 5.2SE from Nexus (skyrimspecialedition mod 12604; the old-Skyrim page, skyrim mod 3863, doesn't work on Special Edition). It's client-only like USSEP, so the server keeps its five masters. It counts as installed when Data has a real `SkyUI_SE.esp` (not the empty stub from the first live test, which is still moved aside as broken) and `SkyUI_SE.bsa`. Before every Play, the plugins of required and listed mods that are in Data (SkyUI, USSEP, plugins named in mods.json) are switched on in plugins.txt, because the launcher's own installs don't do that the way Vortex does.
 
+SSE Display Tweaks (Nexus 34705, the Anniversary Edition file; `SSEDisplayTweaks.dll`) and the Black Screen and Startup Fix (Nexus 176509, a ready-made `SSEDisplayTweaks.ini` for 1080p or 1440p) are required too (Timothy, 2026-09-26). Display Tweaks is listed first so the fix's ini lands over the default one. The launcher doesn't change that ini.
+
 ## Game health checks
 
 The checks Claude ran by hand on the first tester's PC run for every player: before each Play, after a crash, and from **Settings, Check my game**. They cover:

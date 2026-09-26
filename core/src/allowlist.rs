@@ -70,7 +70,7 @@ pub fn vortex_files(game_dir: &Path) -> Vec<VortexFile> {
 
 /// Names of required mods as they appear in Vortex's mod folder names, for
 /// folders that don't carry the Nexus id (a manual install).
-const REQUIRED_NAMES: [&str; 10] = [
+const REQUIRED_NAMES: [&str; 12] = [
     "skse64",
     "skyrim script extender",
     "address library",
@@ -81,6 +81,8 @@ const REQUIRED_NAMES: [&str; 10] = [
     "skyui",
     "skyrim souls",
     "crash logger",
+    "display tweaks",
+    "black screen",
 ];
 
 fn listed_source(source: &str, ids: &[u64]) -> bool {
@@ -100,7 +102,7 @@ pub fn required_file(rel: &str) -> bool {
     let l = rel.replace('\\', "/").to_ascii_lowercase();
     let plugins = "data/skse/plugins/";
     if let Some(n) = l.strip_prefix(plugins) {
-        return ["sksemenuframework", "fonts/", "enginefixes", "skyrimsoulsre", "crashlogger", "version-", "versionlib-"].iter().any(|p| n.starts_with(p));
+        return ["sksemenuframework", "fonts/", "enginefixes", "skyrimsoulsre", "crashlogger", "version-", "versionlib-", "ssedisplaytweaks"].iter().any(|p| n.starts_with(p));
     }
     let Some(n) = l.strip_prefix("data/") else { return false };
     let patch = "unofficial skyrim special edition patch";
@@ -321,6 +323,7 @@ mod tests {
             ("Textures\\a.dds", "Armor 77777 1.0"),
             ("Armor.esp", "Armor 77777 1.0"),
             ("Meshes\\b.nif", "Junk 55555 2.0"),
+            ("SKSE\\Plugins\\SSEDisplayTweaks.ini", "black screen fix"),
         ];
         for (p, _) in files {
             let f = data.join(p.replace('\\', "/"));
