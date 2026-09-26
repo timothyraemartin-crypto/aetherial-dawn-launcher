@@ -11,7 +11,7 @@ jobs:
   windows:
     runs-on: windows-latest
     env:
-      # Where the server publishes launcher files, e.g. https://play.example.org/launcher
+      # Where the server publishes launcher files, e.g. https://vps-d38c928e.vps.ovh.us/launcher
       AD_BASE_URL: ${{ vars.AD_BASE_URL }}
       # Private key for signed launcher updates. Without it the build still
       # works but produces no update signature.

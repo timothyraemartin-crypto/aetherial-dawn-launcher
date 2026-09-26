@@ -22,7 +22,7 @@ It's built with [Tauri 2](https://tauri.app). The UI is plain HTML, CSS and JS i
 
 ## What the server publishes
 
-The server serves static files under one base URL, for example `https://play.example.org/launcher`. The full format is in `skymp-setup/launcher/launcher-spec.md` in the project files.
+The server serves static files under one base URL, for example `https://vps-d38c928e.vps.ovh.us/launcher`. The full format is in `skymp-setup/launcher/launcher-spec.md` in the project files.
 
 - `client/manifest.json` and `client/files/<sha256>`. Build these with `make-manifest.py` from the SkyMP client build folder.
 - `app/latest.json` and the installer, used for launcher self-updates.

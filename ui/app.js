@@ -121,6 +121,12 @@
   }
 
   // ---------- update flow ----------
+  // While the server can't be reached (or hasn't published files yet), try again every minute.
+  let retryTimer = 0;
+  function scheduleRetry() {
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => { if (playMode === 'retry' && !busy) check(); }, 60000);
+  }
   async function check(verifyAll = false) {
     if (busy) return;
     busy = true;
@@ -143,9 +149,15 @@
       }
     } catch (e) {
       setPlay('retry', 'RETRY');
-      setChip('warn', 'Not checked');
-      setStatus("Couldn't reach the server. " + e, true);
       pending = null;
+      if (String(e).includes("hasn't published")) {
+        setChip('warn', 'Server not ready');
+        setStatus("The server is still being set up. The launcher will check again in a minute.");
+      } else {
+        setChip('warn', 'Not checked');
+        setStatus("Couldn't reach the server. Checking again in a minute. " + e, true);
+      }
+      scheduleRetry();
     } finally {
       busy = false;
     }

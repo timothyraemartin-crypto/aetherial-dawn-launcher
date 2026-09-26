@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 /// building to point a release at the real server.
 const DEFAULT_BASE_URL: &str = match option_env!("AD_BASE_URL") {
     Some(u) => u,
-    None => "https://play.example.org/launcher",
+    None => "https://vps-d38c928e.vps.ovh.us/launcher",
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,7 +58,13 @@ fn load_config(app: &AppHandle) -> Config {
     config_path(app)
         .ok()
         .and_then(|p| std::fs::read(p).ok())
-        .and_then(|b| serde_json::from_slice(&b).ok())
+        .and_then(|b| serde_json::from_slice::<Config>(&b).ok())
+        .map(|mut c| {
+            // The server address is baked into each build, so an older saved
+            // config (or one from a test build) never points somewhere stale.
+            c.base_url = DEFAULT_BASE_URL.into();
+            c
+        })
         .unwrap_or_default()
 }
 

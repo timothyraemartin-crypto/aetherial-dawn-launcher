@@ -21,6 +21,8 @@ pub enum Error {
     UnsupportedSchema(u32),
     #[error("{path} was corrupted while downloading (expected {expected}, got {actual})")]
     HashMismatch { path: String, expected: String, actual: String },
+    #[error("The server hasn't published its game files yet.")]
+    NotPublished,
     #[error("{0}")]
     Game(String),
 }

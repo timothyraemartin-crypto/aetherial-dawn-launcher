@@ -36,7 +36,7 @@
   "plugins": {
     "updater": {
       "pubkey": "REPLACE_WITH_UPDATER_PUBLIC_KEY",
-      "endpoints": ["https://play.example.org/launcher/app/latest.json"],
+      "endpoints": ["https://vps-d38c928e.vps.ovh.us/launcher/app/latest.json"],
       "windows": { "installMode": "passive" }
     }
   }

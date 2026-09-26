@@ -55,7 +55,11 @@ impl Manifest {
 
     pub async fn fetch(client: &reqwest::Client, base_url: &str) -> Result<Self> {
         let url = format!("{}/client/manifest.json", base_url.trim_end_matches('/'));
-        let bytes = client.get(url).send().await?.error_for_status()?.bytes().await?;
+        let resp = client.get(url).send().await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(Error::NotPublished);
+        }
+        let bytes = resp.error_for_status()?.bytes().await?;
         Self::parse(&bytes)
     }
 }
