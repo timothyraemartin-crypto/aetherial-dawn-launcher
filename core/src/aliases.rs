@@ -195,7 +195,10 @@ fn rewrite(from: &Path, to: &Path) -> std::io::Result<()> {
     // Up to date only when it's already a rewritten copy: a dashed alias
     // made by 0.1.49-0.1.67 is a hard link with the same time and the old
     // master names.
-    if std::fs::metadata(to).and_then(|m| m.modified()).ok() == Some(t) && !needs_rewrite(to) {
+    // Up to date only when its header is exactly the rewrite of the
+    // original's (the master names follow the current naming rule).
+    let fresh = head(from).and_then(|h| with_aliased_masters(&h)).is_some_and(|want| head(to).as_deref() == Some(&want[..]));
+    if std::fs::metadata(to).and_then(|m| m.modified()).ok() == Some(t) && fresh {
         return Ok(());
     }
     let bytes = std::fs::read(from)?;
@@ -263,6 +266,16 @@ pub fn canonicalize_dir(data: &Path, out: &Path) -> std::io::Result<Vec<Canonica
         .filter(|n| is_plugin(n))
         .collect();
     names.sort_by_key(|n| n.to_ascii_lowercase());
+    // Two downloads that map to one name would overwrite each other.
+    let mut seen: Vec<(String, String)> = Vec::new();
+    for n in &names {
+        let bytes = head(&data.join(n)).unwrap_or_default();
+        let name = run_name(n, with_aliased_masters(&bytes).is_some()).to_ascii_lowercase();
+        if let Some((other, _)) = seen.iter().find(|(_, c)| c == &name) {
+            return Err(std::io::Error::other(format!("{other} and {n} would both load as {name}")));
+        }
+        seen.push((n.clone(), name));
+    }
     let mut done = Vec::new();
     for n in names {
         let bytes = std::fs::read(data.join(&n))?;
@@ -370,6 +383,37 @@ pub fn ensure(game_dir: &Path, plugins_txt: Option<&Path>) -> std::io::Result<Ve
         }
     }
     plugins.sort();
+    // What each original maps to now. A link made under an older naming rule
+    // ("JK-s-Skyrim.esp" before apostrophes were dropped) goes, and the load
+    // order moves to the new name.
+    let mut now: Vec<(String, String)> = Vec::new();
+    for (p, rewritten) in &plugins {
+        let alias = run_name(p, *rewritten);
+        now.push((format!("Data/{p}"), format!("Data/{alias}")));
+        for (f, t) in companions(&data, p, &alias) {
+            now.push((format!("Data/{f}"), format!("Data/{t}")));
+        }
+    }
+    let mut stale = Vec::new();
+    rec.links.retain(|l| {
+        let Some((_, to)) = now.iter().find(|(f, _)| f.eq_ignore_ascii_case(&l.from)) else { return true };
+        if to.eq_ignore_ascii_case(&l.to) {
+            return true;
+        }
+        stale.push((l.clone(), to.clone()));
+        false
+    });
+    for (l, to) in &stale {
+        if !now.iter().any(|(_, t)| t.eq_ignore_ascii_case(&l.to)) {
+            let _ = std::fs::remove_file(game_dir.join(&l.to));
+        }
+        if let (Some(old), Some(new), Some(txt)) = (l.to.strip_prefix("Data/"), to.strip_prefix("Data/"), plugins_txt) {
+            if is_plugin(old) {
+                rename_in(txt, old, new)?;
+                rename_in(&txt.with_file_name("loadorder.txt"), old, new)?;
+            }
+        }
+    }
     let mut out = Vec::new();
     for (p, rewritten) in plugins {
         let alias = run_name(&p, rewritten);
@@ -531,6 +575,58 @@ mod tests {
             assert_eq!(std::fs::read(data.join(&c.name)).unwrap(), std::fs::read(out.join(&c.name)).unwrap(), "{}", c.name);
             assert_eq!(run_as(&g, &c.original), c.name);
         }
+    }
+
+    #[test]
+    fn links_under_the_old_rule_move_to_the_new_name() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        let data = g.join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("Skyrim.esm"), plugin_with_masters(&[])).unwrap();
+        std::fs::write(data.join("JK's Skyrim.esp"), plugin_with_masters(&["Skyrim.esm"])).unwrap();
+        std::fs::write(data.join("JK's Skyrim.bsa"), b"bsa").unwrap();
+        std::fs::write(data.join("RSChildren_JKsSkyrim_Patch.esp"), plugin_with_masters(&["Skyrim.esm", "JK's Skyrim.esp"])).unwrap();
+        // What 0.1.69/0.1.70 left: links under "JK-s-", a rewritten patch
+        // naming "JK-s-Skyrim.esp", and the load order using them.
+        std::fs::hard_link(data.join("JK's Skyrim.esp"), data.join("JK-s-Skyrim.esp")).unwrap();
+        std::fs::hard_link(data.join("JK's Skyrim.bsa"), data.join("JK-s-Skyrim.bsa")).unwrap();
+        std::fs::write(data.join("RSChildren_JKsSkyrim_Patch-AD.esp"), plugin_with_masters(&["Skyrim.esm", "JK-s-Skyrim.esp"])).unwrap();
+        // Same time as its original, as rewrite() leaves it.
+        let t0 = std::fs::metadata(data.join("RSChildren_JKsSkyrim_Patch.esp")).unwrap().modified().unwrap();
+        std::fs::File::options().write(true).open(data.join("RSChildren_JKsSkyrim_Patch-AD.esp")).unwrap().set_modified(t0).unwrap();
+        let rec = Record {
+            links: vec![
+                Alias { from: "Data/JK's Skyrim.esp".into(), to: "Data/JK-s-Skyrim.esp".into() },
+                Alias { from: "Data/JK's Skyrim.bsa".into(), to: "Data/JK-s-Skyrim.bsa".into() },
+                Alias { from: "Data/RSChildren_JKsSkyrim_Patch.esp".into(), to: "Data/RSChildren_JKsSkyrim_Patch-AD.esp".into() },
+            ],
+        };
+        save(g, &rec);
+        let txt = g.join("plugins.txt");
+        std::fs::write(&txt, "*JK-s-Skyrim.esp\r\n*RSChildren_JKsSkyrim_Patch-AD.esp\r\n").unwrap();
+        std::fs::write(g.join("loadorder.txt"), "Skyrim.esm\r\nJK-s-Skyrim.esp\r\nRSChildren_JKsSkyrim_Patch-AD.esp\r\n").unwrap();
+        assert_eq!(crate::loadorder::masters(&data.join("RSChildren_JKsSkyrim_Patch-AD.esp")).unwrap(), ["Skyrim.esm", "JK-s-Skyrim.esp"]);
+
+        ensure(g, Some(&txt)).unwrap();
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*JKs-Skyrim.esp\r\n*RSChildren_JKsSkyrim_Patch-AD.esp\r\n");
+        assert_eq!(std::fs::read_to_string(g.join("loadorder.txt")).unwrap(), "Skyrim.esm\r\nJKs-Skyrim.esp\r\nRSChildren_JKsSkyrim_Patch-AD.esp\r\n");
+        assert!(!data.join("JK-s-Skyrim.esp").exists() && !data.join("JK-s-Skyrim.bsa").exists());
+        assert!(data.join("JKs-Skyrim.esp").is_file() && data.join("JKs-Skyrim.bsa").is_file());
+        assert_eq!(crate::loadorder::masters(&data.join("RSChildren_JKsSkyrim_Patch-AD.esp")).unwrap(), ["Skyrim.esm", "JKs-Skyrim.esp"], "the patch copy follows the new master name");
+        assert!(links(g).iter().all(|l| !l.to.contains("JK-s-")));
+        assert_eq!(std::fs::read(data.join("JK's Skyrim.bsa")).unwrap(), b"bsa", "the original is untouched");
+    }
+
+    #[test]
+    fn two_downloads_with_one_canonical_name_are_refused() {
+        let t = tempfile::tempdir().unwrap();
+        let data = t.path().join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("JK's Skyrim.esp"), plugin_with_masters(&[])).unwrap();
+        std::fs::write(data.join("JKs Skyrim.esp"), plugin_with_masters(&[])).unwrap();
+        let e = canonicalize_dir(&data, &t.path().join("out")).unwrap_err().to_string();
+        assert!(e.contains("jks-skyrim.esp"), "{e}");
     }
 
     #[test]
