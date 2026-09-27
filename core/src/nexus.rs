@@ -112,10 +112,6 @@ fn enc(s: &str) -> String {
         .collect()
 }
 
-/// The files to try for a mod, best first: the list's file id when it pins
-/// one; otherwise main files (then updates and optional ones), newest first,
-/// preferring names that contain `pick`. Old versions come last so a newer
-/// file made for a newer Skyrim can fall back to an older one.
 /// Whether any current (not archived or deleted) file matches the pick.
 pub fn pick_is_current(files: &[NexusFile], pick: &str) -> bool {
     let p = pick.to_ascii_lowercase();
@@ -124,6 +120,10 @@ pub fn pick_is_current(files: &[NexusFile], pick: &str) -> bool {
     })
 }
 
+/// The files to try for a mod, best first: the list's file id when it pins
+/// one; otherwise main files (then updates and optional ones), newest first,
+/// preferring names that contain `pick`. Old versions come last so a newer
+/// file made for a newer Skyrim can fall back to an older one.
 pub fn candidates(files: &[NexusFile], file: Option<u64>, pick: Option<&str>) -> Vec<NexusFile> {
     if let Some(id) = file {
         return files.iter().filter(|f| f.file_id == id).cloned().collect();

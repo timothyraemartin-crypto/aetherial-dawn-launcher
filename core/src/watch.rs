@@ -310,15 +310,60 @@ pub const CRASH_LOG_MAX: usize = 30_000;
 /// The newest crash logger log written since `since`, for staff: the whole
 /// file when it fits, else its header and plugin lists; never over
 /// `CRASH_LOG_MAX` characters.
-pub fn crash_log_for_staff(skse_log_dir: &Path, since: SystemTime, home: Option<&Path>) -> Option<String> {
+pub fn crash_log_for_staff(skse_log_dir: &Path, since: SystemTime, private: &[&Path]) -> Option<String> {
     let path = newest_crash_log(skse_log_dir, since)?;
-    let mut whole = String::from_utf8_lossy(&std::fs::read(&path).ok()?).into_owned();
-    // The Windows user folder stays private, as in the health checks (L1).
-    if let Some(h) = home.map(|h| h.display().to_string()).filter(|h| h.len() > 3) {
-        whole = whole.replace(&h, "%USERPROFILE%");
+    let whole = redact_paths(&String::from_utf8_lossy(&std::fs::read(&path).ok()?), private);
+    // Whole when it fits, else cut from the middle only, so the registers,
+    // stack and objects near the top and the lists at the end both stay.
+    Some(cut_chars(&whole, CRASH_LOG_MAX))
+}
+
+/// Hides the player's own folders in text for staff: each of `private` (the
+/// home and Documents folders) becomes %USERPROFILE% or <private>, matched
+/// without regard to case or slash kind and only at a path boundary, and the
+/// folder name after any "\Users\" (8.3 short names too) becomes <user>.
+pub fn redact_paths(text: &str, private: &[&Path]) -> String {
+    let mut out = text.to_string();
+    let norm = |s: &str| s.to_ascii_lowercase().replace('/', "\\");
+    for (n, p) in private.iter().enumerate() {
+        let want = norm(&p.display().to_string());
+        let want = want.trim_end_matches('\\');
+        if want.len() < 4 {
+            continue;
+        }
+        let label = if n == 0 { "%USERPROFILE%" } else { "<private>" };
+        let mut i = 0;
+        loop {
+            let hay = norm(&out);
+            let Some(at) = hay[i..].find(want).map(|a| a + i) else { break };
+            let end = at + want.len();
+            let boundary = hay[end..].chars().next().is_none_or(|c| !c.is_alphanumeric() && c != '_' && c != '~');
+            if boundary && out.is_char_boundary(at) && out.is_char_boundary(end) {
+                out.replace_range(at..end, label);
+                i = at + label.len();
+            } else {
+                i = end;
+            }
+        }
     }
-    let text = if whole.chars().count() <= CRASH_LOG_MAX { whole } else { crash_log_text_parts(&whole) };
-    Some(cut_chars(&text, CRASH_LOG_MAX))
+    // Any other user folder, e.g. a short name or another drive.
+    let mut res = String::with_capacity(out.len());
+    let hay = norm(&out);
+    let mut last = 0;
+    let mut i = 0;
+    while let Some(at) = hay[i..].find("\\users\\").map(|a| a + i) {
+        let start = at + "\\users\\".len();
+        let end = hay[start..].find(|c: char| c == '\\' || c == '"' || c == '\'' || c.is_whitespace() || c == ')').map(|e| e + start).unwrap_or(hay.len());
+        let name = &hay[start..end];
+        if !name.is_empty() && !matches!(name, "public" | "default" | "all users" | "<user>") && out.is_char_boundary(start) && out.is_char_boundary(end) {
+            res.push_str(&out[last..start]);
+            res.push_str("<user>");
+            last = end;
+        }
+        i = end.max(start);
+    }
+    res.push_str(&out[last..]);
+    res
 }
 
 /// At most `max` characters, cut from the middle so both the top (the
@@ -378,24 +423,28 @@ mod tests {
     fn sends_the_crash_log_whole_or_trimmed() {
         let t = tempfile::tempdir().unwrap();
         let since = SystemTime::now() - Duration::from_secs(60);
-        assert_eq!(crash_log_for_staff(t.path(), since, None), None);
+        assert_eq!(crash_log_for_staff(t.path(), since, &[]), None);
         std::fs::write(t.path().join("crash-1.log"), "Unhandled exception\nREGISTERS:\nRAX 0").unwrap();
-        assert_eq!(crash_log_for_staff(t.path(), since, None).unwrap(), "Unhandled exception\nREGISTERS:\nRAX 0");
+        assert_eq!(crash_log_for_staff(t.path(), since, &[]).unwrap(), "Unhandled exception\nREGISTERS:\nRAX 0");
         let mut big = String::from("Unhandled exception at X.dll+1\nREGISTERS:\n");
         for i in 0..5000 {
             big.push_str(&format!("[RSP+{i}] 0x0000000000000000 (size_t) [0]\n"));
         }
         big.push_str("SKSE PLUGINS:\n\tX.dll\n");
         std::fs::write(t.path().join("crash-1.log"), big).unwrap();
-        let got = crash_log_for_staff(t.path(), since, None).unwrap();
+        let got = crash_log_for_staff(t.path(), since, &[]).unwrap();
         assert!(got.chars().count() <= CRASH_LOG_MAX && got.contains("X.dll+1") && got.contains("SKSE PLUGINS"));
         assert_eq!(cut_chars("abcdef", 100), "abcdef");
         assert!(cut_chars(&"é".repeat(50), 40).chars().count() <= 40);
         let cut = cut_chars(&format!("TOP{}END", "x".repeat(1000)), 100);
         assert!(cut.starts_with("TOP") && cut.ends_with("END") && cut.chars().count() <= 100);
         std::fs::write(t.path().join("crash-1.log"), "at C:\\Users\\Tim\\Documents\\x").unwrap();
-        let got = crash_log_for_staff(t.path(), since, Some(Path::new("C:\\Users\\Tim"))).unwrap();
+        let got = crash_log_for_staff(t.path(), since, &[Path::new("C:\\Users\\Tim")]).unwrap();
         assert!(got.contains("%USERPROFILE%") && !got.contains("Tim"));
+        let home = Path::new("C:\\Users\\Tim");
+        let docs = Path::new("D:\\OneDrive\\Documents");
+        let r = redact_paths("c:/users/tim/x C:\\Users\\Timothy\\y C:\\Users\\TIMOTH~1\\z d:\\onedrive\\documents\\My Games C:\\Users\\Public\\a", &[home, docs]);
+        assert_eq!(r, "%USERPROFILE%/x C:\\Users\\<user>\\y C:\\Users\\<user>\\z <private>\\My Games C:\\Users\\Public\\a");
     }
 
     #[test]

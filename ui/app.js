@@ -14,7 +14,11 @@
       return r;
     } catch (e) {
       if (cmd !== 'log_ui') logUi(`${cmd} FAILED after ${Math.round(performance.now() - t)} ms: ${e}`);
-      throw e;
+      // Players see plain words; the raw text is in the log above.
+      if (cmd === 'log_ui' || cmd === 'plain_error') throw e;
+      let shown = e;
+      try { shown = await T.core.invoke('plain_error', { text: String(e) }); } catch {}
+      throw shown;
     }
   };
   window.addEventListener('error', e => logUi(`script error: ${e.message} at ${e.filename}:${e.lineno}`));
@@ -567,7 +571,11 @@ let autoMods = false;
           setStatus('A required mod isn\'t in yet. The launcher tries again the next time you press Play.', true);
           return;
         }
-        playAfterNexus = !auto;
+        if (auto) {
+          setStatus(`${mods.length === 1 ? mods[0].name : 'A required mod'} installed but isn't detected yet. Press Play to try again; if it repeats, send Copy diagnostics to staff.`, true);
+          return;
+        }
+        playAfterNexus = true;
         setStatus(`Sign in to Nexus below; the launcher then installs ${mods.length === 1 ? mods[0].name : `${mods.length} required mods`} by itself.`, true);
         return;
       }
@@ -802,11 +810,14 @@ let autoMods = false;
     catch { $('cr-note').textContent = "Couldn't copy. Open the log folder and send the newest game-….txt file."; }
     $('cr-note').hidden = false;
   };
-  $('rq-close').onclick = () => showPage(page);
+  $('rq-close').onclick = () => { playAfterNexus = false; showPage(page); };
   $('rq-all').onclick = () => downloadAll();
   // After Nexus sign-in, the Play that asked for it carries on by itself.
-  function resumePlay() {
+  async function resumePlay() {
     if (!playAfterNexus || $('rq-nx-in').hidden) return;
+    // Wait out a check that is running, so the resumed Play isn't dropped.
+    for (let i = 0; busy && i < 120; i++) await new Promise(r => setTimeout(r, 500));
+    if (!playAfterNexus) return;
     playAfterNexus = false;
     onPlay();
   }
