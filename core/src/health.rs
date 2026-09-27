@@ -89,6 +89,7 @@ pub fn run(i: &Inputs) -> Report {
         camera_preset(i),
         ussep_version(i),
         load_order(i),
+        server_order(i),
         plugin_names(i),
         load_order_file(i),
         stub_plugins(i),
@@ -237,6 +238,24 @@ fn load_order(i: &Inputs) -> Check {
         check("loadorder", "Load order", Status::Ok, "Only the base game, Creation Club and Aetherial Dawn's plugins are switched on.", vec![])
     } else {
         check("loadorder", "Load order", Status::Warn, "The launcher switches extra plugins off before Play.", items)
+    }
+}
+
+/// The game's plugins against the server's, position by position, as the
+/// SkyMP client checks them (serverorder.rs).
+fn server_order(i: &Inputs) -> Check {
+    let order = i.masters.map(crate::serverorder::server_order).unwrap_or_default();
+    if !crate::serverorder::beyond_base(&order) {
+        return check("serverorder", "Server plugin order", Status::Ok, "The server loads only the five base masters.", vec![]);
+    }
+    let Some(dir) = i.appdata else {
+        return check("serverorder", "Server plugin order", Status::Info, "Couldn't find the load order folder.", vec![]);
+    };
+    let bad = crate::serverorder::mismatches(i.game_dir, &dir.join("plugins.txt"), &order);
+    if bad.is_empty() {
+        check("serverorder", "Server plugin order", Status::Ok, format!("The game loads the server's {} plugins in the same order.", order.len()), vec![])
+    } else {
+        check("serverorder", "Server plugin order", Status::Fail, "The game's plugins don't match the server's order; SkyMP would stop with a load order error.", bad)
     }
 }
 

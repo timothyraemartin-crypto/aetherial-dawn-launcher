@@ -1,7 +1,7 @@
 // Hides the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use launcher_core::{auth, game, gameini, health, loadorder, manifest::Manifest, pristine, requirements, settings, strays, sync, version, watch, Error};
+use launcher_core::{auth, game, gameini, health, loadorder, manifest::Manifest, pristine, requirements, serverorder, settings, strays, sync, version, watch, Error};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -186,6 +186,28 @@ fn skip_tool() {
     log::line("tools: the player skipped the running tool for now");
 }
 
+/// Puts Skyrim.ccc back when Play stops before the game starts.
+struct CccGuard {
+    dir: PathBuf,
+    armed: bool,
+}
+
+impl Drop for CccGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            restore_ccc(&self.dir, "play stopped before the game started");
+        }
+    }
+}
+
+fn restore_ccc(dir: &std::path::Path, why: &str) {
+    match serverorder::restore_ccc(dir) {
+        Ok(true) => log::line(&format!("play: put Skyrim.ccc back ({why})")),
+        Ok(false) => {}
+        Err(e) => log::line(&format!("play: couldn't put Skyrim.ccc back ({why}): {e}")),
+    }
+}
+
 /// Puts back every file the launcher set aside (other mods, old plugins).
 #[tauri::command]
 async fn restore_set_aside(state: State<'_, AppState>) -> CmdResult<usize> {
@@ -306,8 +328,34 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
         }
     }
     let _ = app.emit("tool-running", "");
+    // Once the server loads more than the five base masters, this PC loads
+    // exactly its plugins in its order: no Creation Club masters for the
+    // session, and plugins.txt in the server's order (serverorder.rs).
+    let mut ccc_guard = CccGuard { dir: dir.clone(), armed: false };
+    if let Some(order) = fetch_masters(&state.http, &config.base_url).await.map(|v| serverorder::server_order(&v)).filter(|o| serverorder::beyond_base(o)) {
+        match serverorder::hide_ccc(&dir) {
+            Ok(h) => {
+                ccc_guard.armed = true;
+                if !h.is_empty() {
+                    log::line(&format!("play: emptied Skyrim.ccc for this session (Creation Club masters would shift the server's plugin positions); the original is put back when the game closes: {}", h.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")));
+                }
+            }
+            Err(e) => return Err(format!("Couldn't switch Creation Club content off for this session ({e}). Close Skyrim and try again.")),
+        }
+        if let Some(txt) = plugins_txt(&app) {
+            match serverorder::set_exact(&txt, &order) {
+                Ok(true) => log::line(&format!("play: set {} to the server's {} plugins in order, then this PC's own", txt.display(), order.len())),
+                Ok(false) => {}
+                Err(e) => return Err(format!("Couldn't set your load order ({e}). Close Skyrim and Vortex, then try again.")),
+            }
+        }
+    }
     let report = run_health(&app, &state.http, &config.base_url, &dir, Some(&m)).await;
     log::line(&format!("health before play: worst={:?}\n{}", report.worst, report.text()));
+    // The game would stop with SkyMP's "LOAD ORDER ERROR"; say it here.
+    if let Some(c) = report.checks.iter().find(|c| c.id == "serverorder" && c.status == health::Status::Fail) {
+        return Err(format!("Your plugins don't match the server's order, so the game would refuse to connect: {}. Send Copy diagnostics to staff.", c.items.iter().take(3).cloned().collect::<Vec<_>>().join("; ")));
+    }
     if report.worst >= health::Status::Warn && config.share_health {
         send_health(&app, &state.http, &config, &m.build, "before play", None, None, &report).await;
     }
@@ -349,6 +397,8 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
         log::line(&format!("play: left Google sign-in settings out of the game's environment: {}", google.join(", ")));
     }
     log::line("play: started skse64_loader.exe");
+    // Skyrim.ccc goes back when the game closes (watch_game).
+    ccc_guard.armed = false;
     let started = std::time::SystemTime::now();
     if config.close_on_launch {
         if let Some(w) = app.get_webview_window("main") {
@@ -415,6 +465,12 @@ async fn end_when_window_closed(pid: u32) {
 /// Follows Skyrim from launch to exit. Every session leaves a report in the
 /// log folder; a crash brings the launcher back with that report on screen.
 async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::time::SystemTime, close_on_launch: bool) {
+    watch_game_inner(app, &game_dir, started, close_on_launch).await;
+    restore_ccc(&game_dir, "the game closed");
+}
+
+async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: std::time::SystemTime, close_on_launch: bool) {
+    let game_dir = game_dir.to_path_buf();
     // skse64_loader starts SkyrimSE.exe and exits, so look for the game itself.
     let mut pid = None;
     for _ in 0..90 {
@@ -1827,6 +1883,12 @@ fn main() {
                 .build()?;
             app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http, mods: Default::default(), music: music::Music::new() });
             mods::restore_left_handler(app.handle());
+            // A session that ended while the launcher was closed.
+            if let Some(dir) = app.state::<AppState>().config.try_lock().ok().and_then(|c| c.game_dir.clone()) {
+                if watch::find_process(watch::GAME_PROCESS).is_none() {
+                    restore_ccc(&dir, "the launcher started and the game isn't running");
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside, skip_tool])
