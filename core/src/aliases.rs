@@ -127,12 +127,44 @@ pub fn with_aliased_masters(bytes: &[u8]) -> Option<Vec<u8>> {
     rename_masters(bytes, &|m: &str| (!client_can_load_name(m)).then(|| alias_name(m)))
 }
 
-/// Whether a plugin in Data runs as a rewritten copy: a master it names
-/// runs under another name (a dashed alias, or itself a rewritten copy's
-/// "-AD" name, down a chain of patches).
+/// The TES4 "light" (ESL) flag.
+const LIGHT: u32 = 0x200;
+
+/// An .esp or .esm with the ESL flag set. The game loads it as a light
+/// plugin on PCs, while the SkyMP server gives it a full load-order index,
+/// so every plugin after it would disagree (Kad_MoonMonkRobes.esp,
+/// 2026-09-27). Its canonical copy has the flag cleared. An .esl stays
+/// light whatever its flag says, so it's left alone.
+fn light_flagged(plugin: &str, bytes: &[u8]) -> bool {
+    !plugin.to_ascii_lowercase().ends_with(".esl")
+        && bytes.len() >= 12
+        && &bytes[..4] == b"TES4"
+        && u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) & LIGHT != 0
+}
+
+/// The canonical bytes of a plugin in `data`: masters that run under
+/// another name renamed, and the ESL flag cleared on an .esp or .esm. None
+/// when neither is needed (or the header can't be read).
+pub fn canonical_bytes(data: &Path, plugin: &str, bytes: &[u8]) -> Option<Vec<u8>> {
+    let renamed = with_masters_in(data, bytes);
+    if !light_flagged(plugin, bytes) {
+        return renamed;
+    }
+    let mut out = renamed.unwrap_or_else(|| bytes.to_vec());
+    let f = u32::from_le_bytes([out[8], out[9], out[10], out[11]]) & !LIGHT;
+    out[8..12].copy_from_slice(&f.to_le_bytes());
+    Some(out)
+}
+
+/// Whether a plugin in Data runs as a rewritten copy: it's ESL-flagged, or
+/// a master it names runs under another name (a dashed alias, or itself a
+/// rewritten copy's "-AD" name, down a chain of patches).
 fn rewritten_in(data: &Path, plugin: &str, depth: u8) -> bool {
     if depth > 32 {
         return false;
+    }
+    if head(&data.join(plugin)).is_some_and(|h| light_flagged(plugin, &h)) {
+        return true;
     }
     crate::loadorder::masters(&data.join(plugin)).unwrap_or_default().iter().any(|m| !client_can_load_name(m) || rewritten_in(data, m, depth + 1))
 }
@@ -215,9 +247,10 @@ fn head(path: &Path) -> Option<Vec<u8>> {
     Some(b)
 }
 
-/// Whether a plugin names a master the client can't load.
+/// Whether a plugin names a master the client can't load, or is ESL-flagged.
 fn needs_rewrite(data: &Path, path: &Path) -> bool {
-    head(path).is_some_and(|h| with_masters_in(data, &h).is_some())
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    head(path).is_some_and(|h| canonical_bytes(data, &name, &h).is_some())
 }
 
 /// Writes the rewritten copy, keeping the original's modified time so it's
@@ -230,12 +263,13 @@ fn rewrite(from: &Path, to: &Path) -> std::io::Result<()> {
     // Up to date only when its header is exactly the rewrite of the
     // original's (the master names follow the current naming rule).
     let data = from.parent().unwrap_or(Path::new("."));
-    let fresh = head(from).and_then(|h| with_masters_in(data, &h)).is_some_and(|want| head(to).as_deref() == Some(&want[..]));
+    let name = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let fresh = head(from).and_then(|h| canonical_bytes(data, &name, &h)).is_some_and(|want| head(to).as_deref() == Some(&want[..]));
     if std::fs::metadata(to).and_then(|m| m.modified()).ok() == Some(t) && fresh {
         return Ok(());
     }
     let bytes = std::fs::read(from)?;
-    let new = with_masters_in(data, &bytes).ok_or_else(|| std::io::Error::other("the plugin's header can't be rewritten"))?;
+    let new = canonical_bytes(data, &name, &bytes).ok_or_else(|| std::io::Error::other("the plugin's header can't be rewritten"))?;
     // Remove the old name first and write a new file: writing through a
     // hard link would change the original (Vortex's copy) too.
     if to.exists() {
@@ -247,7 +281,7 @@ fn rewrite(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 /// The name a plugin runs under: its dashed alias, or "<name>-AD.esp" for
-/// a loadable name whose masters need rewriting.
+/// a loadable name whose masters need rewriting or whose ESL flag is cleared.
 pub fn run_name(plugin: &str, rewritten: bool) -> String {
     if !client_can_load_name(plugin) {
         return alias_name(plugin);
@@ -264,7 +298,7 @@ pub fn run_name(plugin: &str, rewritten: bool) -> String {
 /// unchanged). The launcher makes the same bytes on each PC, so the server's
 /// copy and the players' copies are identical.
 pub fn canonical(data: &Path, plugin: &str, bytes: &[u8]) -> (String, Option<Vec<u8>>) {
-    let new = with_masters_in(data, bytes);
+    let new = canonical_bytes(data, plugin, bytes);
     (run_name(plugin, new.is_some()), new)
 }
 
@@ -275,7 +309,7 @@ pub struct CanonicalPlugin {
     pub original: String,
     /// The name the server and every PC load ("JKs-Skyrim.esp").
     pub name: String,
-    /// Whether its masters were renamed inside the file.
+    /// Whether the file was changed: masters renamed, or the ESL flag cleared.
     pub rewritten: bool,
     /// sha256 of the written plugin.
     pub sha256: String,
@@ -303,7 +337,7 @@ pub fn canonicalize_dir(data: &Path, out: &Path) -> std::io::Result<Vec<Canonica
     let mut seen: Vec<(String, String)> = Vec::new();
     for n in &names {
         let bytes = head(&data.join(n)).unwrap_or_default();
-        let name = run_name(n, with_masters_in(data, &bytes).is_some()).to_ascii_lowercase();
+        let name = run_name(n, canonical_bytes(data, n, &bytes).is_some()).to_ascii_lowercase();
         if let Some((other, _)) = seen.iter().find(|(_, c)| c == &name) {
             return Err(std::io::Error::other(format!("{other} and {n} would both load as {name}")));
         }
@@ -649,6 +683,63 @@ mod tests {
         assert_eq!(crate::loadorder::masters(&data.join("RSChildren_JKsSkyrim_Patch-AD.esp")).unwrap(), ["Skyrim.esm", "JKs-Skyrim.esp"], "the patch copy follows the new master name");
         assert!(links(g).iter().all(|l| !l.to.contains("JK-s-")));
         assert_eq!(std::fs::read(data.join("JK's Skyrim.bsa")).unwrap(), b"bsa", "the original is untouched");
+    }
+
+    #[test]
+    fn esl_flagged_esps_load_as_full_plugins_on_the_server_and_every_pc() {
+        // The ESL flag is bit 0x200 of the TES4 flags (byte 9).
+        let esl = |ms: &[&str]| {
+            let mut b = plugin_with_masters(ms);
+            b[9] |= 0x02;
+            b
+        };
+        let t = tempfile::tempdir().unwrap();
+        let (g, out) = (t.path().join("game"), t.path().join("server"));
+        let data = g.join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("Skyrim.esm"), plugin_with_masters(&[])).unwrap();
+        let robes = esl(&["Skyrim.esm"]);
+        std::fs::write(data.join("Kad_MoonMonkRobes.esp"), &robes).unwrap();
+        std::fs::write(data.join("Kad_MoonMonkRobes.bsa"), b"bsa").unwrap();
+        std::fs::write(data.join("Common Clothing Expanded.esp"), esl(&["Skyrim.esm"])).unwrap();
+        std::fs::write(data.join("Robes Patch.esp"), plugin_with_masters(&["Skyrim.esm", "Kad_MoonMonkRobes.esp"])).unwrap();
+        let hud = esl(&["Skyrim.esm"]);
+        std::fs::write(data.join("TrueHUD.esl"), &hud).unwrap();
+        let got = canonicalize_dir(&data, &out).unwrap();
+        let names: Vec<(&str, &str, bool)> = got.iter().map(|c| (c.original.as_str(), c.name.as_str(), c.rewritten)).collect();
+        assert_eq!(
+            names,
+            [
+                ("Common Clothing Expanded.esp", "Common-Clothing-Expanded.esp", true),
+                ("Kad_MoonMonkRobes.esp", "Kad_MoonMonkRobes-AD.esp", true),
+                ("Robes Patch.esp", "Robes-Patch.esp", true),
+                ("Skyrim.esm", "Skyrim.esm", false),
+                ("TrueHUD.esl", "TrueHUD.esl", false),
+            ]
+        );
+        // Exactly the original with the flag cleared; the same bytes on
+        // every build, since nothing else changes.
+        let mut want = robes.clone();
+        want[9] &= !0x02;
+        assert_eq!(std::fs::read(out.join("Kad_MoonMonkRobes-AD.esp")).unwrap(), want);
+        assert_eq!(got[1].companions, ["Kad_MoonMonkRobes-AD.bsa"]);
+        assert_eq!(crate::loadorder::masters(&out.join("Robes-Patch.esp")).unwrap(), ["Skyrim.esm", "Kad_MoonMonkRobes-AD.esp"]);
+        // An .esl is light by its extension; it's left as it is.
+        assert_eq!(std::fs::read(out.join("TrueHUD.esl")).unwrap(), hud);
+        // A player's launcher makes byte-identical files under the same names,
+        // and the original download is untouched.
+        let txt = g.join("plugins.txt");
+        std::fs::write(&txt, "*Kad_MoonMonkRobes.esp\n*Common Clothing Expanded.esp\n*Robes Patch.esp\n").unwrap();
+        ensure(&g, Some(&txt)).unwrap();
+        for c in &got {
+            assert_eq!(std::fs::read(data.join(&c.name)).unwrap(), std::fs::read(out.join(&c.name)).unwrap(), "{}", c.name);
+            assert_eq!(run_as(&g, &c.original), c.name);
+        }
+        assert_eq!(std::fs::read(data.join("Kad_MoonMonkRobes.esp")).unwrap(), robes);
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*Kad_MoonMonkRobes-AD.esp\n*Common-Clothing-Expanded.esp\n*Robes-Patch.esp\n");
+        // A second Play changes nothing.
+        ensure(&g, Some(&txt)).unwrap();
+        assert_eq!(std::fs::read(data.join("Kad_MoonMonkRobes-AD.esp")).unwrap(), want);
     }
 
     #[test]
