@@ -69,7 +69,7 @@ fn mcm_config(file: &str) -> Option<String> {
 
 /// The file on disk, matching its path case-insensitively (Windows does;
 /// the tests run on Linux).
-fn find(game_dir: &Path, rel: &str) -> std::path::PathBuf {
+pub(crate) fn find(game_dir: &Path, rel: &str) -> std::path::PathBuf {
     let mut at = game_dir.to_path_buf();
     for part in rel.split('/') {
         let exact = at.join(part);
@@ -250,7 +250,7 @@ pub fn xml_set(text: &str, key: &str, value: &Value) -> Option<String> {
 /// Writes a new file beside the old one and renames it over, so a hard link
 /// (Vortex deploys by hard link from its staging folder) is replaced, never
 /// written through.
-fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(p) = path.parent() {
         std::fs::create_dir_all(p)?;
     }
