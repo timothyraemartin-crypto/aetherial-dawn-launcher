@@ -670,15 +670,36 @@ async fn auth_begin(app: AppHandle) -> CmdResult<String> {
     use tauri_plugin_opener::OpenerExt;
     let st = auth::new_state();
     let verifier = auth::new_verifier();
-    // The verifier never leaves this process except on the status call.
-    login_verifiers().lock().unwrap().insert(st.clone(), verifier.clone());
-    app.opener().open_url(auth::login_url(AUTH_URL, &st, &auth::challenge(&verifier)), None::<&str>).map_err(|e| e.to_string())?;
+    let challenge = auth::challenge(&verifier);
+    let (listener, port) = auth::listen().await.map_err(err)?;
+    // One sign-in at a time; the verifier stays in this process.
+    {
+        let mut all = logins().lock().unwrap();
+        all.clear();
+        all.insert(st.clone(), None);
+    }
+    let (st2, http) = (st.clone(), app.state::<AppState>().http.clone());
+    tauri::async_runtime::spawn(async move {
+        let answer = match tokio::time::timeout(LOGIN_WAIT, auth::wait_for_code(listener, &st2)).await {
+            Ok(Some(code)) => auth::exchange(&http, AUTH_URL, &st2, &code, &verifier).await,
+            _ => auth::Answer::SignedOut("Sign-in timed out. Try again.".into()),
+        };
+        if let Some(slot) = logins().lock().unwrap().get_mut(&st2) {
+            *slot = Some(answer);
+        }
+    });
+    log::line(&format!("sign-in: opened the browser, waiting on 127.0.0.1:{port}"));
+    app.opener().open_url(auth::login_url(AUTH_URL, &st, &challenge, port), None::<&str>).map_err(|e| e.to_string())?;
     Ok(st)
 }
 
-/// Each sign-in's secret verifier, by state (kept only in memory).
-fn login_verifiers() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
-    static V: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> = std::sync::OnceLock::new();
+const LOGIN_WAIT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// The sign-in in progress, by state, and its answer once the browser came
+/// back and the code was traded (kept only in memory).
+type Logins = std::collections::HashMap<String, Option<auth::Answer<auth::SignedIn>>>;
+fn logins() -> &'static std::sync::Mutex<Logins> {
+    static V: std::sync::OnceLock<std::sync::Mutex<Logins>> = std::sync::OnceLock::new();
     V.get_or_init(Default::default)
 }
 
@@ -694,13 +715,20 @@ struct PollResult {
 #[tauri::command]
 async fn auth_poll(app: AppHandle, state: State<'_, AppState>, st: String) -> CmdResult<PollResult> {
     let r = |status, message: Option<String>| PollResult { status, message, account: None };
-    let Some(verifier) = login_verifiers().lock().unwrap().get(&st).cloned() else {
-        return Ok(r("expired", Some("The sign-in link expired. Try again.".into())));
+    let answer = {
+        let mut all = logins().lock().unwrap();
+        match all.get_mut(&st) {
+            None => return Ok(r("expired", Some("The sign-in link expired. Try again.".into()))),
+            Some(slot) => slot.take(),
+        }
     };
-    let answer = auth::poll(&state.http, AUTH_URL, &st, &verifier).await;
-    if !matches!(answer, auth::Answer::Pending) {
-        login_verifiers().lock().unwrap().remove(&st);
-    }
+    let answer = match answer {
+        Some(a) => {
+            logins().lock().unwrap().remove(&st);
+            a
+        }
+        None => auth::Answer::Pending,
+    };
     if !matches!(answer, auth::Answer::Pending) {
         log::line(&format!("sign-in: {}", answer_kind(&answer)));
     }
@@ -714,7 +742,8 @@ async fn auth_poll(app: AppHandle, state: State<'_, AppState>, st: String) -> Cm
         }
         auth::Answer::Refused { message, .. } => r("refused", Some(message)),
         auth::Answer::SignedOut(message) => r("expired", Some(message)),
-        auth::Answer::Offline(message) => r("offline", Some(message)),
+        // The code is traded once, so a failed trade means starting again.
+        auth::Answer::Offline(message) => r("expired", Some(format!("Couldn't finish signing in: {message}. Try again."))),
     })
 }
 
