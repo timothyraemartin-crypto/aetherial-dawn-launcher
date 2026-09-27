@@ -194,6 +194,22 @@ pub fn json_set(doc: &mut Value, key: &str, value: &Value) -> bool {
     }
 }
 
+/// Writes a new file beside the old one and renames it over, so a hard link
+/// (Vortex deploys by hard link from its staging folder) is replaced, never
+/// written through.
+fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(p) = path.parent() {
+        std::fs::create_dir_all(p)?;
+    }
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".aetherial-part");
+    let tmp = std::path::PathBuf::from(tmp);
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
 fn back_up(game_dir: &Path, rel: &str, stamp: &str) -> std::io::Result<()> {
     let from = find(game_dir, rel);
     if !from.is_file() {
@@ -277,6 +293,10 @@ fn write_one(game_dir: &Path, s: &Setting, todo: &[(&String, &Value)], stamp: &s
             };
             let mut text = std::fs::read_to_string(&path).unwrap_or_default();
             for (k, v) in todo {
+                if v.as_str().is_some_and(|t| t.contains(['\n', '\r'])) || k.contains(['\n', '\r', '=', '[', ']']) {
+                    skipped.push(((*k).clone(), "a value or key can't span lines"));
+                    continue;
+                }
                 if allowed.as_ref().map(|a| !has_key(a, k)).unwrap_or(false) {
                     skipped.push(((*k).clone(), "the mod's MCM config has no such key"));
                     continue;
@@ -286,10 +306,7 @@ fn write_one(game_dir: &Path, s: &Setting, todo: &[(&String, &Value)], stamp: &s
             }
             if !wrote.is_empty() {
                 back_up(game_dir, &s.file, stamp)?;
-                if let Some(p) = path.parent() {
-                    std::fs::create_dir_all(p)?;
-                }
-                std::fs::write(&path, text)?;
+                replace(&path, text.as_bytes())?;
             }
         }
         "json" => {
@@ -309,7 +326,7 @@ fn write_one(game_dir: &Path, s: &Setting, todo: &[(&String, &Value)], stamp: &s
             }
             if !wrote.is_empty() {
                 back_up(game_dir, &s.file, stamp)?;
-                std::fs::write(&path, serde_json::to_string_pretty(&doc)?)?;
+                replace(&path, serde_json::to_string_pretty(&doc)?.as_bytes())?;
             }
         }
         _ => skipped.extend(todo.iter().map(|(k, _)| ((*k).clone(), "this launcher can't write that format yet"))),
@@ -429,6 +446,26 @@ mod tests {
         assert_eq!(v, json!({"Wetness": {"Enabled": true, "Rain": 2}}));
         assert!(!safe("Data/x.dll") && !safe("/etc/x.ini") && !safe("Skyrim.ini") && safe("Data/MCM/Settings/A.ini"));
         assert!(!safe("Data/SKSE/Plugins/SkyPatcher/npc/x.ini"));
+    }
+
+    #[test]
+    fn never_writes_through_a_hard_link_or_adds_lines() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        put(g, "Data/SKSE/Plugins/Precision.dll", "x");
+        put(g, "staging/Shipped.ini", "[A]\nb = 1\n");
+        std::fs::create_dir_all(g.join("Data/SKSE/Plugins")).unwrap();
+        std::fs::hard_link(g.join("staging/Shipped.ini"), g.join("Data/SKSE/Plugins/Shipped.ini")).unwrap();
+        let s = Setting {
+            file: "Data/SKSE/Plugins/Shipped.ini".into(),
+            format: "ini".into(),
+            set: [("A.b".to_string(), json!(2)), ("A.c".to_string(), json!("x\n[Evil]"))].into_iter().collect(),
+        };
+        let log = apply_all(g, &[entry(vec![s])]);
+        assert!(log.iter().any(|l| l.contains("A.c") && l.contains("span lines")), "{log:?}");
+        assert_eq!(std::fs::read_to_string(g.join("Data/SKSE/Plugins/Shipped.ini")).unwrap(), "[A]\nb = 2\n");
+        assert_eq!(std::fs::read_to_string(g.join("staging/Shipped.ini")).unwrap(), "[A]\nb = 1\n", "Vortex's staging copy is untouched");
+        assert!(!g.join("Data/SKSE/Plugins/Shipped.ini.aetherial-part").exists());
     }
 
     #[test]

@@ -405,6 +405,9 @@ async fn install(m: &ModEntry, archive: &Path, game_dir: &Path, file_id: Option<
             log::line(&format!("mods: {} installer options (picks {:?}): {}", m.name, m.fomod, r.join(" || ")));
         }
         let mut copies = modlist::plan(&m, &work)?;
+        if let Some((level, folder)) = m.cpu_pick().filter(|_| !m.cpu.is_empty()) {
+            log::line(&format!("mods: {} takes the {level} build ({folder}) for this processor", m.name));
+        }
         // An SKSE DLL for another Skyrim never goes in; the next file is tried.
         let mut wrong = modlist::fix_wrong_builds(&mut copies, &work);
         // The Unofficial Patch for Skyrim 1.7.99 crashes 1.6.1170.

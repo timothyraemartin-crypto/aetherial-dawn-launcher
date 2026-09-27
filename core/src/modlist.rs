@@ -90,6 +90,45 @@ pub struct ModEntry {
     /// (presets.rs).
     #[serde(default)]
     pub settings: Vec<crate::presets::Setting>,
+    /// Builds of the mod for CPU instruction sets, as folders in the archive
+    /// ("avx512", "avx2", "avx", "plain" -> folder). The best one this CPU
+    /// runs is installed and the other folders are left out (FSMP: an AVX-512
+    /// build crashes the game on a CPU without it).
+    #[serde(default)]
+    pub cpu: BTreeMap<String, String>,
+}
+
+/// CPU levels a `cpu` map can name, best first.
+pub const CPU_LEVELS: [&str; 4] = ["avx512", "avx2", "avx", "plain"];
+
+/// The instruction sets this CPU (and Windows) can run, best first.
+pub fn cpu_supports() -> Vec<&'static str> {
+    let mut out = Vec::new();
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx512f") {
+            out.push("avx512");
+        }
+        if std::arch::is_x86_feature_detected!("avx2") {
+            out.push("avx2");
+        }
+        if std::arch::is_x86_feature_detected!("avx") {
+            out.push("avx");
+        }
+    }
+    out.push("plain");
+    out
+}
+
+impl ModEntry {
+    /// The `cpu` build to install on a CPU with these levels, as (level, folder).
+    pub fn cpu_pick_for(&self, supports: &[&str]) -> Option<(String, String)> {
+        CPU_LEVELS.iter().filter(|l| supports.contains(l)).find_map(|l| self.cpu.iter().find(|(k, _)| k.eq_ignore_ascii_case(l)).map(|(k, v)| (k.clone(), v.clone())))
+    }
+
+    pub fn cpu_pick(&self) -> Option<(String, String)> {
+        self.cpu_pick_for(&cpu_supports())
+    }
 }
 
 impl ModEntry {
@@ -99,6 +138,10 @@ impl ModEntry {
         if let Some(r) = load_installed(game_dir).mods.get(&self.id) {
             let pin = self.nexus.as_ref().and_then(|n| n.file);
             if (pin.is_some() && r.file_id.is_some() && pin != r.file_id) || r.fomod.as_ref().is_some_and(|f| f != &self.fomod) {
+                return false;
+            }
+            // The game folder moved to a PC with another CPU.
+            if !self.cpu.is_empty() && r.cpu.is_some() && r.cpu != self.cpu_pick().map(|p| p.0) {
                 return false;
             }
         }
@@ -567,6 +610,11 @@ fn find_ci(root: &Path, rel: &str) -> Option<PathBuf> {
 
 /// Decides which unpacked files go where, relative to the game folder.
 pub fn plan(entry: &ModEntry, unpacked: &Path) -> Result<Vec<Copy>> {
+    plan_for(entry, unpacked, &cpu_supports())
+}
+
+/// `plan` on a CPU with these instruction sets.
+pub fn plan_for(entry: &ModEntry, unpacked: &Path, supports: &[&str]) -> Result<Vec<Copy>> {
     let mut out = Vec::new();
     if entry.target == Target::Game {
         let want: Vec<String> = entry.include.iter().map(|s| s.to_ascii_lowercase()).collect();
@@ -597,8 +645,25 @@ pub fn plan(entry: &ModEntry, unpacked: &Path) -> Result<Vec<Copy>> {
         }
     } else if let Some(root) = data_root(unpacked) {
         copy_tree(&root, Path::new("Data"), &mut out);
-    } else {
+    } else if entry.cpu.is_empty() {
         return Err(Error::Game(format!("couldn't tell where {}'s files go. Install it with Vortex", entry.name)));
+    }
+    // One CPU build: nothing from the other builds' folders, and the chosen
+    // folder's files over whatever the installer picked.
+    if !entry.cpu.is_empty() {
+        let (level, folder) = entry.cpu_pick_for(supports).ok_or_else(|| Error::Game(format!("{} has no build for this computer's processor", entry.name)))?;
+        let find = |f: &str| {
+            find_ci(unpacked, f).or_else(|| std::fs::read_dir(unpacked).ok()?.flatten().filter(|e| e.path().is_dir()).find_map(|e| find_ci(&e.path(), f)))
+        };
+        let dirs: Vec<PathBuf> = entry.cpu.values().filter_map(|f| find(f)).collect();
+        out.retain(|c| !dirs.iter().any(|d| c.from.starts_with(d)));
+        let Some(chosen) = find(&folder).filter(|d| d.is_dir()) else {
+            return Err(Error::Game(format!("the download for {} doesn't have its {level} build ({folder})", entry.name)));
+        };
+        let mut picked = Vec::new();
+        copy_tree(&data_root(&chosen).unwrap_or(chosen), Path::new("Data"), &mut picked);
+        out.retain(|c| !picked.iter().any(|p| p.to.to_string_lossy().eq_ignore_ascii_case(&c.to.to_string_lossy())));
+        out.extend(picked);
     }
     // A plugin below the top of Data never loads: leave it out, unless the
     // list lifts it to the top.
@@ -812,6 +877,9 @@ pub struct InstalledMod {
     /// The FOMOD picks it was installed with (None before 0.1.68).
     #[serde(default)]
     pub fomod: Option<Vec<String>>,
+    /// The CPU build it was installed with, for mods with a `cpu` map.
+    #[serde(default)]
+    pub cpu: Option<String>,
 }
 
 fn record_path(game_dir: &Path) -> PathBuf {
@@ -875,6 +943,7 @@ pub fn apply(entry: &ModEntry, copies: &[Copy], game_dir: &Path, file_id: Option
         skipped,
         when: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
         fomod: Some(entry.fomod.clone()),
+        cpu: (!entry.cpu.is_empty()).then(|| entry.cpu_pick().map(|p| p.0)).flatten(),
     };
     let mut all = load_installed(game_dir);
     all.mods.insert(entry.id.clone(), rec.clone());
@@ -949,6 +1018,34 @@ pub fn verify(entry: &ModEntry, archive: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn installs_the_build_for_this_cpu() {
+        let t = tempfile::tempdir().unwrap();
+        let u = t.path().join("u");
+        for d in ["raw-vs2022-windows", "raw-vs2022-windows-avx", "raw-vs2022-windows-avx2", "raw-vs2022-windows-avx512"] {
+            let p = u.join(d).join("SKSE/Plugins");
+            std::fs::create_dir_all(&p).unwrap();
+            std::fs::write(p.join("hdtsmp64.dll"), d).unwrap();
+        }
+        std::fs::create_dir_all(u.join("common/SKSE/Plugins/hdtsmp64")).unwrap();
+        std::fs::write(u.join("common/SKSE/Plugins/hdtsmp64/configs.xml"), "c").unwrap();
+        let e: ModEntry = serde_json::from_value(serde_json::json!({"id": "fsmp", "name": "FSMP", "cpu": {
+            "avx512": "raw-vs2022-windows-avx512", "avx2": "raw-vs2022-windows-avx2", "avx": "raw-vs2022-windows-avx", "plain": "raw-vs2022-windows"}})).unwrap();
+        let dll = |sup: &[&str]| {
+            let c = plan_for(&e, &u, sup).unwrap();
+            let d: Vec<_> = c.iter().filter(|c| c.to.ends_with("hdtsmp64.dll")).collect();
+            assert_eq!(d.len(), 1, "{c:?}");
+            assert_eq!(d[0].to, PathBuf::from("Data/SKSE/Plugins/hdtsmp64.dll"));
+            std::fs::read_to_string(&d[0].from).unwrap()
+        };
+        assert_eq!(dll(&["avx2", "avx", "plain"]), "raw-vs2022-windows-avx2");
+        assert_eq!(dll(&["avx512", "avx2", "avx", "plain"]), "raw-vs2022-windows-avx512");
+        assert_eq!(dll(&["plain"]), "raw-vs2022-windows");
+        let only_avx = ModEntry { cpu: [("avx2".to_string(), "raw-vs2022-windows-avx2".to_string())].into_iter().collect(), ..e.clone() };
+        assert!(plan_for(&only_avx, &u, &["avx", "plain"]).is_err(), "never a build the CPU can't run");
+        assert!(cpu_supports().contains(&"plain"));
+    }
     use super::*;
 
     fn zip_with(path: &Path, files: &[(&str, &[u8])]) {
