@@ -88,7 +88,6 @@ pub fn run(i: &Inputs) -> Report {
         wanted_off(i),
         camera_preset(i),
         ussep_version(i),
-        ussep_waiting(i),
         load_order(i),
         plugin_names(i),
         load_order_file(i),
@@ -365,11 +364,7 @@ fn skse_builds(i: &Inputs) -> Check {
 /// Required mods' plugins switched off in the load order (their menus, like
 /// SmoothCam's settings page, don't show then).
 fn wanted_off(i: &Inputs) -> Check {
-    let mut off = i.appdata.map(|a| loadorder::wanted_but_off(i.game_dir, &a.join("plugins.txt"))).unwrap_or_default();
-    if !crate::ussep::server_has(i.masters) {
-        let held = crate::ussep::plugin_names();
-        off.retain(|n| !held.iter().any(|h| h.eq_ignore_ascii_case(n)));
-    }
+    let off = i.appdata.map(|a| loadorder::wanted_but_off(i.game_dir, &a.join("plugins.txt"))).unwrap_or_default();
     if off.is_empty() {
         check("requiredoff", "Required mods switched on", Status::Ok, "Every required mod's plugin is switched on.", vec![])
     } else {
@@ -382,16 +377,6 @@ fn ussep_version(i: &Inputs) -> Check {
     match crate::ussep::too_new(i.game_dir) {
         Some(why) => check("ussepversion", "Unofficial Patch version", Status::Fail, format!("{why}. It crashes the game while drawing land, so the launcher sets it aside and installs 4.3.8a."), vec![]),
         None => check("ussepversion", "Unofficial Patch version", Status::Ok, "The Unofficial Patch is the version for Skyrim 1.6.1170.", vec![]),
-    }
-}
-
-/// The patch stays switched off until the server loads it too.
-fn ussep_waiting(i: &Inputs) -> Check {
-    let present = i.game_dir.join("Data").join(crate::requirements::USSEP_PLUGIN).is_file();
-    if present && !crate::ussep::server_has(i.masters) {
-        check("usseppending", "Unofficial Patch", Status::Info, "Unofficial Patch: waiting for server support; it crashes world loading until then. It stays installed and switches back on by itself once the server has it.", vec![])
-    } else {
-        check("usseppending", "Unofficial Patch", Status::Ok, "The Unofficial Patch is on.", vec![])
     }
 }
 

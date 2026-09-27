@@ -130,7 +130,7 @@ Required mods' plugins (SkyUI, the Unofficial Patch's dashed copy, SmoothCam, Tr
 
 USSEP 4.3.9 and later need Skyrim 1.7.99; the last one for 1.6.1170 is 4.3.8a. Timothy's Vortex had 4.3.9c, which crashed the game 17-19 seconds in while drawing land it changes (SkyrimSE.exe+02AD242 via Skyrim Souls RE's terrain hook, 2026-09-26 22:39 and 23:50). The launcher reads the patch's version from its header description, else Vortex's folder name, else its own install record. A newer one doesn't count as installed and is moved (with its Vortex mod's other files) to `.aetherial-dawn\disabled\<time>-too-new-ussep\` before Play; the Nexus install picks files whose version starts with 4.3.8 and refuses a download whose header says 4.3.9 or newer.
 
-Since 0.1.56 (Timothy chose "server runs it", 2026-09-27) the patch stays required and installed, with its dashed copy, but its plugin lines stay switched off in plugins.txt until the server's `masters.json` lists the patch; then Play switches it back on by itself. The game check shows "Unofficial Patch: waiting for server support". Crash reports whose log shows the terrain update (`BGSTerrainManager`, or land plus the patch) name that as the likely cause instead of the checks' guess.
+Crash reports whose log shows the terrain update (`BGSTerrainManager`, or land plus the patch) name that as the likely cause instead of the checks' guess. (0.1.56 briefly held the patch off until the server had it; 0.1.57 removed that, since the land crash was the 1.7.99 patch version and SkyMP never streams terrain.)
 
 A header-only plugin no longer counts as broken (MCM Helper's `MCMHelper.esp` is one and was parked); Play puts required files back from `*-plugins` backup folders too.
 

@@ -262,8 +262,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
         install_missing_mods(&state.http, &dir).await?;
     }
     game::inspect(&dir).map_err(err)?;
-    let server_has_ussep = launcher_core::ussep::server_has(fetch_masters(&state.http, &config.base_url).await.as_ref());
-    tidy_game(&app, &dir, &m, config.only_server_mods, server_has_ussep)?;
+    tidy_game(&app, &dir, &m, config.only_server_mods)?;
     let report = run_health(&app, &state.http, &config.base_url, &dir, Some(&m)).await;
     log::line(&format!("health before play: worst={:?}\n{}", report.worst, report.text()));
     if report.worst >= health::Status::Warn && config.share_health {
@@ -1087,7 +1086,7 @@ async fn steam_app_install(state: State<'_, AppState>) -> CmdResult<version::Gam
 /// extra plugins are switched off in plugins.txt, and archives Skyrim.ini
 /// names but that no longer exist are dropped (the ini is backed up first).
 /// Nothing is deleted.
-fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_mods: bool, server_has_ussep: bool) -> CmdResult<()> {
+fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_mods: bool) -> CmdResult<()> {
     // The Unofficial Patch made for Skyrim 1.7.99 (4.3.9+) crashes 1.6.1170
     // while drawing land; it's set aside and 4.3.8a installed in its place.
     match launcher_core::ussep::set_aside_if_too_new(dir) {
@@ -1182,26 +1181,7 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_m
     // Required and listed mods' plugins (SkyUI, the Unofficial Patch) only
     // work switched on; Vortex does this, the launcher's own installs don't.
     if let Some(txt) = plugins_txt(app) {
-        // The Unofficial Patch waits, switched off, until the server loads it
-        // too (Timothy chose "server runs it", 2026-09-27); its files stay.
-        let held = launcher_core::ussep::plugin_names();
-        let mut want = loadorder::wanted(dir);
-        if !server_has_ussep {
-            want.retain(|n| !held.iter().any(|h| h.eq_ignore_ascii_case(n)));
-            let on: Vec<String> = std::fs::read_to_string(&txt)
-                .unwrap_or_default()
-                .lines()
-                .filter_map(|l| l.trim().strip_prefix('*').map(str::trim))
-                .filter(|n| held.iter().any(|h| h.eq_ignore_ascii_case(n)))
-                .map(str::to_string)
-                .collect();
-            if !on.is_empty() {
-                match loadorder::switch_off(&txt, &on) {
-                    Ok(()) => log::line(&format!("play: Unofficial Patch waits for server support, switched off: {}", on.join(", "))),
-                    Err(e) => log::line(&format!("play: couldn't switch the Unofficial Patch off: {e}")),
-                }
-            }
-        }
+        let want = loadorder::wanted(dir);
         match loadorder::force_on(&txt, &want) {
             Ok(on) if !on.is_empty() => log::line(&format!("play: switched on in {}: {}", txt.display(), on.join(", "))),
             Ok(_) => {}
