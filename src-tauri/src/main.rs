@@ -85,7 +85,12 @@ struct AppState {
 type CmdResult<T> = Result<T, String>;
 
 fn err(e: Error) -> String {
-    e.to_string()
+    let raw = e.to_string();
+    let p = launcher_core::plain(&raw);
+    if p != raw {
+        log::line(&format!("error: {raw}"));
+    }
+    p
 }
 
 fn config_path(app: &AppHandle) -> CmdResult<PathBuf> {

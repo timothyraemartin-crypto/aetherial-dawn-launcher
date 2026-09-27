@@ -212,7 +212,7 @@
         setStatus("The server is still being set up. The launcher will check again in a minute.");
       } else {
         setChip('warn', 'Not checked');
-        setStatus(`Couldn't reach the Aetherial Dawn server (${e}). Check your internet; the launcher tries again every minute.` + HELP, true);
+        setStatus(`Couldn't reach the Aetherial Dawn server. Check your internet; the launcher tries again every minute.` + HELP, true);
       }
       scheduleRetry();
     } finally {
@@ -704,10 +704,12 @@
     $('rq-all').disabled = true;
     $('rq-stop').hidden = false;
     if (!modsOff) modsOff = await T.event.listen('mods-progress', ({ payload }) => modProgress(payload));
+    let ok = false;
     try {
       const r = await invoke('download_all_mods');
-      if (r.failed.length) rqError(`Couldn't install: ${r.failed.map(f => `${f[0]} (${f[1]})`).join('; ')}`);
+      if (r.failed.length) rqError(`Not installed yet: ${r.failed.map(f => f[0]).join(', ')}. The launcher tries again the next time you press Play.`);
       else if (r.cancelled) rqError('Stopped. Click Download all to carry on.');
+      else ok = true;
     } catch (e) {
       if (String(e) === 'NEEDS_NEXUS_SIGN_IN') { rqError('Sign in to Nexus first (above).'); $('rq-key').focus(); }
       else rqError(e);
@@ -715,9 +717,11 @@
       modsRunning = false;
       await refreshMods();
     }
+    return ok;
   }
 
-async function onPlay() {
+let autoMods = false;
+  async function onPlay() {
     if (busy) return;
     if (playMode === 'strays') return openStrays();
     if (playMode === 'retry') return check();
@@ -737,8 +741,19 @@ async function onPlay() {
         setPlay('play', 'PLAY');
         let mods = [];
         try { mods = JSON.parse(msg.slice(17)); } catch (_) {}
-        setStatus(`Install ${mods.length === 1 ? mods[0].name : `${mods.length} required mods`}, then press Play.`, true);
-        showRequiredMods();
+        await showRequiredMods();
+        // Play installs what's missing by itself, then carries on (once, so a
+        // mod that won't install can't loop).
+        if (!autoMods && !$('rq-nx-in').hidden) {
+          autoMods = true;
+          setStatus(`Installing ${mods.length === 1 ? mods[0].name : `${mods.length} required mods`}, then starting Skyrim…`);
+          const ok = await downloadAll();
+          autoMods = false;
+          if (ok) { showSheet(null); return onPlay(); }
+          setStatus('A required mod isn\'t in yet. The launcher tries again the next time you press Play.', true);
+          return;
+        }
+        setStatus(`Sign in to Nexus below; the launcher then installs ${mods.length === 1 ? mods[0].name : `${mods.length} required mods`} by itself.`, true);
         return;
       }
       if (msg.startsWith('SIGNED_OUT:')) {
@@ -797,7 +812,7 @@ async function onPlay() {
   let gameRunning = false, updating = false;
   let lastUpToDateLog = 0;
   async function checkSelfUpdate(byHand) {
-    if (updating || gameRunning || busy) return byHand ? 'busy' : undefined;
+    if (updating || gameRunning || busy || modsRunning) return byHand ? 'busy' : undefined;
     try {
       const upd = await T.updater.check();
       if (!upd) {

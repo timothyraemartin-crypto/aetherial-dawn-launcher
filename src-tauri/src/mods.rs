@@ -730,6 +730,7 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
             }
             Err(e) => {
                 log::line(&format!("mods: {} failed: {e}", m.name));
+                let e = launcher_core::plain(&e);
                 emit(&app, m, "failed", 0, 0, e.clone());
                 result.failed.push((m.name.clone(), e));
             }

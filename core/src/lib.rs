@@ -49,3 +49,47 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// One plain sentence for a player in place of a technical error; the raw
+/// text stays in the launcher's log. Text that is already plain comes back
+/// as it is.
+pub fn plain(raw: &str) -> String {
+    let l = raw.to_ascii_lowercase();
+    let has = |k: &[&str]| k.iter().any(|k| l.contains(k));
+    if has(&["os error 5)", "access is denied", "permission denied"]) {
+        return "Windows wouldn't let the launcher change a game file. Close Skyrim and Vortex, then try again.".into();
+    }
+    if has(&["os error 32)", "being used by another process"]) {
+        return "A game file is in use by another program. Close Skyrim and Vortex, then try again.".into();
+    }
+    if has(&["os error 112)", "not enough space", "no space left"]) {
+        return "The drive with Skyrim is full. Free some space, then try again.".into();
+    }
+    if has(&["corrupted while downloading", "hash mismatch"]) {
+        return "A download came through damaged. The launcher fetches it again on the next try.".into();
+    }
+    if has(&["timed out", "operation timed out", "deadline has elapsed"]) {
+        return "The connection was too slow. The launcher tries again on the next try.".into();
+    }
+    if has(&["error sending request", "dns error", "connection refused", "connection reset", "network error", "error decoding response", "tcp connect"]) {
+        return "The launcher couldn't reach the internet just now. Check your connection; it tries again on the next try.".into();
+    }
+    if has(&["invalid data:", "expected value at line", "eof while parsing"]) {
+        return "The server sent something the launcher couldn't read. It tries again on the next try.".into();
+    }
+    if let Some(rest) = raw.strip_prefix("file error: ") {
+        return format!("A game file couldn't be changed ({rest}). Close Skyrim and Vortex, then try again.");
+    }
+    raw.to_string()
+}
+
+#[cfg(test)]
+mod plain_tests {
+    #[test]
+    fn words_errors_plainly() {
+        assert!(super::plain("file error: Access is denied. (os error 5)").starts_with("Windows wouldn't let"));
+        assert!(super::plain("network error: error sending request for url (https://x/y)").contains("couldn't reach"));
+        assert!(!super::plain("Data/x.dll was corrupted while downloading (expected ab, got cd)").contains("ab"));
+        assert_eq!(super::plain("Pick your Skyrim folder first."), "Pick your Skyrim folder first.");
+    }
+}

@@ -75,11 +75,36 @@ pub struct ModEntry {
     /// Shown under the mod's name: which file to pick on Nexus.
     #[serde(default)]
     pub hint: Option<String>,
+    /// Files this mod replaces even when another mod put them there first
+    /// (the old one is backed up), and that only count as installed when
+    /// they came from this mod.
+    #[serde(default)]
+    pub owns: Vec<String>,
 }
 
 impl ModEntry {
     pub fn installed(&self, game_dir: &Path) -> bool {
-        !self.check.is_empty() && self.check.iter().all(|c| safe_rel(c).map(|r| present_like(&game_dir.join(r))).unwrap_or(false))
+        !self.check.is_empty()
+            && self.check.iter().all(|c| safe_rel(c).map(|r| present_like(&game_dir.join(r))).unwrap_or(false))
+            && self.owns.iter().all(|o| self.owns_now(game_dir, o))
+    }
+
+    /// Whether an owned file in the game folder came from this mod: the
+    /// launcher installed it, or Vortex deployed it from this mod's folder.
+    fn owns_now(&self, game_dir: &Path, rel: &str) -> bool {
+        if !game_dir.join(rel).is_file() {
+            return false;
+        }
+        let rec = load_installed(game_dir);
+        if rec.mods.get(&self.id).is_some_and(|m| m.files.iter().any(|f| f.eq_ignore_ascii_case(rel))) {
+            return true;
+        }
+        let Some(n) = &self.nexus else { return false };
+        let id = n.mod_id.to_string();
+        // Vortex folder names carry the Nexus id, with dashes or spaces.
+        crate::allowlist::vortex_files(game_dir)
+            .iter()
+            .any(|f| f.rel.eq_ignore_ascii_case(rel) && f.source.split(|c: char| !c.is_ascii_digit()).any(|t| t == id))
     }
 
     /// A copy that checks for one file only.
@@ -184,6 +209,9 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
         nexus: Some(NexusRef { mod_id: 176509, file: None, pick: Some("1080".into()) }),
         check: vec![format!("Data/SKSE/Plugins/{}", r::DISPLAY_TWEAKS_INI)],
         hint: Some("the file for your screen (1080p or 1440p)".into()),
+        // Display Tweaks ships an ini of the same name; the fix's must win
+        // (quality check 2026-09-27: it was skipped and still counted).
+        owns: vec![format!("Data/SKSE/Plugins/{}", r::DISPLAY_TWEAKS_INI)],
         ..Default::default()
     });
     // Timothy, 2026-09-26: "These mods need added". Client-only camera,
@@ -243,7 +271,7 @@ pub fn merged(game_version: Option<&str>, server: Option<&ModList>) -> Vec<ModEn
     let mut out = builtin(game_version);
     if let Some(s) = server {
         for m in &s.mods {
-            if m.id.is_empty() || (m.nexus.is_none() && m.url.is_none()) || m.check.iter().any(|c| safe_rel(c).is_none()) {
+            if m.id.is_empty() || (m.nexus.is_none() && m.url.is_none()) || m.check.iter().chain(&m.owns).any(|c| safe_rel(c).is_none()) {
                 continue;
             }
             if let Some(url) = &m.url {
@@ -252,7 +280,14 @@ pub fn merged(game_version: Option<&str>, server: Option<&ModList>) -> Vec<ModEn
                 }
             }
             match out.iter_mut().find(|e| e.id == m.id) {
-                Some(e) => *e = m.clone(),
+                Some(e) => {
+                    // The launcher's own knowledge of owned files stays.
+                    let owns = std::mem::take(&mut e.owns);
+                    *e = m.clone();
+                    if e.owns.is_empty() {
+                        e.owns = owns;
+                    }
+                }
                 None => out.push(m.clone()),
             }
         }
@@ -710,13 +745,23 @@ pub fn apply(entry: &ModEntry, copies: &[Copy], game_dir: &Path, file_id: Option
     let vortex = vortex_manages(game_dir);
     let mut files = Vec::new();
     let mut skipped = Vec::new();
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     for c in copies {
         let dest = game_dir.join(&c.to);
         let rel = c.to.to_string_lossy().replace('\\', "/");
-        // Vortex's own copy of a file wins, unless it's a broken plugin.
-        if dest.exists() && (vortex || is_settings(&c.to)) && present(&dest) {
+        let owned = entry.owns.iter().any(|o| o.eq_ignore_ascii_case(&rel));
+        // Vortex's own copy of a file wins, unless it's a broken plugin or
+        // a file this mod owns (backed up first).
+        if dest.exists() && (vortex || is_settings(&c.to)) && present(&dest) && !owned {
             skipped.push(rel);
             continue;
+        }
+        if owned && dest.is_file() && std::fs::read(&dest).ok() != std::fs::read(&c.from).ok() {
+            let to = game_dir.join(crate::strays::DISABLED_DIR).join(format!("{secs}-replaced")).join(&rel);
+            if let Some(p) = to.parent() {
+                std::fs::create_dir_all(p)?;
+            }
+            std::fs::copy(&dest, &to)?;
         }
         // A DLL of the wrong build is set aside with the reason, never deleted.
         if dest.is_file() && is_skse_dll(&dest) {
@@ -987,6 +1032,34 @@ mod tests {
         std::fs::remove_dir_all(u.join("AE")).unwrap();
         let mut copies = vec![Copy { from: u.join("SE/SKSE/Plugins/TrueDirectionalMovement.dll"), to: PathBuf::from("Data/SKSE/Plugins/TrueDirectionalMovement.dll") }];
         assert_eq!(fix_wrong_builds(&mut copies, &u).len(), 1);
+    }
+
+    #[test]
+    fn black_screen_fix_owns_its_ini() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        let e = builtin(None).into_iter().find(|m| m.id == "black-screen-fix").unwrap();
+        let ini = format!("Data/SKSE/Plugins/{}", crate::requirements::DISPLAY_TWEAKS_INI);
+        std::fs::create_dir_all(g.join("Data/SKSE/Plugins")).unwrap();
+        // Display Tweaks' own ini doesn't count.
+        std::fs::write(g.join(&ini), "display tweaks default").unwrap();
+        assert!(!e.installed(g));
+        // Vortex deploying it from the fix's folder does.
+        std::fs::write(
+            g.join("Data/vortex.deployment.json"),
+            format!(r#"{{"files":[{{"relPath":"SKSE/Plugins/{}","source":"Black Screen and Startup Fix 176509 1 0 1750000000"}}]}}"#, crate::requirements::DISPLAY_TWEAKS_INI),
+        )
+        .unwrap();
+        assert!(e.installed(g));
+        std::fs::remove_file(g.join("Data/vortex.deployment.json")).unwrap();
+        // The launcher's install replaces Display Tweaks' ini, keeping a copy.
+        let src = g.join("fix.ini");
+        std::fs::write(&src, "fix preset").unwrap();
+        let rec = apply(&e, &[Copy { from: src, to: PathBuf::from(&ini) }], g, None, None).unwrap();
+        assert_eq!(rec.files.as_slice(), std::slice::from_ref(&ini));
+        assert_eq!(std::fs::read_to_string(g.join(&ini)).unwrap(), "fix preset");
+        let aside: Vec<_> = std::fs::read_dir(g.join(crate::strays::DISABLED_DIR)).unwrap().flatten().collect();
+        assert_eq!(std::fs::read_to_string(aside[0].path().join(&ini)).unwrap(), "display tweaks default");
     }
 
     #[test]
