@@ -189,11 +189,16 @@ fn needs_rewrite(path: &Path) -> bool {
 /// only rewritten when the original changes.
 fn rewrite(from: &Path, to: &Path) -> std::io::Result<()> {
     let t = std::fs::metadata(from)?.modified()?;
-    if std::fs::metadata(to).and_then(|m| m.modified()).ok() == Some(t) {
+    // Up to date only when it's already a rewritten copy: a dashed alias
+    // made by 0.1.49-0.1.67 is a hard link with the same time and the old
+    // master names.
+    if std::fs::metadata(to).and_then(|m| m.modified()).ok() == Some(t) && !needs_rewrite(to) {
         return Ok(());
     }
     let bytes = std::fs::read(from)?;
     let new = with_aliased_masters(&bytes).ok_or_else(|| std::io::Error::other("the plugin's header can't be rewritten"))?;
+    // Remove the old name first and write a new file: writing through a
+    // hard link would change the original (Vortex's copy) too.
     if to.exists() {
         std::fs::remove_file(to)?;
     }
@@ -387,6 +392,15 @@ mod tests {
         ensure(g, Some(&txt)).unwrap();
         assert!(!data.join("AOS_ISC_Integration-AD-AD.esp").exists());
         assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*Obsidian-Weathers.esp\n*Obsidian-CS.esp\n*Audio-Overhaul-Skyrim.esp\n*AOS_ISC_Integration-AD.esp\n");
+        // A hard-linked alias left by an older launcher (same bytes, same
+        // time) is replaced by a rewritten copy; the original is untouched.
+        let before = std::fs::read(data.join("Obsidian CS.esp")).unwrap();
+        std::fs::remove_file(data.join("Obsidian-CS.esp")).unwrap();
+        std::fs::hard_link(data.join("Obsidian CS.esp"), data.join("Obsidian-CS.esp")).unwrap();
+        ensure(g, Some(&txt)).unwrap();
+        assert_eq!(m("Obsidian-CS.esp"), ["Skyrim.esm", "Obsidian-Weathers.esp"]);
+        assert_eq!(std::fs::read(data.join("Obsidian CS.esp")).unwrap(), before);
+        assert_eq!(m("Obsidian CS.esp"), ["Skyrim.esm", "Obsidian Weathers.esp"]);
         // A plugin with no such master isn't rewritten.
         assert!(with_aliased_masters(&plugin_with_masters(&["Skyrim.esm"])).is_none());
     }
