@@ -24,6 +24,7 @@ pub mod skse;
 pub mod steamapp;
 pub mod strays;
 pub mod sync;
+pub mod ussep;
 pub mod version;
 pub mod watch;
 

@@ -1087,6 +1087,13 @@ async fn steam_app_install(state: State<'_, AppState>) -> CmdResult<version::Gam
 /// names but that no longer exist are dropped (the ini is backed up first).
 /// Nothing is deleted.
 fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_mods: bool) -> CmdResult<()> {
+    // The Unofficial Patch made for Skyrim 1.7.99 (4.3.9+) crashes 1.6.1170
+    // while drawing land; it's set aside and 4.3.8a installed in its place.
+    match launcher_core::ussep::set_aside_if_too_new(dir) {
+        Ok(Some((dest, why))) => log::line(&format!("play: {why}; set it aside to {}", dest.display())),
+        Ok(None) => {}
+        Err(e) => return Err(format!("Couldn't move the Unofficial Patch made for a newer Skyrim out of the way ({e}). Close Skyrim and Vortex, then try again.")),
+    }
     // Plugins whose names the SkyMP client can't load run under a
     // dash-named copy (Timothy 2026-09-26: correct it, don't switch it off).
     match launcher_core::aliases::ensure(dir, plugins_txt(app).as_deref()) {

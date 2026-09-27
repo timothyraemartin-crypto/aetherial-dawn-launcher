@@ -87,6 +87,7 @@ pub fn run(i: &Inputs) -> Report {
         skse_builds(i),
         wanted_off(i),
         camera_preset(i),
+        ussep_version(i),
         load_order(i),
         plugin_names(i),
         load_order_file(i),
@@ -371,6 +372,14 @@ fn wanted_off(i: &Inputs) -> Check {
     }
 }
 
+/// The Unofficial Patch must be the one for Skyrim 1.6.1170 (4.3.8a).
+fn ussep_version(i: &Inputs) -> Check {
+    match crate::ussep::too_new(i.game_dir) {
+        Some(why) => check("ussepversion", "Unofficial Patch version", Status::Fail, format!("{why}. It crashes the game while drawing land, so the launcher sets it aside and installs 4.3.8a."), vec![]),
+        None => check("ussepversion", "Unofficial Patch version", Status::Ok, "The Unofficial Patch is the version for Skyrim 1.6.1170.", vec![]),
+    }
+}
+
 /// Whether the Souls-style camera preset has been applied.
 fn camera_preset(i: &Inputs) -> Check {
     let name = "SmoothCam's Modern Camera Preset";
@@ -387,6 +396,9 @@ pub fn likely_cause(r: &Report) -> Option<String> {
     let failed = |id: &str, st: Status| r.checks.iter().find(|c| c.id == id && c.status >= st);
     if let Some(c) = failed("requiredfiles", Status::Fail) {
         return Some(format!("A required mod is missing its support files: {}", c.items.first().cloned().unwrap_or_default()));
+    }
+    if let Some(c) = failed("ussepversion", Status::Fail) {
+        return Some(c.detail.split(". ").next().unwrap_or("Unofficial Patch made for a newer Skyrim").to_string());
     }
     if let Some(c) = failed("sksebuilds", Status::Fail) {
         return Some(format!("An SKSE mod is the build for another Skyrim: {}", c.items.first().cloned().unwrap_or_default()));

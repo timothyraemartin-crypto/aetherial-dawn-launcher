@@ -88,7 +88,7 @@ pub fn engine_fixes_preload_ok(game_dir: &Path) -> bool {
 }
 
 pub fn ussep_ok(game_dir: &Path) -> bool {
-    game_dir.join("Data").join(USSEP_PLUGIN).is_file()
+    game_dir.join("Data").join(USSEP_PLUGIN).is_file() && crate::ussep::too_new(game_dir).is_none()
 }
 
 /// A real SkyUI SE install: its plugin (not the empty stub an old setup left
@@ -151,7 +151,7 @@ pub fn missing_nexus_mods(game_dir: &Path, game_version: Option<&str>) -> Vec<Ne
             id: "ussep",
             name: "Unofficial Skyrim Special Edition Patch",
             page: page("ussep"),
-            pick: "the version the server uses (for Skyrim 1.6.1170)".into(),
+            pick: "version 4.3.8a under Old files, the one for Skyrim 1.6.1170 (4.3.9 and newer need Skyrim 1.7.99)".into(),
             looks_for: format!("{USSEP_PLUGIN} in Data"),
         });
     }

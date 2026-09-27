@@ -118,7 +118,10 @@ pub fn candidates(files: &[NexusFile], file: Option<u64>, pick: Option<&str>) ->
     let pick = pick.map(|p| p.to_ascii_lowercase());
     let rank = |f: &NexusFile| {
         let cat = f.category_name.as_deref().unwrap_or("").to_ascii_uppercase();
-        let named = pick.as_ref().map(|p| f.name.to_ascii_lowercase().contains(p.as_str()) || f.file_name.to_ascii_lowercase().contains(p.as_str())).unwrap_or(false);
+        let named = pick
+            .as_ref()
+            .map(|p| f.name.to_ascii_lowercase().contains(p.as_str()) || f.file_name.to_ascii_lowercase().contains(p.as_str()) || f.version.as_deref().map(|v| v.to_ascii_lowercase().starts_with(p.as_str())).unwrap_or(false))
+            .unwrap_or(false);
         let cat_rank = match cat.as_str() {
             "MAIN" => 0,
             "UPDATE" => 1,

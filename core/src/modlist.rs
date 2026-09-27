@@ -138,9 +138,10 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
     out.push(ModEntry {
         id: "ussep".into(),
         name: "Unofficial Skyrim Special Edition Patch".into(),
-        nexus: Some(NexusRef { mod_id: 266, file: None, pick: None }),
+        // 4.3.9 and later need Skyrim 1.7.99 and crash 1.6.1170 (crate::ussep).
+        nexus: Some(NexusRef { mod_id: 266, file: None, pick: Some(crate::ussep::NEXUS_PICK.into()) }),
         check: vec![format!("Data/{}", r::USSEP_PLUGIN)],
-        hint: Some("the version for Skyrim 1.6.1170".into()),
+        hint: Some("version 4.3.8a under Old files, the one for Skyrim 1.6.1170 (not 4.3.9 or newer)".into()),
         ..Default::default()
     });
     out.push(ModEntry {
@@ -264,7 +265,16 @@ pub fn merged(game_version: Option<&str>, server: Option<&ModList>) -> Vec<ModEn
 /// SKSE DLL must be the build SKSE loads on 1.6.1170 (not the old-Skyrim
 /// True Directional Movement Vortex deployed, 2026-09-26).
 fn present(p: &Path) -> bool {
-    p.exists() && !(is_plugin(p) && crate::loadorder::broken(p).is_some()) && !(is_skse_dll(p) && crate::skse::wrong_build(p).is_some())
+    if !p.exists() || ussep_too_new(p) {
+        return false;
+    }
+    !(is_plugin(p) && crate::loadorder::broken(p).is_some()) && !(is_skse_dll(p) && crate::skse::wrong_build(p).is_some())
+}
+
+/// The Unofficial Patch made for Skyrim 1.7.99 doesn't count on 1.6.1170.
+fn ussep_too_new(p: &Path) -> bool {
+    let is_ussep = p.file_name().map(|n| n.to_string_lossy().eq_ignore_ascii_case(crate::requirements::USSEP_PLUGIN)).unwrap_or(false);
+    is_ussep && p.parent().and_then(Path::parent).map(|g| crate::ussep::too_new(g).is_some()).unwrap_or(false)
 }
 
 /// Like `present`, with one `*` allowed in the file name (a SmoothCam preset

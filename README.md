@@ -126,6 +126,10 @@ SmoothCam - Modern Camera Preset (Nexus 41636) is required (Timothy, 2026-09-26)
 
 Required mods' plugins (SkyUI, the Unofficial Patch's dashed copy, SmoothCam, True Directional Movement, TrueHUD, MCM Helper) are switched on before every Play even when Vortex lists them switched off, because their menus need them. Other plugins switched off in Vortex stay off.
 
+### Unofficial Patch version
+
+USSEP 4.3.9 and later need Skyrim 1.7.99; the last one for 1.6.1170 is 4.3.8a. Timothy's Vortex had 4.3.9c, which crashed the game 17-19 seconds in while drawing land it changes (SkyrimSE.exe+02AD242 via Skyrim Souls RE's terrain hook, 2026-09-26 22:39 and 23:50). The launcher reads the patch's version from its header description, else Vortex's folder name, else its own install record. A newer one doesn't count as installed and is moved (with its Vortex mod's other files) to `.aetherial-dawn\disabled\<time>-too-new-ussep\` before Play; the Nexus install picks files whose version starts with 4.3.8 and refuses a download whose header says 4.3.9 or newer.
+
 ### SKSE mods built for another Skyrim
 
 A DLL in `Data\SKSE\Plugins` only counts as installed when it's the build SKSE 2.2.6 loads on Skyrim 1.6.1170. The launcher reads the DLL's `SKSEPlugin_Version` data and applies SKSE's own rules (1.6.629+ structure layout or no struct use; Address Library, signatures or 1.6.1170 in its version list; SKSE 2.2.6 or older required). In the first test Vortex had deployed True Directional Movement's old build and SKSE stopped the game with "only compatible with versions earlier than 1.6.629". Before every Play such DLLs are moved to `.aetherial-dawn\disabled\<time>-wrong-build\` with a `why.txt` (never deleted), the game check lists them, and a required mod's right build is installed: from an installer with SE and AE folders it takes the one that fits, and with Premium it tries the page's other files when the picked one is the wrong build.

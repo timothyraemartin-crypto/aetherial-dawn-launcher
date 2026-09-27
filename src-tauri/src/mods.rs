@@ -371,7 +371,15 @@ async fn install(m: &ModEntry, archive: &Path, game_dir: &Path, file_id: Option<
         modlist::extract(&archive, &work)?;
         let mut copies = modlist::plan(&m, &work)?;
         // An SKSE DLL for another Skyrim never goes in; the next file is tried.
-        let wrong = modlist::fix_wrong_builds(&mut copies, &work);
+        let mut wrong = modlist::fix_wrong_builds(&mut copies, &work);
+        // The Unofficial Patch for Skyrim 1.7.99 crashes 1.6.1170.
+        for c in &copies {
+            if c.to.file_name().map(|n| n.to_string_lossy().eq_ignore_ascii_case(launcher_core::requirements::USSEP_PLUGIN)).unwrap_or(false) {
+                if let Some(v) = launcher_core::ussep::plugin_too_new(&c.from) {
+                    wrong.push((format!("Unofficial Patch {v}"), "made for Skyrim 1.7.99".into()));
+                }
+            }
+        }
         if !wrong.is_empty() {
             let _ = std::fs::remove_dir_all(&work);
             log::line(&format!("mods: {} download has the wrong build: {}", m.name, wrong.iter().map(|(n, w)| format!("{n} ({w})")).collect::<Vec<_>>().join(", ")));
