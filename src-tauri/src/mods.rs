@@ -17,6 +17,7 @@ use crate::{log, AppState, CmdResult};
 
 /// How long to wait for a free member to press a mod's download button.
 const WAIT_FOR_CLICK: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+const NO_HANDOVER: &str = "Nexus didn't hand over the file just now.";
 /// How long a Premium member's own file page gets to hand over its nxm:// link.
 const WAIT_FOR_PAGE: std::time::Duration = std::time::Duration::from_secs(120);
 
@@ -529,7 +530,7 @@ async fn premium_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, gam
         }
     }
     if !unreachable.is_empty() && wrong.is_empty() && too_new.is_empty() {
-        return Err("Nexus didn't hand over the file just now. The launcher tries again the next time you press Play".into());
+        return Err(format!("{NO_HANDOVER} The launcher tries again the next time you press Play"));
     }
     if !wrong.is_empty() && too_new.is_empty() {
         let tried: Vec<String> = cands.iter().take(8).map(|f| format!("{} {}", f.name, f.version.as_deref().unwrap_or(""))).collect();
@@ -705,7 +706,9 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
                 direct_one(&app, &state.http, m, &dir, &cancel).await
             };
             match &r {
-                Err(e) if attempt == 0 && e != "cancelled" && (m.nexus.is_none() || premium) => {
+                // No retry after the browser fallback: it already tried twice
+                // and would open more tabs.
+                Err(e) if attempt == 0 && e != "cancelled" && !e.starts_with(NO_HANDOVER) && (m.nexus.is_none() || premium) => {
                     log::line(&format!("mods: {} failed ({e}); trying once more", m.name));
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 }
