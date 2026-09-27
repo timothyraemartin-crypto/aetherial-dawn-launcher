@@ -69,37 +69,12 @@ jobs:
         with:
           name: aetherial-dawn-launcher-windows
           path: dist/*
-      # Runs the installer the way a new player does: a plain double-click, no
-      # flags. It must install with no pages to click through, make the desktop
-      # shortcut and start the launcher by itself. A failure here stops the release.
+      # Runs the installer the way a new player does (no flags) and checks the
+      # whole one-click install, then the update and silent runs. A failure
+      # here stops the release.
       - name: Install like a new player
         shell: pwsh
-        run: |
-          $setup = Resolve-Path "dist/AetherialDawn-Launcher-$env:VERSION-setup.exe"
-          $dir = Join-Path $env:LOCALAPPDATA "Aetherial Dawn"
-          $lnk = Join-Path ([Environment]::GetFolderPath('Desktop')) "Aetherial Dawn.lnk"
-          if (Test-Path $dir) { throw "$dir exists before the install" }
-          Start-Process -FilePath $setup
-          $deadline = (Get-Date).AddMinutes(3)
-          $app = $null
-          while ((Get-Date) -lt $deadline) {
-            $app = Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase) -and $_.Path -notmatch 'uninstall' } | Select-Object -First 1
-            if ($app) { break }
-            Start-Sleep -Seconds 2
-          }
-          Get-ChildItem $dir -ErrorAction SilentlyContinue | Format-Table Name, Length
-          if (-not $app) { throw "the launcher did not start within 3 minutes of a plain run of the installer" }
-          Write-Host "launcher running: $($app.Path) (pid $($app.Id))"
-          if (-not (Test-Path $lnk)) { throw "no desktop shortcut at $lnk" }
-          Write-Host "desktop shortcut: $lnk"
-          $closeBy = (Get-Date).AddSeconds(30)
-          do {
-            $left = Get-Process | Where-Object { $_.Path -eq $setup.Path }
-            if ($left) { Start-Sleep -Seconds 2 }
-          } while ($left -and (Get-Date) -lt $closeBy)
-          if ($left) { throw "the installer is still open (a page waiting for a click?)" }
-          Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force
-          Write-Host "one-click install passed"
+        run: ./.github/scripts/one-click-test.ps1 -Setup "dist/AetherialDawn-Launcher-$env:VERSION-setup.exe" -Version $env:VERSION
       - name: Publish release
         if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         uses: softprops/action-gh-release@v2
