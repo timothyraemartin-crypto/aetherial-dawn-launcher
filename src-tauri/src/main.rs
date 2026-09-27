@@ -343,7 +343,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
             Err(e) => return Err(format!("Couldn't switch Creation Club content off for this session ({e}). Close Skyrim and try again.")),
         }
         if let Some(txt) = plugins_txt(&app) {
-            match serverorder::set_exact(&txt, &order) {
+            match serverorder::set_exact(&dir, &txt, &order) {
                 Ok(true) => log::line(&format!("play: set {} to the server's {} plugins in order, then this PC's own", txt.display(), order.len())),
                 Ok(false) => {}
                 Err(e) => return Err(format!("Couldn't set your load order ({e}). Close Skyrim and Vortex, then try again.")),

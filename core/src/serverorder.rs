@@ -30,11 +30,11 @@ pub struct ServerPlugin {
 }
 
 /// The server's order from its masters.json (list order is load order).
+/// Only a list says an order: the object form comes back sorted, so it
+/// gives no order at all.
 pub fn server_order(masters: &serde_json::Value) -> Vec<ServerPlugin> {
     let list = masters.get("masters").or_else(|| masters.get("files")).unwrap_or(masters);
-    let Some(a) = list.as_array() else {
-        return crate::health::parse_masters(masters).into_iter().map(|(name, size, sha256)| ServerPlugin { name, size, sha256, crc32: None }).collect();
-    };
+    let Some(a) = list.as_array() else { return Vec::new() };
     a.iter()
         .filter_map(|e| {
             let n = e.get("name").or_else(|| e.get("file")).or_else(|| e.get("path")).and_then(|n| n.as_str())?;
@@ -63,17 +63,19 @@ fn ccc_paths(game_dir: &Path) -> Vec<PathBuf> {
     [game_dir.join("Skyrim.ccc"), game_dir.join("Data").join("Skyrim.ccc")].into_iter().filter(|p| p.is_file()).collect()
 }
 
-/// Empties Skyrim.ccc for a session, keeping the original beside it (a
-/// backup already there from an unfinished session is kept, never
-/// overwritten). Returns the files emptied.
+/// Empties Skyrim.ccc for a session, keeping the original beside it. A
+/// non-empty Skyrim.ccc is the real one (Steam may have put it back), so it
+/// replaces any older backup; an empty one keeps the backup an unfinished
+/// session left. Returns the files emptied.
 pub fn hide_ccc(game_dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     for p in ccc_paths(game_dir) {
         let backup = p.with_file_name(CCC_BACKUP);
-        if !backup.exists() {
+        let real = std::fs::metadata(&p)?.len() > 0;
+        if real || !backup.exists() {
             std::fs::copy(&p, &backup)?;
         }
-        if std::fs::metadata(&p)?.len() > 0 {
+        if real {
             // A new file, never a write through a link.
             std::fs::remove_file(&p)?;
             std::fs::write(&p, b"")?;
@@ -83,14 +85,23 @@ pub fn hide_ccc(game_dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-/// Puts back the Skyrim.ccc a session emptied. Returns whether it did.
+/// Puts back the Skyrim.ccc a session emptied. Only an empty (or missing)
+/// Skyrim.ccc is replaced; a non-empty one is newer than the backup (Steam
+/// restored it), so the stale backup goes instead. Returns whether it put
+/// one back.
 pub fn restore_ccc(game_dir: &Path) -> std::io::Result<bool> {
     let mut any = false;
     for dir in [game_dir.to_path_buf(), game_dir.join("Data")] {
         let backup = dir.join(CCC_BACKUP);
-        if backup.is_file() {
-            std::fs::rename(&backup, dir.join("Skyrim.ccc"))?;
+        if !backup.is_file() {
+            continue;
+        }
+        let ccc = dir.join("Skyrim.ccc");
+        if std::fs::metadata(&ccc).map(|m| m.len() == 0).unwrap_or(true) {
+            std::fs::rename(&backup, &ccc)?;
             any = true;
+        } else {
+            std::fs::remove_file(&backup)?;
         }
     }
     Ok(any)
@@ -229,9 +240,17 @@ pub fn mismatches(game_dir: &Path, plugins_txt: &Path, server: &[ServerPlugin]) 
 /// Rewrites plugins.txt so the server's plugins after the base masters come
 /// first, switched on, in the server's order, then the plugins already on
 /// that the client may load (RaceMenu's), then everything else switched off
-/// (Vortex's spaced originals among them; the files stay in Data). The old
-/// file is kept beside it. Returns whether it changed.
-pub fn set_exact(plugins_txt: &Path, server: &[ServerPlugin]) -> std::io::Result<bool> {
+/// (Vortex's spaced originals among them; the files stay in Data). A full
+/// master the server doesn't load (a Creation Club .esm, an ESM-flagged
+/// .esp) is switched off too: the game loads masters first, so it would
+/// sit between the server's plugins. The old file is kept beside it.
+/// Returns whether it changed.
+pub fn set_exact(game_dir: &Path, plugins_txt: &Path, server: &[ServerPlugin]) -> std::io::Result<bool> {
+    let data = game_dir.join("Data");
+    let full_master = |n: &str| {
+        let l = n.to_ascii_lowercase();
+        find(&data, n).and_then(|p| flags(&p)).is_some_and(|(master, light)| !light && !l.ends_with(".esl") && (master || l.ends_with(".esm")))
+    };
     let text = std::fs::read_to_string(plugins_txt).unwrap_or_default();
     let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let name = |l: &str| l.trim().trim_start_matches('*').trim().to_string();
@@ -248,7 +267,7 @@ pub fn set_exact(plugins_txt: &Path, server: &[ServerPlugin]) -> std::io::Result
         if is_server(&n) {
             continue;
         }
-        let on = l.trim().starts_with('*') && client_can_load_name(&n);
+        let on = l.trim().starts_with('*') && client_can_load_name(&n) && !full_master(&n);
         out.push(if on { format!("*{n}") } else { n });
     }
     let mut new = out.join(nl);
@@ -300,6 +319,19 @@ mod tests {
         assert!(std::fs::read_to_string(g.join("Skyrim.ccc")).unwrap().contains("ALMSIVI"));
         assert!(!g.join(CCC_BACKUP).exists());
         assert!(!restore_ccc(g).unwrap());
+
+        // Steam puts a newer list back mid-session: it wins over the backup.
+        hide_ccc(g).unwrap();
+        std::fs::write(g.join("Skyrim.ccc"), "ccBGSSSE001-Fish.esm\r\nccNEW.esm\r\n").unwrap();
+        assert!(!restore_ccc(g).unwrap());
+        assert!(std::fs::read_to_string(g.join("Skyrim.ccc")).unwrap().contains("ccNEW"));
+        assert!(!g.join(CCC_BACKUP).exists(), "the stale backup goes");
+        // And the next session backs up the newer list.
+        std::fs::write(g.join(CCC_BACKUP), "old\r\n").unwrap();
+        hide_ccc(g).unwrap();
+        assert!(std::fs::read_to_string(g.join(CCC_BACKUP)).unwrap().contains("ccNEW"));
+        restore_ccc(g).unwrap();
+        assert!(std::fs::read_to_string(g.join("Skyrim.ccc")).unwrap().contains("ccNEW"));
     }
 
     #[test]
@@ -318,9 +350,10 @@ mod tests {
         std::fs::write(data.join("JKs-Skyrim.esp"), plugin(0)).unwrap();
         std::fs::write(data.join("RaceMenu.esp"), plugin(0)).unwrap();
         std::fs::write(data.join("TrueHUD.esl"), plugin(0x200)).unwrap();
+        std::fs::write(data.join("ccBGSSSE025-AdvDSGS.esm"), plugin(1)).unwrap();
         std::fs::write(g.join("Skyrim.ccc"), "ccASVSSE001-ALMSIVI.esm\r\nccQDRSSE001-SurvivalMode.esl\r\n").unwrap();
         let txt = g.join("plugins.txt");
-        std::fs::write(&txt, "# Vortex\r\n*RaceMenu.esp\r\n*Unofficial Skyrim Special Edition Patch.esp\r\n*JKs-Skyrim.esp\r\n*TrueHUD.esl\r\n*Unofficial-Skyrim-Special-Edition-Patch.esp\r\nOld.esp\r\n").unwrap();
+        std::fs::write(&txt, "# Vortex\r\n*RaceMenu.esp\r\n*Unofficial Skyrim Special Edition Patch.esp\r\n*JKs-Skyrim.esp\r\n*TrueHUD.esl\r\n*ccBGSSSE025-AdvDSGS.esm\r\n*Unofficial-Skyrim-Special-Edition-Patch.esp\r\nOld.esp\r\n").unwrap();
         let mut server: Vec<ServerPlugin> = BASE.iter().map(|b| sp(b)).collect();
         server.push(sp("Unofficial-Skyrim-Special-Edition-Patch.esp"));
         server.push(sp("JKs-Skyrim.esp"));
@@ -330,14 +363,14 @@ mod tests {
         assert!(!mismatches(g, &txt, &server).is_empty());
 
         hide_ccc(g).unwrap();
-        assert!(set_exact(&txt, &server).unwrap());
+        assert!(set_exact(g, &txt, &server).unwrap());
         assert_eq!(
             std::fs::read_to_string(&txt).unwrap(),
-            "# Vortex\r\n*Unofficial-Skyrim-Special-Edition-Patch.esp\r\n*JKs-Skyrim.esp\r\n*RaceMenu.esp\r\nUnofficial Skyrim Special Edition Patch.esp\r\n*TrueHUD.esl\r\nOld.esp\r\n"
+            "# Vortex\r\n*Unofficial-Skyrim-Special-Edition-Patch.esp\r\n*JKs-Skyrim.esp\r\n*RaceMenu.esp\r\nUnofficial Skyrim Special Edition Patch.esp\r\n*TrueHUD.esl\r\nccBGSSSE025-AdvDSGS.esm\r\nOld.esp\r\n"
         );
         assert_eq!(game_order(g, &txt), [&BASE[..], &["Unofficial-Skyrim-Special-Edition-Patch.esp", "JKs-Skyrim.esp", "RaceMenu.esp"]].concat());
         assert_eq!(mismatches(g, &txt, &server), Vec::<String>::new());
-        assert!(!set_exact(&txt, &server).unwrap(), "already exact");
+        assert!(!set_exact(g, &txt, &server).unwrap(), "already exact");
 
         // A different file under the right name is caught by size.
         server[6].size = Some(999);
@@ -352,5 +385,7 @@ mod tests {
         assert_eq!((o[1].name.as_str(), o[1].crc32), ("JKs-Skyrim.esp", Some(10)));
         assert_eq!(o[2].crc32, Some(11));
         assert!(!beyond_base(&o));
+        // The object form has no order.
+        assert!(server_order(&serde_json::json!({"Skyrim.esm": {"size": 1}, "A.esp": {"size": 2}})).is_empty());
     }
 }
