@@ -268,7 +268,10 @@ fn present(p: &Path) -> bool {
     if !p.exists() || ussep_too_new(p) {
         return false;
     }
-    !(is_plugin(p) && crate::loadorder::broken(p).is_some()) && !(is_skse_dll(p) && crate::skse::wrong_build(p).is_some())
+    if is_plugin(p) && crate::loadorder::broken(p).is_some() {
+        return false;
+    }
+    !(is_skse_dll(p) && crate::skse::wrong_build(p).is_some())
 }
 
 /// The Unofficial Patch made for Skyrim 1.7.99 doesn't count on 1.6.1170.
