@@ -46,10 +46,13 @@ fn save(game_dir: &Path, r: &Record) -> std::io::Result<()> {
 }
 
 /// A served path that stays inside Data and names a settings file.
+/// SkyPatcher's inis are never written: they change records on this
+/// client only, which desyncs it from the server.
 fn safe(file: &str) -> bool {
     let p = Path::new(file);
     let l = file.to_ascii_lowercase();
     l.starts_with("data/")
+        && !l.starts_with("data/skse/plugins/skypatcher/")
         && [".ini", ".json", ".xml"].iter().any(|x| l.ends_with(x))
         && p.components().all(|c| matches!(c, Component::Normal(_)))
 }
@@ -425,6 +428,7 @@ mod tests {
         let v: Value = serde_json::from_slice(&std::fs::read(g.join("Data/SKSE/Plugins/CommunityShaders/SettingsUser.json")).unwrap()).unwrap();
         assert_eq!(v, json!({"Wetness": {"Enabled": true, "Rain": 2}}));
         assert!(!safe("Data/x.dll") && !safe("/etc/x.ini") && !safe("Skyrim.ini") && safe("Data/MCM/Settings/A.ini"));
+        assert!(!safe("Data/SKSE/Plugins/SkyPatcher/npc/x.ini"));
     }
 
     #[test]
