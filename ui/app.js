@@ -351,71 +351,16 @@
     skipArmed = false;
     $('dg-skip').textContent = 'My game is already on this version';
     $('dg-skip').hidden = !c.needed;
-    dgMode(false);
+    dgMode();
     showSheet('downgrade');
-    invoke('steam_app_state').then(st => {
-      $('dg-app-note').textContent = st.running
-        ? "Uses the Steam account you're already signed into. You paste three lines into Steam's console."
-        : "Steam isn't open. Start Steam and sign in to use this, or pick another option.";
-    }).catch(() => {});
   }
-  // ---------- downgrade through the Steam app ----------
-  let steamPoll = null;
-  function dgMode(steam) {
-    $('dg-steam').hidden = !steam;
-    $('dg-install').hidden = !steam;
-    $('dg-go').hidden = steam;
-    document.querySelector('#downgrade .choice').hidden = steam;
-    $('dg-notes').hidden = steam;
-    const how = document.querySelector('input[name="dg-login"]:checked').value;
-    $('dg-user-field').hidden = steam || !['user', 'here', 'build'].includes(how);
-    $('dg-other').hidden = steam || !document.querySelector('#downgrade .opt.other[hidden]');
-    if (!steam && steamPoll) { clearInterval(steamPoll); steamPoll = null; }
+  function dgMode() {
+    $('dg-go').hidden = false;
+    document.querySelector('#downgrade .choice').hidden = false;
+    $('dg-notes').hidden = false;
   }
   const gb = n => n >= 1073741824 ? (n / 1073741824).toFixed(1) + ' GB' : mb(n);
-  function renderDepots(st) {
-    const box = $('dg-depots');
-    if (!box.children.length) {
-      box.innerHTML = st.depots.map((d, i) => `<div class="depot"><code>${esc(d.command)}</code><button class="btn" data-i="${i}">Copy</button><small id="dg-d${i}"></small></div>`).join('');
-      box.querySelectorAll('button').forEach(b => b.onclick = async () => {
-        const d = st.depots[+b.dataset.i];
-        try { await navigator.clipboard.writeText(d.command); b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy'; }, 1600); }
-        catch { b.textContent = 'Select it'; }
-      });
-    }
-    let ready = st.depots.length > 0;
-    st.depots.forEach((d, i) => {
-      const el = $('dg-d' + i);
-      if (!el) return;
-      if (!d.present) { el.className = ''; el.textContent = 'Waiting for you to paste this line'; ready = false; }
-      else if (d.quietSecs < 10) { el.className = 'going'; el.textContent = `Steam is downloading · ${gb(d.bytes)}`; ready = false; }
-      else { el.className = 'done'; el.textContent = `Downloaded · ${plural(d.files, 'file')} · ${gb(d.bytes)}`; }
-    });
-    if (!st.running) { $('dg-error').textContent = 'Steam closed. Open Steam again; downloads it already finished are kept.'; $('dg-error').hidden = false; }
-    $('dg-install').disabled = !ready;
-  }
-  async function steamBegin() {
-    dgBusy(true);
-    $('dg-error').hidden = true;
-    try {
-      const st = await invoke('steam_app_begin');
-      $('dg-depots').innerHTML = '';
-      dgMode(true);
-      renderDepots(st);
-      steamPoll = setInterval(async () => { try { renderDepots(await invoke('steam_app_state')); } catch {} }, 3000);
-    } catch (e) { dgFail(e); return; }
-    dgBusy(false);
-  }
-  async function steamInstall() {
-    dgBusy(true);
-    $('dg-install').disabled = true;
-    $('dg-error').hidden = true;
-    $('dg-progress').hidden = false;
-    $('dg-stage').textContent = 'Copying the files Steam downloaded into Skyrim…';
-    try { const c = await invoke('steam_app_install'); dgMode(false); dgDone(c); }
-    catch (e) { dgFail(e); $('dg-install').disabled = false; }
-  }
-  function dgBusy(on) { for (const id of ['dg-go', 'dg-cancel', 'dg-skip', 'dg-other']) $(id).disabled = on; busy = on; }
+  function dgBusy(on) { for (const id of ['dg-go', 'dg-cancel', 'dg-skip']) $(id).disabled = on; busy = on; }
   function dgDone(c) {
     gameCheck = c;
     dgBusy(false);
@@ -435,83 +380,6 @@
     steam: 'Sign in to Steam in the window that just opened. The download runs there, so keep it open until it finishes.',
     verify: 'Checking your game…',
   };
-  // ---------- downgrade with the Steam sign-in inside the launcher ----------
-  let inlineRun = false;
-  function dgAsk(label, type, note) {
-    $('dg-ask-label').textContent = label;
-    $('dg-answer').type = type;
-    $('dg-answer').value = '';
-    $('dg-ask-note').textContent = note;
-    $('dg-ask').hidden = false;
-    $('dg-answer').focus();
-  }
-  function steamEvent(ev) {
-    const stage = t => { $('dg-progress').hidden = false; $('dg-stage').textContent = t; };
-    switch (ev.kind) {
-      case 'signingIn': stage('Signing in to Steam…'); break;
-      case 'password':
-        stage('Steam is asking for your password.');
-        dgAsk('Steam password', 'password', "It goes straight to Steam and isn't saved. Steam remembers this PC afterwards, so next time there's nothing to type.");
-        break;
-      case 'guardApp':
-        stage('Steam Guard is asking for a code.');
-        dgAsk('Steam Guard code', 'text', 'Open the Steam app on your phone and type the code it shows.');
-        break;
-      case 'guardEmail':
-        stage('Steam Guard is asking for a code.');
-        dgAsk('Steam Guard code', 'text', `Steam emailed a code to ${ev.email || 'your email address'}.`);
-        break;
-      case 'confirmPhone':
-        $('dg-ask').hidden = true;
-        stage('Approve the sign-in in the Steam app on your phone. The download starts right after.');
-        break;
-      case 'progress':
-        $('dg-ask').hidden = true;
-        $('dg-bar').hidden = false;
-        $('dg-bar-i').style.width = Math.min(100, ev.percent) + '%';
-        stage(`Downloading Skyrim ${shortVer((gameCheck || {}).target)} from Steam… ${ev.percent.toFixed(0)}%`);
-        break;
-    }
-  }
-  async function sendAnswer() {
-    const text = $('dg-answer').value;
-    if (!text.trim()) return;
-    $('dg-answer').value = '';
-    $('dg-ask').hidden = true;
-    $('dg-stage').textContent = 'Checking with Steam…';
-    try { await invoke('steam_login_answer', { text }); } catch (e) { dgFail(e); }
-  }
-  async function inlineDowngrade() {
-    const user = $('dg-user').value.trim();
-    if (!user) { dgFail('Type your Steam account name.'); return; }
-    try { localStorage.setItem('ad-steam-user', user); } catch {}
-    dgBusy(true);
-    inlineRun = true;
-    $('dg-cancel').disabled = false;
-    $('dg-cancel').textContent = 'Stop';
-    $('dg-error').hidden = true;
-    $('dg-notes').hidden = true;
-    document.querySelector('#downgrade .choice').hidden = true;
-    $('dg-other').hidden = true;
-    $('dg-progress').hidden = false;
-    $('dg-stage').textContent = STAGES.tool;
-    const offStage = await T.event.listen('downgrade-stage', ({ payload }) => {
-      $('dg-stage').textContent = payload === 'steam' ? 'Connecting to Steam…' : (STAGES[payload] || '');
-    });
-    const offLogin = await T.event.listen('steam-login', ({ payload }) => steamEvent(payload));
-    try { dgDone(await invoke('downgrade', { username: user, inline: true })); }
-    catch (e) { dgFail(e); }
-    finally {
-      offStage(); offLogin();
-      inlineRun = false;
-      $('dg-ask').hidden = true;
-      $('dg-bar').hidden = true;
-      $('dg-cancel').textContent = 'Not now';
-      $('dg-notes').hidden = false;
-      document.querySelector('#downgrade .choice').hidden = false;
-      dgMode(false);
-    }
-  }
   // ---------- patching the player's own files (no Steam) ----------
   const PATCH_STAGES = {
     check: (p) => `Checking your game files… ${p.done} of ${p.total}${p.file ? ' · ' + p.file : ''}`,
@@ -540,73 +408,16 @@
     catch (e) {
       const msg = String(e);
       if (msg.startsWith('NO_PATCH:')) {
-        dgFail(msg.slice(9) + ' You can download the right version with Steam below.');
-        document.querySelectorAll('#downgrade .opt.other').forEach(o => { o.hidden = false; });
-        $('dg-other').hidden = true;
-      } else dgFail(msg);
+        // Never through Steam or a QR code (Timothy's decision): the patch
+        // needs the game's own files, which Steam's Verify puts back.
+        dgFail(msg.slice(9) + " In Steam, right-click Skyrim Special Edition, open Properties, then Installed Files, press Verify integrity, and press this button again.");
+          } else dgFail(msg);
     }
     finally { off(); $('dg-bar').hidden = true; }
   }
-  // Staff, once per Skyrim update: download the server's version into a
-  // separate folder with a Steam sign-in, build the patches, then patch.
-  async function buildPatches() {
-    const user = $('dg-user').value.trim();
-    if (!user) { dgFail('Type your Steam account name.'); return; }
-    try { localStorage.setItem('ad-steam-user', user); } catch {}
-    dgBusy(true);
-    inlineRun = true;
-    $('dg-cancel').disabled = false;
-    $('dg-cancel').textContent = 'Stop';
-    $('dg-error').hidden = true;
-    $('dg-notes').hidden = true;
-    document.querySelector('#downgrade .choice').hidden = true;
-    $('dg-other').hidden = true;
-    $('dg-progress').hidden = false;
-    $('dg-stage').textContent = STAGES.tool;
-    const offStage = await T.event.listen('downgrade-stage', ({ payload }) => {
-      $('dg-stage').textContent = payload === 'steam' ? 'Connecting to Steam…' : (STAGES[payload] || '');
-    });
-    const offLogin = await T.event.listen('steam-login', ({ payload }) => steamEvent(payload));
-    const offBuild = await T.event.listen('patch-progress', ({ payload: p }) => {
-      $('dg-ask').hidden = true;
-      $('dg-bar').hidden = true;
-      $('dg-stage').textContent = (PATCH_STAGES[p.stage] || (() => ''))(p);
-    });
-    let built = false;
-    try { await invoke('build_patches', { username: user }); built = true; }
-    catch (e) { dgFail(e); }
-    finally {
-      offStage(); offLogin(); offBuild();
-      inlineRun = false;
-      $('dg-ask').hidden = true;
-      $('dg-bar').hidden = true;
-      $('dg-cancel').textContent = 'Not now';
-      $('dg-notes').hidden = false;
-      document.querySelector('#downgrade .choice').hidden = false;
-      dgMode(false);
-    }
-    if (built) {
-      document.querySelector('input[name="dg-login"][value="patch"]').checked = true;
-      await patchGame();
-    }
-  }
-  async function runDowngrade() {
-    const how = document.querySelector('input[name="dg-login"]:checked').value;
-    if (how === 'patch') return patchGame();
-    if (how === 'build') return buildPatches();
-    if (how === 'here') return inlineDowngrade();
-    if (how === 'app') return steamBegin();
-    const user = how === 'user' ? $('dg-user').value.trim() : null;
-    if (user === '') { dgFail('Type your Steam account name, or choose the Steam mobile app.'); return; }
-    dgBusy(true);
-    $('dg-error').hidden = true;
-    $('dg-progress').hidden = false;
-    $('dg-stage').textContent = STAGES.tool;
-    const off = await T.event.listen('downgrade-stage', ({ payload }) => { $('dg-stage').textContent = STAGES[payload] || ''; });
-    try { dgDone(await invoke('downgrade', { username: user })); }
-    catch (e) { dgFail(e); }
-    finally { off(); }
-  }
+  // Only the patch route is in the player build: no Steam sign-in, no QR
+  // code (Timothy's decisions).
+  function runDowngrade() { return patchGame(); }
 
   // ---------- plugins the server didn't ship ----------
   let ignoreStrays = false;
@@ -930,17 +741,8 @@ let autoMods = false;
   $('g-downgrade').onclick = openDowngrade;
   $('dg-go').onclick = runDowngrade;
   $('dg-cancel').onclick = () => {
-    if (inlineRun) { invoke('steam_login_cancel').catch(() => {}); return; }
-    dgMode(false); showPage(page);
+    dgMode(); showPage(page);
   };
-  $('dg-send').onclick = sendAnswer;
-  $('dg-answer').onkeydown = e => { if (e.key === 'Enter') sendAnswer(); };
-  $('dg-other').onclick = () => {
-    document.querySelectorAll('#downgrade .opt.other').forEach(o => { o.hidden = false; });
-    $('dg-other').hidden = true;
-  };
-  try { $('dg-user').value = localStorage.getItem('ad-steam-user') || ''; } catch {}
-  $('dg-install').onclick = steamInstall;
   $('st-move').onclick = moveStrays;
   // ---------- other mods set aside before Play ----------
   const asideNote = n => {
@@ -1051,10 +853,6 @@ let autoMods = false;
     dgBusy(true);
     try { dgDone(await invoke('mark_game_ok')); } catch (e) { dgFail(e); }
   };
-  document.querySelectorAll('input[name="dg-login"]').forEach(r => r.onchange = () => {
-    const how = document.querySelector('input[name="dg-login"]:checked').value;
-    $('dg-user-field').hidden = !['user', 'here', 'build'].includes(how);
-  });
   $('c-skse-recheck').onclick = refreshState;
   $('f-go').onclick = () => { if (!signedIn()) { showSignIn(); return; } showPage('home'); check(); };
   $('si-go').onclick = beginSignIn;

@@ -1,7 +1,7 @@
 // Hides the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use launcher_core::{auth, downgrade, game, gameini, health, loadorder, manifest::Manifest, pristine, requirements, settings, steamapp, strays, sync, version, watch, Error};
+use launcher_core::{auth, game, gameini, health, loadorder, manifest::Manifest, pristine, requirements, settings, strays, sync, version, watch, Error};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -74,10 +74,6 @@ struct AppState {
     config: Mutex<Config>,
     manifest: Mutex<Option<Manifest>>,
     http: reqwest::Client,
-    /// The Steam download running inside the launcher, and its input for the
-    /// player's password or Steam Guard code.
-    steam_child: std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>,
-    steam_input: std::sync::Mutex<Option<std::process::ChildStdin>>,
     mods: mods::ModsState,
     music: music::Music,
 }
@@ -721,149 +717,6 @@ async fn game_check(state: State<'_, AppState>) -> CmdResult<version::GameCheck>
     Ok(auto_version(&dir, m.as_ref().and_then(|m| m.game.as_ref())))
 }
 
-/// Downloads the server's Skyrim build from Steam with the player's own
-/// account through DepotDownloader. Sends `downgrade-stage` events ("tool",
-/// "steam", "verify") to the UI. With `inline`, the sign-in happens inside
-/// the launcher: `steam-login` events say what Steam asks for, and the UI
-/// answers through `steam_login_answer`. Otherwise DepotDownloader opens its
-/// own window.
-#[tauri::command]
-async fn downgrade(app: AppHandle, state: State<'_, AppState>, username: Option<String>, inline: Option<bool>) -> CmdResult<version::GameCheck> {
-    let dir = game_dir(&state).await?;
-    let m = state.manifest.lock().await.clone().ok_or("Check for updates first.")?;
-    let spec = m.game.clone().ok_or("The server doesn't ask for a particular Skyrim version.")?;
-    let inline = inline.unwrap_or(false);
-    let login = match username.as_deref().map(str::trim) {
-        Some(u) if !u.is_empty() => downgrade::Login::User(u.to_string()),
-        _ if inline => return Err("Type your Steam account name.".into()),
-        _ => downgrade::Login::Qr,
-    };
-    let args = downgrade::args(&spec, &dir, &login).map_err(err)?;
-    log::line(&format!("downgrade: to {} in {}{}, DepotDownloader {}", spec.version.as_deref().unwrap_or("?"), dir.display(), if inline { " (sign-in inside the launcher)" } else { "" }, args.join(" ")));
-    let tools = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("tools");
-    let _ = app.emit("downgrade-stage", "tool");
-    let tool = downgrade::ensure_tool(&state.http, &tools, spec.tool.as_ref()).await.map_err(err)?;
-    log::line(&format!("downgrade: tool ready at {}", tool.display()));
-    let _ = app.emit("downgrade-stage", "steam");
-    if inline {
-        run_inline(&app, &state, &tool, &args, &tools).await?;
-        log::line("downgrade: Steam download finished");
-    } else {
-        downgrade::run(&tool, &args, &tools).await.map_err(err)?;
-        log::line("downgrade: Steam download window closed");
-    }
-    let _ = app.emit("downgrade-stage", "verify");
-    finish_downgrade(&dir, &spec, false)
-}
-
-async fn run_inline(app: &AppHandle, state: &AppState, tool: &std::path::Path, args: &[String], tools: &std::path::Path) -> CmdResult<()> {
-    use std::io::Read;
-    if state.steam_child.lock().unwrap().is_some() {
-        return Err("A Steam download is already running.".into());
-    }
-    let mut child = downgrade::spawn_piped(tool, args, tools).map_err(err)?;
-    let failed: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
-    let pipes: Vec<Box<dyn Read + Send>> = [child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>)]
-        .into_iter()
-        .flatten()
-        .collect();
-    *state.steam_input.lock().unwrap() = child.stdin.take();
-    *state.steam_child.lock().unwrap() = Some(child);
-    let mut readers = Vec::new();
-    for mut pipe in pipes {
-        let (app, failed) = (app.clone(), failed.clone());
-        readers.push(std::thread::spawn(move || {
-            let mut scanner = downgrade::Scanner::default();
-            let mut buf = [0u8; 4096];
-            let mut last_logged = -10.0f32;
-            while let Ok(n) = pipe.read(&mut buf) {
-                if n == 0 {
-                    break;
-                }
-                for ev in scanner.feed(&String::from_utf8_lossy(&buf[..n])) {
-                    match &ev {
-                        downgrade::Event::Progress { percent } => {
-                            if *percent >= last_logged + 10.0 {
-                                last_logged = *percent;
-                                log::line(&format!("steam: {percent:.0}%"));
-                            }
-                        }
-                        downgrade::Event::Line { text } => log::line(&format!("steam: {text}")),
-                        downgrade::Event::LoginFailed { message } => {
-                            log::line(&format!("steam: sign-in refused: {message}"));
-                            *failed.lock().unwrap() = Some(message.clone());
-                        }
-                        other => log::line(&format!("steam: asks {other:?}")),
-                    }
-                    let _ = app.emit("steam-login", &ev);
-                }
-            }
-        }));
-    }
-    let status = loop {
-        let done = {
-            let mut guard = state.steam_child.lock().unwrap();
-            match guard.as_mut() {
-                None => None,
-                Some(c) => match c.try_wait() {
-                    Ok(Some(s)) => {
-                        guard.take();
-                        Some(Some(s))
-                    }
-                    Ok(None) => Some(None),
-                    Err(_) => {
-                        guard.take();
-                        None
-                    }
-                },
-            }
-        };
-        match done {
-            None => break None,
-            Some(Some(s)) => break Some(s),
-            Some(None) => tokio::time::sleep(std::time::Duration::from_millis(400)).await,
-        }
-    };
-    state.steam_input.lock().unwrap().take();
-    for r in readers {
-        let _ = tokio::task::spawn_blocking(move || r.join()).await;
-    }
-    match status {
-        Some(s) if s.success() => Ok(()),
-        None => Err("The Steam download was stopped. Nothing was changed that a second try won't fix.".into()),
-        Some(s) => {
-            log::line(&format!("downgrade: DepotDownloader ended with {s}"));
-            match failed.lock().unwrap().take() {
-                Some(m) => Err(format!("Steam didn't accept the sign-in ({m}). Check your account name and password, then try again.")),
-                None => Err("The Steam download didn't finish. Nothing was changed that a second try won't fix.".into()),
-            }
-        }
-    }
-}
-
-/// Passes the player's answer (password or Steam Guard code) to Steam. The
-/// text is never logged or kept.
-#[tauri::command]
-fn steam_login_answer(state: State<'_, AppState>, text: String) -> CmdResult<()> {
-    use std::io::Write;
-    let mut guard = state.steam_input.lock().unwrap();
-    let input = guard.as_mut().ok_or("The Steam download isn't running.")?;
-    let line = format!("{}\n", text.trim_end_matches(['\r', '\n']));
-    input.write_all(line.as_bytes()).and_then(|_| input.flush()).map_err(|e| format!("Couldn't pass that to Steam: {e}"))?;
-    log::line("steam: passed the player's answer to Steam");
-    Ok(())
-}
-
-/// Stops a Steam download running inside the launcher.
-#[tauri::command]
-fn steam_login_cancel(state: State<'_, AppState>) {
-    if let Some(mut c) = state.steam_child.lock().unwrap().take() {
-        let _ = c.kill();
-        let _ = c.wait();
-        log::line("steam: download stopped by the player");
-    }
-    state.steam_input.lock().unwrap().take();
-}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -996,94 +849,10 @@ fn patch_build_dir(game_dir: &std::path::Path) -> PathBuf {
     game_dir.join(".aetherial-dawn").join("patch-build")
 }
 
-/// Staff, once per Steam build: downloads the server's build with Steam into
-/// a separate folder (never the game folder), then makes patches from the
-/// game as Steam has it now to that build. The patches are used on this PC
-/// right away, and the folder `<game>\.aetherial-dawn\patch-build\out` is
-/// what goes on the server at launcher/patches/. Sends the same events as
-/// the Steam sign-in, then `patch-progress` with stage "build".
-#[tauri::command]
-async fn build_patches(app: AppHandle, state: State<'_, AppState>, username: String) -> CmdResult<String> {
-    let dir = game_dir(&state).await?;
-    let spec = game_spec(&state).await?;
-    let version = spec.version.clone().ok_or("The server doesn't name a Skyrim version.")?;
-    let build = patch_build_dir(&dir);
-    let target = build.join(&version);
-    let out = build.join("out");
-    let login = downgrade::Login::User(username.trim().to_string());
-    let args = downgrade::args(&spec, &target, &login).map_err(err)?;
-    log::line(&format!("patch build: downloading {version} into {} to make patches", target.display()));
-    let tools = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("tools");
-    let _ = app.emit("downgrade-stage", "tool");
-    let tool = downgrade::ensure_tool(&state.http, &tools, spec.tool.as_ref()).await.map_err(err)?;
-    let _ = app.emit("downgrade-stage", "steam");
-    run_inline(&app, &state, &tool, &args, &tools).await?;
-    log::line("patch build: download finished, making patches");
-    let (from, app2, out2, target2) = (dir.clone(), app.clone(), out.clone(), target.clone());
-    let index = tokio::task::spawn_blocking(move || {
-        launcher_core::patcher::build(&from, &target2, &version, &out2, |m| {
-            log::line(&format!("patch build: {m}"));
-            let _ = app2.emit("patch-progress", PatchProgress { stage: "build", file: m.to_string(), done: 0, total: 0 });
-        })
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| format!("Couldn't make the patches ({e})."))?;
-    let n: usize = index.files.iter().map(|f| f.patches.len()).sum();
-    log::line(&format!("patch build: {n} patches for {} files in {}", index.files.len(), out.display()));
-    Ok(out.display().to_string())
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SteamApp {
-    running: bool,
-    depots: Vec<steamapp::DepotState>,
-}
 
 async fn game_spec(state: &AppState) -> CmdResult<launcher_core::manifest::GameSpec> {
     let m = state.manifest.lock().await.clone().ok_or("Check for updates first.")?;
     m.game.ok_or_else(|| "The server doesn't ask for a particular Skyrim version.".into())
-}
-
-fn steam_root() -> CmdResult<PathBuf> {
-    steamapp::steam_root().ok_or_else(|| "Steam wasn't found on this PC. Use the Steam mobile app option instead.".into())
-}
-
-/// Is Steam open, and how far along is each depot download?
-#[tauri::command]
-async fn steam_app_state(state: State<'_, AppState>) -> CmdResult<SteamApp> {
-    let spec = game_spec(&state).await?;
-    let depots = steamapp::steam_root().map(|r| steamapp::state(&r, &spec)).unwrap_or_default();
-    Ok(SteamApp { running: steamapp::steam_running(), depots })
-}
-
-/// Clears old depot downloads and opens Steam's console, where the player
-/// pastes the download lines.
-#[tauri::command]
-async fn steam_app_begin(app: AppHandle, state: State<'_, AppState>) -> CmdResult<SteamApp> {
-    use tauri_plugin_opener::OpenerExt;
-    let spec = game_spec(&state).await?;
-    let root = steam_root()?;
-    if !steamapp::steam_running() {
-        return Err("Steam isn't open. Start Steam, sign in, then try again.".into());
-    }
-    steamapp::clear(&root, &spec);
-    log::line(&format!("downgrade (Steam app): opening the console, Steam at {}, lines: {}", root.display(), steamapp::commands(&spec).join(" / ")));
-    app.opener().open_url("steam://open/console", None::<&str>).map_err(|e| format!("Couldn't open Steam's console ({e}). Press Windows+R, type steam://open/console and press Enter."))?;
-    Ok(SteamApp { running: true, depots: steamapp::state(&root, &spec) })
-}
-
-/// Copies what Steam downloaded into the game folder and checks the version.
-#[tauri::command]
-async fn steam_app_install(state: State<'_, AppState>) -> CmdResult<version::GameCheck> {
-    let dir = game_dir(&state).await?;
-    let spec = game_spec(&state).await?;
-    let root = steam_root()?;
-    let (dir2, spec2) = (dir.clone(), spec.clone());
-    let n = tokio::task::spawn_blocking(move || steamapp::install(&root, &spec2, &dir2)).await.map_err(|e| e.to_string())?.map_err(err)?;
-    log::line(&format!("downgrade (Steam app): copied {n} files into {}", dir.display()));
-    finish_downgrade(&dir, &spec, false)
 }
 
 /// Before every Play: puts leftovers from other mod setups out of the game's
@@ -1905,11 +1674,11 @@ fn main() {
                 .user_agent(concat!("AetherialDawnLauncher/", env!("CARGO_PKG_VERSION")))
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .build()?;
-            app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http, steam_child: Default::default(), steam_input: Default::default(), mods: Default::default(), music: music::Music::new() });
+            app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http, mods: Default::default(), music: music::Music::new() });
             mods::restore_left_handler(app.handle());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, downgrade, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, steam_app_state, steam_app_begin, steam_app_install, move_strays, last_game_report, health_check, steam_login_answer, steam_login_cancel, patch_game, build_patches, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside])
+        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }

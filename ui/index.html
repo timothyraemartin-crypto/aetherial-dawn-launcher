@@ -164,30 +164,8 @@
       <div class="eyebrow">GAME VERSION</div>
       <h2>Match the server's Skyrim</h2>
       <p class="lead" id="dg-lead"></p>
-      <div class="choice" role="radiogroup" aria-label="How to sign in to Steam">
+      <div class="choice" role="radiogroup" aria-label="How to match the version">
         <label class="opt wide"><input type="radio" name="dg-login" value="patch" checked><div><b>Patch my game files <em class="tag">Recommended</em></b><small>The launcher downloads free patches and changes your own Skyrim files into the right version. No Steam, nothing to type.</small></div></label>
-        <label class="opt other" hidden><input type="radio" name="dg-login" value="here"><div><b>Sign in to Steam here</b><small>Download the right version with your Steam account, inside the launcher.</small></div></label>
-        <label class="opt other" hidden><input type="radio" name="dg-login" value="app"><div><b>Steam app on this PC</b><small id="dg-app-note">You paste three lines into Steam's console.</small></div></label>
-        <label class="opt other" hidden><input type="radio" name="dg-login" value="qr"><div><b>Steam mobile app</b><small>Scan a QR code in a separate window.</small></div></label>
-        <label class="opt other" hidden><input type="radio" name="dg-login" value="user"><div><b>Separate sign-in window</b><small>You type your password in Steam's own window.</small></div></label>
-      </div>
-      <button class="linkish" id="dg-other">Other ways to download</button>
-      <div class="field" id="dg-user-field" hidden>
-        <label for="dg-user">Steam account name</label>
-        <div class="line"><input id="dg-user" autocomplete="username" spellcheck="false" maxlength="64"></div>
-      </div>
-      <div class="steamapp" id="dg-steam" hidden>
-        <ol class="notes">
-          <li>Steam's console has opened. If it didn't, press Windows+R, type <code>steam://open/console</code> and press Enter.</li>
-          <li>Copy the first line below, paste it into the box at the bottom of Steam's console and press Enter. Wait until the console says <i>Depot download complete</i> before pasting the next line.</li>
-          <li>When all three lines have finished, click Install.</li>
-        </ol>
-        <div class="depots" id="dg-depots"></div>
-      </div>
-      <div class="field" id="dg-ask" hidden>
-        <label for="dg-answer" id="dg-ask-label"></label>
-        <div class="line"><input id="dg-answer" type="password" autocomplete="off" spellcheck="false" maxlength="128"><button class="btn primary" id="dg-send">Continue</button></div>
-        <small class="hint" id="dg-ask-note"></small>
       </div>
       <ul class="notes" id="dg-notes">
         <li>The launcher only changes Skyrim's own game files, and checks each one before swapping it in. Your saves and mods stay.</li>
@@ -199,7 +177,6 @@
       <span class="error" id="dg-error" hidden></span>
       <div class="actions">
         <button class="btn primary" id="dg-go">DOWNGRADE</button>
-        <button class="btn primary" id="dg-install" hidden disabled>INSTALL</button>
         <button class="btn" id="dg-cancel">Not now</button>
         <button class="linkish" id="dg-skip">My game is already on this version</button>
       </div>
