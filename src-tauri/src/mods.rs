@@ -471,7 +471,9 @@ async fn premium_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, gam
         }
     }
     if !wrong.is_empty() && too_new.is_empty() {
-        return Err(format!("no file on its Nexus page has a build of {} that works on Skyrim 1.6.1170", wrong.join(", ")));
+        let tried: Vec<String> = cands.iter().take(8).map(|f| format!("{} {}", f.name, f.version.as_deref().unwrap_or(""))).collect();
+        log::line(&format!("mods: {} files tried, none works on Skyrim 1.6.1170: {}", m.name, tried.join("; ")));
+        return Err(format!("none of the files on its Nexus page that the launcher could get works on Skyrim 1.6.1170 (it needs {})", m.hint.as_deref().unwrap_or("an older version")));
     }
     Err(format!("every recent file is made for a newer Skyrim ({})", too_new.join(", ")))
 }

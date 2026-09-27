@@ -86,7 +86,17 @@ impl Client<'_> {
 
     pub async fn files(&self, game: &str, mod_id: u64) -> Result<Vec<NexusFile>> {
         let a: FilesAnswer = self.json(&format!("{API}/games/{game}/mods/{mod_id}/files.json")).await?;
-        Ok(a.files)
+        let mut files = a.files;
+        // Archived files aren't in the default list; the Unofficial Patch for
+        // Skyrim 1.6.1170 (4.3.8a) is archived on its page.
+        if let Ok(b) = self.json::<FilesAnswer>(&format!("{API}/games/{game}/mods/{mod_id}/files.json?category=archived")).await {
+            for f in b.files {
+                if !files.iter().any(|x| x.file_id == f.file_id) {
+                    files.push(f);
+                }
+            }
+        }
+        Ok(files)
     }
 
     /// A download address for a file. Premium members need nothing else; free
@@ -132,7 +142,17 @@ pub fn candidates(files: &[NexusFile], file: Option<u64>, pick: Option<&str>) ->
         };
         (if named { 0 } else { 1 }, if cat_rank == 3 { 1 } else { 0 }, cat_rank, std::cmp::Reverse(f.uploaded_timestamp))
     };
-    let mut out: Vec<NexusFile> = files.iter().filter(|f| !matches!(f.category_name.as_deref(), Some("DELETED") | Some("ARCHIVED"))).cloned().collect();
+    // Archived files only when the list's pick names them (a version made
+    // for the server's Skyrim that the page has since archived).
+    let mut out: Vec<NexusFile> = files
+        .iter()
+        .filter(|f| match f.category_name.as_deref() {
+            Some("DELETED") => false,
+            Some("ARCHIVED") => rank(f).0 == 0 && pick.is_some(),
+            _ => true,
+        })
+        .cloned()
+        .collect();
     out.sort_by_key(|f| rank(f));
     if pick.is_some() && out.first().map(|f| rank(f).0 == 0).unwrap_or(false) {
         out.retain(|f| rank(f).0 == 0);
@@ -331,5 +351,12 @@ mod tests {
         assert_eq!(candidates(&files, None, None).iter().map(|f| f.file_id).collect::<Vec<_>>(), [4, 2, 1, 3]);
         assert_eq!(candidates(&files, Some(3), None)[0].file_id, 3);
         assert!(candidates(&files, Some(99), None).is_empty());
+        // The Unofficial Patch for 1.6.1170 is archived; its version picks it.
+        let mut ussep = vec![f(10, "Unofficial Skyrim Special Edition Patch", "MAIN", 90), f(11, "Unofficial Skyrim Special Edition Patch", "ARCHIVED", 60), f(12, "Other archived", "ARCHIVED", 70)];
+        ussep[0].version = Some("4.3.9c".into());
+        ussep[1].version = Some("4.3.8a".into());
+        ussep[2].version = Some("4.3.7".into());
+        assert_eq!(candidates(&ussep, None, Some("4.3.8")).iter().map(|f| f.file_id).collect::<Vec<_>>(), [11]);
+        assert_eq!(candidates(&ussep, None, None).iter().map(|f| f.file_id).collect::<Vec<_>>(), [10]);
     }
 }

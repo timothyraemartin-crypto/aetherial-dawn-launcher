@@ -151,7 +151,7 @@ pub fn missing_nexus_mods(game_dir: &Path, game_version: Option<&str>) -> Vec<Ne
             id: "ussep",
             name: "Unofficial Skyrim Special Edition Patch",
             page: page("ussep"),
-            pick: "version 4.3.8a under Old files, the one for Skyrim 1.6.1170 (4.3.9 and newer need Skyrim 1.7.99)".into(),
+            pick: "version 4.3.8a, the one for Skyrim 1.6.1170, in the archived files at the bottom of the Files tab (4.3.9 and newer need Skyrim 1.7.99)".into(),
             looks_for: format!("{USSEP_PLUGIN} in Data"),
         });
     }

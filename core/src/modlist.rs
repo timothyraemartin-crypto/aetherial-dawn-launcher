@@ -141,7 +141,7 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
         // 4.3.9 and later need Skyrim 1.7.99 and crash 1.6.1170 (crate::ussep).
         nexus: Some(NexusRef { mod_id: 266, file: None, pick: Some(crate::ussep::NEXUS_PICK.into()) }),
         check: vec![format!("Data/{}", r::USSEP_PLUGIN)],
-        hint: Some("version 4.3.8a under Old files, the one for Skyrim 1.6.1170 (not 4.3.9 or newer)".into()),
+        hint: Some("version 4.3.8a, the one for Skyrim 1.6.1170, in the archived files at the bottom of the Files tab (not 4.3.9 or newer)".into()),
         ..Default::default()
     });
     out.push(ModEntry {
