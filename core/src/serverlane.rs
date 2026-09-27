@@ -264,6 +264,30 @@ fn at_path(dir: &Path, rel: &str) -> Option<PathBuf> {
     std::fs::symlink_metadata(&at).ok().filter(|m| m.is_file()).map(|_| at)
 }
 
+/// Every plugin file in an unpacked download, as its path inside the
+/// archive ("/" between folders), sorted; at most 200. Logged for a mod
+/// listed with no plugins, so its plugin names can be learned from a run.
+pub fn plugins_in(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
+                stack.push(e.path());
+            } else if ft.is_file() && is_plugin(&e.file_name().to_string_lossy()) {
+                if let Ok(rel) = e.path().strip_prefix(dir) {
+                    out.push(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+    }
+    out.sort();
+    out.truncate(200);
+    out
+}
+
 fn files_named(dir: &Path, name: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -433,6 +457,17 @@ mod tests {
         // Unsafe or mismatched paths are refused before any download.
         assert!(check(&lane(&json("../Armors of the Velothi.esp"))).is_err());
         assert!(check(&lane(&json("001 Crafted Only/Other.esp"))).is_err());
+    }
+
+    #[test]
+    fn lists_every_plugin_in_a_download() {
+        let t = tempfile::tempdir().unwrap();
+        for f in ["Heavy Armory.esp", "Options/Patch A.esl", "Options/B/Patch.ESM", "readme.txt", "Meshes/x.nif"] {
+            let p = t.path().join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
+        }
+        assert_eq!(plugins_in(t.path()), vec!["Heavy Armory.esp", "Options/B/Patch.ESM", "Options/Patch A.esl"]);
     }
 
     #[test]

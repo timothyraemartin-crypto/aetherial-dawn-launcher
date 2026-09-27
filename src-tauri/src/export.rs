@@ -192,6 +192,12 @@ async fn one(api: &nexus::Client<'_>, root: &Path, m: &serverlane::LaneMod) -> R
         if let Some(r) = modlist::fomod_report(&m.entry, &work) {
             say(&format!("export: {} installer options (picks {:?}): {}", m.entry.name, m.entry.fomod, r.join(" || ")));
         }
+        // Listed with no plugins: every plugin in the download is named, so
+        // the list can pin them next time (whether or not the pick works).
+        if m.plugins.is_empty() {
+            let all = serverlane::plugins_in(&work);
+            say(&format!("export: {} holds {} plugin(s) in its download: {}", m.entry.name, all.len(), if all.is_empty() { "none".to_string() } else { all.join(", ") }));
+        }
         let picked = serverlane::pick(&m, &work).map_err(|e| e.to_string());
         // The picked files are copied out before the folder goes.
         let out = picked.and_then(|p| {
