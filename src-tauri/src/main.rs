@@ -498,10 +498,16 @@ async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::
     if close {
         // "Close the launcher when the game starts" would cut the export
         // off: the launcher stays hidden until it's done.
+        // At most 2 hours, so a stuck export never keeps a hidden launcher
+        // running until the PC restarts; it carries on at the next start.
         if export::running() {
-            log::line("launcher: staying open, hidden, until the server-mods export finishes");
-            while export::running() {
+            log::line("launcher: staying open, hidden, until the server-mods export finishes (2 hours at most)");
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(2 * 60 * 60);
+            while export::running() && std::time::Instant::now() < until {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+            if export::running() {
+                log::line("launcher: the server-mods export took over 2 hours; closing now");
             }
         }
         app.exit(0);
