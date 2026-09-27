@@ -17,6 +17,35 @@ use crate::{log, AppState, CmdResult};
 
 /// How long to wait for a free member to press a mod's download button.
 const WAIT_FOR_CLICK: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+/// How long a Premium member's own file page gets to hand over its nxm:// link.
+const WAIT_FOR_PAGE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Catches nxm:// links for one Download all. The launcher only takes over
+/// nxm:// when it needs a link (always for free members; for Premium only
+/// when the API won't give a file directly) and gives it back at the end.
+struct Catcher {
+    rx: tokio::sync::mpsc::UnboundedReceiver<nexus::Nxm>,
+    claimed: bool,
+}
+
+impl Catcher {
+    fn claim(&mut self, app: &AppHandle) {
+        if self.claimed {
+            return;
+        }
+        self.claimed = true;
+        match std::env::current_exe().map_err(Error::from).and_then(|exe| nexus::claim_nxm_handler(&exe)) {
+            Ok(prev) => {
+                if let Some(p) = previous_handler_path(app) {
+                    let _ = std::fs::create_dir_all(p.parent().unwrap());
+                    let _ = std::fs::write(p, prev.unwrap_or_default());
+                }
+                log::line("mods: the launcher takes Nexus download links until the mods are in");
+            }
+            Err(e) => log::line(&format!("mods: couldn't take nxm:// links: {e}")),
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct ModsState {
@@ -429,7 +458,7 @@ fn archive_path(game_dir: &Path, m: &ModEntry, file: &str) -> PathBuf {
 /// Premium: pick the file, fetch it through the API, install it. A file made
 /// for a newer Skyrim falls back to the next older one (unless the list pins
 /// a file).
-async fn premium_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, game_dir: &Path, cancel: &AtomicBool) -> Result<(), String> {
+async fn premium_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, game_dir: &Path, cancel: &AtomicBool, catcher: &mut Catcher) -> Result<(), String> {
     let n = m.nexus.as_ref().unwrap();
     let files = api.files(modlist::NEXUS_GAME, n.mod_id).await.map_err(|e| e.to_string())?;
     let mut cands = nexus::candidates(&files, n.file, n.pick.as_deref());
@@ -447,12 +476,41 @@ async fn premium_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, gam
     }
     let mut too_new = Vec::new();
     let mut wrong = Vec::new();
+    let mut unreachable = Vec::new();
+    let mut pages_asked = 0;
     for f in cands.iter().take(8) {
         if cancel.load(Ordering::SeqCst) {
             return Err("cancelled".into());
         }
         emit(app, m, "download", 0, f.size_in_bytes.unwrap_or(0), f.name.clone());
-        let url = api.download_link(modlist::NEXUS_GAME, n.mod_id, f.file_id, None).await.map_err(|e| e.to_string())?;
+        let cat = f.category_name.as_deref().unwrap_or("?");
+        let url = match api.download_link(modlist::NEXUS_GAME, n.mod_id, f.file_id, None).await {
+            Ok(u) => u,
+            Err(e) => {
+                // Nexus may not hand out archived files through the API (the
+                // Unofficial Patch 4.3.8a is archived): ask the file's own page
+                // for it instead, which answers Premium members with an nxm://
+                // link at once.
+                log::line(&format!("mods: Nexus API gave no link for {} file {} {} ({cat}, id {}): {e}", m.name, f.name, f.version.as_deref().unwrap_or(""), f.file_id));
+                // The page is asked for the best two files at most, so a
+                // refusing API doesn't open a browser tab per file.
+                if pages_asked >= 2 {
+                    unreachable.push(f.name.clone());
+                    continue;
+                }
+                pages_asked += 1;
+                match via_page(app, api, m, f.file_id, cancel, catcher).await {
+                    Ok(u) => u,
+                    Err(e) if e == "cancelled" => return Err(e),
+                    Err(e) => {
+                        log::line(&format!("mods: {} file {} not reachable through its page either: {e}", m.name, f.name));
+                        unreachable.push(f.name.clone());
+                        continue;
+                    }
+                }
+            }
+        };
+        log::line(&format!("mods: {} downloading {} {} ({cat}, id {})", m.name, f.name, f.version.as_deref().unwrap_or(""), f.file_id));
         let path = archive_path(game_dir, m, &f.file_name);
         download(app, api.http, m, &url, &path, cancel).await?;
         emit(app, m, "install", 0, 0, "");
@@ -470,12 +528,45 @@ async fn premium_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, gam
             }
         }
     }
+    if !unreachable.is_empty() && wrong.is_empty() && too_new.is_empty() {
+        return Err("Nexus didn't hand over the file just now. The launcher tries again the next time you press Play".into());
+    }
     if !wrong.is_empty() && too_new.is_empty() {
         let tried: Vec<String> = cands.iter().take(8).map(|f| format!("{} {}", f.name, f.version.as_deref().unwrap_or(""))).collect();
         log::line(&format!("mods: {} files tried, none works on Skyrim 1.6.1170: {}", m.name, tried.join("; ")));
         return Err(format!("none of the files on its Nexus page that the launcher could get works on Skyrim 1.6.1170 (it needs {})", m.hint.as_deref().unwrap_or("an older version")));
     }
     Err(format!("every recent file is made for a newer Skyrim ({})", too_new.join(", ")))
+}
+
+/// Opens one file's Nexus page with the mod-manager download started
+/// (`nmm=1`) and catches the nxm:// link it answers with; for a Premium
+/// member nothing needs pressing. Returns the download address.
+async fn via_page(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, file_id: u64, cancel: &AtomicBool, catcher: &mut Catcher) -> Result<String, String> {
+    let n = m.nexus.as_ref().unwrap();
+    catcher.claim(app);
+    while catcher.rx.try_recv().is_ok() {}
+    open_url(app, &format!("https://www.nexusmods.com/{}/mods/{}?tab=files&file_id={file_id}&nmm=1", modlist::NEXUS_GAME, n.mod_id))?;
+    emit(app, m, "waiting", 0, 0, "Getting it from Nexus in your browser. Nothing to press.");
+    let deadline = tokio::time::Instant::now() + WAIT_FOR_PAGE;
+    let link = loop {
+        if cancel.load(Ordering::SeqCst) {
+            return Err("cancelled".into());
+        }
+        match tokio::time::timeout(std::time::Duration::from_millis(500), catcher.rx.recv()).await {
+            Ok(Some(l)) if l.mod_id == n.mod_id && l.game == modlist::NEXUS_GAME => break l,
+            Ok(Some(l)) => log::line(&format!("mods: ignored a link for mod {} while waiting for {}", l.mod_id, m.name)),
+            Ok(None) => return Err("stopped waiting".into()),
+            Err(_) if tokio::time::Instant::now() > deadline => return Err("the Nexus page sent no download link".into()),
+            Err(_) => {}
+        }
+    };
+    if link.file_id != file_id {
+        log::line(&format!("mods: the page sent file {} instead of {file_id} for {}", link.file_id, m.name));
+    }
+    let url = api.download_link(modlist::NEXUS_GAME, n.mod_id, link.file_id, Some(&link)).await.map_err(|e| e.to_string())?;
+    log::line(&format!("mods: {} link caught from its Nexus page (file {})", m.name, link.file_id));
+    Ok(url)
 }
 
 /// Free: open the mod's page and wait for the player to press "Mod manager
@@ -585,24 +676,13 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
         emit(&app, m, "queued", 0, 0, "");
     }
 
-    // Free members: hold nxm:// while waiting, then give it back.
-    let mut rx = None;
-    let free_nexus = needs_nexus && !premium;
-    if free_nexus {
-        let claimed = std::env::current_exe().map_err(Error::from).and_then(|exe| nexus::claim_nxm_handler(&exe));
-        match claimed {
-            Ok(prev) => {
-                if let Some(p) = previous_handler_path(&app) {
-                    let _ = std::fs::create_dir_all(p.parent().unwrap());
-                    let _ = std::fs::write(p, prev.unwrap_or_default());
-                }
-                log::line("mods: the launcher takes Nexus download links until the mods are in");
-            }
-            Err(e) => log::line(&format!("mods: couldn't take nxm:// links: {e}")),
-        }
-        let (tx, r) = tokio::sync::mpsc::unbounded_channel();
-        *state.mods.nxm_tx.lock().unwrap() = Some(tx);
-        rx = Some(r);
+    // nxm:// links: free members always need them; Premium only when the
+    // API won't hand a file over. Held while waiting, then given back.
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    *state.mods.nxm_tx.lock().unwrap() = Some(tx);
+    let mut catcher = Catcher { rx, claimed: false };
+    if needs_nexus && !premium {
+        catcher.claim(&app);
     }
 
     let mut result = RunResult::default();
@@ -611,15 +691,27 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
             result.cancelled = true;
             break;
         }
-        let r = if m.nexus.is_some() {
-            if premium {
-                premium_one(&app, &api, m, &dir, &cancel).await
+        let mut r = Err(String::new());
+        // One quiet retry before a failure is shown (a dropped download, a
+        // busy Nexus).
+        for attempt in 0..2 {
+            r = if m.nexus.is_some() {
+                if premium {
+                    premium_one(&app, &api, m, &dir, &cancel, &mut catcher).await
+                } else {
+                    free_one(&app, &api, m, &dir, &cancel, &mut catcher.rx).await
+                }
             } else {
-                free_one(&app, &api, m, &dir, &cancel, rx.as_mut().unwrap()).await
+                direct_one(&app, &state.http, m, &dir, &cancel).await
+            };
+            match &r {
+                Err(e) if attempt == 0 && e != "cancelled" && (m.nexus.is_none() || premium) => {
+                    log::line(&format!("mods: {} failed ({e}); trying once more", m.name));
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                }
+                _ => break,
             }
-        } else {
-            direct_one(&app, &state.http, m, &dir, &cancel).await
-        };
+        }
         match r {
             Ok(()) if m.installed(&dir) => {
                 emit(&app, m, "done", 0, 0, "Installed");
@@ -644,8 +736,8 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
         }
     }
 
-    if free_nexus {
-        *state.mods.nxm_tx.lock().unwrap() = None;
+    *state.mods.nxm_tx.lock().unwrap() = None;
+    if catcher.claimed {
         restore_left_handler(&app);
     }
     *state.mods.cancel.lock().unwrap() = None;
