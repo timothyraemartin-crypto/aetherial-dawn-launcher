@@ -211,7 +211,13 @@ pub fn restore_kept(game_dir: &Path) -> std::io::Result<Vec<String>> {
     let root = game_dir.join(crate::strays::DISABLED_DIR);
     let Ok(rd) = std::fs::read_dir(&root) else { return Ok(Vec::new()) };
     let keep = keep_set(game_dir);
-    let mut stamps: Vec<std::path::PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir() && p.to_string_lossy().ends_with("-other-mods")).collect();
+    // "-plugins" too: a required mod's header-only plugin (MCMHelper.esp) was
+    // parked there as broken before 0.1.56.
+    let mut stamps: Vec<std::path::PathBuf> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && { let s = p.to_string_lossy(); s.ends_with("-other-mods") || s.ends_with("-plugins") })
+        .collect();
     stamps.sort();
     stamps.reverse();
     let mut back = Vec::new();
@@ -230,8 +236,15 @@ pub fn restore_kept(game_dir: &Path) -> std::io::Result<Vec<String>> {
                 if !(keep.contains(&rel_s.to_ascii_lowercase()) || required_file(&rel_s)) {
                     continue;
                 }
-                // Never put back a DLL SKSE would refuse.
+                // Never put back a DLL SKSE would refuse, or a broken plugin.
                 if crate::skse::is_skse_plugin(&rel_s) && crate::skse::wrong_build(&p).is_some() {
+                    continue;
+                }
+                let l = rel_s.to_ascii_lowercase();
+                if (l.ends_with(".esp") || l.ends_with(".esm") || l.ends_with(".esl")) && crate::loadorder::broken(&p).is_some() {
+                    continue;
+                }
+                if stamp.to_string_lossy().ends_with("-plugins") && !required_file(&rel_s) {
                     continue;
                 }
                 let to = game_dir.join(rel);
@@ -364,5 +377,22 @@ mod tests {
         assert!(!g.join("Data/Meshes/a.nif").exists());
         assert_eq!(restore_all(g).unwrap(), 1);
         assert!(g.join("Data/Meshes/a.nif").is_file());
+    }
+
+    #[test]
+    fn puts_back_a_required_plugin_parked_as_broken() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        std::fs::create_dir_all(g.join("Data")).unwrap();
+        let parked = g.join(crate::strays::DISABLED_DIR).join("2026-09-26-plugins/Data");
+        std::fs::create_dir_all(&parked).unwrap();
+        // Header only, no records: valid, and MCM Helper's plugin is like that.
+        let mut header = crate::loadorder::tests::plugin(1.71, false);
+        header.truncate(24 + u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize);
+        std::fs::write(parked.join("MCMHelper.esp"), &header).unwrap();
+        std::fs::write(parked.join("ccOld.esl"), &header).unwrap();
+        let back = restore_kept(g).unwrap();
+        assert_eq!(back, vec!["Data/MCMHelper.esp".to_string()]);
+        assert!(g.join("Data/MCMHelper.esp").is_file() && !g.join("Data/ccOld.esl").exists());
     }
 }

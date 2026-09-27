@@ -262,7 +262,8 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
         install_missing_mods(&state.http, &dir).await?;
     }
     game::inspect(&dir).map_err(err)?;
-    tidy_game(&app, &dir, &m, config.only_server_mods)?;
+    let server_has_ussep = launcher_core::ussep::server_has(fetch_masters(&state.http, &config.base_url).await.as_ref());
+    tidy_game(&app, &dir, &m, config.only_server_mods, server_has_ussep)?;
     let report = run_health(&app, &state.http, &config.base_url, &dir, Some(&m)).await;
     log::line(&format!("health before play: worst={:?}\n{}", report.worst, report.text()));
     if report.worst >= health::Status::Warn && config.share_health {
@@ -1086,7 +1087,7 @@ async fn steam_app_install(state: State<'_, AppState>) -> CmdResult<version::Gam
 /// extra plugins are switched off in plugins.txt, and archives Skyrim.ini
 /// names but that no longer exist are dropped (the ini is backed up first).
 /// Nothing is deleted.
-fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_mods: bool) -> CmdResult<()> {
+fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_mods: bool, server_has_ussep: bool) -> CmdResult<()> {
     // The Unofficial Patch made for Skyrim 1.7.99 (4.3.9+) crashes 1.6.1170
     // while drawing land; it's set aside and 4.3.8a installed in its place.
     match launcher_core::ussep::set_aside_if_too_new(dir) {
@@ -1181,7 +1182,27 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_m
     // Required and listed mods' plugins (SkyUI, the Unofficial Patch) only
     // work switched on; Vortex does this, the launcher's own installs don't.
     if let Some(txt) = plugins_txt(app) {
-        match loadorder::force_on(&txt, &loadorder::wanted(dir)) {
+        // The Unofficial Patch waits, switched off, until the server loads it
+        // too (Timothy chose "server runs it", 2026-09-27); its files stay.
+        let held = launcher_core::ussep::plugin_names();
+        let mut want = loadorder::wanted(dir);
+        if !server_has_ussep {
+            want.retain(|n| !held.iter().any(|h| h.eq_ignore_ascii_case(n)));
+            let on: Vec<String> = std::fs::read_to_string(&txt)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| l.trim().strip_prefix('*').map(str::trim))
+                .filter(|n| held.iter().any(|h| h.eq_ignore_ascii_case(n)))
+                .map(str::to_string)
+                .collect();
+            if !on.is_empty() {
+                match loadorder::switch_off(&txt, &on) {
+                    Ok(()) => log::line(&format!("play: Unofficial Patch waits for server support, switched off: {}", on.join(", "))),
+                    Err(e) => log::line(&format!("play: couldn't switch the Unofficial Patch off: {e}")),
+                }
+            }
+        }
+        match loadorder::force_on(&txt, &want) {
             Ok(on) if !on.is_empty() => log::line(&format!("play: switched on in {}: {}", txt.display(), on.join(", "))),
             Ok(_) => {}
             Err(e) => log::line(&format!("play: couldn't switch plugins on: {e}")),
@@ -1330,15 +1351,20 @@ struct Filed {
     likely_cause: Option<String>,
 }
 
-async fn run_health(app: &AppHandle, http: &reqwest::Client, base: &str, dir: &std::path::Path, m: Option<&Manifest>) -> health::Report {
+/// The server's masters.json (its plugins and their fingerprints).
+async fn fetch_masters(http: &reqwest::Client, base: &str) -> Option<serde_json::Value> {
     let url = format!("{}/masters.json", base.trim_end_matches('/'));
-    let masters = match http.get(&url).timeout(std::time::Duration::from_secs(8)).send().await.and_then(|r| r.error_for_status()) {
+    match http.get(&url).timeout(std::time::Duration::from_secs(8)).send().await.and_then(|r| r.error_for_status()) {
         Ok(r) => r.json::<serde_json::Value>().await.ok(),
         Err(e) => {
             log::line(&format!("health: couldn't load {url}: {e}"));
             None
         }
-    };
+    }
+}
+
+async fn run_health(app: &AppHandle, http: &reqwest::Client, base: &str, dir: &std::path::Path, m: Option<&Manifest>) -> health::Report {
+    let masters = fetch_masters(http, base).await;
     let appdata = app.path().local_data_dir().ok().map(|d| d.join("Skyrim Special Edition"));
     let docs = app.path().document_dir().or_else(|_| app.path().home_dir().map(|h| h.join("Documents"))).ok();
     let cache = app.path().app_local_data_dir().ok().map(|d| health::cache_path(&d));
@@ -1372,7 +1398,7 @@ fn health_payload(app: &AppHandle, config: &Config, build: &str, when: &str, cra
         "crash": crash,
         "worst": r.worst,
         // The launcher's own guess, from the checks, for staff to prefer.
-        "likelyCause": health::likely_cause(r),
+        "likelyCause": crash.and_then(health::crash_cause).or_else(|| health::likely_cause(r)),
         "checks": r.checks,
         "text": r.text(),
     })
@@ -1441,7 +1467,7 @@ async fn send_health(app: &AppHandle, http: &reqwest::Client, config: &Config, b
             Posted::Filed(mut f) => {
                 // The checks know more than the staff service's guess (it
                 // blamed plugins for a Menu Framework crash on 2026-09-26).
-                if let Some(c) = health::likely_cause(r) {
+                if let Some(c) = crash.and_then(health::crash_cause).or_else(|| health::likely_cause(r)) {
                     f.likely_cause = Some(c);
                 }
                 return f;

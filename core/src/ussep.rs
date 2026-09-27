@@ -14,6 +14,20 @@ pub const NEWEST_FOR_1170: (u32, u32, u32) = (4, 3, 8);
 pub const NEXUS_PICK: &str = "4.3.8";
 pub const USSEP_ARCHIVE: &str = "Unofficial Skyrim Special Edition Patch.bsa";
 
+/// Whether the server's masters.json lists the Unofficial Patch (by either
+/// name). Until it does, the patch stays installed but switched off: with it
+/// on, world loading crashed (Timothy chose "server runs it", 2026-09-27).
+pub fn server_has(masters: Option<&serde_json::Value>) -> bool {
+    let Some(v) = masters else { return false };
+    let t = v.to_string().to_ascii_lowercase();
+    t.contains("unofficial skyrim special edition patch") || t.contains("unofficial-skyrim-special-edition-patch")
+}
+
+/// The patch's plugin names in plugins.txt: its own and its dashed copy.
+pub fn plugin_names() -> [String; 2] {
+    [USSEP_PLUGIN.to_string(), crate::aliases::alias_name(USSEP_PLUGIN)]
+}
+
 /// The first "4.3.9"-style version in a text ("4-3-9c" too), with no digit
 /// right before it.
 pub fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
@@ -153,6 +167,13 @@ mod tests {
         out.extend(b"GRUP");
         out.extend([0u8; 20]);
         out
+    }
+
+    #[test]
+    fn knows_when_the_server_has_it() {
+        assert!(!server_has(None));
+        assert!(!server_has(Some(&serde_json::json!({"loadOrder": ["Skyrim.esm"]}))));
+        assert!(server_has(Some(&serde_json::json!({"loadOrder": ["Skyrim.esm", "Unofficial Skyrim Special Edition Patch.esp"]}))));
     }
 
     #[test]

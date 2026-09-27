@@ -58,8 +58,12 @@ pub fn broken(path: &Path) -> Option<String> {
     if !(0.9..=2.0).contains(&version) {
         return Some(format!("header version {version:.2}"));
     }
-    if len <= 24 + size {
-        return Some(format!("only {len} bytes, no records"));
+    // A header-only plugin is valid: MCM Helper's MCMHelper.esp is one, and
+    // it was parked as broken on 2026-09-26. The SkyUI stub from the first
+    // live test is still caught by its version-0 header above; a header cut
+    // short is caught here.
+    if len < 24 + size {
+        return Some(format!("only {len} bytes, header cut short"));
     }
     None
 }
@@ -341,7 +345,7 @@ pub fn test_plugin(version: f32, records: bool) -> Vec<u8> {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
 
     pub fn plugin(version: f32, records: bool) -> Vec<u8> {

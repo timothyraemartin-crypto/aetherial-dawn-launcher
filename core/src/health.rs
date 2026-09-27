@@ -88,6 +88,7 @@ pub fn run(i: &Inputs) -> Report {
         wanted_off(i),
         camera_preset(i),
         ussep_version(i),
+        ussep_waiting(i),
         load_order(i),
         plugin_names(i),
         load_order_file(i),
@@ -364,7 +365,11 @@ fn skse_builds(i: &Inputs) -> Check {
 /// Required mods' plugins switched off in the load order (their menus, like
 /// SmoothCam's settings page, don't show then).
 fn wanted_off(i: &Inputs) -> Check {
-    let off = i.appdata.map(|a| loadorder::wanted_but_off(i.game_dir, &a.join("plugins.txt"))).unwrap_or_default();
+    let mut off = i.appdata.map(|a| loadorder::wanted_but_off(i.game_dir, &a.join("plugins.txt"))).unwrap_or_default();
+    if !crate::ussep::server_has(i.masters) {
+        let held = crate::ussep::plugin_names();
+        off.retain(|n| !held.iter().any(|h| h.eq_ignore_ascii_case(n)));
+    }
     if off.is_empty() {
         check("requiredoff", "Required mods switched on", Status::Ok, "Every required mod's plugin is switched on.", vec![])
     } else {
@@ -380,6 +385,16 @@ fn ussep_version(i: &Inputs) -> Check {
     }
 }
 
+/// The patch stays switched off until the server loads it too.
+fn ussep_waiting(i: &Inputs) -> Check {
+    let present = i.game_dir.join("Data").join(crate::requirements::USSEP_PLUGIN).is_file();
+    if present && !crate::ussep::server_has(i.masters) {
+        check("usseppending", "Unofficial Patch", Status::Info, "Unofficial Patch: waiting for server support; it crashes world loading until then. It stays installed and switches back on by itself once the server has it.", vec![])
+    } else {
+        check("usseppending", "Unofficial Patch", Status::Ok, "The Unofficial Patch is on.", vec![])
+    }
+}
+
 /// Whether the Souls-style camera preset has been applied.
 fn camera_preset(i: &Inputs) -> Check {
     let name = "SmoothCam's Modern Camera Preset";
@@ -388,6 +403,16 @@ fn camera_preset(i: &Inputs) -> Check {
         (None, Some((f, _))) => check("camerapreset", "Camera preset", Status::Info, format!("{name} ({f}) becomes your camera on the next Play. Your current SmoothCam settings are backed up first."), vec![]),
         (None, None) => check("camerapreset", "Camera preset", Status::Info, format!("{name} isn't installed yet; the launcher installs it with the other required mods."), vec![]),
     }
+}
+
+/// A cause read from the crash log itself, which beats the checks: the
+/// 23:50 reports blamed a parked MCMHelper.esp for a terrain crash.
+pub fn crash_cause(crash: &str) -> Option<String> {
+    let l = crash.to_ascii_lowercase();
+    if l.contains("bgsterrainmanager") || (l.contains("tesobjectland") && l.contains("unofficial")) {
+        return Some("The game crashed drawing land changed by the Unofficial Patch (terrain update)".into());
+    }
+    None
 }
 
 /// The launcher's own best guess at a crash's cause, from the checks, most
