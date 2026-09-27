@@ -9,12 +9,47 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use launcher_core::{modlist, nexus, serverlane};
+use std::time::Duration;
+
+use launcher_core::{modlist, nexus, serverlane, watch};
 use tauri::{AppHandle, Manager};
 
-use crate::{log, AppState};
+use crate::AppState;
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
+/// Longest wait for a request to answer, or for the next piece of a download.
+const STALL: Duration = Duration::from_secs(60);
+/// Why a mod stopped when the game started: it's fetched again after.
+const GAME_RUNNING: &str = "the game started";
+
+/// Every export line goes through here: download addresses (Nexus CDN links
+/// carry md5, expires and user_id) are hidden, since Copy diagnostics puts
+/// the log on the clipboard.
+fn say(msg: &str) {
+    crate::log::line(&launcher_core::scrub(msg));
+}
+
+fn game_running() -> bool {
+    watch::find_process(watch::GAME_PROCESS).is_some()
+}
+
+/// Waits while Skyrim runs, so the export never competes with the game.
+async fn wait_for_game_to_close() {
+    if game_running() {
+        say("export: paused while the game runs");
+        while game_running() {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
+        say("export: the game closed; carrying on");
+    }
+}
+
+async fn in_time<T, E: std::fmt::Display>(what: &str, f: impl std::future::Future<Output = Result<T, E>>) -> Result<T, String> {
+    match tokio::time::timeout(STALL, f).await {
+        Ok(r) => r.map_err(|e| e.to_string()),
+        Err(_) => Err(format!("{what} didn't answer within {} seconds", STALL.as_secs())),
+    }
+}
 
 /// Starts an export in the background when one is due. Only one runs at a time.
 pub fn start(app: &AppHandle) {
@@ -24,7 +59,7 @@ pub fn start(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = run(&app).await {
-            log::line(&format!("export: stopped: {e}"));
+            say(&format!("export: stopped: {e}"));
         }
         RUNNING.store(false, Ordering::SeqCst);
     });
@@ -37,8 +72,8 @@ async fn run(app: &AppHandle) -> Result<(), String> {
         (c.base_url.clone(), c.account.as_ref().and_then(|a| a.discord_id.clone()))
     };
     let url = format!("{}/server-lane.json", base.trim_end_matches('/'));
-    let lane: serverlane::ServerLane = match state.http.get(&url).send().await {
-        Ok(r) if r.status().is_success() => r.json().await.map_err(|e| format!("server-lane.json: {e}"))?,
+    let lane: serverlane::ServerLane = match in_time("the server", state.http.get(&url).send()).await {
+        Ok(r) if r.status().is_success() => in_time("the server", r.json()).await.map_err(|e| format!("server-lane.json: {e}"))?,
         // Not published: nothing to export (every other player's case).
         _ => return Ok(()),
     };
@@ -52,16 +87,16 @@ async fn run(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
     let Some(key) = crate::mods::nexus_key(app) else {
-        log::line("export: the server lane waits for a Nexus sign-in");
+        say("export: the server lane waits for a Nexus sign-in");
         return Ok(());
     };
     let version = app.package_info().version.to_string();
     let api = nexus::Client { http: &state.http, key: &key, app_version: &version };
-    if !api.validate().await.map_err(|e| e.to_string())?.is_premium {
-        log::line("export: the server lane needs a Premium Nexus account; nothing downloaded");
+    if !in_time("Nexus", api.validate()).await?.is_premium {
+        say("export: the server lane needs a Premium Nexus account; nothing downloaded");
         return Ok(());
     }
-    log::line(&format!("export: server lane of {} mods into {}", lane.mods.len(), root.display()));
+    say(&format!("export: server lane of {} mods into {}", lane.mods.len(), root.display()));
     {
         let root = root.clone();
         tokio::task::spawn_blocking(move || serverlane::start_over(&root)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
@@ -69,10 +104,17 @@ async fn run(app: &AppHandle) -> Result<(), String> {
     let mut plugins = std::collections::BTreeMap::new();
     let mut failed = Vec::new();
     for m in &lane.mods {
-        match one(&api, &root, m).await {
+        wait_for_game_to_close().await;
+        let mut got = one(&api, &root, m).await;
+        // The game started mid-download: wait, then fetch it again once.
+        if got.as_ref().is_err_and(|e| e == GAME_RUNNING) {
+            wait_for_game_to_close().await;
+            got = one(&api, &root, m).await;
+        }
+        match got {
             Ok(picked) => {
                 let names: Vec<&str> = picked.iter().map(|p| p.1.as_str()).collect();
-                log::line(&format!("export: {} gave {}", m.entry.name, names.join(", ")));
+                say(&format!("export: {} gave {}", m.entry.name, names.join(", ")));
                 if let Err(e) = serverlane::collect(&root, &m.entry.id, &picked, &mut plugins) {
                     failed.push(format!("{}: {e}", m.entry.name));
                 }
@@ -82,7 +124,7 @@ async fn run(app: &AppHandle) -> Result<(), String> {
     }
     if !failed.is_empty() {
         for f in &failed {
-            log::line(&format!("export: failed {f}"));
+            say(&format!("export: failed {f}"));
         }
         let tries = serverlane::failed(&root, &hash).map_err(|e| e.to_string())?;
         let next = if tries >= serverlane::MAX_FAILURES { "it stops trying until the server's list changes" } else { "it tries again the next time the launcher starts or the game closes" };
@@ -94,7 +136,7 @@ async fn run(app: &AppHandle) -> Result<(), String> {
     };
     let _ = std::fs::remove_dir_all(root.join("downloads"));
     let _ = std::fs::remove_dir_all(root.join("unpacked"));
-    log::line(&format!(
+    say(&format!(
         "export: {} ready: {} plugins, {} bytes, sha256 {}",
         root.join(serverlane::ZIP_NAME).display(),
         rec.plugins.len(),
@@ -111,16 +153,19 @@ async fn one(api: &nexus::Client<'_>, root: &Path, m: &serverlane::LaneMod) -> R
     let downloads = root.join("downloads");
     let prefix = format!("{}-{file}.", m.entry.id);
     let have = std::fs::read_dir(&downloads).ok().and_then(|rd| rd.flatten().map(|e| e.path()).find(|p| p.file_name().is_some_and(|f| f.to_string_lossy().starts_with(&prefix) && !f.to_string_lossy().ends_with(".part"))));
-    let archive = match have.filter(|p| modlist::verify(&m.entry, p).is_ok()) {
+    let archive = match have.filter(|p| serverlane::verify(m, p).is_ok()) {
         Some(p) => p,
         None => {
-            let url = api.download_link(modlist::NEXUS_GAME, n.mod_id, file, None).await.map_err(|e| e.to_string())?;
+            let url = in_time("Nexus", api.download_link(modlist::NEXUS_GAME, n.mod_id, file, None)).await?;
             let name = url.split('?').next().unwrap_or("").rsplit('/').next().unwrap_or("");
             let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).filter(|e| e.len() <= 4 && e.bytes().all(|b| b.is_ascii_alphanumeric())).unwrap_or_else(|| "bin".into());
             let path = downloads.join(format!("{prefix}{ext}"));
-            log::line(&format!("export: downloading {} (mod {}, file {file})", m.entry.name, n.mod_id));
+            say(&format!("export: downloading {} (mod {}, file {file})", m.entry.name, n.mod_id));
             fetch(api.http, &url, &path).await?;
-            modlist::verify(&m.entry, &path).map_err(|e| e.to_string())?;
+            if let Err(e) = serverlane::verify(m, &path) {
+                let _ = std::fs::remove_file(&path);
+                return Err(e.to_string());
+            }
             path
         }
     };
@@ -130,7 +175,7 @@ async fn one(api: &nexus::Client<'_>, root: &Path, m: &serverlane::LaneMod) -> R
         let _ = std::fs::remove_dir_all(&work);
         modlist::extract(&archive, &work).map_err(|e| e.to_string())?;
         if let Some(r) = modlist::fomod_report(&m.entry, &work) {
-            log::line(&format!("export: {} installer options (picks {:?}): {}", m.entry.name, m.entry.fomod, r.join(" || ")));
+            say(&format!("export: {} installer options (picks {:?}): {}", m.entry.name, m.entry.fomod, r.join(" || ")));
         }
         let picked = serverlane::pick(&m, &work).map_err(|e| e.to_string());
         // The picked files are copied out before the folder goes.
@@ -153,22 +198,37 @@ async fn one(api: &nexus::Client<'_>, root: &Path, m: &serverlane::LaneMod) -> R
     .map_err(|e| e.to_string())?
 }
 
-/// A plain download to `path` (through a .part file). Only https.
+/// A plain download to `path` (through a .part file). Only https. Stops
+/// when the connection stalls or the game starts.
 async fn fetch(http: &reqwest::Client, url: &str, path: &Path) -> Result<(), String> {
     use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
     if !url.starts_with("https://") {
         return Err("the download address isn't secure".into());
     }
-    let resp = http.get(url).send().await.and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
+    let resp = in_time("the download", async { http.get(url).send().await.and_then(|r| r.error_for_status()) }).await?;
     if let Some(p) = path.parent() {
         tokio::fs::create_dir_all(p).await.map_err(|e| e.to_string())?;
     }
     let tmp = path.with_extension("part");
     let mut f = tokio::fs::File::create(&tmp).await.map_err(|e| e.to_string())?;
     let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        f.write_all(&chunk.map_err(|e| e.to_string())?).await.map_err(|e| e.to_string())?;
+    let mut checked = std::time::Instant::now();
+    loop {
+        let chunk = match tokio::time::timeout(STALL, stream.next()).await {
+            Ok(Some(c)) => c.map_err(|e| e.to_string())?,
+            Ok(None) => break,
+            Err(_) => return Err(format!("the download stalled for {} seconds", STALL.as_secs())),
+        };
+        f.write_all(&chunk).await.map_err(|e| e.to_string())?;
+        if checked.elapsed() > Duration::from_secs(5) {
+            checked = std::time::Instant::now();
+            if game_running() {
+                drop(f);
+                let _ = tokio::fs::remove_file(&tmp).await;
+                return Err(GAME_RUNNING.into());
+            }
+        }
     }
     f.flush().await.map_err(|e| e.to_string())?;
     drop(f);

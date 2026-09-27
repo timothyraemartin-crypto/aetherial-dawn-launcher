@@ -111,7 +111,7 @@ pub fn plain(raw: &str) -> String {
 
 /// Removes web addresses and "(os error N)" leftovers from otherwise plain
 /// text, so signed download links never reach a screenshot.
-fn scrub(raw: &str) -> String {
+pub fn scrub(raw: &str) -> String {
     let mut out = String::new();
     for w in raw.split(' ') {
         let t = w.trim_start_matches('(');
@@ -158,6 +158,9 @@ mod plain_tests {
         assert!(super::plain("The requested operation requires elevation. (os error 740)").contains("administrator"));
         assert!(!super::plain("file error: something odd").contains("odd"));
         assert_eq!(super::plain("see https://x.y/z now"), "see (link hidden) now");
+        // The export log's error lines (a Nexus CDN link names the account).
+        let e = super::scrub("export: failed JK: error sending request for url (https://cf-files.nexusmods.com/cdn/1704/x.7z?md5=abc&expires=17&user_id=42)");
+        assert!(!e.contains("md5") && !e.contains("user_id") && e.contains("(link hidden)"), "{e}");
         assert_eq!(super::plain("appeal at https://discord.gg/abc now"), "appeal at https://discord.gg/abc now");
         assert_eq!(super::plain_ui("NO_PATCH:network error: error sending request"), "NO_PATCH:The launcher couldn't reach the internet just now. Check your connection; it tries again on the next try.");
         assert_eq!(super::plain_ui("NEEDS_NEXUS_MODS:[{\"a\":1}]"), "NEEDS_NEXUS_MODS:[{\"a\":1}]");

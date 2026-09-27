@@ -31,6 +31,21 @@ pub struct LaneMod {
     /// the installer's own pick first.
     #[serde(default)]
     pub plugins: Vec<String>,
+    /// The download's size in bytes, when the list pins it (with the
+    /// entry's `sha256`).
+    #[serde(default)]
+    pub size: Option<u64>,
+}
+
+/// Checks a downloaded archive against the list's size and sha256.
+pub fn verify(m: &LaneMod, archive: &Path) -> Result<()> {
+    if let Some(want) = m.size {
+        let got = std::fs::metadata(archive)?.len();
+        if got != want {
+            return Err(Error::Game(format!("{} downloaded {got} bytes, the list says {want}", m.entry.name)));
+        }
+    }
+    modlist::verify(&m.entry, archive)
 }
 
 /// What an export left, `server-lane/export.json`.
@@ -346,6 +361,19 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join("server-lane.zip.sha256")).unwrap(), format!("{}  server-lane.zip\n", rec.zip_sha256));
         start_over(&root).unwrap();
         assert!(!done(&root, &h) && !root.join("Data").exists());
+    }
+
+    #[test]
+    fn checks_the_listed_size_and_sha256() {
+        let t = tempfile::tempdir().unwrap();
+        let a = t.path().join("a.7z");
+        std::fs::write(&a, b"abc").unwrap();
+        let sha = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let m = |extra: &str| lane(&format!(r#"{{"for_discord_id":"1","mods":[{{"id":"a","name":"A","nexus":{{"mod":1,"file":2}}{extra}}}]}}"#)).mods.remove(0);
+        verify(&m(""), &a).unwrap();
+        verify(&m(&format!(r#","size":3,"sha256":"{sha}""#)), &a).unwrap();
+        assert!(verify(&m(r#","size":4"#), &a).is_err());
+        assert!(verify(&m(&format!(r#","sha256":"{}""#, "0".repeat(64))), &a).is_err());
     }
 
     #[test]
