@@ -124,6 +124,28 @@ pub fn build_of_bytes(b: &[u8]) -> Build {
     Build::Fits
 }
 
+/// What the launcher read from a DLL's SKSE data, for the log when it
+/// refuses one: its SKSEPlugin_* exports, flags and listed Skyrim versions.
+pub fn describe(p: &Path) -> String {
+    let Ok(b) = std::fs::read(p) else { return "unreadable".into() };
+    let Some(ex) = exports(&b) else { return format!("not a 64-bit DLL ({} bytes)", b.len()) };
+    let names: Vec<&str> = ex.iter().map(|(n, _)| n.as_str()).filter(|n| n.starts_with("SKSEPlugin")).collect();
+    let mut out = format!("{} bytes, {} exports, SKSE exports [{}]", b.len(), ex.len(), names.join(", "));
+    if let Some(v) = ex.iter().find(|(n, _)| n == "SKSEPlugin_Version").and_then(|(_, at)| at.map(|o| &b[o..o + 848])) {
+        let ver = |x: u32| format!("{}.{}.{}", x >> 24, (x >> 16) & 0xff, (x >> 4) & 0xfff);
+        let compatible: Vec<String> = (0..16).filter_map(|i| u32_at(v, 780 + i * 4)).take_while(|&x| x != 0).map(ver).collect();
+        out.push_str(&format!(
+            "; data version {}, flags {:#x}, ex flags {:#x}, games [{}], needs SKSE {}",
+            u32_at(v, 0).unwrap_or(0),
+            u32_at(v, 776).unwrap_or(0),
+            u32_at(v, 772).unwrap_or(0),
+            compatible.join(", "),
+            ver(u32_at(v, 844).unwrap_or(0))
+        ));
+    }
+    out
+}
+
 /// What SKSE would make of the DLL at `p` (Unknown when it can't be read).
 pub fn build_of(p: &Path) -> Build {
     match std::fs::read(p) {
@@ -165,6 +187,16 @@ pub fn wrong_builds(game_dir: &Path) -> Vec<(String, String)> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn describes_what_it_read() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("old.dll");
+        std::fs::write(&p, dll(&["SKSEPlugin_Query", "SKSEPlugin_Load"], &[0u8; 4])).unwrap();
+        let d = describe(&p);
+        assert!(d.contains("SKSE exports [SKSEPlugin_Query, SKSEPlugin_Load]"), "{d}");
+        assert_eq!(describe(&t.path().join("missing.dll")), "unreadable");
+    }
 
     /// A minimal 64-bit DLL exporting `names`, the first pointing at `data`.
     pub fn dll(names: &[&str], data: &[u8]) -> Vec<u8> {

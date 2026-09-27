@@ -484,7 +484,12 @@ pub fn extract(archive: &Path, dir: &Path) -> Result<()> {
     if head.starts_with(b"PK") {
         let mut zip = zip::ZipArchive::new(std::fs::File::open(archive)?).map_err(|e| Error::Game(format!("the download isn't a readable zip: {e}")))?;
         for i in 0..zip.len() {
-            let mut f = zip.by_index(i).map_err(|e| Error::Game(e.to_string()))?;
+            // LZMA entries (method 14) go through lzma-rust2; the rest
+            // through the zip crate (deflate, deflate64, bzip2, zstd).
+            #[allow(deprecated)]
+            let lzma = zip.by_index_raw(i).map_err(|e| Error::Game(e.to_string()))?.compression() == zip::CompressionMethod::Unsupported(14);
+            let method = zip.by_index_raw(i).map(|f| f.compression()).ok();
+            let mut f = if lzma { zip.by_index_raw(i) } else { zip.by_index(i) }.map_err(|e| Error::Game(format!("{e} (zip method {method:?})")))?;
             let Some(rel) = safe_rel(f.name()) else { continue };
             let dest = dir.join(rel);
             if f.is_dir() {
@@ -495,7 +500,15 @@ pub fn extract(archive: &Path, dir: &Path) -> Result<()> {
                 std::fs::create_dir_all(p)?;
             }
             let mut out = std::fs::File::create(&dest)?;
-            std::io::copy(&mut f, &mut out)?;
+            if lzma {
+                let size = f.size();
+                let got = std::io::copy(&mut zip_lzma(&mut f, size)?, &mut out)?;
+                if got != size {
+                    return Err(Error::Game(format!("couldn't unpack {}: it came out {got} bytes, not {size}", f.name())));
+                }
+            } else {
+                std::io::copy(&mut f, &mut out)?;
+            }
         }
         Ok(())
     } else if head == [b'7', b'z', 0xBC, 0xAF, 0x27, 0x1C] {
@@ -522,6 +535,21 @@ pub fn extract(archive: &Path, dir: &Path) -> Result<()> {
     } else {
         Err(Error::Game("the download isn't a zip or 7z archive".into()))
     }
+}
+
+/// A zip entry's LZMA stream (APPNOTE 5.8.8: a 2-byte version, a 2-byte
+/// properties length, the 5 properties bytes, then raw LZMA data).
+fn zip_lzma<R: std::io::Read>(mut r: R, size: u64) -> Result<lzma_rust2::LzmaReader<R>> {
+    let mut head = [0u8; 4];
+    r.read_exact(&mut head)?;
+    let len = u16::from_le_bytes([head[2], head[3]]) as usize;
+    if len < 5 {
+        return Err(Error::Game("a zip entry has damaged LZMA properties".into()));
+    }
+    let mut props = vec![0u8; len];
+    r.read_exact(&mut props)?;
+    let dict = u32::from_le_bytes([props[1], props[2], props[3], props[4]]);
+    lzma_rust2::LzmaReader::new_with_props(r, size, props[0], dict, None).map_err(|e| Error::Game(format!("couldn't unpack an LZMA entry: {e}")))
 }
 
 // ---------- planning what goes where ----------
@@ -722,6 +750,36 @@ pub fn top_plugins(files: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Whether a FOMOD option's name allows Skyrim 1.6.1170: true when it names
+/// no Skyrim version, names 1.6.1170, or names a lower version with "+" or
+/// "and newer"/"and up"; false when it names only versions that exclude it
+/// ("1.5.97", "v1.7.99+", "1.6.640 only").
+pub fn option_fits_game(name: &str) -> bool {
+    const GAME: (u32, u32, u32) = (1, 6, 1170);
+    let l = name.to_ascii_lowercase();
+    let b = l.as_bytes();
+    let mut versions = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_ascii_digit() && (i == 0 || !(b[i - 1].is_ascii_digit() || b[i - 1] == b'.')) {
+            let start = i;
+            while i < b.len() && (b[i].is_ascii_digit() || b[i] == b'.') {
+                i += 1;
+            }
+            let tok = l[start..i].trim_end_matches('.');
+            let parts: Vec<u32> = tok.split('.').filter_map(|x| x.parse().ok()).collect();
+            if parts.len() == 3 && parts[0] == 1 && (5..=7).contains(&parts[1]) {
+                let rest = l[i..].trim_start_matches([' ', ')']);
+                let open = ["+", "and newer", "and up", "or newer", "or later", "and later"].iter().any(|w| rest.starts_with(w));
+                versions.push(((parts[0], parts[1], parts[2]), open));
+            }
+            continue;
+        }
+        i += 1;
+    }
+    versions.is_empty() || versions.iter().any(|&(v, open)| v == GAME || (open && v <= GAME))
+}
+
 /// FOMOD configs are UTF-8 or UTF-16 (with a byte order mark).
 fn read_xml_text(path: &Path) -> Result<String> {
     let b = std::fs::read(path)?;
@@ -811,7 +869,11 @@ pub fn fomod_pick(xml: &str, choose: &[String]) -> Result<(Vec<FomodFile>, Vec<S
                 let kind = group.attribute("type").unwrap_or("SelectAny");
                 let Some(plugins) = child(group, "plugins") else { continue };
                 let all: Vec<_> = children(plugins, "plugin").filter(|p| !banned(p)).collect();
-                let named: Vec<_> = all.iter().filter(|p| wanted.iter().any(|w| p.attribute("name").unwrap_or("").to_ascii_lowercase().contains(w.as_str()))).copied().collect();
+                let mut named: Vec<_> = all.iter().filter(|p| wanted.iter().any(|w| p.attribute("name").unwrap_or("").to_ascii_lowercase().contains(w.as_str()))).copied().collect();
+                // "AE" also matches "SSE/AE v1.7.99+" (Moons and Stars,
+                // 2026-09-27): an option naming only other Skyrim versions
+                // goes after the ones that fit 1.6.1170.
+                named.sort_by_key(|p| !option_fits_game(p.attribute("name").unwrap_or("")));
                 let mut picked: Vec<_> = if !named.is_empty() {
                     named
                 } else {
@@ -1025,6 +1087,48 @@ pub fn verify(entry: &ModEntry, archive: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fomod_options_naming_another_skyrim_go_last() {
+        assert!(!super::option_fits_game("SSE/AE v1.7.99+"));
+        assert!(!super::option_fits_game("SE 1.5.97"));
+        assert!(!super::option_fits_game("AE 1.6.640 only"));
+        assert!(super::option_fits_game("AE 1.6.1170"));
+        assert!(super::option_fits_game("AE (1.6.640+)"));
+        assert!(super::option_fits_game("AE 1.6.1130 and newer"));
+        assert!(super::option_fits_game("AE"));
+        assert!(super::option_fits_game("Version 2.1.0"));
+        let xml = r#"<config><installSteps><installStep name="s"><optionalFileGroups><group name="Game version" type="SelectExactlyOne"><plugins>
+            <plugin name="SSE/AE v1.7.99+"><files><file source="new/po3_MoonMod.dll" destination="SKSE/Plugins/po3_MoonMod.dll"/></files><typeDescriptor><type name="Optional"/></typeDescriptor></plugin>
+            <plugin name="AE v1.6.1170"><files><file source="old/po3_MoonMod.dll" destination="SKSE/Plugins/po3_MoonMod.dll"/></files><typeDescriptor><type name="Optional"/></typeDescriptor></plugin>
+            <plugin name="SE v1.5.97"><files><file source="se/po3_MoonMod.dll" destination="SKSE/Plugins/po3_MoonMod.dll"/></files><typeDescriptor><type name="Optional"/></typeDescriptor></plugin>
+        </plugins></group></optionalFileGroups></installStep></installSteps></config>"#;
+        let (files, report) = super::fomod_pick(xml, &["AE".into()]).unwrap();
+        assert_eq!(files.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(), vec!["old/po3_MoonMod.dll"], "{report:?}");
+    }
+
+    #[test]
+    fn unpacks_zips_made_with_other_compression() {
+        for (name, bytes) in [("lzma", &include_bytes!("../testdata/lzma.zip")[..]), ("bzip2", &include_bytes!("../testdata/bzip2.zip")[..])] {
+            let t = tempfile::tempdir().unwrap();
+            let a = t.path().join(format!("{name}.zip"));
+            std::fs::write(&a, bytes).unwrap();
+            super::extract(&a, &t.path().join("out")).unwrap();
+            assert_eq!(std::fs::read(t.path().join("out/SKSE/Plugins/x.dll")).unwrap(), b"hello world".repeat(50), "{name}");
+        }
+        // Zstandard, written here.
+        let t = tempfile::tempdir().unwrap();
+        let a = t.path().join("zstd.zip");
+        {
+            use std::io::Write;
+            let mut z = zip::ZipWriter::new(std::fs::File::create(&a).unwrap());
+            z.start_file("SKSE/Plugins/x.dll", zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Zstd)).unwrap();
+            z.write_all(b"zstd bytes").unwrap();
+            z.finish().unwrap();
+        }
+        super::extract(&a, &t.path().join("out")).unwrap();
+        assert_eq!(std::fs::read(t.path().join("out/SKSE/Plugins/x.dll")).unwrap(), b"zstd bytes");
+    }
+
 
     #[test]
     fn installs_the_build_for_this_cpu() {

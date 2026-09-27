@@ -419,6 +419,16 @@ async fn install(m: &ModEntry, archive: &Path, game_dir: &Path, file_id: Option<
             }
         }
         if !wrong.is_empty() {
+            // What was read from each refused DLL, and a copy kept aside, so
+            // a wrong call can be checked (RaceMenu 0.4.20, 2026-09-27).
+            // One folder per mod, replaced each time, so retries don't pile up.
+            let keep = game_dir.join(launcher_core::strays::DISABLED_DIR).join("refused-download").join(&m.id);
+            for c in copies.iter().filter(|c| wrong.iter().any(|(n, _)| c.to.file_name().is_some_and(|f| f.to_string_lossy().eq_ignore_ascii_case(n)))) {
+                log::line(&format!("mods: {} {} read as: {}", m.name, c.to.display(), launcher_core::skse::describe(&c.from)));
+                if std::fs::create_dir_all(&keep).is_ok() {
+                    let _ = std::fs::copy(&c.from, keep.join(c.to.file_name().unwrap()));
+                }
+            }
             let _ = std::fs::remove_dir_all(&work);
             log::line(&format!("mods: {} download has the wrong build: {}", m.name, wrong.iter().map(|(n, w)| format!("{n} ({w})")).collect::<Vec<_>>().join(", ")));
             return Ok(Outcome::WrongBuild(wrong.into_iter().map(|(n, _)| n).collect()));

@@ -14,9 +14,12 @@ thiserror = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "time"] }
 rand = "0.9"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "2", default-features = false, features = ["deflate", "deflate64", "bzip2", "zstd"] }
 sevenz-rust2 = { version = "0.23", default-features = false }
 zstd = "0.13"
+# LZMA entries in zips (FSMP 4.0.1): the zip crate's own LZMA reader fails
+# on them; this is the decoder sevenz-rust2 already brings.
+lzma-rust2 = { version = "0.21", default-features = false, features = ["std"] }
 roxmltree = "0.20"
 lz4_flex = "0.11"
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
