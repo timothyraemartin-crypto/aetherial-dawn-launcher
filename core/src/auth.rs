@@ -9,11 +9,13 @@
 //!
 //! The state alone must not be enough to collect the token (a crafted link
 //! with a state someone else chose could hand them the player's sign-in;
-//! quality check 2026-09-27). So, PKCE style (RFC 7636, S256): the launcher
-//! keeps a secret verifier, sends only its SHA-256 as `code_challenge` with
-//! the state, and shows the verifier on the status call in the
-//! `x-code-verifier` header. A service that doesn't know about challenges
-//! ignores both.
+//! quality check 2026-09-27). So sign-in uses a loopback redirect (RFC 8252)
+//! plus a verifier (RFC 7636, S256): the service sends the browser back to
+//! 127.0.0.1 on a port only this launcher listens on, with a one-time code,
+//! and the launcher trades state + code + its secret verifier for the token
+//! (CONTRACT.md "Launcher flow", bot commit aac8e71). A crafted link can't
+//! reach an attacker's launcher, and the code is useless without the
+//! verifier.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -52,8 +54,118 @@ pub enum Answer<T> {
     Offline(String),
 }
 
-pub fn login_url(base: &str, state: &str, challenge: &str) -> String {
-    format!("{}/api/users/login-discord?state={state}&code_challenge={challenge}&code_challenge_method=S256", base.trim_end_matches('/'))
+pub fn login_url(base: &str, state: &str, challenge: &str, port: u16) -> String {
+    format!("{}/api/users/login-discord?state={state}&challenge={challenge}&port={port}", base.trim_end_matches('/'))
+}
+
+/// The path the service sends the browser back to.
+pub const CALLBACK_PATH: &str = "/aetherial-login";
+const CLOSE_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Aetherial Dawn</title><body style=\"font-family:sans-serif;background:#111;color:#eee;text-align:center;padding-top:20vh\"><h2>You can close this tab and go back to the launcher.</h2>";
+
+/// The browser's return request line ("GET /aetherial-login?state=..&code=.. HTTP/1.1"):
+/// its state and code.
+pub fn parse_callback(request_line: &str) -> Option<(String, String)> {
+    let mut parts = request_line.split_whitespace();
+    if parts.next()? != "GET" {
+        return None;
+    }
+    let (path, query) = parts.next()?.split_once('?')?;
+    if path != CALLBACK_PATH {
+        return None;
+    }
+    let (mut state, mut code) = (None, None);
+    for kv in query.split('&') {
+        let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+        match k {
+            "state" => state = Some(unescape(v)),
+            "code" => code = Some(unescape(v)),
+            _ => {}
+        }
+    }
+    Some((state?, code.filter(|c| !c.is_empty())?))
+}
+
+fn unescape(v: &str) -> String {
+    let b = v.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' if i + 2 < b.len() => match std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                Some(x) => {
+                    out.push(x);
+                    i += 3;
+                    continue;
+                }
+                None => out.push(b'%'),
+            },
+            b'+' => out.push(b' '),
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// A listener on 127.0.0.1 at a free port, for the browser's return.
+pub async fn listen() -> Result<(tokio::net::TcpListener, u16)> {
+    let l = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let port = l.local_addr()?.port();
+    Ok((l, port))
+}
+
+/// Waits for the browser's return with our state, answers it with a small
+/// page, and returns the code. Other requests get a 404 and are ignored.
+pub async fn wait_for_code(listener: tokio::net::TcpListener, state: &str) -> Option<String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    loop {
+        let (mut sock, _) = listener.accept().await.ok()?;
+        let mut buf = vec![0u8; 8192];
+        let mut n = 0;
+        while n < buf.len() {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), sock.read(&mut buf[n..])).await {
+                Ok(Ok(0)) | Err(_) | Ok(Err(_)) => break,
+                Ok(Ok(k)) => n += k,
+            }
+            if buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+        let got = text.lines().next().and_then(parse_callback).filter(|(s, _)| s == state);
+        let (status, body) = if got.is_some() { ("200 OK", CLOSE_PAGE) } else { ("404 Not Found", "") };
+        let resp = format!("HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n{body}", body.len());
+        let _ = sock.write_all(resp.as_bytes()).await;
+        let _ = sock.shutdown().await;
+        if let Some((_, code)) = got {
+            return Some(code);
+        }
+    }
+}
+
+/// Trades the code, with the verifier, for the launcher token. One try per
+/// sign-in.
+pub async fn exchange(client: &reqwest::Client, base: &str, state: &str, code: &str, verifier: &str) -> Answer<SignedIn> {
+    let url = format!("{}/api/users/login-discord/token", base.trim_end_matches('/'));
+    let resp = match client.post(url).json(&serde_json::json!({ "state": state, "code": code, "verifier": verifier })).send().await {
+        Ok(r) => r,
+        Err(e) => return Answer::Offline(format!("couldn't reach the login service ({e})")),
+    };
+    let status = resp.status().as_u16();
+    let body: Value = resp.json().await.unwrap_or(Value::Null);
+    match status {
+        200 => match serde_json::from_value(body) {
+            Ok(v) => Answer::Ok(v),
+            Err(e) => Answer::Offline(format!("the login service sent something unexpected ({e})")),
+        },
+        403 if body["error"] == "bad_verifier" => Answer::SignedOut("That sign-in didn't go through. Try again.".into()),
+        403 => Answer::Refused {
+            error: body["error"].as_str().unwrap_or("refused").to_string(),
+            message: message(&body, "Your Discord account can't use Aetherial Dawn right now."),
+        },
+        404 => Answer::SignedOut("The sign-in link expired. Try again.".into()),
+        _ => Answer::Offline(message(&body, &format!("the login service answered {status}"))),
+    }
 }
 
 pub fn new_state() -> String {
@@ -118,12 +230,6 @@ pub struct SignedIn {
     pub token: String,
     #[serde(flatten)]
     pub profile: Profile,
-}
-
-/// One poll of the browser sign-in.
-pub async fn poll(client: &reqwest::Client, base: &str, state: &str, verifier: &str) -> Answer<SignedIn> {
-    let url = format!("{}/api/users/login-discord/status?state={state}", base.trim_end_matches('/'));
-    classify(client.get(url).header("x-code-verifier", verifier).send().await, true).await
 }
 
 /// Checks the token and re-reads the player's profile.
@@ -208,7 +314,34 @@ mod tests {
         assert_eq!(challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
         let v = new_verifier();
         assert_eq!(challenge(&v).len(), 43);
-        assert!(login_url("https://x/ad/", "s", "c").ends_with("/ad/api/users/login-discord?state=s&code_challenge=c&code_challenge_method=S256"));
+        assert!(login_url("https://x/ad/", "s", "c", 5000).ends_with("/ad/api/users/login-discord?state=s&challenge=c&port=5000"));
+    }
+
+    #[test]
+    fn reads_the_browser_return() {
+        assert_eq!(parse_callback("GET /aetherial-login?state=ab&code=x%2By HTTP/1.1"), Some(("ab".into(), "x+y".into())));
+        assert_eq!(parse_callback("GET /aetherial-login?code=1&state=ab HTTP/1.1"), Some(("ab".into(), "1".into())));
+        assert_eq!(parse_callback("GET /other?state=ab&code=1 HTTP/1.1"), None);
+        assert_eq!(parse_callback("GET /aetherial-login?state=ab HTTP/1.1"), None);
+        assert_eq!(parse_callback("POST /aetherial-login?state=ab&code=1 HTTP/1.1"), None);
+        assert_eq!(unescape("a%2"), "a%2");
+    }
+
+    #[tokio::test]
+    async fn loopback_takes_only_our_state() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (l, port) = listen().await.unwrap();
+        let wait = tokio::spawn(async move { wait_for_code(l, "mine").await });
+        let hit = |path: &'static str| async move {
+            let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            s.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes()).await.unwrap();
+            let mut out = String::new();
+            s.read_to_string(&mut out).await.unwrap();
+            out
+        };
+        assert!(hit("/aetherial-login?state=theirs&code=1").await.starts_with("HTTP/1.1 404"));
+        assert!(hit("/aetherial-login?state=mine&code=good").await.contains("close this tab"));
+        assert_eq!(wait.await.unwrap().as_deref(), Some("good"));
     }
 
     #[test]
