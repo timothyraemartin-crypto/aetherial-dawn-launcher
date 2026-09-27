@@ -780,6 +780,10 @@ let autoMods = false;
     $('aside-note').textContent = n ? `Last time you pressed Play, ${n} file${n === 1 ? '' : 's'} from other mods ${n === 1 ? 'was' : 'were'} set aside (in your Skyrim folder under .aetherial-dawn\\disabled).` : 'Nothing has been set aside.';
   };
   try { asideNote(+localStorage.getItem('ad-set-aside') || 0); } catch { asideNote(0); }
+  // A mod's tool running before the game starts ("Fitting armor to bodies").
+  T.event.listen('tool-running', ({ payload: label }) => {
+    if (label) setStatus(`${label}. This can take a few minutes the first time.`);
+  });
   T.event.listen('mods-set-aside', ({ payload: n }) => {
     try { localStorage.setItem('ad-set-aside', String(n)); } catch {}
     asideNote(n);

@@ -194,6 +194,57 @@ pub fn json_set(doc: &mut Value, key: &str, value: &Value) -> bool {
     }
 }
 
+/// Finds `<name>` or `<name .../>` in text[from..to]: (start of the tag,
+/// end of the opening tag, and for a non-empty element the start and end of
+/// its closing tag).
+fn xml_find(text: &str, name: &str, from: usize, to: usize) -> Option<(usize, usize, Option<(usize, usize)>)> {
+    let mut at = from;
+    while let Some(i) = text[at..to].find(&format!("<{name}")) {
+        let start = at + i;
+        let after = text[start + 1 + name.len()..].chars().next()?;
+        if after == '>' || after == '/' || after.is_whitespace() {
+            let open_end = start + text[start..to].find('>')? + 1;
+            if text[..open_end].ends_with("/>") {
+                return Some((start, open_end, None));
+            }
+            let close = format!("</{name}>");
+            let c = open_end + text[open_end..to].find(&close)?;
+            return Some((start, open_end, Some((c, c + close.len()))));
+        }
+        at = start + 1;
+    }
+    None
+}
+
+fn xml_escape(v: &str) -> String {
+    v.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// Sets the text of the element at a dotted path ("Config.SelectedPreset"),
+/// adding the last element to its parent when it's missing. None when the
+/// parent isn't there.
+pub fn xml_set(text: &str, key: &str, value: &Value) -> Option<String> {
+    let v = xml_escape(&ini_value(value));
+    let parts: Vec<&str> = key.split('.').collect();
+    let (mut from, mut to) = (0, text.len());
+    for p in &parts[..parts.len() - 1] {
+        let (_, open_end, close) = xml_find(text, p, from, to)?;
+        let (c, _) = close?;
+        (from, to) = (open_end, c);
+    }
+    let last = parts[parts.len() - 1];
+    Some(match xml_find(text, last, from, to) {
+        Some((_, open_end, Some((c, _)))) => format!("{}{v}{}", &text[..open_end], &text[c..]),
+        Some((start, open_end, None)) => format!("{}<{last}>{v}</{last}>{}", &text[..start], &text[open_end..]),
+        None => {
+            let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+            let line_start = text[..to].rfind('\n').map(|i| i + 1).unwrap_or(to);
+            let indent: String = text[line_start..to].chars().take_while(|c| c.is_whitespace()).collect();
+            format!("{}{indent}    <{last}>{v}</{last}>{nl}{}", &text[..line_start], &text[line_start..])
+        }
+    })
+}
+
 /// Writes a new file beside the old one and renames it over, so a hard link
 /// (Vortex deploys by hard link from its staging folder) is replaced, never
 /// written through.
@@ -329,7 +380,30 @@ fn write_one(game_dir: &Path, s: &Setting, todo: &[(&String, &Value)], stamp: &s
                 replace(&path, serde_json::to_string_pretty(&doc)?.as_bytes())?;
             }
         }
-        _ => skipped.extend(todo.iter().map(|(k, _)| ((*k).clone(), "this launcher can't write that format yet"))),
+        "xml" => {
+            let Ok(mut text) = std::fs::read_to_string(&path) else {
+                skipped.extend(todo.iter().map(|(k, _)| ((*k).clone(), "waits until the mod has installed the file")));
+                return Ok((wrote, skipped));
+            };
+            for (k, v) in todo {
+                if v.as_str().is_some_and(|t| t.contains(['\n', '\r'])) || !k.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')) {
+                    skipped.push(((*k).clone(), "a value or key can't span lines"));
+                    continue;
+                }
+                match xml_set(&text, k, v) {
+                    Some(t) => {
+                        text = t;
+                        wrote.push((*k).clone());
+                    }
+                    None => skipped.push(((*k).clone(), "that element's parent isn't in the file")),
+                }
+            }
+            if !wrote.is_empty() {
+                back_up(game_dir, &s.file, stamp)?;
+                replace(&path, text.as_bytes())?;
+            }
+        }
+        _ => skipped.extend(todo.iter().map(|(k, _)| ((*k).clone(), "this launcher can't write that format"))),
     }
     Ok((wrote, skipped))
 }
@@ -466,6 +540,19 @@ mod tests {
         assert_eq!(std::fs::read_to_string(g.join("Data/SKSE/Plugins/Shipped.ini")).unwrap(), "[A]\nb = 2\n");
         assert_eq!(std::fs::read_to_string(g.join("staging/Shipped.ini")).unwrap(), "[A]\nb = 1\n", "Vortex's staging copy is untouched");
         assert!(!g.join("Data/SKSE/Plugins/Shipped.ini.aetherial-part").exists());
+    }
+
+    #[test]
+    fn xml_sets_element_text() {
+        let t = "<Config>\n    <ShapeDataPath>x</ShapeDataPath>\n    <SelectedPreset>CBBE</SelectedPreset>\n    <Empty/>\n</Config>\n";
+        let out = xml_set(t, "Config.SelectedPreset", &json!("3BA & more")).unwrap();
+        assert!(out.contains("<SelectedPreset>3BA &amp; more</SelectedPreset>") && out.contains("<ShapeDataPath>x</ShapeDataPath>"));
+        let out = xml_set(&out, "Config.Empty", &json!(1)).unwrap();
+        assert!(out.contains("<Empty>1</Empty>"));
+        let out = xml_set(&out, "Config.New", &json!(true)).unwrap();
+        assert!(out.ends_with("<Empty>1</Empty>\n    <New>1</New>\n</Config>\n"), "{out}");
+        assert!(xml_set(t, "Other.X", &json!(1)).is_none());
+        assert!(xml_set(t, "Config.SelectedPresetX", &json!(1)).unwrap().contains("<SelectedPreset>CBBE</SelectedPreset>"));
     }
 
     #[test]

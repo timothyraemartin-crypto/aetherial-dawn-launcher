@@ -266,9 +266,34 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     tidy_game(&app, &dir, &m, config.only_server_mods)?;
     // Each listed mod's settings as the server sets them, once; the
     // player's later changes stay.
-    for l in launcher_core::presets::apply_all(&dir, &mods::full_list(&state).await) {
+    let list = mods::full_list(&state).await;
+    for l in launcher_core::presets::apply_all(&dir, &list) {
         log::line(&format!("play: preset {l}"));
     }
+    // Tools the mods ship (BodySlide's batch build), run minimized and only
+    // when what they read changed. A failed run doesn't stop Play; it runs
+    // again next time.
+    for m in list.iter().filter(|m| m.run.is_some()) {
+        let label = m.run.as_ref().map(|r| r.label.clone()).unwrap_or_default();
+        let (d, e) = (dir.clone(), m.clone());
+        match launcher_core::tools::due(&dir, m) {
+            Ok(Some(_)) => {
+                let _ = app.emit("tool-running", &label);
+            }
+            Ok(None) => continue,
+            Err(e) => {
+                log::line(&format!("tools: {} didn't run: {e}", m.name));
+                continue;
+            }
+        }
+        match tokio::task::spawn_blocking(move || launcher_core::tools::run(&d, &e)).await {
+            Ok(Ok(Some((code, took)))) => log::line(&format!("tools: {} ran in {} s, exit code {code}", m.name, took.as_secs())),
+            Ok(Ok(None)) => {}
+            Ok(Err(e)) => log::line(&format!("tools: {} didn't run: {e}", m.name)),
+            Err(e) => log::line(&format!("tools: {} stopped: {e}", m.name)),
+        }
+    }
+    let _ = app.emit("tool-running", "");
     let report = run_health(&app, &state.http, &config.base_url, &dir, Some(&m)).await;
     log::line(&format!("health before play: worst={:?}\n{}", report.worst, report.text()));
     if report.worst >= health::Status::Warn && config.share_health {

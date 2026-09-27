@@ -96,6 +96,10 @@ pub struct ModEntry {
     /// build crashes the game on a CPU without it).
     #[serde(default)]
     pub cpu: BTreeMap<String, String>,
+    /// A program the mod ships that the launcher runs itself, minimized,
+    /// before the game starts (BodySlide's batch build; tools.rs).
+    #[serde(default)]
+    pub run: Option<crate::tools::ToolRun>,
 }
 
 /// CPU levels a `cpu` map can name, best first.
@@ -442,7 +446,7 @@ pub fn vortex_manages(game_dir: &Path) -> bool {
 }
 
 /// A relative path with no parent steps or roots, using forward slashes.
-fn safe_rel(p: &str) -> Option<PathBuf> {
+pub fn safe_rel(p: &str) -> Option<PathBuf> {
     let p = p.replace('\\', "/");
     if p.is_empty() || p.starts_with('/') || p.contains(':') {
         return None;
