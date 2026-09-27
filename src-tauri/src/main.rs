@@ -682,21 +682,41 @@ async fn auth_begin(app: AppHandle) -> CmdResult<String> {
         all.insert(st.clone(), None);
     }
     let (st2, http) = (st.clone(), app.state::<AppState>().http.clone());
-    tauri::async_runtime::spawn(async move {
+    let task = tauri::async_runtime::spawn(async move {
         let answer = match tokio::time::timeout(LOGIN_WAIT, auth::wait_for_code(listener, &st2)).await {
-            Ok(Some(code)) => auth::exchange(&http, AUTH_URL, &st2, &code, &verifier).await,
+            Ok(Some(ret)) => {
+                let answer = auth::exchange(&http, AUTH_URL, &st2, &ret.code, &verifier).await;
+                // The browser tab says whose sign-in it was, or why it failed.
+                let line = match &answer {
+                    auth::Answer::Ok(done) => format!("Signed in to Aetherial Dawn as {}", done.profile.discord_username.as_deref().unwrap_or("your Discord account")),
+                    auth::Answer::Refused { message, .. } => message.clone(),
+                    _ => "That sign-in didn't go through. Try again from the launcher.".into(),
+                };
+                ret.finish(&line).await;
+                answer
+            }
             _ => auth::Answer::SignedOut("Sign-in timed out. Try again.".into()),
         };
         if let Some(slot) = logins().lock().unwrap().get_mut(&st2) {
             *slot = Some(answer);
         }
     });
+    // A new press gets a new state and verifier; the earlier sign-in stops
+    // listening at once.
+    if let Some(old) = login_task().lock().unwrap().replace(task) {
+        old.abort();
+    }
     log::line(&format!("sign-in: opened the browser, waiting on 127.0.0.1:{port}"));
     app.opener().open_url(auth::login_url(AUTH_URL, &st, &challenge, port), None::<&str>).map_err(|e| e.to_string())?;
     Ok(st)
 }
 
 const LOGIN_WAIT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+fn login_task() -> &'static std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>> {
+    static T: std::sync::OnceLock<std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>> = std::sync::OnceLock::new();
+    T.get_or_init(Default::default)
+}
 
 /// The sign-in in progress, by state, and its answer once the browser came
 /// back and the code was traded (kept only in memory).
@@ -748,6 +768,21 @@ async fn auth_poll(app: AppHandle, state: State<'_, AppState>, st: String) -> Cm
         // The code is traded once, so a failed trade means starting again.
         auth::Answer::Offline(message) => r("expired", Some(format!("Couldn't finish signing in: {message}. Try again."))),
     })
+}
+
+/// Asks Steam to repair Skyrim's own files (Verify integrity), which puts
+/// back the files the server's patches start from. Never a downgrade through
+/// Steam. Returns false when the game isn't a Steam copy.
+#[tauri::command]
+async fn repair_game_files(app: AppHandle, state: State<'_, AppState>) -> CmdResult<bool> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = game_dir(&state).await?;
+    if !dir.to_string_lossy().to_ascii_lowercase().contains("steamapps") {
+        return Ok(false);
+    }
+    log::line("patch: asking Steam to verify Skyrim's files (steam://validate/489830)");
+    app.opener().open_url("steam://validate/489830", None::<&str>).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 /// A command's error in plain words for the player (the UI's invoke
@@ -833,10 +868,16 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
         .send()
         .await
         .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("NO_PATCH:The server's patches aren't available ({e})."))?
+        .map_err(|e| {
+            log::line(&format!("patch: patch list not available: {e}"));
+            "NO_PATCH:The server has no patches for your Skyrim right now.".to_string()
+        })?
         .json()
         .await
-        .map_err(|e| format!("NO_PATCH:The server's patch list is damaged ({e})."))?
+        .map_err(|e| {
+            log::line(&format!("patch: patch list unreadable: {e}"));
+            "NO_PATCH:The server's patch list couldn't be read. Try again later.".to_string()
+        })?
     };
     if Some(index.target.as_str()) != spec.version.as_deref() {
         return Err(format!("NO_PATCH:The server's patches make {}, but it needs {}.", index.target, spec.version.as_deref().unwrap_or("?")));
@@ -861,7 +902,7 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
     let missing: Vec<&str> = steps.iter().filter(|s| s.patch.is_none()).map(|s| s.file.path.as_str()).collect();
     if !missing.is_empty() {
         log::line(&format!("patch: no patch for this copy of: {}", missing.join(", ")));
-        return Err(format!("NO_PATCH:Your copy of {} is a Skyrim build the server has no patch for yet. Staff have been told.", missing.join(", ")));
+        return Err(format!("NO_PATCH_FILES:Your copy of {} is a Skyrim build the server has no patch for yet.", missing.join(", ")));
     }
     log::line(&format!("patch: {} file(s) to patch: {}", steps.len(), steps.iter().map(|s| s.file.path.as_str()).collect::<Vec<_>>().join(", ")));
     let tmp = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("patches");
@@ -1732,7 +1773,7 @@ fn main() {
             mods::restore_left_handler(app.handle());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![plain_error, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside])
+        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }

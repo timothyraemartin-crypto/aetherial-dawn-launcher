@@ -60,7 +60,38 @@ pub fn login_url(base: &str, state: &str, challenge: &str, port: u16) -> String 
 
 /// The path the service sends the browser back to.
 pub const CALLBACK_PATH: &str = "/aetherial-login";
-const CLOSE_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Aetherial Dawn</title><body style=\"font-family:sans-serif;background:#111;color:#eee;text-align:center;padding-top:20vh\"><h2>You can close this tab and go back to the launcher.</h2>";
+/// The page the browser shows once it's back: whose sign-in it was (so a
+/// player notices a sign-in they didn't start), or why it didn't go through.
+pub fn close_page(line: &str) -> String {
+    let esc: String = line.chars().map(|c| match c {
+        '<' => "&lt;".to_string(),
+        '>' => "&gt;".to_string(),
+        '&' => "&amp;".to_string(),
+        '"' => "&quot;".to_string(),
+        c => c.to_string(),
+    }).collect();
+    format!("<!doctype html><meta charset=utf-8><title>Aetherial Dawn</title><body style=\"font-family:sans-serif;background:#111;color:#eee;text-align:center;padding-top:20vh\"><h2>{esc}</h2><p>You can close this tab and go back to the launcher.</p>")
+}
+
+/// The browser's return, held open until the launcher knows what to say.
+pub struct Return {
+    pub code: String,
+    sock: tokio::net::TcpStream,
+}
+
+impl Return {
+    /// Answers the browser with `close_page(line)` and closes.
+    pub async fn finish(mut self, line: &str) {
+        let _ = respond(&mut self.sock, "200 OK", &close_page(line)).await;
+    }
+}
+
+async fn respond(sock: &mut tokio::net::TcpStream, status: &str, body: &str) -> std::io::Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let resp = format!("HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n{body}", body.len());
+    sock.write_all(resp.as_bytes()).await?;
+    sock.shutdown().await
+}
 
 /// The browser's return request line ("GET /aetherial-login?state=..&code=.. HTTP/1.1"):
 /// its state and code.
@@ -114,31 +145,33 @@ pub async fn listen() -> Result<(tokio::net::TcpListener, u16)> {
     Ok((l, port))
 }
 
-/// Waits for the browser's return with our state, answers it with a small
-/// page, and returns the code. Other requests get a 404 and are ignored.
-pub async fn wait_for_code(listener: tokio::net::TcpListener, state: &str) -> Option<String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+/// Waits for the browser's return with our state and returns it, still
+/// open, with the code. Other requests get a 404 and are ignored; each
+/// connection gets 5 seconds in all to send its request line.
+pub async fn wait_for_code(listener: tokio::net::TcpListener, state: &str) -> Option<Return> {
+    use tokio::io::AsyncReadExt;
     loop {
         let (mut sock, _) = listener.accept().await.ok()?;
         let mut buf = vec![0u8; 8192];
         let mut n = 0;
-        while n < buf.len() {
-            match tokio::time::timeout(std::time::Duration::from_secs(5), sock.read(&mut buf[n..])).await {
-                Ok(Ok(0)) | Err(_) | Ok(Err(_)) => break,
-                Ok(Ok(k)) => n += k,
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while n < buf.len() {
+                match sock.read(&mut buf[n..]).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(k) => n += k,
+                }
+                if buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
             }
-            if buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
-                break;
-            }
-        }
+        })
+        .await;
         let text = String::from_utf8_lossy(&buf[..n]).into_owned();
-        let got = text.lines().next().and_then(parse_callback).filter(|(s, _)| s == state);
-        let (status, body) = if got.is_some() { ("200 OK", CLOSE_PAGE) } else { ("404 Not Found", "") };
-        let resp = format!("HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n{body}", body.len());
-        let _ = sock.write_all(resp.as_bytes()).await;
-        let _ = sock.shutdown().await;
-        if let Some((_, code)) = got {
-            return Some(code);
+        match text.lines().next().and_then(parse_callback).filter(|(s, _)| s == state) {
+            Some((_, code)) => return Some(Return { code, sock }),
+            None => {
+                let _ = respond(&mut sock, "404 Not Found", "").await;
+            }
         }
     }
 }
@@ -164,6 +197,11 @@ pub async fn exchange(client: &reqwest::Client, base: &str, state: &str, code: &
             message: message(&body, "Your Discord account can't use Aetherial Dawn right now."),
         },
         404 => Answer::SignedOut("The sign-in link expired. Try again.".into()),
+        // Discord or the membership check didn't answer: stop waiting and say so.
+        503 => Answer::Refused {
+            error: "unavailable".into(),
+            message: message(&body, "Discord isn't answering right now. Try again in a minute."),
+        },
         _ => Answer::Offline(message(&body, &format!("the login service answered {status}"))),
     }
 }
@@ -340,8 +378,12 @@ mod tests {
             out
         };
         assert!(hit("/aetherial-login?state=theirs&code=1").await.starts_with("HTTP/1.1 404"));
-        assert!(hit("/aetherial-login?state=mine&code=good").await.contains("close this tab"));
-        assert_eq!(wait.await.unwrap().as_deref(), Some("good"));
+        let page = tokio::spawn(hit("/aetherial-login?state=mine&code=good"));
+        let ret = wait.await.unwrap().unwrap();
+        assert_eq!(ret.code, "good");
+        ret.finish("Signed in as <Tim>").await;
+        let page = page.await.unwrap();
+        assert!(page.contains("Signed in as &lt;Tim&gt;") && page.contains("close this tab"));
     }
 
     #[test]

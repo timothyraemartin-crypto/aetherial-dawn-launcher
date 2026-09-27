@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aetherial-dawn-launcher"
-version = "0.1.66"
+version = "0.1.67"
 dependencies = [
  "futures-util",
  "launcher-core",
@@ -1781,7 +1781,7 @@ dependencies = [
 
 [[package]]
 name = "iana-time-zone"
-version = "0.1.66"
+version = "0.1.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e31bc9ad994ba00e440a8aa5c9ef0ec67d5cb5e5cb0cc7f8b744a35b389cc470"
 dependencies = [
@@ -2207,7 +2207,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-core"
-version = "0.1.66"
+version = "0.1.67"
 dependencies = [
  "futures-util",
  "hex",

@@ -379,11 +379,6 @@
     $('dg-error').textContent = String(e);
     $('dg-error').hidden = false;
   }
-  const STAGES = {
-    tool: 'Getting the Steam download tool…',
-    steam: 'Sign in to Steam in the window that just opened. The download runs there, so keep it open until it finishes.',
-    verify: 'Checking your game…',
-  };
   // ---------- patching the player's own files (no Steam) ----------
   const PATCH_STAGES = {
     check: (p) => `Checking your game files… ${p.done} of ${p.total}${p.file ? ' · ' + p.file : ''}`,
@@ -410,12 +405,27 @@
     });
     try { dgDone(await invoke('patch_game')); }
     catch (e) {
-      const msg = String(e);
-      if (msg.startsWith('NO_PATCH:')) {
-        // Never through Steam or a QR code (Timothy's decision): the patch
-        // needs the game's own files, which Steam's Verify puts back.
-        dgFail(msg.slice(9) + " In Steam, right-click Skyrim Special Edition, open Properties, then Installed Files, press Verify integrity, and press this button again.");
-          } else dgFail(msg);
+      let msg = String(e);
+      // The patches start from Steam's own files: have Steam repair them
+      // (Verify integrity, never a downgrade through Steam), then carry on.
+      if (msg.startsWith('NO_PATCH_FILES:')) {
+        const steam = await invoke('repair_game_files').catch(() => false);
+        if (steam) {
+          $('dg-bar').hidden = true;
+          $('dg-stage').textContent = "Steam is checking Skyrim's files. The launcher carries on by itself when Steam is done.";
+          const until = Date.now() + 30 * 60 * 1000;
+          while (Date.now() < until) {
+            await new Promise(r => setTimeout(r, 30000));
+            try { dgDone(await invoke('patch_game')); return; }
+            catch (e2) { msg = String(e2); if (!msg.startsWith('NO_PATCH_FILES:')) break; }
+          }
+          if (msg.startsWith('NO_PATCH_FILES:')) msg = 'NO_PATCH:Steam\'s check didn\'t bring back the files the patches need. Press this button to try again.';
+        } else {
+          msg = 'NO_PATCH:' + msg.slice(15) + ' Repair Skyrim in the store app you got it from, then press this button again.';
+        }
+      }
+      if (msg.startsWith('NO_PATCH:')) dgFail(msg.slice(9));
+      else dgFail(msg);
     }
     finally { off(); $('dg-bar').hidden = true; }
   }
