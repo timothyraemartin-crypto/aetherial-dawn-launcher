@@ -15,11 +15,14 @@ use serde::{Deserialize, Serialize};
 use crate::loadorder::client_can_load_name;
 
 /// "Unofficial Skyrim Special Edition Patch.esp" ->
-/// "Unofficial-Skyrim-Special-Edition-Patch.esp": every character the client
+/// "Unofficial-Skyrim-Special-Edition-Patch.esp": the canonical name the
+/// server and every PC share (SERVER-PLUGINS.md). Apostrophes and
+/// ampersands are dropped ("JK's Skyrim.esp" -> "JKs-Skyrim.esp",
+/// "Cloaks&Capes.esp" -> "CloaksCapes.esp"); every other character the client
 /// rejects becomes a dash, with runs of dashes joined.
 pub fn alias_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
-    for c in name.chars() {
+    for c in name.chars().filter(|c| !matches!(c, '\'' | '\u{2019}' | '&')) {
         let c = if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') { c } else { '-' };
         if c == '-' && out.ends_with('-') {
             continue;
@@ -209,7 +212,7 @@ fn rewrite(from: &Path, to: &Path) -> std::io::Result<()> {
 
 /// The name a plugin runs under: its dashed alias, or "<name>-AD.esp" for
 /// a loadable name whose masters need rewriting.
-fn run_name(plugin: &str, rewritten: bool) -> String {
+pub fn run_name(plugin: &str, rewritten: bool) -> String {
     if !client_can_load_name(plugin) {
         return alias_name(plugin);
     }
@@ -220,9 +223,69 @@ fn run_name(plugin: &str, rewritten: bool) -> String {
     plugin.to_string()
 }
 
+/// The canonical form of a plugin for the server and every PC: the name it
+/// runs under, and its bytes with renamed masters (None when they're
+/// unchanged). The launcher makes the same bytes on each PC, so the server's
+/// copy and the players' copies are identical.
+pub fn canonical(plugin: &str, bytes: &[u8]) -> (String, Option<Vec<u8>>) {
+    let new = with_aliased_masters(bytes);
+    (run_name(plugin, new.is_some()), new)
+}
+
+/// One plugin as `canonicalize_dir` wrote it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CanonicalPlugin {
+    /// The name in the mod's download ("JK's Skyrim.esp").
+    pub original: String,
+    /// The name the server and every PC load ("JKs-Skyrim.esp").
+    pub name: String,
+    /// Whether its masters were renamed inside the file.
+    pub rewritten: bool,
+    /// sha256 of the written plugin.
+    pub sha256: String,
+    /// Archives, ini and string files written under the new name
+    /// (paths relative to Data).
+    pub companions: Vec<String>,
+}
+
+/// The server's side of the canonical rename (SERVER-PLUGINS.md): every
+/// plugin at the top of `data` is written to `out` under the name it runs
+/// under on players' PCs, with the same bytes the launcher makes there, and
+/// its archives, ini and string files follow its name. Returns what was
+/// written, in name order.
+pub fn canonicalize_dir(data: &Path, out: &Path) -> std::io::Result<Vec<CanonicalPlugin>> {
+    use sha2::{Digest, Sha256};
+    std::fs::create_dir_all(out)?;
+    let mut names: Vec<String> = std::fs::read_dir(data)?
+        .flatten()
+        .filter(|e| e.path().is_file())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| is_plugin(n))
+        .collect();
+    names.sort_by_key(|n| n.to_ascii_lowercase());
+    let mut done = Vec::new();
+    for n in names {
+        let bytes = std::fs::read(data.join(&n))?;
+        let (name, new) = canonical(&n, &bytes);
+        let body = new.as_deref().unwrap_or(&bytes);
+        std::fs::write(out.join(&name), body)?;
+        let mut companions_out = Vec::new();
+        for (from, to) in companions(data, &n, &name) {
+            let dest = out.join(&to);
+            if let Some(p) = dest.parent() {
+                std::fs::create_dir_all(p)?;
+            }
+            std::fs::copy(data.join(&from), dest)?;
+            companions_out.push(to);
+        }
+        done.push(CanonicalPlugin { original: n, name, rewritten: new.is_some(), sha256: hex::encode(Sha256::digest(body)), companions: companions_out });
+    }
+    Ok(done)
+}
+
 /// Files keyed to a plugin's name: its archives, its ini, its string files
 /// and its translations. (original relative to Data, alias relative to Data)
-fn companions(data: &Path, plugin: &str, alias: &str) -> Vec<(String, String)> {
+pub fn companions(data: &Path, plugin: &str, alias: &str) -> Vec<(String, String)> {
     let s = stem(plugin);
     let a = stem(alias).to_string();
     let sl = s.to_ascii_lowercase();
@@ -406,10 +469,82 @@ mod tests {
     }
 
     #[test]
+    fn jks_plugins_with_apostrophes_run_as_dashed_names() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        let data = g.join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("Skyrim.esm"), plugin_with_masters(&[])).unwrap();
+        std::fs::write(data.join("JK's Skyrim.esp"), plugin_with_masters(&["Skyrim.esm"])).unwrap();
+        std::fs::write(data.join("JK's Skyrim.bsa"), b"bsa").unwrap();
+        std::fs::write(data.join("JK's Whiterun Outskirts.esp"), plugin_with_masters(&["Skyrim.esm", "JK's Skyrim.esp"])).unwrap();
+        // A patch with a plain name whose master has an apostrophe.
+        std::fs::write(data.join("RSChildren_JKsSkyrim_Patch.esp"), plugin_with_masters(&["Skyrim.esm", "JK's Skyrim.esp"])).unwrap();
+        let txt = g.join("plugins.txt");
+        std::fs::write(&txt, "*JK's Skyrim.esp\r\n*JK's Whiterun Outskirts.esp\r\n*RSChildren_JKsSkyrim_Patch.esp\r\n").unwrap();
+        ensure(g, Some(&txt)).unwrap();
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*JKs-Skyrim.esp\r\n*JKs-Whiterun-Outskirts.esp\r\n*RSChildren_JKsSkyrim_Patch-AD.esp\r\n");
+        let m = |n: &str| crate::loadorder::masters(&data.join(n)).unwrap();
+        assert_eq!(m("JKs-Whiterun-Outskirts.esp"), ["Skyrim.esm", "JKs-Skyrim.esp"]);
+        assert_eq!(m("RSChildren_JKsSkyrim_Patch-AD.esp"), ["Skyrim.esm", "JKs-Skyrim.esp"]);
+        assert!(data.join("JKs-Skyrim.bsa").is_file());
+        assert_eq!(m("JK's Whiterun Outskirts.esp"), ["Skyrim.esm", "JK's Skyrim.esp"], "the original stays as it was");
+        assert_eq!(run_as(g, "JK's Skyrim.esp"), "JKs-Skyrim.esp");
+        assert!(crate::loadorder::client_can_load_name(&run_as(g, "JK's Whiterun Outskirts.esp")));
+        // Again: nothing changes.
+        ensure(g, Some(&txt)).unwrap();
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*JKs-Skyrim.esp\r\n*JKs-Whiterun-Outskirts.esp\r\n*RSChildren_JKsSkyrim_Patch-AD.esp\r\n");
+    }
+
+    #[test]
+    fn the_server_gets_the_same_bytes_as_every_pc() {
+        let t = tempfile::tempdir().unwrap();
+        let (g, out) = (t.path().join("game"), t.path().join("server"));
+        let data = g.join("Data");
+        std::fs::create_dir_all(data.join("Strings")).unwrap();
+        std::fs::write(data.join("Skyrim.esm"), plugin_with_masters(&[])).unwrap();
+        std::fs::write(data.join("JKs Skyrim.esp"), plugin_with_masters(&["Skyrim.esm"])).unwrap();
+        std::fs::write(data.join("JKs Skyrim.bsa"), b"bsa").unwrap();
+        std::fs::write(data.join("CWE - JK - United.esp"), plugin_with_masters(&["Skyrim.esm", "JKs Skyrim.esp"])).unwrap();
+        std::fs::write(data.join("Cloaks&Capes.esp"), plugin_with_masters(&["Skyrim.esm"])).unwrap();
+        std::fs::write(data.join("Strings/Cloaks&Capes_english.strings"), b"s").unwrap();
+        std::fs::write(data.join("RSChildren_JKsSkyrim_Patch.esp"), plugin_with_masters(&["Skyrim.esm", "JKs Skyrim.esp"])).unwrap();
+        let got = canonicalize_dir(&data, &out).unwrap();
+        let names: Vec<(&str, &str, bool)> = got.iter().map(|c| (c.original.as_str(), c.name.as_str(), c.rewritten)).collect();
+        assert_eq!(
+            names,
+            [
+                ("Cloaks&Capes.esp", "CloaksCapes.esp", false),
+                ("CWE - JK - United.esp", "CWE-JK-United.esp", true),
+                ("JKs Skyrim.esp", "JKs-Skyrim.esp", false),
+                ("RSChildren_JKsSkyrim_Patch.esp", "RSChildren_JKsSkyrim_Patch-AD.esp", true),
+                ("Skyrim.esm", "Skyrim.esm", false),
+            ]
+        );
+        assert_eq!(got[2].companions, ["JKs-Skyrim.bsa"]);
+        assert_eq!(got[0].companions, ["Strings/CloaksCapes_english.strings"]);
+        // A player's launcher makes byte-identical files under the same names.
+        let txt = g.join("plugins.txt");
+        std::fs::write(&txt, "*JKs Skyrim.esp\n*CWE - JK - United.esp\n*Cloaks&Capes.esp\n*RSChildren_JKsSkyrim_Patch.esp\n").unwrap();
+        ensure(&g, Some(&txt)).unwrap();
+        for c in &got {
+            assert_eq!(std::fs::read(data.join(&c.name)).unwrap(), std::fs::read(out.join(&c.name)).unwrap(), "{}", c.name);
+            assert_eq!(run_as(&g, &c.original), c.name);
+        }
+    }
+
+    #[test]
     fn names() {
         assert_eq!(alias_name("Unofficial Skyrim Special Edition Patch.esp"), "Unofficial-Skyrim-Special-Edition-Patch.esp");
         assert_eq!(alias_name("A  +  B .esp"), "A-B.esp");
         assert!(client_can_load_name(&alias_name("Élan's Mod (v2).esm")));
+        // The names SERVER-PLUGINS.md lists.
+        assert_eq!(alias_name("The Great City of Morthal.esp"), "The-Great-City-of-Morthal.esp");
+        assert_eq!(alias_name("Cloaks&Capes.esp"), "CloaksCapes.esp");
+        assert_eq!(alias_name("COTN - Morthal.esp"), "COTN-Morthal.esp");
+        assert_eq!(alias_name("OCW_Obscure's_CollegeofWinterhold.esp"), "OCW_Obscures_CollegeofWinterhold.esp");
+        assert_eq!(alias_name("The Great Cities of JK's North - Patch.esp"), "The-Great-Cities-of-JKs-North-Patch.esp");
+        assert_eq!(alias_name("Riften Expansion - JK’s Skyrim Patch.esp"), "Riften-Expansion-JKs-Skyrim-Patch.esp");
     }
 
     #[test]
