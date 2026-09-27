@@ -249,7 +249,7 @@ fn plugin_names(i: &Inputs) -> Check {
             let n = e.file_name().to_string_lossy().into_owned();
             let l = n.to_ascii_lowercase();
             if (l.ends_with(".esp") || l.ends_with(".esm") || l.ends_with(".esl")) && !loadorder::client_can_load_name(&n) {
-                items.push(format!("{n} loads as {} so the game accepts it", crate::aliases::alias_name(&n)));
+                items.push(format!("{n} loads as {} so the game accepts it", crate::aliases::run_as(i.game_dir, &n)));
             }
         }
     }

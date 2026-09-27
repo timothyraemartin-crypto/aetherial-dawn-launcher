@@ -437,6 +437,13 @@ async fn install(m: &ModEntry, archive: &Path, game_dir: &Path, file_id: Option<
         // And switch its plugins on, as Vortex would.
         if let Some(txt) = plugins_txt() {
             let mut names: Vec<String> = m.check.iter().filter_map(|c| c.strip_prefix("Data/")).filter(|n| !n.contains('/') && [".esp", ".esm", ".esl"].iter().any(|x| n.to_ascii_lowercase().ends_with(x))).map(str::to_string).collect();
+            names.retain(|n| {
+                let ok = launcher_core::loadorder::masters_present(&game_dir, n);
+                if !ok {
+                    log::line(&format!("mods: {} left {n} off: a master it needs isn't installed", m.name));
+                }
+                ok
+            });
             // And the plugins it installed whose masters are all here (a
             // patch for a mod the player doesn't have stays off).
             for n in modlist::top_plugins(&rec.files) {

@@ -84,6 +84,10 @@ pub fn masters(path: &Path) -> Option<Vec<String>> {
     let mut out = Vec::new();
     let mut at = 0;
     while at + 6 <= body.len() {
+        if &body[at..at + 4] == b"XXXX" {
+            // An oversized subrecord (a big ONAM): the masters came first.
+            break;
+        }
         let len = u16::from_le_bytes([body[at + 4], body[at + 5]]) as usize;
         let data = body.get(at + 6..at + 6 + len)?;
         if &body[at..at + 4] == b"MAST" {
@@ -187,6 +191,17 @@ fn allowed(game_dir: &Path, manifest: &Manifest) -> Vec<String> {
     // copy (aliases.rs); that copy is allowed wherever its original is.
     let also: Vec<String> = ok.iter().filter(|n| !client_can_load_name(n)).map(|n| crate::aliases::alias_name(n).to_ascii_lowercase()).collect();
     ok.extend(also);
+    // Rewritten copies (a plugin whose masters run under an alias) run in
+    // their original's place; the original itself must stay off.
+    for l in crate::aliases::links(game_dir) {
+        let (Some(f), Some(t)) = (l.from.strip_prefix("Data/"), l.to.strip_prefix("Data/")) else { continue };
+        if ok.contains(&f.to_ascii_lowercase()) {
+            ok.push(t.to_ascii_lowercase());
+            if client_can_load_name(f) && crate::aliases::run_as(game_dir, f) != f {
+                ok.retain(|n| n != &f.to_ascii_lowercase());
+            }
+        }
+    }
     for ccc in [game_dir.join("Data").join("Skyrim.ccc"), game_dir.join("Skyrim.ccc")] {
         if let Ok(t) = std::fs::read_to_string(ccc) {
             ok.extend(t.lines().map(|l| l.trim().to_ascii_lowercase()).filter(|l| !l.is_empty()));
@@ -266,8 +281,10 @@ pub fn wanted(game_dir: &Path) -> Vec<String> {
     names
         .into_iter()
         .filter(|n| seen.insert(n.to_ascii_lowercase()))
-        // A name the client can't load runs as its dash-named copy.
-        .map(|n| if client_can_load_name(&n) { n } else { crate::aliases::alias_name(&n) })
+        // A patch whose master isn't installed stays off; a name the client
+        // can't load runs as its dash-named (or rewritten) copy.
+        .filter(|n| masters_present(game_dir, n))
+        .map(|n| crate::aliases::run_as(game_dir, &n))
         .filter(|n| {
             let p = game_dir.join("Data").join(n);
             p.is_file() && broken(&p).is_none()

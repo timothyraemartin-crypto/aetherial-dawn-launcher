@@ -63,6 +63,17 @@ fn save(game_dir: &Path, r: &Record) {
     }
 }
 
+/// The name a plugin in Data runs under at Play: the launcher's link or
+/// rewritten copy when it made one, else its dashed alias when the client
+/// can't load the name, else the name itself.
+pub fn run_as(game_dir: &Path, plugin: &str) -> String {
+    let from = format!("Data/{plugin}");
+    if let Some(l) = load(game_dir).links.iter().find(|l| l.from.eq_ignore_ascii_case(&from) && l.to.strip_prefix("Data/").is_some_and(is_plugin)) {
+        return l.to.trim_start_matches("Data/").to_string();
+    }
+    if client_can_load_name(plugin) { plugin.to_string() } else { alias_name(plugin) }
+}
+
 /// The links the launcher made, for tidying (never set aside on their own).
 pub fn links(game_dir: &Path) -> Vec<Alias> {
     load(game_dir).links
@@ -104,11 +115,111 @@ fn link(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The plugin with each master the client can't load renamed to its dashed
+/// alias (Obsidian CS.esp masters "Obsidian Weathers.esp", which only runs
+/// as Obsidian-Weathers.esp: a plain link would load with a master that
+/// isn't active, and the game crashes at start). None when no master needs
+/// it or the header can't be read.
+pub fn with_aliased_masters(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() < 24 || &bytes[..4] != b"TES4" {
+        return None;
+    }
+    let size = u32::from_le_bytes(bytes[4..8].try_into().ok()?) as usize;
+    let body = bytes.get(24..24 + size)?;
+    let mut out_body = Vec::with_capacity(body.len() + 64);
+    let mut changed = false;
+    let mut at = 0;
+    while at + 6 <= body.len() {
+        let kind = &body[at..at + 4];
+        if kind == b"XXXX" {
+            // An oversized subrecord follows: keep the rest as it is.
+            out_body.extend_from_slice(&body[at..]);
+            at = body.len();
+            break;
+        }
+        let len = u16::from_le_bytes([body[at + 4], body[at + 5]]) as usize;
+        let data = body.get(at + 6..at + 6 + len)?;
+        let name = String::from_utf8_lossy(data).trim_end_matches('\0').to_string();
+        if kind == b"MAST" && !client_can_load_name(&name) {
+            let mut new = alias_name(&name).into_bytes();
+            new.push(0);
+            out_body.extend_from_slice(b"MAST");
+            out_body.extend_from_slice(&u16::try_from(new.len()).ok()?.to_le_bytes());
+            out_body.extend_from_slice(&new);
+            changed = true;
+        } else {
+            out_body.extend_from_slice(&body[at..at + 6 + len]);
+        }
+        at += 6 + len;
+    }
+    if !changed || at != body.len() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() + 64);
+    out.extend_from_slice(&bytes[..4]);
+    out.extend_from_slice(&u32::try_from(out_body.len()).ok()?.to_le_bytes());
+    out.extend_from_slice(&bytes[8..24]);
+    out.extend_from_slice(&out_body);
+    out.extend_from_slice(&bytes[24 + size..]);
+    Some(out)
+}
+
+/// The plugin's header, enough to read its masters.
+fn head(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut h = [0u8; 24];
+    f.read_exact(&mut h).ok()?;
+    if &h[..4] != b"TES4" {
+        return None;
+    }
+    let size = u32::from_le_bytes(h[4..8].try_into().ok()?) as usize;
+    let mut b = h.to_vec();
+    b.resize(24 + size.min(1 << 20), 0);
+    f.read_exact(&mut b[24..]).ok()?;
+    Some(b)
+}
+
+/// Whether a plugin names a master the client can't load.
+fn needs_rewrite(path: &Path) -> bool {
+    head(path).is_some_and(|h| with_aliased_masters(&h).is_some())
+}
+
+/// Writes the rewritten copy, keeping the original's modified time so it's
+/// only rewritten when the original changes.
+fn rewrite(from: &Path, to: &Path) -> std::io::Result<()> {
+    let t = std::fs::metadata(from)?.modified()?;
+    if std::fs::metadata(to).and_then(|m| m.modified()).ok() == Some(t) {
+        return Ok(());
+    }
+    let bytes = std::fs::read(from)?;
+    let new = with_aliased_masters(&bytes).ok_or_else(|| std::io::Error::other("the plugin's header can't be rewritten"))?;
+    if to.exists() {
+        std::fs::remove_file(to)?;
+    }
+    std::fs::write(to, new)?;
+    std::fs::File::options().write(true).open(to)?.set_modified(t)?;
+    Ok(())
+}
+
+/// The name a plugin runs under: its dashed alias, or "<name>-AD.esp" for
+/// a loadable name whose masters need rewriting.
+fn run_name(plugin: &str, rewritten: bool) -> String {
+    if !client_can_load_name(plugin) {
+        return alias_name(plugin);
+    }
+    if rewritten {
+        let (s, x) = plugin.rsplit_once('.').unwrap_or((plugin, "esp"));
+        return format!("{s}-AD.{x}");
+    }
+    plugin.to_string()
+}
+
 /// Files keyed to a plugin's name: its archives, its ini, its string files
 /// and its translations. (original relative to Data, alias relative to Data)
-fn companions(data: &Path, plugin: &str) -> Vec<(String, String)> {
+fn companions(data: &Path, plugin: &str, alias: &str) -> Vec<(String, String)> {
     let s = stem(plugin);
-    let a = stem(&alias_name(plugin)).to_string();
+    let a = stem(alias).to_string();
     let sl = s.to_ascii_lowercase();
     let mut out = Vec::new();
     if let Ok(rd) = std::fs::read_dir(data) {
@@ -182,17 +293,27 @@ pub fn ensure(game_dir: &Path, plugins_txt: Option<&Path>) -> std::io::Result<Ve
     if let Ok(rd) = std::fs::read_dir(&data) {
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
-            if is_plugin(&n) && !client_can_load_name(&n) && e.path().is_file() {
-                plugins.push(n);
+            if is_plugin(&n) && e.path().is_file() && !rec.links.iter().any(|l| l.to.eq_ignore_ascii_case(&format!("Data/{n}"))) {
+                let rewritten = needs_rewrite(&e.path());
+                if !client_can_load_name(&n) || rewritten {
+                    plugins.push((n, rewritten));
+                }
             }
         }
     }
     plugins.sort();
     let mut out = Vec::new();
-    for p in plugins {
-        let alias = alias_name(&p);
-        let mut pairs = vec![(p.clone(), alias.clone())];
-        pairs.extend(companions(&data, &p));
+    for (p, rewritten) in plugins {
+        let alias = run_name(&p, rewritten);
+        if rewritten {
+            rewrite(&data.join(&p), &data.join(&alias))?;
+        }
+        let mut pairs = if rewritten { Vec::new() } else { vec![(p.clone(), alias.clone())] };
+        pairs.extend(companions(&data, &p, &alias));
+        let a = Alias { from: format!("Data/{p}"), to: format!("Data/{alias}") };
+        if rewritten && !rec.links.contains(&a) {
+            rec.links.push(a);
+        }
         for (from, to) in pairs {
             link(&data.join(&from), &data.join(&to))?;
             let a = Alias { from: format!("Data/{from}"), to: format!("Data/{to}") };
@@ -213,6 +334,62 @@ pub fn ensure(game_dir: &Path, plugins_txt: Option<&Path>) -> std::io::Result<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plugin_with_masters(ms: &[&str]) -> Vec<u8> {
+        let mut sub = b"HEDR".to_vec();
+        sub.extend(12u16.to_le_bytes());
+        sub.extend(1.7f32.to_le_bytes());
+        sub.extend([0u8; 8]);
+        for m in ms {
+            sub.extend(b"MAST");
+            sub.extend(((m.len() + 1) as u16).to_le_bytes());
+            sub.extend(m.as_bytes());
+            sub.push(0);
+            sub.extend(b"DATA");
+            sub.extend(8u16.to_le_bytes());
+            sub.extend([0u8; 8]);
+        }
+        let mut b = b"TES4".to_vec();
+        b.extend((sub.len() as u32).to_le_bytes());
+        b.extend([0u8; 16]);
+        b.extend(sub);
+        b.extend(b"GRUPrest-of-file");
+        b
+    }
+
+    #[test]
+    fn patches_of_renamed_plugins_get_their_masters_renamed() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        let data = g.join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("Obsidian Weathers.esp"), plugin_with_masters(&["Skyrim.esm"])).unwrap();
+        std::fs::write(data.join("Obsidian CS.esp"), plugin_with_masters(&["Skyrim.esm", "Obsidian Weathers.esp"])).unwrap();
+        std::fs::write(data.join("Audio Overhaul Skyrim.esp"), plugin_with_masters(&["Skyrim.esm"])).unwrap();
+        std::fs::write(data.join("AOS_ISC_Integration.esp"), plugin_with_masters(&["Skyrim.esm", "Audio Overhaul Skyrim.esp"])).unwrap();
+        std::fs::write(data.join("AOS_ISC_Integration.bsa"), b"bsa").unwrap();
+        std::fs::write(data.join("Skyrim.esm"), plugin_with_masters(&[])).unwrap();
+        let txt = g.join("plugins.txt");
+        std::fs::write(&txt, "*Obsidian Weathers.esp\n*Obsidian CS.esp\n*Audio Overhaul Skyrim.esp\n*AOS_ISC_Integration.esp\n").unwrap();
+        ensure(g, Some(&txt)).unwrap();
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*Obsidian-Weathers.esp\n*Obsidian-CS.esp\n*Audio-Overhaul-Skyrim.esp\n*AOS_ISC_Integration-AD.esp\n");
+        let m = |n: &str| crate::loadorder::masters(&data.join(n)).unwrap();
+        assert_eq!(m("Obsidian-CS.esp"), ["Skyrim.esm", "Obsidian-Weathers.esp"]);
+        assert_eq!(m("AOS_ISC_Integration-AD.esp"), ["Skyrim.esm", "Audio-Overhaul-Skyrim.esp"]);
+        // The rest of the file is kept after the rewritten header.
+        assert!(std::fs::read(data.join("AOS_ISC_Integration-AD.esp")).unwrap().ends_with(b"GRUPrest-of-file"));
+        assert!(data.join("AOS_ISC_Integration-AD.bsa").is_file());
+        assert_eq!(m("Obsidian Weathers.esp"), ["Skyrim.esm"]);
+        assert_eq!(run_as(g, "AOS_ISC_Integration.esp"), "AOS_ISC_Integration-AD.esp");
+        assert_eq!(run_as(g, "Obsidian CS.esp"), "Obsidian-CS.esp");
+        assert_eq!(run_as(g, "Skyrim.esm"), "Skyrim.esm");
+        // Again: nothing changes, and no copy of a copy.
+        ensure(g, Some(&txt)).unwrap();
+        assert!(!data.join("AOS_ISC_Integration-AD-AD.esp").exists());
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*Obsidian-Weathers.esp\n*Obsidian-CS.esp\n*Audio-Overhaul-Skyrim.esp\n*AOS_ISC_Integration-AD.esp\n");
+        // A plugin with no such master isn't rewritten.
+        assert!(with_aliased_masters(&plugin_with_masters(&["Skyrim.esm"])).is_none());
+    }
 
     #[test]
     fn names() {

@@ -90,6 +90,14 @@ pub struct ModEntry {
 
 impl ModEntry {
     pub fn installed(&self, game_dir: &Path) -> bool {
+        // The list now pins another file, or picks other installer options,
+        // than the launcher installed: install it again.
+        if let Some(r) = load_installed(game_dir).mods.get(&self.id) {
+            let pin = self.nexus.as_ref().and_then(|n| n.file);
+            if (pin.is_some() && r.file_id.is_some() && pin != r.file_id) || r.fomod.as_ref().is_some_and(|f| f != &self.fomod) {
+                return false;
+            }
+        }
         // No checks: the launcher's own record of what it installed (mods
         // whose FOMOD installer decides the file names, or textures only).
         if self.check.is_empty() {
@@ -797,6 +805,9 @@ pub struct InstalledMod {
     #[serde(default)]
     pub skipped: Vec<String>,
     pub when: u64,
+    /// The FOMOD picks it was installed with (None before 0.1.68).
+    #[serde(default)]
+    pub fomod: Option<Vec<String>>,
 }
 
 fn record_path(game_dir: &Path) -> PathBuf {
@@ -859,6 +870,7 @@ pub fn apply(entry: &ModEntry, copies: &[Copy], game_dir: &Path, file_id: Option
         files,
         skipped,
         when: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        fomod: Some(entry.fomod.clone()),
     };
     let mut all = load_installed(game_dir);
     all.mods.insert(entry.id.clone(), rec.clone());
@@ -1087,6 +1099,13 @@ mod tests {
         assert!(e.installed(&game));
         std::fs::remove_file(game.join("Data/textures/a.dds")).unwrap();
         assert!(!e.installed(&game));
+        // Changed picks or pin: not installed any more.
+        std::fs::write(game.join("Data/textures/a.dds"), b"t").unwrap();
+        assert!(e.installed(&game));
+        let picks = ModEntry { fomod: vec!["2K".into()], ..e.clone() };
+        assert!(!picks.installed(&game));
+        let pinned = ModEntry { nexus: Some(NexusRef { mod_id: 5, file: Some(2), pick: None }), ..e.clone() };
+        assert!(!pinned.installed(&game));
         assert_eq!(top_plugins(&["Data/A.esp".into(), "Data/x/B.esp".into(), "Data/c.dds".into()]), ["A.esp"]);
     }
 
