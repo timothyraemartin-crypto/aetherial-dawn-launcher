@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
 mod export;
+mod faces;
 mod log;
 mod mods;
 mod music;
@@ -509,7 +510,19 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
         Some(pid) => {
             log::line(&format!("game: SkyrimSE.exe running as process {pid}"));
             tokio::spawn(end_when_window_closed(pid));
+            // Face sharing for as long as the game runs.
+            let stop = std::sync::Arc::new(AtomicBool::new(false));
+            let sharing = token(&app).map(|t| {
+                let http = app.state::<AppState>().http.clone();
+                tokio::spawn(faces::run(http, AUTH_URL.to_string(), t, game_dir.clone(), stop.clone()))
+            });
             let code = tokio::task::spawn_blocking(move || watch::wait_exit(pid)).await.ok().flatten();
+            stop.store(true, Ordering::SeqCst);
+            let last = match sharing {
+                Some(h) => h.await.ok().flatten(),
+                None => None,
+            };
+            faces::tidy(&game_dir, last);
             let ran = started.elapsed().unwrap_or_default();
             let summary = match code {
                 None => format!("Skyrim closed after {} seconds (Windows gave no exit code).", ran.as_secs()),
@@ -1915,6 +1928,7 @@ fn main() {
             if let Some(dir) = app.state::<AppState>().config.try_lock().ok().and_then(|c| c.game_dir.clone()) {
                 if watch::find_process(watch::GAME_PROCESS).is_none() {
                     restore_ccc(&dir, "the launcher started and the game isn't running");
+                    faces::tidy(&dir, None);
                 }
             }
             // The server-mods export, only on the PC the server names.

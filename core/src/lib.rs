@@ -9,6 +9,7 @@ pub mod bsa;
 pub mod camera;
 pub mod community;
 pub mod downgrade;
+pub mod faces;
 pub mod game;
 pub mod gameini;
 pub mod health;
