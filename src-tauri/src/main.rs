@@ -307,6 +307,25 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     'tools: for m in list.iter() {
         for (i, r) in m.run.iter().enumerate() {
             let label = r.label.clone();
+            // A group read from the installed outfit files (never guessed).
+            if !r.group_from.is_empty() {
+                match launcher_core::tools::write_group(&dir, m, i) {
+                    Ok(g) => {
+                        if !g.missing.is_empty() {
+                            log::line(&format!("tools: {} group {} leaves out {} (not installed or unreadable)", m.name, g.name, g.missing.join(", ")));
+                        }
+                        if g.members.is_empty() {
+                            log::line(&format!("tools: {} ({label}) has nothing to build yet", m.name));
+                            continue;
+                        }
+                        log::line(&format!("tools: {} group {}: {}", m.name, g.name, g.members.join(", ")));
+                    }
+                    Err(e) => {
+                        log::line(&format!("tools: {} didn't run: {e}", m.name));
+                        continue;
+                    }
+                }
+            }
             match launcher_core::tools::due(&dir, m, i) {
                 Ok(Some(_)) => {
                     let _ = app.emit("tool-running", &label);

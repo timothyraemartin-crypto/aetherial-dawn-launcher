@@ -70,6 +70,86 @@ pub struct ToolRun {
     /// builds into; after a clean run its files move into Data.
     #[serde(default)]
     pub output: Option<String>,
+    /// BodySlide outfit files (.osp under Data/CalienteTools/BodySlide/
+    /// SliderSets/) for refits that ship no group of their own: the launcher
+    /// reads the SliderSet names from the installed files and writes them as
+    /// one group, SliderGroups/AetherialDawn-<id>.xml, which "{group}" in
+    /// args names. A missing file is logged and left out, never guessed.
+    #[serde(default)]
+    pub group_from: Vec<String>,
+}
+
+const SLIDER_SETS: &str = "data/calientetools/bodyslide/slidersets/";
+const SLIDER_GROUPS: &str = "Data/CalienteTools/BodySlide/SliderGroups";
+
+/// The group a run writes, and what went into it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Group {
+    pub name: String,
+    pub members: Vec<String>,
+    /// Listed .osp files that aren't installed or can't be read.
+    pub missing: Vec<String>,
+}
+
+/// The group name of a run with `group_from` ("AetherialDawn-<id>").
+pub fn group_name(m: &ModEntry, i: usize) -> String {
+    format!("AetherialDawn-{}", key(m, i).replace('#', "-"))
+}
+
+fn group_paths(run: &ToolRun) -> Result<Vec<PathBuf>> {
+    run.group_from
+        .iter()
+        .map(|g| {
+            crate::modlist::safe_rel(g)
+                .filter(|r| {
+                    let l = r.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+                    l.starts_with(SLIDER_SETS) && l.ends_with(".osp")
+                })
+                .ok_or_else(|| Error::UnsafePath(g.clone()))
+        })
+        .collect()
+}
+
+/// Reads the SliderSet names from a run's `group_from` files and writes
+/// them as its group (only when that changes the file). Nothing is written
+/// when no listed file is installed.
+pub fn write_group(game_dir: &Path, m: &ModEntry, i: usize) -> Result<Group> {
+    let Some(run) = m.run.get(i) else { return Err(Error::Game(format!("{} has no run {i}", m.name))) };
+    let name = group_name(m, i);
+    let mut members: Vec<String> = Vec::new();
+    let mut missing = Vec::new();
+    for (rel, listed) in group_paths(run)?.iter().zip(&run.group_from) {
+        let path = crate::presets::find(game_dir, &rel.to_string_lossy().replace('\\', "/"));
+        let names = std::fs::read(&path).ok().and_then(|b| {
+            let text = String::from_utf8_lossy(b.strip_prefix(b"\xEF\xBB\xBF".as_slice()).unwrap_or(&b)).into_owned();
+            let doc = roxmltree::Document::parse(&text).ok()?;
+            let n: Vec<String> = doc.descendants().filter(|e| e.has_tag_name("SliderSet")).filter_map(|e| e.attribute("name").map(str::to_string)).collect();
+            (!n.is_empty()).then_some(n)
+        });
+        match names {
+            Some(n) => {
+                for x in n {
+                    if !members.iter().any(|y| y.eq_ignore_ascii_case(&x)) {
+                        members.push(x);
+                    }
+                }
+            }
+            None => missing.push(listed.clone()),
+        }
+    }
+    if !members.is_empty() {
+        let esc = |t: &str| t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+        let mut xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<SliderGroups>\n    <Group name=\"{}\">\n", esc(&name));
+        for x in &members {
+            xml.push_str(&format!("        <Member name=\"{}\"/>\n", esc(x)));
+        }
+        xml.push_str("    </Group>\n</SliderGroups>\n");
+        let file = crate::presets::find(game_dir, &format!("{SLIDER_GROUPS}/{name}.xml"));
+        if std::fs::read(&file).ok().as_deref() != Some(xml.as_bytes()) {
+            crate::presets::replace(&file, xml.as_bytes())?;
+        }
+    }
+    Ok(Group { name, members, missing })
 }
 
 /// `run` in mods.json: one run or a list of them.
@@ -133,11 +213,11 @@ fn save(game_dir: &Path, r: &BTreeMap<String, Done>) -> Result<()> {
     Ok(())
 }
 
-fn args_for(run: &ToolRun, game_dir: &Path) -> Vec<String> {
+fn args_for(run: &ToolRun, game_dir: &Path, group: &str) -> Vec<String> {
     let game = game_dir.to_string_lossy();
     let data = game_dir.join("Data").to_string_lossy().into_owned();
     let out = run.output.as_ref().and_then(|o| crate::modlist::safe_rel(o)).map(|r| game_dir.join(r).to_string_lossy().into_owned()).unwrap_or_default();
-    run.args.iter().map(|a| a.replace("{game}", &game).replace("{data}", &data).replace("{out}", &out)).collect()
+    run.args.iter().map(|a| a.replace("{game}", &game).replace("{data}", &data).replace("{out}", &out).replace("{group}", group)).collect()
 }
 
 /// Every file under the inputs (path, size, modified time), hashed with the
@@ -154,7 +234,8 @@ fn stamp(game_dir: &Path, run: &ToolRun) -> String {
     h.update([0]);
     h.update(run.output.as_deref().unwrap_or("").as_bytes());
     let mut files: Vec<(String, PathBuf)> = Vec::new();
-    for i in std::iter::once(&run.exe).chain(&run.inputs) {
+    // The outfit files a group is read from count as inputs.
+    for i in std::iter::once(&run.exe).chain(&run.inputs).chain(&run.group_from) {
         let Some(rel) = crate::modlist::safe_rel(i) else { continue };
         let root = game_dir.join(&rel);
         let mut stack = vec![root];
@@ -211,11 +292,12 @@ pub fn due(game_dir: &Path, m: &ModEntry, i: usize) -> Result<Option<(PathBuf, V
         return Err(Error::Game(format!("{} is missing", run.exe)));
     }
     output_dir(game_dir, run)?;
+    group_paths(run)?;
     let s = stamp(game_dir, run);
     if load(game_dir).get(&key(m, i)).is_some_and(|d| d.stamp == s || (d.failed_stamp == s && d.failures >= MAX_FAILURES)) {
         return Ok(None);
     }
-    Ok(Some((exe, args_for(run, game_dir), s)))
+    Ok(Some((exe, args_for(run, game_dir, &group_name(m, i)), s)))
 }
 
 /// Runs a mod's tool when it's due. Returns its exit code and how long it
@@ -575,6 +657,44 @@ mod tests {
         let bad: ModEntry = serde_json::from_value(json!({"id": "y", "name": "Y", "check": ["Data/CalienteTools/BodySlide/BodySlide.exe"],
             "run": {"label": "x", "exe": "Data/CalienteTools/BodySlide/BodySlide.exe", "output": "Data/meshes"}})).unwrap();
         assert!(due(g, &bad, 0).is_err());
+    }
+
+    #[test]
+    fn a_group_is_read_from_the_installed_outfit_files() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        let sets = g.join("Data/CalienteTools/BodySlide/SliderSets");
+        std::fs::create_dir_all(&sets).unwrap();
+        std::fs::write(sets.join("Refit A.osp"), "\u{feff}<?xml version=\"1.0\"?>\n<SliderSetInfo version=\"1\"><SliderSet name=\"Armor A 3BA\"/><SliderSet name=\"Armor A Gauntlets &amp; Boots\"/></SliderSetInfo>").unwrap();
+        std::fs::write(sets.join("refit b.osp"), "<SliderSetInfo><SliderSet name=\"Robe B\"/><SliderSet name=\"armor a 3ba\"/></SliderSetInfo>").unwrap();
+        std::fs::write(sets.join("broken.osp"), "not xml").unwrap();
+        let m: ModEntry = serde_json::from_value(json!({"id": "bodyslide", "name": "BodySlide", "run": [{"label": "y", "exe": "Data/CalienteTools/BodySlide/BodySlide x64.exe"}, {"label": "x", "exe": "Data/CalienteTools/BodySlide/BodySlide x64.exe",
+            "args": ["--groupbuild", "{group}"],
+            "group_from": ["Data/CalienteTools/BodySlide/SliderSets/Refit A.osp", "Data/CalienteTools/BodySlide/SliderSets/Refit B.osp", "Data/CalienteTools/BodySlide/SliderSets/Missing.osp", "Data/CalienteTools/BodySlide/SliderSets/broken.osp"]}]})).unwrap();
+        let grp = write_group(g, &m, 1).unwrap();
+        assert_eq!(grp.name, "AetherialDawn-bodyslide-1");
+        assert_eq!(grp.members, vec!["Armor A 3BA", "Armor A Gauntlets & Boots", "Robe B"]);
+        assert_eq!(grp.missing, vec!["Data/CalienteTools/BodySlide/SliderSets/Missing.osp", "Data/CalienteTools/BodySlide/SliderSets/broken.osp"]);
+        let file = g.join("Data/CalienteTools/BodySlide/SliderGroups/AetherialDawn-bodyslide-1.xml");
+        let xml = std::fs::read_to_string(&file).unwrap();
+        assert!(xml.contains("<Group name=\"AetherialDawn-bodyslide-1\">") && xml.contains("<Member name=\"Armor A Gauntlets &amp; Boots\"/>"), "{xml}");
+        // BodySlide's own reader accepts it as XML.
+        roxmltree::Document::parse(&xml).unwrap();
+        // Unchanged content isn't rewritten (it would count as a changed input).
+        let before = std::fs::metadata(&file).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        write_group(g, &m, 1).unwrap();
+        assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), before);
+        assert_eq!(args_for(&m.run[1], g, &group_name(&m, 1)), vec!["--groupbuild", "AetherialDawn-bodyslide-1"]);
+        // Nothing installed: nothing written.
+        let none: ModEntry = serde_json::from_value(json!({"id": "z", "name": "Z", "run": {"label": "x", "exe": "Data/CalienteTools/BodySlide/BodySlide x64.exe", "group_from": ["Data/CalienteTools/BodySlide/SliderSets/Gone.osp"]}})).unwrap();
+        assert!(write_group(g, &none, 0).unwrap().members.is_empty());
+        assert!(!g.join("Data/CalienteTools/BodySlide/SliderGroups/AetherialDawn-z.xml").exists());
+        // Only .osp files under SliderSets.
+        for bad in ["Data/SKSE/Plugins/x.osp", "Data/CalienteTools/BodySlide/SliderSets/../../x.osp", "Data/CalienteTools/BodySlide/SliderSets/a.xml"] {
+            let m: ModEntry = serde_json::from_value(json!({"id": "z", "name": "Z", "run": {"label": "x", "exe": "Data/CalienteTools/BodySlide/BodySlide x64.exe", "group_from": [bad]}})).unwrap();
+            assert!(write_group(g, &m, 0).is_err(), "{bad}");
+        }
     }
 
     #[test]
