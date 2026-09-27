@@ -533,7 +533,15 @@ async fn direct_one(app: &AppHandle, http: &reqwest::Client, m: &ModEntry, game_
 pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> CmdResult<RunResult> {
     let dir = state.config.lock().await.game_dir.clone().ok_or("Pick your Skyrim folder first.")?;
     let list = full_list(&state).await;
-    let todo: Vec<ModEntry> = modlist::missing(&list, &dir).into_iter().cloned().collect();
+    let mut todo: Vec<ModEntry> = modlist::missing(&list, &dir).into_iter().cloned().collect();
+    // The Black Screen Fix preset that fits the game's resolution.
+    let height = app.path().document_dir().ok().and_then(|d| launcher_core::gameini::screen_height(&d));
+    for m in todo.iter_mut().filter(|m| m.id == "black-screen-fix") {
+        if let Some(n) = m.nexus.as_mut().filter(|n| n.file.is_none()) {
+            n.pick = Some(launcher_core::gameini::preset_for(height).into());
+            log::line(&format!("mods: Black Screen Fix preset for a screen {} high: {}p", height.map(|h| h.to_string()).unwrap_or_else(|| "of unknown height".into()), n.pick.as_deref().unwrap_or("")));
+        }
+    }
     if todo.is_empty() {
         return Ok(RunResult::default());
     }

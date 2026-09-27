@@ -28,6 +28,35 @@ pub fn ini_paths(documents: &Path) -> Vec<PathBuf> {
     ["Skyrim.ini", "SkyrimPrefs.ini", "SkyrimCustom.ini"].iter().map(|n| dir.join(n)).collect()
 }
 
+/// The game's screen height from SkyrimPrefs.ini ([Display] iSize H).
+pub fn screen_height(documents: &Path) -> Option<u32> {
+    let text = std::fs::read_to_string(documents.join("My Games").join("Skyrim Special Edition").join("SkyrimPrefs.ini")).ok()?;
+    let mut display = false;
+    for line in text.lines() {
+        let l = line.trim();
+        if l.starts_with('[') {
+            display = l.eq_ignore_ascii_case("[display]");
+        } else if display {
+            if let Some((k, v)) = l.split_once('=') {
+                if k.trim().eq_ignore_ascii_case("iSize H") {
+                    return v.trim().parse().ok();
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Which Black Screen and Startup Fix preset fits a screen: its 1440p file
+/// from 1440 pixels high up, else the 1080p one.
+pub fn preset_for(height: Option<u32>) -> &'static str {
+    if height.unwrap_or(0) >= 1440 {
+        "1440"
+    } else {
+        "1080"
+    }
+}
+
 /// Rewrites the text, dropping archives that aren't in `data_dir` and repeats
 /// (across both lists, first one wins).
 pub fn clean(text: &str, data_dir: &Path) -> (String, Repair) {
@@ -106,5 +135,17 @@ mod tests {
         );
         assert!(tmp.path().join("Skyrim.ini.aetherial-dawn-backup").exists());
         assert!(repair(&ini, &data).unwrap().is_empty());
+    }
+
+    #[test]
+    fn picks_the_preset_for_the_screen() {
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path().join("My Games/Skyrim Special Edition");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SkyrimPrefs.ini"), "[Display]\r\niSize W=2560\r\niSize H=1440\r\n[Grass]\r\niSize H=5\r\n").unwrap();
+        assert_eq!(screen_height(t.path()), Some(1440));
+        assert_eq!(preset_for(screen_height(t.path())), "1440");
+        assert_eq!(preset_for(Some(1080)), "1080");
+        assert_eq!(preset_for(None), "1080");
     }
 }
