@@ -80,10 +80,24 @@ pub struct ModEntry {
     /// they came from this mod.
     #[serde(default)]
     pub owns: Vec<String>,
+    /// Plugins the archive keeps in a folder of choices (Embers XD's
+    /// "plugins/esp/Embers XD.esp"), by their path in the archive: they go
+    /// to the top of Data. Other plugins below the top of Data never load
+    /// and aren't copied.
+    #[serde(default)]
+    pub lift: Vec<String>,
 }
 
 impl ModEntry {
     pub fn installed(&self, game_dir: &Path) -> bool {
+        // No checks: the launcher's own record of what it installed (mods
+        // whose FOMOD installer decides the file names, or textures only).
+        if self.check.is_empty() {
+            return load_installed(game_dir).mods.get(&self.id).is_some_and(|r| {
+                let files: Vec<&String> = r.files.iter().chain(&r.skipped).collect();
+                !files.is_empty() && files.iter().all(|f| safe_rel(f).is_some_and(|p| game_dir.join(p).exists()))
+            }) && self.owns.iter().all(|o| self.owns_now(game_dir, o));
+        }
         !self.check.is_empty()
             && self.check.iter().all(|c| safe_rel(c).map(|r| present_like(&game_dir.join(r))).unwrap_or(false))
             && self.owns.iter().all(|o| self.owns_now(game_dir, o))
@@ -556,10 +570,7 @@ pub fn plan(entry: &ModEntry, unpacked: &Path) -> Result<Vec<Copy>> {
         }
         return Ok(out);
     }
-    if let Some(config) = find_ci(unpacked, "fomod/ModuleConfig.xml").or_else(|| {
-        // The fomod folder can sit one level down.
-        std::fs::read_dir(unpacked).ok()?.flatten().filter(|e| e.path().is_dir()).find_map(|e| find_ci(&e.path(), "fomod/ModuleConfig.xml"))
-    }) {
+    if let Some(config) = fomod_config(unpacked) {
         let root = config.parent().and_then(|p| p.parent()).unwrap_or(unpacked).to_path_buf();
         let text = read_xml_text(&config)?;
         for (src, dest) in fomod_files(&text, &entry.fomod)? {
@@ -576,6 +587,24 @@ pub fn plan(entry: &ModEntry, unpacked: &Path) -> Result<Vec<Copy>> {
         copy_tree(&root, Path::new("Data"), &mut out);
     } else {
         return Err(Error::Game(format!("couldn't tell where {}'s files go. Install it with Vortex", entry.name)));
+    }
+    // A plugin below the top of Data never loads: leave it out, unless the
+    // list lifts it to the top.
+    let is_plugin = |p: &Path| p.extension().map(|x| ["esp", "esm", "esl"].contains(&x.to_string_lossy().to_ascii_lowercase().as_str())).unwrap_or(false);
+    out.retain(|c| !(is_plugin(&c.to) && c.to.components().count() > 2));
+    for l in &entry.lift {
+        let Some(rel) = safe_rel(l) else { continue };
+        let from = find_ci(unpacked, &rel.to_string_lossy()).or_else(|| {
+            std::fs::read_dir(unpacked).ok()?.flatten().filter(|e| e.path().is_dir()).find_map(|e| find_ci(&e.path(), &rel.to_string_lossy()))
+        });
+        match from {
+            Some(f) if f.is_file() => {
+                let to = PathBuf::from("Data").join(f.file_name().unwrap());
+                out.retain(|c| !c.to.to_string_lossy().eq_ignore_ascii_case(&to.to_string_lossy()));
+                out.push(Copy { from: f, to });
+            }
+            _ => return Err(Error::Game(format!("the download for {} doesn't have {l}", entry.name))),
+        }
     }
     // Preloader files go next to SkyrimSE.exe, wherever the archive keeps them.
     if !entry.game_files.is_empty() {
@@ -598,6 +627,15 @@ pub fn plan(entry: &ModEntry, unpacked: &Path) -> Result<Vec<Copy>> {
         return Err(Error::Game(format!("the download for {} had nothing to install", entry.name)));
     }
     Ok(out)
+}
+
+/// Plugin names at the top of Data among game-relative paths.
+pub fn top_plugins(files: &[String]) -> Vec<String> {
+    files
+        .iter()
+        .filter_map(|f| f.replace('\\', "/").strip_prefix("Data/").map(str::to_string))
+        .filter(|n| !n.contains('/') && [".esp", ".esm", ".esl"].iter().any(|x| n.to_ascii_lowercase().ends_with(x)))
+        .collect()
 }
 
 /// FOMOD configs are UTF-8 or UTF-16 (with a byte order mark).
@@ -642,13 +680,45 @@ fn plugin_type(p: roxmltree::Node) -> String {
 /// and the first usable option of groups that need one. Conditional installs
 /// that depend only on flags set by the chosen options are included.
 pub fn fomod_files(xml: &str, choose: &[String]) -> Result<Vec<(String, String)>> {
+    Ok(fomod_pick(xml, choose)?.0)
+}
+
+/// The FOMOD config in an unpacked archive, as it `plan` finds it.
+fn fomod_config(unpacked: &Path) -> Option<PathBuf> {
+    find_ci(unpacked, "fomod/ModuleConfig.xml").or_else(|| {
+        // The fomod folder can sit one level down.
+        std::fs::read_dir(unpacked).ok()?.flatten().filter(|e| e.path().is_dir()).find_map(|e| find_ci(&e.path(), "fomod/ModuleConfig.xml"))
+    })
+}
+
+/// For the log: each FOMOD group's options, with the ones picked marked
+/// "[x]", so a test install shows the names to pick by.
+pub fn fomod_report(entry: &ModEntry, unpacked: &Path) -> Option<Vec<String>> {
+    let text = read_xml_text(&fomod_config(unpacked)?).ok()?;
+    fomod_pick(&text, &entry.fomod).ok().map(|r| r.1)
+}
+
+/// A FOMOD file or folder: its source in the archive and its destination.
+pub type FomodFile = (String, String);
+
+/// `fomod_files` and a line per group saying what it offered and picked.
+/// A choice starting with "!" never picks options whose names contain the
+/// rest ("!Moss").
+pub fn fomod_pick(xml: &str, choose: &[String]) -> Result<(Vec<FomodFile>, Vec<String>)> {
+    let mut report = Vec::new();
     let doc = roxmltree::Document::parse(xml).map_err(|e| Error::Game(format!("the mod's FOMOD installer is unreadable: {e}")))?;
     let root = doc.root_element();
     let mut out = Vec::new();
     if let Some(req) = child(root, "requiredInstallFiles") {
         out.extend(file_list(req));
     }
-    let wanted: Vec<String> = choose.iter().map(|c| c.to_ascii_lowercase()).collect();
+    let wanted: Vec<String> = choose.iter().filter(|c| !c.starts_with('!')).map(|c| c.to_ascii_lowercase()).collect();
+    let never: Vec<String> = choose.iter().filter_map(|c| c.strip_prefix('!')).map(|c| c.to_ascii_lowercase()).filter(|c| !c.is_empty()).collect();
+    let name_of = |p: &roxmltree::Node| p.attribute("name").unwrap_or("").to_string();
+    let banned = |p: &roxmltree::Node| {
+        let n = name_of(p).to_ascii_lowercase();
+        never.iter().any(|w| n.contains(w.as_str()))
+    };
     let mut flags: BTreeMap<String, String> = BTreeMap::new();
     if let Some(steps) = child(root, "installSteps") {
         for step in children(steps, "installStep") {
@@ -656,7 +726,7 @@ pub fn fomod_files(xml: &str, choose: &[String]) -> Result<Vec<(String, String)>
             for group in children(groups, "group") {
                 let kind = group.attribute("type").unwrap_or("SelectAny");
                 let Some(plugins) = child(group, "plugins") else { continue };
-                let all: Vec<_> = children(plugins, "plugin").collect();
+                let all: Vec<_> = children(plugins, "plugin").filter(|p| !banned(p)).collect();
                 let named: Vec<_> = all.iter().filter(|p| wanted.iter().any(|w| p.attribute("name").unwrap_or("").to_ascii_lowercase().contains(w.as_str()))).copied().collect();
                 let mut picked: Vec<_> = if !named.is_empty() {
                     named
@@ -669,6 +739,11 @@ pub fn fomod_files(xml: &str, choose: &[String]) -> Result<Vec<(String, String)>
                 if picked.is_empty() && matches!(kind, "SelectExactlyOne" | "SelectAtLeastOne" | "SelectAll") {
                     picked = all.iter().filter(|p| plugin_type(**p) != "NotUsable").take(if kind == "SelectAll" { usize::MAX } else { 1 }).copied().collect();
                 }
+                report.push(format!(
+                    "{} ({kind}): {}",
+                    group.attribute("name").unwrap_or("?"),
+                    children(plugins, "plugin").map(|p| format!("{}{}", if picked.iter().any(|x| x == &p) { "[x] " } else { "" }, name_of(&p))).collect::<Vec<_>>().join(" | ")
+                ));
                 for p in picked {
                     if let Some(files) = child(p, "files") {
                         out.extend(file_list(files));
@@ -699,7 +774,7 @@ pub fn fomod_files(xml: &str, choose: &[String]) -> Result<Vec<(String, String)>
             }
         }
     }
-    Ok(out)
+    Ok((out, report))
 }
 
 // ---------- installing ----------
@@ -973,6 +1048,49 @@ mod tests {
     }
 
     #[test]
+    fn fomod_never_picks_excluded_options_and_reports_groups() {
+        let xml = r#"<config><installSteps><installStep name="s"><optionalFileGroups>
+<group name="Extras" type="SelectAny"><plugins>
+<plugin name="Main"><files><file source="main.esp"/></files><typeDescriptor><type name="Recommended"/></typeDescriptor></plugin>
+<plugin name="Moss ESL"><files><file source="moss.esp"/></files><typeDescriptor><type name="Recommended"/></typeDescriptor></plugin>
+</plugins></group></optionalFileGroups></installStep></installSteps></config>"#;
+        let (files, report) = fomod_pick(xml, &["!moss".into()]).unwrap();
+        assert_eq!(files.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(), ["main.esp"]);
+        assert_eq!(report, ["Extras (SelectAny): [x] Main | Moss ESL"]);
+    }
+
+    #[test]
+    fn lifts_listed_plugins_and_drops_nested_ones() {
+        let t = tempfile::tempdir().unwrap();
+        let a = t.path().join("m.zip");
+        zip_with(&a, &[("meshes/fire.nif", b"m"), ("plugins/esm/Embers XD.esm", b"e"), ("plugins/esp/Embers XD.esp", b"p"), ("patches/JK/Embers XD - Patch - JK.esp", b"j")]);
+        let u = t.path().join("u");
+        extract(&a, &u).unwrap();
+        let e = ModEntry { id: "e".into(), name: "E".into(), lift: vec!["plugins/esp/Embers XD.esp".into()], ..Default::default() };
+        let mut to: Vec<String> = plan(&e, &u).unwrap().iter().map(|c| c.to.to_string_lossy().replace('\\', "/")).collect();
+        to.sort();
+        assert_eq!(to, ["Data/Embers XD.esp", "Data/meshes/fire.nif"]);
+        let bad = ModEntry { lift: vec!["plugins/none.esp".into()], ..e };
+        assert!(plan(&bad, &u).is_err());
+    }
+
+    #[test]
+    fn no_checks_means_the_launchers_own_record() {
+        let t = tempfile::tempdir().unwrap();
+        let game = t.path().join("game");
+        std::fs::create_dir_all(game.join("Data")).unwrap();
+        let src = t.path().join("a.dds");
+        std::fs::write(&src, b"t").unwrap();
+        let e = ModEntry { id: "tex".into(), name: "Tex".into(), ..Default::default() };
+        assert!(!e.installed(&game));
+        apply(&e, &[Copy { from: src, to: "Data/textures/a.dds".into() }], &game, Some(1), None).unwrap();
+        assert!(e.installed(&game));
+        std::fs::remove_file(game.join("Data/textures/a.dds")).unwrap();
+        assert!(!e.installed(&game));
+        assert_eq!(top_plugins(&["Data/A.esp".into(), "Data/x/B.esp".into(), "Data/c.dds".into()]), ["A.esp"]);
+    }
+
+    #[test]
     fn keeps_vortex_files_and_player_settings() {
         let t = tempfile::tempdir().unwrap();
         let game = t.path();
@@ -1084,5 +1202,19 @@ mod tests {
         assert_eq!(rec.files, ["Data/SkyUI_SE.esp"]);
         assert_eq!(rec.skipped, ["Data/SkyUI_SE.bsa"]);
         assert!(m.installed(g));
+    }
+}
+
+#[cfg(test)]
+mod served_list_check {
+    /// AD_MODS_JSON=path: the whole served list parses and nothing is dropped.
+    #[test]
+    fn served_list_parses() {
+        let Ok(p) = std::env::var("AD_MODS_JSON") else { return };
+        let list: super::ModList = serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap();
+        let n = list.mods.len();
+        let merged = super::merged(Some("1.6.1170.0"), Some(&list));
+        let builtin = super::builtin(Some("1.6.1170.0")).len();
+        assert_eq!(merged.len(), builtin + n);
     }
 }

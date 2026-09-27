@@ -401,6 +401,9 @@ async fn install(m: &ModEntry, archive: &Path, game_dir: &Path, file_id: Option<
         let work = game_dir.join(modlist::MODS_DIR).join("unpacked").join(&m.id);
         let _ = std::fs::remove_dir_all(&work);
         modlist::extract(&archive, &work)?;
+        if let Some(r) = modlist::fomod_report(&m, &work) {
+            log::line(&format!("mods: {} installer options (picks {:?}): {}", m.name, m.fomod, r.join(" || ")));
+        }
         let mut copies = modlist::plan(&m, &work)?;
         // An SKSE DLL for another Skyrim never goes in; the next file is tried.
         let mut wrong = modlist::fix_wrong_builds(&mut copies, &work);
@@ -433,7 +436,19 @@ async fn install(m: &ModEntry, archive: &Path, game_dir: &Path, file_id: Option<
         let _ = std::fs::remove_file(&archive);
         // And switch its plugins on, as Vortex would.
         if let Some(txt) = plugins_txt() {
-            let names: Vec<String> = m.check.iter().filter_map(|c| c.strip_prefix("Data/")).filter(|n| !n.contains('/') && [".esp", ".esm", ".esl"].iter().any(|x| n.to_ascii_lowercase().ends_with(x))).map(str::to_string).collect();
+            let mut names: Vec<String> = m.check.iter().filter_map(|c| c.strip_prefix("Data/")).filter(|n| !n.contains('/') && [".esp", ".esm", ".esl"].iter().any(|x| n.to_ascii_lowercase().ends_with(x))).map(str::to_string).collect();
+            // And the plugins it installed whose masters are all here (a
+            // patch for a mod the player doesn't have stays off).
+            for n in modlist::top_plugins(&rec.files) {
+                if names.iter().any(|x| x.eq_ignore_ascii_case(&n)) {
+                    continue;
+                }
+                if launcher_core::loadorder::masters_present(&game_dir, &n) {
+                    names.push(n);
+                } else {
+                    log::line(&format!("mods: {} left {n} off: a master it needs isn't installed", m.name));
+                }
+            }
             match launcher_core::loadorder::switch_on(&txt, &names) {
                 Ok(on) if !on.is_empty() => log::line(&format!("mods: switched on in plugins.txt: {}", on.join(", "))),
                 Ok(_) => {}

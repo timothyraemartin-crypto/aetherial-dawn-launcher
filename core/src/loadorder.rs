@@ -68,6 +68,42 @@ pub fn broken(path: &Path) -> Option<String> {
     None
 }
 
+/// The masters a plugin names in its header (MAST), or None when the file
+/// isn't a readable plugin.
+pub fn masters(path: &Path) -> Option<Vec<String>> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut head = [0u8; 24];
+    f.read_exact(&mut head).ok()?;
+    if &head[..4] != b"TES4" {
+        return None;
+    }
+    let size = u32::from_le_bytes(head[4..8].try_into().ok()?) as usize;
+    let mut body = vec![0u8; size.min(1 << 20)];
+    f.read_exact(&mut body).ok()?;
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at + 6 <= body.len() {
+        let len = u16::from_le_bytes([body[at + 4], body[at + 5]]) as usize;
+        let data = body.get(at + 6..at + 6 + len)?;
+        if &body[at..at + 4] == b"MAST" {
+            out.push(String::from_utf8_lossy(data).trim_end_matches('\0').to_string());
+        }
+        at += 6 + len;
+    }
+    Some(out)
+}
+
+/// Whether every master a plugin in Data needs is in Data too. A patch for
+/// a mod the player doesn't have must stay off, or the game won't start.
+pub fn masters_present(game_dir: &Path, plugin: &str) -> bool {
+    let data = game_dir.join("Data");
+    match masters(&data.join(plugin)) {
+        Some(ms) => ms.iter().all(|m| find(&data, m).is_some()),
+        None => false,
+    }
+}
+
 /// The HEDR version and the TES4 record's form version of a plugin.
 pub fn header(path: &Path) -> Option<(f32, u16)> {
     use std::io::Read;
@@ -210,7 +246,13 @@ pub fn switch_off(plugins_txt: &Path, names: &[String]) -> Result<()> {
 pub fn wanted(game_dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = vec![crate::requirements::USSEP_PLUGIN.into(), crate::requirements::SKYUI_PLUGIN.into()];
     names.extend(COMPANION_PLUGINS.iter().map(|p| p.to_string()));
+    let rec = crate::modlist::load_installed(game_dir);
     for m in crate::allowlist::listed(game_dir) {
+        // Plugins the launcher installed for a listed mod whose checks name
+        // no plugin (FOMOD installers pick them), when their masters are here.
+        if let Some(r) = rec.mods.get(&m.id) {
+            names.extend(crate::modlist::top_plugins(&r.files).into_iter().filter(|n| masters_present(game_dir, n)));
+        }
         for c in &m.check {
             if let Some(n) = c.replace('\\', "/").strip_prefix("Data/") {
                 let l = n.to_ascii_lowercase();
@@ -347,6 +389,36 @@ pub fn test_plugin(version: f32, records: bool) -> Vec<u8> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn reads_masters_and_checks_they_are_here() {
+        let mut sub = b"HEDR".to_vec();
+        sub.extend(12u16.to_le_bytes());
+        sub.extend(1.7f32.to_le_bytes());
+        sub.extend([0u8; 8]);
+        for m in ["Skyrim.esm", "True Storms.esp"] {
+            sub.extend(b"MAST");
+            sub.extend(((m.len() + 1) as u16).to_le_bytes());
+            sub.extend(m.as_bytes());
+            sub.push(0);
+            sub.extend(b"DATA");
+            sub.extend(8u16.to_le_bytes());
+            sub.extend([0u8; 8]);
+        }
+        let mut b = b"TES4".to_vec();
+        b.extend((sub.len() as u32).to_le_bytes());
+        b.extend([0u8; 16]);
+        b.extend(sub);
+        let t = tempfile::tempdir().unwrap();
+        let data = t.path().join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("patch.esp"), &b).unwrap();
+        std::fs::write(data.join("skyrim.esm"), b"x").unwrap();
+        assert_eq!(masters(&data.join("patch.esp")).unwrap(), ["Skyrim.esm", "True Storms.esp"]);
+        assert!(!masters_present(t.path(), "patch.esp"));
+        std::fs::write(data.join("True Storms.esp"), b"x").unwrap();
+        assert!(masters_present(t.path(), "patch.esp"));
+    }
 
     pub fn plugin(version: f32, records: bool) -> Vec<u8> {
         plugin_form(version, 44, records)
