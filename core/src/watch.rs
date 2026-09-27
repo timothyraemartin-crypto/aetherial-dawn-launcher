@@ -353,7 +353,13 @@ pub fn redact_paths(text: &str, private: &[&Path]) -> String {
     let mut i = 0;
     while let Some(at) = hay[i..].find("\\users\\").map(|a| a + i) {
         let start = at + "\\users\\".len();
-        let end = hay[start..].find(|c: char| c == '\\' || c == '"' || c == '\'' || c.is_whitespace() || c == ')').map(|e| e + start).unwrap_or(hay.len());
+        // A name may hold spaces ("Tim Martin"): it runs to the next
+        // backslash on the same line; with none, to the first space.
+        let line_end = hay[start..].find(['"', '\'', '\n', '\r', ')']).map(|e| e + start).unwrap_or(hay.len());
+        let end = match hay[start..line_end].find('\\') {
+            Some(e) => e + start,
+            None => hay[start..line_end].find(char::is_whitespace).map(|e| e + start).unwrap_or(line_end),
+        };
         let name = &hay[start..end];
         if !name.is_empty() && !matches!(name, "public" | "default" | "all users" | "<user>") && out.is_char_boundary(start) && out.is_char_boundary(end) {
             res.push_str(&out[last..start]);
@@ -445,6 +451,8 @@ mod tests {
         let docs = Path::new("D:\\OneDrive\\Documents");
         let r = redact_paths("c:/users/tim/x C:\\Users\\Timothy\\y C:\\Users\\TIMOTH~1\\z d:\\onedrive\\documents\\My Games C:\\Users\\Public\\a", &[home, docs]);
         assert_eq!(r, "%USERPROFILE%/x C:\\Users\\<user>\\y C:\\Users\\<user>\\z <private>\\My Games C:\\Users\\Public\\a");
+        let r = redact_paths("at D:\\Users\\Tim Martin\\AppData\\x.dll and C:\\Users\\Ann is done", &[]);
+        assert_eq!(r, "at D:\\Users\\<user>\\AppData\\x.dll and C:\\Users\\<user> is done");
     }
 
     #[test]

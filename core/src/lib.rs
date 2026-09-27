@@ -111,7 +111,10 @@ fn scrub(raw: &str) -> String {
     let mut out = String::new();
     for w in raw.split(' ') {
         let t = w.trim_start_matches('(');
-        if t.starts_with("http://") || t.starts_with("https://") {
+        // Links are hidden, except Discord invites staff send on purpose
+        // (the temp-ban appeal invite).
+        let invite = ["https://discord.gg/", "http://discord.gg/", "discord.gg/"].iter().any(|p| t.starts_with(p));
+        if (t.starts_with("http://") || t.starts_with("https://")) && !invite {
             out.push_str("(link hidden)");
         } else {
             out.push_str(w);
@@ -151,6 +154,7 @@ mod plain_tests {
         assert!(super::plain("The requested operation requires elevation. (os error 740)").contains("administrator"));
         assert!(!super::plain("file error: something odd").contains("odd"));
         assert_eq!(super::plain("see https://x.y/z now"), "see (link hidden) now");
+        assert_eq!(super::plain("appeal at https://discord.gg/abc now"), "appeal at https://discord.gg/abc now");
         assert_eq!(super::plain_ui("NO_PATCH:network error: error sending request"), "NO_PATCH:The launcher couldn't reach the internet just now. Check your connection; it tries again on the next try.");
         assert_eq!(super::plain_ui("NEEDS_NEXUS_MODS:[{\"a\":1}]"), "NEEDS_NEXUS_MODS:[{\"a\":1}]");
         assert!(super::plain_ui("SIGNED_OUT:Please sign in again.").starts_with("SIGNED_OUT:Please"));

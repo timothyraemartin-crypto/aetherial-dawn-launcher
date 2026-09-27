@@ -353,6 +353,7 @@
     $('dg-error').hidden = true;
     $('dg-progress').hidden = true;
     skipArmed = false;
+    if (verifyWake) { stopVerifyWait(); $('dg-go').disabled = false; }
     $('dg-skip').textContent = 'My game is already on this version';
     $('dg-skip').hidden = !c.needed;
     dgMode();
@@ -390,6 +391,8 @@
     unpack: () => 'Unpacking the patches…',
     swap: () => 'Putting the new files in place…',
   };
+  let verifyRun = 0, verifyWake = null;
+  function stopVerifyWait() { verifyRun++; if (verifyWake) { verifyWake(); verifyWake = null; } }
   async function patchGame() {
     dgBusy(true);
     $('dg-error').hidden = true;
@@ -411,17 +414,27 @@
       if (msg.startsWith('NO_PATCH_FILES:')) {
         const steam = await invoke('repair_game_files').catch(() => false);
         if (steam) {
+          // The wait can be cancelled: Cancel bumps the run token and wakes
+          // the sleep; nothing else is blocked while Steam works.
+          const run = ++verifyRun;
           $('dg-bar').hidden = true;
           $('dg-stage').textContent = "Steam is checking Skyrim's files. The launcher carries on by itself when Steam is done.";
+          busy = false;
+          $('dg-cancel').disabled = false;
+          $('dg-skip').disabled = false;
           const until = Date.now() + 30 * 60 * 1000;
-          while (Date.now() < until) {
-            await new Promise(r => setTimeout(r, 30000));
-            try { dgDone(await invoke('patch_game')); return; }
+          while (Date.now() < until && run === verifyRun) {
+            await new Promise(r => { verifyWake = r; setTimeout(r, 30000); });
+            if (run !== verifyRun) break;
+            try { const c = await invoke('patch_game'); verifyWake = null; verifyRun++; dgDone(c); return; }
             catch (e2) { msg = String(e2); if (!msg.startsWith('NO_PATCH_FILES:')) break; }
           }
+          verifyWake = null;
+          if (run !== verifyRun) { $('dg-progress').hidden = true; $('dg-go').disabled = false; return; }
+          verifyRun++;
           if (msg.startsWith('NO_PATCH_FILES:')) msg = 'NO_PATCH:Steam\'s check didn\'t bring back the files the patches need. Press this button to try again.';
         } else {
-          msg = 'NO_PATCH:' + msg.slice(15) + ' Repair Skyrim in the store app you got it from, then press this button again.';
+          msg = 'NO_PATCH:' + msg.slice(15) + ' Only the Steam copy of Skyrim Special Edition can be changed to the server\'s version.';
         }
       }
       if (msg.startsWith('NO_PATCH:')) dgFail(msg.slice(9));
@@ -759,7 +772,7 @@ let autoMods = false;
   $('g-downgrade').onclick = openDowngrade;
   $('dg-go').onclick = runDowngrade;
   $('dg-cancel').onclick = () => {
-    dgMode(); showPage(page);
+    stopVerifyWait(); dgMode(); showPage(page);
   };
   $('st-move').onclick = moveStrays;
   // ---------- other mods set aside before Play ----------
@@ -871,6 +884,7 @@ let autoMods = false;
       $('dg-skip').textContent = 'Yes, my game is already on this version';
       return;
     }
+    stopVerifyWait();
     dgBusy(true);
     try { dgDone(await invoke('mark_game_ok')); } catch (e) { dgFail(e); }
   };

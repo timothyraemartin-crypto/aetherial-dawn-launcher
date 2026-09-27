@@ -180,7 +180,7 @@ pub async fn wait_for_code(listener: tokio::net::TcpListener, state: &str) -> Op
 /// sign-in.
 pub async fn exchange(client: &reqwest::Client, base: &str, state: &str, code: &str, verifier: &str) -> Answer<SignedIn> {
     let url = format!("{}/api/users/login-discord/token", base.trim_end_matches('/'));
-    let resp = match client.post(url).json(&serde_json::json!({ "state": state, "code": code, "verifier": verifier })).send().await {
+    let resp = match client.post(url).json(&serde_json::json!({ "state": state, "code": code, "verifier": verifier })).timeout(std::time::Duration::from_secs(20)).send().await {
         Ok(r) => r,
         Err(e) => return Answer::Offline(format!("couldn't reach the login service ({e})")),
     };

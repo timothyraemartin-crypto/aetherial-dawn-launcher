@@ -820,6 +820,19 @@ struct PatchProgress {
 /// on the player's own files: no Steam and no sign-in. Sends `patch-progress`
 /// events. Errors starting with "NO_PATCH:" mean the player's copy is a
 /// build no patch was made from yet.
+/// No patch fits this copy. When SkyrimSE.exe isn't the server's build, the
+/// answer is NO_PATCH_FILES, so the UI has Steam repair the game to Steam's
+/// current build (which MulderLoad's patches start from) and tries again.
+fn not_patchable(dir: &std::path::Path, spec: &launcher_core::manifest::GameSpec) -> String {
+    let have = version::exe_version(&dir.join(game::GAME_EXE));
+    let want = spec.version.as_deref().and_then(version::parse_version);
+    match have {
+        Some(h) if Some(h) == want => "NO_PATCH:Your Skyrim is already the server's version.".into(),
+        Some(h) => format!("NO_PATCH_FILES:Your Skyrim is version {}, which the launcher can't change directly.", version::short(h)),
+        None => "NO_PATCH_FILES:The launcher couldn't read your Skyrim's version.".into(),
+    }
+}
+
 #[tauri::command]
 async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<version::GameCheck> {
     use launcher_core::{community, patcher};
@@ -870,17 +883,18 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
         .and_then(|r| r.error_for_status())
         .map_err(|e| {
             log::line(&format!("patch: patch list not available: {e}"));
-            "NO_PATCH:The server has no patches for your Skyrim right now.".to_string()
+            not_patchable(&dir, &spec)
         })?
         .json()
         .await
         .map_err(|e| {
             log::line(&format!("patch: patch list unreadable: {e}"));
-            "NO_PATCH:The server's patch list couldn't be read. Try again later.".to_string()
+            not_patchable(&dir, &spec)
         })?
     };
     if Some(index.target.as_str()) != spec.version.as_deref() {
-        return Err(format!("NO_PATCH:The server's patches make {}, but it needs {}.", index.target, spec.version.as_deref().unwrap_or("?")));
+        log::line(&format!("patch: the server's patches make {}, but it needs {}", index.target, spec.version.as_deref().unwrap_or("?")));
+        return Err(not_patchable(&dir, &spec));
     }
     if watch::find_process(watch::GAME_PROCESS).is_some() {
         return Err("Close Skyrim first.".into());
