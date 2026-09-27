@@ -1877,8 +1877,12 @@ fn main() {
                 config.game_dir.as_ref().map(|d| d.display().to_string()).unwrap_or_else(|| "not set".into())
             ));
             save_config(app.handle(), &config)?;
+            // The bot counts launcher versions from this header.
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert("x-launcher-version", reqwest::header::HeaderValue::from_static(env!("CARGO_PKG_VERSION")));
             let http = reqwest::Client::builder()
                 .user_agent(concat!("AetherialDawnLauncher/", env!("CARGO_PKG_VERSION")))
+                .default_headers(headers)
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .build()?;
             app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http, mods: Default::default(), music: music::Music::new() });
