@@ -284,10 +284,6 @@ html.animated .nav { background: linear-gradient(180deg, rgba(6,10,15,.9), rgba(
 .rq-nexus .line { display: flex; gap: 8px; }
 .rq-nexus input { flex: 1; min-width: 0; font: 400 12px var(--mono); color: var(--text); background: #070B10; border: 1px solid var(--line-strong); border-radius: 4px; padding: 9px 11px; }
 .page-foot .line { display: flex; gap: 8px; }
-.music-ask { position: fixed; right: 20px; bottom: 20px; z-index: 40; display: grid; gap: 10px; width: 300px; padding: 14px 16px; background: rgba(10, 16, 24, .96); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,.45); font-size: 13px; }
-.music-ask small { display: block; color: var(--muted); margin-top: 3px; font-size: 12px; }
-.music-ask .line { display: flex; gap: 8px; }
-.music-ask[hidden] { display: none; }
 #aside-line { display: flex; gap: 10px; align-items: center; justify-content: space-between; margin-top: 10px; }
 #aside-line small { opacity: .75; }
 #aside-line .btn { flex: none; }

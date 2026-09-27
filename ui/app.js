@@ -356,6 +356,8 @@
     $('dg-error').hidden = true;
     $('dg-progress').hidden = true;
     skipArmed = false;
+    // Only the Play that opens this sheet sets it again (onPlay).
+    playAfterPatch = false;
     if (verifyWake) { stopVerifyWait(); $('dg-go').disabled = false; }
     $('dg-skip').textContent = 'My game is already on this version';
     $('dg-skip').hidden = !c.needed;
@@ -380,6 +382,7 @@
     const resume = playAfterPatch;
     playAfterPatch = false;
     if (resume && playMode === 'play') onPlay();
+    else if (resume && playMode === 'signin') showSignIn('Your game is ready. Sign in with Discord, then press Play.');
   }
   function dgFail(e) {
     playAfterPatch = false;
@@ -769,13 +772,10 @@ let autoMods = false;
   $('set-anim').onclick = () => { Ambient.set(!Ambient.enabled); $('set-anim').setAttribute('aria-checked', Ambient.enabled); };
   const setMusic = async on => {
     $('set-music').setAttribute('aria-checked', on);
-    $('music-ask').hidden = true;
     state.config.music = on;
     await invoke('set_music', { on }).catch(() => {});
   };
   $('set-music').onclick = () => setMusic($('set-music').getAttribute('aria-checked') !== 'true');
-  $('mu-keep').onclick = () => setMusic(true);
-  $('mu-mute').onclick = () => setMusic(false);
   document.querySelectorAll('.switch:not(#set-anim):not(#set-music)').forEach(s => s.onclick = async () => {
     s.setAttribute('aria-checked', s.getAttribute('aria-checked') !== 'true');
     const prefs = { closeOnLaunch: $('set-close').getAttribute('aria-checked') === 'true', backgroundUpdates: $('set-bg').getAttribute('aria-checked') === 'true', shareHealth: $('set-share').getAttribute('aria-checked') === 'true', onlyServerMods: $('set-only').getAttribute('aria-checked') === 'true' };
@@ -893,7 +893,10 @@ let autoMods = false;
       ? 'Nexus opened in your browser. Click <b>Authorise</b> there and come back.'
       : 'Nexus opened your API keys page in your browser. Copy your <i>Personal API Key</i> at the bottom (its Copy button, or select it and press Ctrl+C) and the launcher signs you in by itself.';
     try { await invoke(ssoReady ? 'nexus_sso' : 'nexus_copy_sign_in'); bringToFront(); await refreshMods(); resumePlay(); }
-    catch (e) { if (!String(e).includes('cancelled')) rqError(e); }
+    catch (e) {
+      if (!String(e).includes('cancelled')) rqError(e);
+      if (playAfterNexus) { playAfterNexus = false; setStatus("Nexus sign-in didn't finish. Press Play to try again.", true); }
+    }
     finally { $('rq-sso-go').disabled = false; $('rq-sso-go').textContent = 'Sign in with Nexus'; $('rq-sso-stop').hidden = true; }
   };
   $('rq-signout').onclick = async () => { await invoke('nexus_sign_out').catch(rqError); await refreshMods(); };
