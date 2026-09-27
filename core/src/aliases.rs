@@ -124,6 +124,37 @@ fn link(from: &Path, to: &Path) -> std::io::Result<()> {
 /// isn't active, and the game crashes at start). None when no master needs
 /// it or the header can't be read.
 pub fn with_aliased_masters(bytes: &[u8]) -> Option<Vec<u8>> {
+    rename_masters(bytes, &|m: &str| (!client_can_load_name(m)).then(|| alias_name(m)))
+}
+
+/// Whether a plugin in Data runs as a rewritten copy: a master it names
+/// runs under another name (a dashed alias, or itself a rewritten copy's
+/// "-AD" name, down a chain of patches).
+fn rewritten_in(data: &Path, plugin: &str, depth: u8) -> bool {
+    if depth > 32 {
+        return false;
+    }
+    crate::loadorder::masters(&data.join(plugin)).unwrap_or_default().iter().any(|m| !client_can_load_name(m) || rewritten_in(data, m, depth + 1))
+}
+
+/// The name a master runs under in Data, when it isn't its own.
+fn master_run_name(data: &Path, m: &str) -> Option<String> {
+    if !client_can_load_name(m) {
+        Some(alias_name(m))
+    } else if rewritten_in(data, m, 0) {
+        Some(run_name(m, true))
+    } else {
+        None
+    }
+}
+
+/// `with_aliased_masters` for a plugin in `data`: masters that run as
+/// rewritten copies ("Patch-AD.esp") are renamed too.
+pub fn with_masters_in(data: &Path, bytes: &[u8]) -> Option<Vec<u8>> {
+    rename_masters(bytes, &|m: &str| master_run_name(data, m))
+}
+
+fn rename_masters(bytes: &[u8], rename: &dyn Fn(&str) -> Option<String>) -> Option<Vec<u8>> {
     if bytes.len() < 24 || &bytes[..4] != b"TES4" {
         return None;
     }
@@ -143,8 +174,9 @@ pub fn with_aliased_masters(bytes: &[u8]) -> Option<Vec<u8>> {
         let len = u16::from_le_bytes([body[at + 4], body[at + 5]]) as usize;
         let data = body.get(at + 6..at + 6 + len)?;
         let name = String::from_utf8_lossy(data).trim_end_matches('\0').to_string();
-        if kind == b"MAST" && !client_can_load_name(&name) {
-            let mut new = alias_name(&name).into_bytes();
+        let renamed = if kind == b"MAST" { rename(&name) } else { None };
+        if let Some(new) = renamed {
+            let mut new = new.into_bytes();
             new.push(0);
             out_body.extend_from_slice(b"MAST");
             out_body.extend_from_slice(&u16::try_from(new.len()).ok()?.to_le_bytes());
@@ -184,8 +216,8 @@ fn head(path: &Path) -> Option<Vec<u8>> {
 }
 
 /// Whether a plugin names a master the client can't load.
-fn needs_rewrite(path: &Path) -> bool {
-    head(path).is_some_and(|h| with_aliased_masters(&h).is_some())
+fn needs_rewrite(data: &Path, path: &Path) -> bool {
+    head(path).is_some_and(|h| with_masters_in(data, &h).is_some())
 }
 
 /// Writes the rewritten copy, keeping the original's modified time so it's
@@ -197,12 +229,13 @@ fn rewrite(from: &Path, to: &Path) -> std::io::Result<()> {
     // master names.
     // Up to date only when its header is exactly the rewrite of the
     // original's (the master names follow the current naming rule).
-    let fresh = head(from).and_then(|h| with_aliased_masters(&h)).is_some_and(|want| head(to).as_deref() == Some(&want[..]));
+    let data = from.parent().unwrap_or(Path::new("."));
+    let fresh = head(from).and_then(|h| with_masters_in(data, &h)).is_some_and(|want| head(to).as_deref() == Some(&want[..]));
     if std::fs::metadata(to).and_then(|m| m.modified()).ok() == Some(t) && fresh {
         return Ok(());
     }
     let bytes = std::fs::read(from)?;
-    let new = with_aliased_masters(&bytes).ok_or_else(|| std::io::Error::other("the plugin's header can't be rewritten"))?;
+    let new = with_masters_in(data, &bytes).ok_or_else(|| std::io::Error::other("the plugin's header can't be rewritten"))?;
     // Remove the old name first and write a new file: writing through a
     // hard link would change the original (Vortex's copy) too.
     if to.exists() {
@@ -230,8 +263,8 @@ pub fn run_name(plugin: &str, rewritten: bool) -> String {
 /// runs under, and its bytes with renamed masters (None when they're
 /// unchanged). The launcher makes the same bytes on each PC, so the server's
 /// copy and the players' copies are identical.
-pub fn canonical(plugin: &str, bytes: &[u8]) -> (String, Option<Vec<u8>>) {
-    let new = with_aliased_masters(bytes);
+pub fn canonical(data: &Path, plugin: &str, bytes: &[u8]) -> (String, Option<Vec<u8>>) {
+    let new = with_masters_in(data, bytes);
     (run_name(plugin, new.is_some()), new)
 }
 
@@ -270,7 +303,7 @@ pub fn canonicalize_dir(data: &Path, out: &Path) -> std::io::Result<Vec<Canonica
     let mut seen: Vec<(String, String)> = Vec::new();
     for n in &names {
         let bytes = head(&data.join(n)).unwrap_or_default();
-        let name = run_name(n, with_aliased_masters(&bytes).is_some()).to_ascii_lowercase();
+        let name = run_name(n, with_masters_in(data, &bytes).is_some()).to_ascii_lowercase();
         if let Some((other, _)) = seen.iter().find(|(_, c)| c == &name) {
             return Err(std::io::Error::other(format!("{other} and {n} would both load as {name}")));
         }
@@ -279,7 +312,7 @@ pub fn canonicalize_dir(data: &Path, out: &Path) -> std::io::Result<Vec<Canonica
     let mut done = Vec::new();
     for n in names {
         let bytes = std::fs::read(data.join(&n))?;
-        let (name, new) = canonical(&n, &bytes);
+        let (name, new) = canonical(data, &n, &bytes);
         let body = new.as_deref().unwrap_or(&bytes);
         std::fs::write(out.join(&name), body)?;
         let mut companions_out = Vec::new();
@@ -375,7 +408,7 @@ pub fn ensure(game_dir: &Path, plugins_txt: Option<&Path>) -> std::io::Result<Ve
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
             if is_plugin(&n) && e.path().is_file() && !rec.links.iter().any(|l| l.to.eq_ignore_ascii_case(&format!("Data/{n}"))) {
-                let rewritten = needs_rewrite(&e.path());
+                let rewritten = needs_rewrite(&data, &e.path());
                 if !client_can_load_name(&n) || rewritten {
                     plugins.push((n, rewritten));
                 }
@@ -627,6 +660,41 @@ mod tests {
         std::fs::write(data.join("JKs Skyrim.esp"), plugin_with_masters(&[])).unwrap();
         let e = canonicalize_dir(&data, &t.path().join("out")).unwrap_err().to_string();
         assert!(e.contains("jks-skyrim.esp"), "{e}");
+    }
+
+    #[test]
+    fn a_patch_of_a_rewritten_patch_names_its_ad_copy() {
+        let t = tempfile::tempdir().unwrap();
+        let (g, out) = (t.path().join("game"), t.path().join("server"));
+        let data = g.join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("Skyrim.esm"), plugin_with_masters(&[])).unwrap();
+        // A (spaced) <- B (plain name, rewritten as B-AD) <- C (plain name).
+        std::fs::write(data.join("JKs Skyrim.esp"), plugin_with_masters(&["Skyrim.esm"])).unwrap();
+        std::fs::write(data.join("CWE_JK_United.esp"), plugin_with_masters(&["Skyrim.esm", "JKs Skyrim.esp"])).unwrap();
+        std::fs::write(data.join("CWE_JK_Relighting.esp"), plugin_with_masters(&["Skyrim.esm", "CWE_JK_United.esp"])).unwrap();
+        let txt = g.join("plugins.txt");
+        std::fs::write(&txt, "*JKs Skyrim.esp\n*CWE_JK_United.esp\n*CWE_JK_Relighting.esp\n").unwrap();
+        ensure(&g, Some(&txt)).unwrap();
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*JKs-Skyrim.esp\n*CWE_JK_United-AD.esp\n*CWE_JK_Relighting-AD.esp\n");
+        let m = |n: &str| crate::loadorder::masters(&data.join(n)).unwrap();
+        assert_eq!(m("CWE_JK_United-AD.esp"), ["Skyrim.esm", "JKs-Skyrim.esp"]);
+        assert_eq!(m("CWE_JK_Relighting-AD.esp"), ["Skyrim.esm", "CWE_JK_United-AD.esp"]);
+        assert_eq!(m("CWE_JK_Relighting.esp"), ["Skyrim.esm", "CWE_JK_United.esp"], "the original stays as it was");
+        // Again: nothing changes.
+        ensure(&g, Some(&txt)).unwrap();
+        assert!(!data.join("CWE_JK_Relighting-AD-AD.esp").exists());
+        // The server's tool, run on the downloads, makes the same files.
+        let src = t.path().join("downloads");
+        std::fs::create_dir_all(&src).unwrap();
+        for n in ["Skyrim.esm", "JKs Skyrim.esp", "CWE_JK_United.esp", "CWE_JK_Relighting.esp"] {
+            std::fs::copy(data.join(n), src.join(n)).unwrap();
+        }
+        let got = canonicalize_dir(&src, &out).unwrap();
+        for c in &got {
+            assert_eq!(std::fs::read(data.join(&c.name)).unwrap(), std::fs::read(out.join(&c.name)).unwrap(), "{}", c.name);
+        }
+        assert!(got.iter().any(|c| c.original == "CWE_JK_Relighting.esp" && c.name == "CWE_JK_Relighting-AD.esp" && c.rewritten));
     }
 
     #[test]
