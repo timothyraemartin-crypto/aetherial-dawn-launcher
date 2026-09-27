@@ -51,6 +51,19 @@ async fn in_time<T, E: std::fmt::Display>(what: &str, f: impl std::future::Futur
     }
 }
 
+/// Whether an export is running now.
+pub fn running() -> bool {
+    RUNNING.load(Ordering::SeqCst)
+}
+
+/// Called as the launcher closes: an export cut off here leaves its finished
+/// downloads, and the next start carries on from them.
+pub fn on_exit() {
+    if running() {
+        say("export: the launcher closed before the export finished; finished downloads are kept and it carries on the next time the launcher opens");
+    }
+}
+
 /// Starts an export in the background when one is due. Only one runs at a time.
 pub fn start(app: &AppHandle) {
     if RUNNING.swap(true, Ordering::SeqCst) {
@@ -160,7 +173,10 @@ async fn one(api: &nexus::Client<'_>, root: &Path, m: &serverlane::LaneMod) -> R
     let prefix = format!("{}-{file}.", m.entry.id);
     let have = std::fs::read_dir(&downloads).ok().and_then(|rd| rd.flatten().map(|e| e.path()).find(|p| p.file_name().is_some_and(|f| f.to_string_lossy().starts_with(&prefix) && !f.to_string_lossy().ends_with(".part"))));
     let archive = match have.filter(|p| serverlane::verify(m, p).is_ok()) {
-        Some(p) => p,
+        Some(p) => {
+            say(&format!("export: {} already downloaded; using it", m.entry.name));
+            p
+        }
         None => {
             let url = in_time("Nexus", api.download_link(modlist::NEXUS_GAME, n.mod_id, file, None)).await?;
             let name = url.split('?').next().unwrap_or("").rsplit('/').next().unwrap_or("");
