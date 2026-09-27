@@ -162,6 +162,12 @@ async fn one(api: &nexus::Client<'_>, root: &Path, m: &serverlane::LaneMod) -> R
             let path = downloads.join(format!("{prefix}{ext}"));
             say(&format!("export: downloading {} (mod {}, file {file})", m.entry.name, n.mod_id));
             fetch(api.http, &url, &path).await?;
+            if let Some(want) = m.archive.as_ref().and_then(|a| a.size_bytes) {
+                let got = std::fs::metadata(&path).map(|md| md.len()).unwrap_or(0);
+                if got != want {
+                    say(&format!("export: {} came as {got} bytes; the list expected {want} ({})", m.entry.name, m.archive.as_ref().and_then(|a| a.version.as_deref()).unwrap_or("?")));
+                }
+            }
             if let Err(e) = serverlane::verify(m, &path) {
                 let _ = std::fs::remove_file(&path);
                 return Err(e.to_string());

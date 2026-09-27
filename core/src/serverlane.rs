@@ -35,6 +35,26 @@ pub struct LaneMod {
     /// entry's `sha256`).
     #[serde(default)]
     pub size: Option<u64>,
+    /// Plugin name -> its exact path in the archive, for downloads whose
+    /// installer options hold several files with that name. A listed path
+    /// is taken exactly or the mod is refused; it never falls back.
+    #[serde(default)]
+    pub paths: BTreeMap<String, String>,
+    /// What the list expects the download to be (name, version, size as
+    /// Nexus lists it). Logged beside what came, not enforced: `size` and
+    /// `sha256` are the pins.
+    #[serde(default)]
+    pub archive: Option<ArchiveInfo>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct ArchiveInfo {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default, rename = "sizeBytes")]
+    pub size_bytes: Option<u64>,
 }
 
 /// Checks a downloaded archive against the list's size and sha256.
@@ -128,6 +148,16 @@ pub fn check(lane: &ServerLane) -> Result<()> {
                 return Err(Error::Game(format!("server lane: {p} is taken from two mods")));
             }
         }
+        for (name, path) in &m.paths {
+            if !m.plugins.iter().any(|p| p == name) {
+                return Err(Error::Game(format!("server lane: {} gives a path for {name}, which it doesn't list", e.id)));
+            }
+            let file = path.replace('\\', "/");
+            let last = file.rsplit('/').next().unwrap_or("");
+            if modlist::safe_rel(&file).is_none() || !last.eq_ignore_ascii_case(name) {
+                return Err(Error::Game(format!("server lane: {}'s path {path:?} isn't a safe path ending in {name}", e.id)));
+            }
+        }
     }
     Ok(())
 }
@@ -175,6 +205,14 @@ pub fn pick(m: &LaneMod, unpacked: &Path) -> Result<Vec<(PathBuf, String)>> {
     }
     let mut out = Vec::new();
     for want in &m.plugins {
+        // A listed path: exactly that file, or the mod is refused.
+        if let Some(path) = m.paths.get(want) {
+            match at_path(unpacked, path) {
+                Some(f) => out.push((f, want.clone())),
+                None => return Err(Error::Game(format!("{} has no {path} in its download", m.entry.name))),
+            }
+            continue;
+        }
         if let Some(t) = top.iter().find(|(_, n)| n.eq_ignore_ascii_case(want)) {
             out.push((t.0.clone(), want.clone()));
             continue;
@@ -196,6 +234,23 @@ pub fn pick(m: &LaneMod, unpacked: &Path) -> Result<Vec<(PathBuf, String)>> {
         }
     }
     Ok(out)
+}
+
+/// The file at `rel` under `dir`, matching each part's case loosely (the
+/// archive's spelling may differ from the list's).
+fn at_path(dir: &Path, rel: &str) -> Option<PathBuf> {
+    let rel = rel.replace('\\', "/");
+    modlist::safe_rel(&rel)?;
+    let mut at = dir.to_path_buf();
+    for part in rel.split('/').filter(|p| !p.is_empty()) {
+        let exact = at.join(part);
+        at = if exact.exists() {
+            exact
+        } else {
+            std::fs::read_dir(&at).ok()?.flatten().find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(part))?.path()
+        };
+    }
+    std::fs::symlink_metadata(&at).ok().filter(|m| m.is_file()).map(|_| at)
 }
 
 fn files_named(dir: &Path, name: &str) -> Vec<PathBuf> {
@@ -339,6 +394,34 @@ mod tests {
         assert!(pick(&m, &u).unwrap_err().to_string().contains("different files"));
         m.plugins = vec!["Missing.esp".into()];
         assert!(pick(&m, &u).is_err());
+    }
+
+    #[test]
+    fn a_listed_path_is_taken_exactly_or_refused() {
+        let t = tempfile::tempdir().unwrap();
+        let u = t.path().join("u");
+        for (dir, body) in [("000 Standard", "npc"), ("001 Crafted Only", "crafted")] {
+            std::fs::create_dir_all(u.join(dir)).unwrap();
+            std::fs::write(u.join(dir).join("Armors of the Velothi.esp"), body).unwrap();
+        }
+        let json = |path: &str| format!(r#"{{"for_discord_id":"1","mods":[{{"id":"velothi","name":"Velothi","nexus":{{"mod":62752,"file":624586}},"plugins":["Armors of the Velothi.esp"],"archive":{{"name":"Pt. I","version":"1.3.1","sizeBytes":133472002}},"paths":{{"Armors of the Velothi.esp":"{path}"}}}}]}}"#);
+        let l = lane(&json("001 Crafted Only/Armors of the Velothi.esp"));
+        check(&l).unwrap();
+        assert_eq!(l.mods[0].archive.as_ref().unwrap().size_bytes, Some(133472002));
+        let got = pick(&l.mods[0], &u).unwrap();
+        assert_eq!(std::fs::read_to_string(&got[0].0).unwrap(), "crafted");
+        // The case of the folder may differ.
+        let got = pick(&lane(&json("001 crafted only/armors of the velothi.esp")).mods[0], &u).unwrap();
+        assert_eq!(std::fs::read_to_string(&got[0].0).unwrap(), "crafted");
+        // A missing path refuses the mod; the other copy is never taken.
+        let e = pick(&lane(&json("002 Gone/Armors of the Velothi.esp")).mods[0], &u).unwrap_err().to_string();
+        assert!(e.contains("no 002 Gone"), "{e}");
+        // Even when only one other copy exists.
+        std::fs::remove_dir_all(u.join("000 Standard")).unwrap();
+        assert!(pick(&lane(&json("000 Standard/Armors of the Velothi.esp")).mods[0], &u).is_err());
+        // Unsafe or mismatched paths are refused before any download.
+        assert!(check(&lane(&json("../Armors of the Velothi.esp"))).is_err());
+        assert!(check(&lane(&json("001 Crafted Only/Other.esp"))).is_err());
     }
 
     #[test]
