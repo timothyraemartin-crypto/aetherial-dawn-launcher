@@ -22,10 +22,6 @@ jobs:
       # Override with repository variables if the server moves.
       AD_BASE_URL: ${{ vars.AD_BASE_URL || 'https://vps-d38c928e.vps.ovh.us/launcher' }}
       AD_AUTH_URL: ${{ vars.AD_AUTH_URL || 'https://vps-d38c928e.vps.ovh.us/ad' }}
-      # Private key for signed launcher updates. Without it the build still
-      # works but produces no update signature.
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -38,6 +34,12 @@ jobs:
           tool: tauri-cli@2.12.0
       - name: Build installer
         shell: bash
+        env:
+          # Private key for signed launcher updates, given to this step only so
+          # the install test and the launcher it starts can't read it. Without
+          # it the build still works but produces no update signature.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
             echo "::warning title=Unsigned build::The TAURI_SIGNING_PRIVATE_KEY repository secret is empty, so this installer has no update signature and no latest.json. Add it under Settings, Secrets and variables, Actions, Repository secrets."

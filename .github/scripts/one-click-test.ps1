@@ -56,7 +56,7 @@ $setups = Watch-Setups { (Launchers).Count -gt 0 -and -not (Get-CimInstance Win3
 $parentCode = Wait-Exit $parent 30
 Write-Host "   parent pid $($parent.Id) exit code $(Show $parentCode)"
 foreach ($s in $setups) { Write-Host "   setup pid $($s.Id) (parent $($s.Parent)) exit $(Show $s.ExitCode): $($s.CommandLine)" }
-Check '(a) the plain run exits by itself' ($null -ne $parentCode) "exit code $(Show $parentCode)"
+Check '(a) the plain run exits by itself with 0' ($parentCode -eq 0) "exit code $(Show $parentCode)"
 $children = @($setups | Where-Object { $_.Id -ne $parent.Id })
 Check '(b) exactly one child installer' ($children.Count -eq 1) "$($children.Count) children"
 if ($children.Count -ge 1) {
