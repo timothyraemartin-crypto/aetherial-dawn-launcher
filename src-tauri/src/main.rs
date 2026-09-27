@@ -292,12 +292,18 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
         return Err(gc.reason.unwrap_or_else(|| "Your Skyrim version doesn't match the server.".into()));
     }
     if gc.installed.is_some() {
+        if !requirements::skse_ok(&dir) {
+            play_step(&app, "Installing SKSE…");
+        } else if !requirements::crash_logger_ok(&dir) || !requirements::souls_ok(&dir) {
+            play_step(&app, "Installing the launcher's helper mods…");
+        }
         if let Err(e) = install_missing_mods(&state.http, &dir).await {
             send_client_status(&app, &dir);
             return Err(e);
         }
     }
     game::inspect(&dir).map_err(err)?;
+    play_step(&app, "Getting your mods ready…");
     tidy_game(&app, &dir, &m, config.only_server_mods)?;
     // Each listed mod's settings as the server sets them, once; the
     // player's later changes stay.
@@ -357,6 +363,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     // Once the server loads more than the five base masters, this PC loads
     // exactly its plugins in its order: no Creation Club masters for the
     // session, and plugins.txt in the server's order (serverorder.rs).
+    play_step(&app, "Setting the server's load order…");
     let mut ccc_guard = CccGuard { dir: dir.clone(), armed: false };
     if let Some(order) = fetch_masters(&state.http, &config.base_url).await.map(|v| serverorder::server_order(&v)).filter(|o| serverorder::beyond_base(o)) {
         match serverorder::hide_ccc(&dir) {
@@ -376,6 +383,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
             }
         }
     }
+    play_step(&app, "Checking your game…");
     let report = run_health(&app, &state.http, &config.base_url, &dir, Some(&m)).await;
     log::line(&format!("health before play: worst={:?}\n{}", report.worst, report.text()));
     // The game would stop with SkyMP's "LOAD ORDER ERROR"; say it here.
@@ -387,6 +395,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     }
     ensure_requirements(&app, &state, &dir).await?;
     let token = token(&app).ok_or("SIGNED_OUT:Sign in with Discord to play.")?;
+    play_step(&app, "Getting your game session…");
     let session = match auth::play(&state.http, AUTH_URL, &token).await {
         auth::Answer::Ok(p) => {
             log::line("play: login service gave a game session");
@@ -417,6 +426,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     settings::write_auth_data(&dir, &session, &config.account.clone().unwrap_or_default()).map_err(err)?;
     log::line("play: wrote skymp5-client-settings.txt and auth data");
     state.music.stop();
+    play_step(&app, "Starting Skyrim through SKSE…");
     game::launch(&dir).map_err(err)?;
     let google = game::google_env_present();
     if !google.is_empty() {
@@ -1305,6 +1315,13 @@ async fn install_missing_mods(http: &reqwest::Client, dir: &std::path::Path) -> 
         }
     }
     Ok(())
+}
+
+/// What Play is doing now, for the status line under the Play button, so a
+/// long step (a first SKSE download, the pre-Play health check) never looks
+/// like the launcher hung.
+fn play_step(app: &AppHandle, text: &str) {
+    let _ = app.emit("play-step", text);
 }
 
 async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path::Path) -> CmdResult<()> {

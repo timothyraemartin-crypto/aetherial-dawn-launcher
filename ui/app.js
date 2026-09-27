@@ -267,7 +267,7 @@
     renderGame();
     const c = gameCheck;
     if (c && c.needed) {
-      if (c.canDowngrade) { setPlay('downgrade', 'FIX VERSION'); setStatus(c.reason + ' Click Fix version and the launcher fixes it.', true); }
+      if (c.canDowngrade) { setPlay('downgrade', 'PLAY'); setStatus(`${c.reason} Press Play: the launcher changes Skyrim to ${shortVer(c.target)} first, then starts the game.`); }
       else { setPlay('wait', 'WRONG VERSION'); setStatus(c.reason, true); }
       return;
     }
@@ -336,6 +336,7 @@
       try { r = await invoke('auth_poll', { st }); } catch (e) { r = { status: 'offline', message: String(e) }; }
       if (r.status === 'pending' || r.status === 'offline') continue;
       if (r.status === 'done') {
+        bringToFront();
         auth = { signedIn: true, account: r.account };
         renderAccount();
         showPage('home');
@@ -368,14 +369,20 @@
   }
   const gb = n => n >= 1073741824 ? (n / 1073741824).toFixed(1) + ' GB' : mb(n);
   function dgBusy(on) { for (const id of ['dg-go', 'dg-cancel', 'dg-skip']) $(id).disabled = on; busy = on; }
+  // Set when Play started the version fix: Play carries on once it's done.
+  let playAfterPatch = false;
   function dgDone(c) {
     gameCheck = c;
     dgBusy(false);
     showPage(page);
     ready();
     if (!gameCheck.needed && !statusMsg) setStatus(`Skyrim ${shortVer(gameCheck.installed)} is ready for Aetherial Dawn.`);
+    const resume = playAfterPatch;
+    playAfterPatch = false;
+    if (resume && playMode === 'play') onPlay();
   }
   function dgFail(e) {
+    playAfterPatch = false;
     dgBusy(false);
     $('dg-progress').hidden = true;
     $('dg-bar').hidden = true;
@@ -568,7 +575,8 @@ let autoMods = false;
     if (playMode === 'strays') return openStrays();
     if (playMode === 'retry') return check();
     if (playMode === 'update') return update();
-    if (playMode === 'downgrade') return openDowngrade();
+    // Play fixes the game version by itself, then starts the game.
+    if (playMode === 'downgrade') { openDowngrade(); playAfterPatch = true; return patchGame(); }
     if (playMode === 'signin') return showSignIn();
     if (playMode !== 'play') return;
     setPlay('wait', 'LAUNCHING');
@@ -601,7 +609,9 @@ let autoMods = false;
           return;
         }
         playAfterNexus = true;
-        setStatus(`Sign in to Nexus below; the launcher then installs ${mods.length === 1 ? mods[0].name : `${mods.length} required mods`} by itself.`, true);
+        setStatus(`Sign in to Nexus in your browser; the launcher then installs ${mods.length === 1 ? mods[0].name : `${mods.length} required mods`} and starts Skyrim by itself.`);
+        // Play is the click: Nexus opens now, with nothing more to press here.
+        if (!auto && !$('rq-sso-go').disabled) $('rq-sso-go').click();
         return;
       }
       if (msg.startsWith('SIGNED_OUT:')) {
@@ -735,6 +745,8 @@ let autoMods = false;
 
   // ---------- wiring ----------
   const win = T.window.getCurrentWindow();
+  // After a sign-in in the browser, the launcher comes back by itself.
+  function bringToFront() { win.unminimize().catch(() => {}); win.setFocus().catch(() => {}); }
   $('w-min').onclick = () => win.minimize();
   $('w-close').onclick = () => win.close();
   $('w-settings').onclick = $('nav-settings').onclick = $('t-settings').onclick = () => showSheet('settings');
@@ -774,6 +786,7 @@ let autoMods = false;
   $('g-downgrade').onclick = openDowngrade;
   $('dg-go').onclick = runDowngrade;
   $('dg-cancel').onclick = () => {
+    playAfterPatch = false;
     stopVerifyWait(); dgMode(); showPage(page);
   };
   $('st-move').onclick = moveStrays;
@@ -782,6 +795,8 @@ let autoMods = false;
     $('aside-note').textContent = n ? `Last time you pressed Play, ${n} file${n === 1 ? '' : 's'} from other mods ${n === 1 ? 'was' : 'were'} set aside (in your Skyrim folder under .aetherial-dawn\\disabled).` : 'Nothing has been set aside.';
   };
   try { asideNote(+localStorage.getItem('ad-set-aside') || 0); } catch { asideNote(0); }
+  // What Play is doing, step by step.
+  T.event.listen('play-step', ({ payload: text }) => { if (text) setStatus(text); });
   // A mod's tool running before the game starts ("Fitting armor to bodies").
   T.event.listen('tool-running', ({ payload: label }) => {
     toolRunning = !!label;
@@ -877,7 +892,7 @@ let autoMods = false;
     $('rq-sso-note').innerHTML = ssoReady
       ? 'Nexus opened in your browser. Click <b>Authorise</b> there and come back.'
       : 'Nexus opened your API keys page in your browser. Copy your <i>Personal API Key</i> at the bottom (its Copy button, or select it and press Ctrl+C) and the launcher signs you in by itself.';
-    try { await invoke(ssoReady ? 'nexus_sso' : 'nexus_copy_sign_in'); await refreshMods(); resumePlay(); }
+    try { await invoke(ssoReady ? 'nexus_sso' : 'nexus_copy_sign_in'); bringToFront(); await refreshMods(); resumePlay(); }
     catch (e) { if (!String(e).includes('cancelled')) rqError(e); }
     finally { $('rq-sso-go').disabled = false; $('rq-sso-go').textContent = 'Sign in with Nexus'; $('rq-sso-stop').hidden = true; }
   };
@@ -925,7 +940,8 @@ let autoMods = false;
 
   (async () => {
     await refreshState();
-    invoke('music_start').then(asked => { if (!asked && state.config.gameDir) $('music-ask').hidden = false; }).catch(() => {});
+    // Music plays unless it was switched off in Settings; nothing to answer.
+    invoke('music_start').catch(() => {});
     loadStatus();
     setInterval(loadStatus, 30 * 1000);
     await refreshAuth();
