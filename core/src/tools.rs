@@ -92,8 +92,12 @@ pub struct Group {
 }
 
 /// The group name of a run with `group_from` ("AetherialDawn-<id>").
+/// Only [A-Za-z0-9_-] from the mod id, so the name is always one plain
+/// file name (quality check 0.1.78: an id with "/", "..", "\\" or ":" must
+/// never reach outside SliderGroups).
 pub fn group_name(m: &ModEntry, i: usize) -> String {
-    format!("AetherialDawn-{}", key(m, i).replace('#', "-"))
+    let id: String = key(m, i).chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' }).collect();
+    format!("AetherialDawn-{id}")
 }
 
 fn group_paths(run: &ToolRun) -> Result<Vec<PathBuf>> {
@@ -144,7 +148,11 @@ pub fn write_group(game_dir: &Path, m: &ModEntry, i: usize) -> Result<Group> {
             xml.push_str(&format!("        <Member name=\"{}\"/>\n", esc(x)));
         }
         xml.push_str("    </Group>\n</SliderGroups>\n");
-        let file = crate::presets::find(game_dir, &format!("{SLIDER_GROUPS}/{name}.xml"));
+        let groups = crate::presets::find(game_dir, SLIDER_GROUPS);
+        let file = groups.join(format!("{name}.xml"));
+        if file.parent() != Some(groups.as_path()) || !groups.starts_with(game_dir) {
+            return Err(Error::UnsafePath(file.display().to_string()));
+        }
         if std::fs::read(&file).ok().as_deref() != Some(xml.as_bytes()) {
             crate::presets::replace(&file, xml.as_bytes())?;
         }
@@ -690,6 +698,14 @@ mod tests {
         let none: ModEntry = serde_json::from_value(json!({"id": "z", "name": "Z", "run": {"label": "x", "exe": "Data/CalienteTools/BodySlide/BodySlide x64.exe", "group_from": ["Data/CalienteTools/BodySlide/SliderSets/Gone.osp"]}})).unwrap();
         assert!(write_group(g, &none, 0).unwrap().members.is_empty());
         assert!(!g.join("Data/CalienteTools/BodySlide/SliderGroups/AetherialDawn-z.xml").exists());
+        // Whatever the mod id holds, the group stays one file in SliderGroups.
+        for id in ["x/../../../Users/Public/foo", "a\\..\\..\\b", "C:evil", "..", "we ird#1"] {
+            let m: ModEntry = serde_json::from_value(json!({"id": id, "name": "Z", "run": {"label": "x", "exe": "Data/CalienteTools/BodySlide/BodySlide x64.exe", "group_from": ["Data/CalienteTools/BodySlide/SliderSets/Refit A.osp"]}})).unwrap();
+            let grp = write_group(g, &m, 0).unwrap();
+            assert!(grp.name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'), "{id}: {}", grp.name);
+            assert!(g.join("Data/CalienteTools/BodySlide/SliderGroups").join(format!("{}.xml", grp.name)).is_file(), "{id}");
+        }
+        assert!(!g.join("Users").exists() && !t.path().parent().unwrap().join("Users").exists());
         // Only .osp files under SliderSets.
         for bad in ["Data/SKSE/Plugins/x.osp", "Data/CalienteTools/BodySlide/SliderSets/../../x.osp", "Data/CalienteTools/BodySlide/SliderSets/a.xml"] {
             let m: ModEntry = serde_json::from_value(json!({"id": "z", "name": "Z", "run": {"label": "x", "exe": "Data/CalienteTools/BodySlide/BodySlide x64.exe", "group_from": [bad]}})).unwrap();
