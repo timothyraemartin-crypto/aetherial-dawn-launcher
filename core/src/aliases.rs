@@ -131,24 +131,27 @@ pub fn with_aliased_masters(bytes: &[u8]) -> Option<Vec<u8>> {
 const LIGHT: u32 = 0x200;
 
 /// A plugin the game itself ships: the five base masters, and Creation
-/// Club content (listed in Skyrim.ccc next to Data, or named like
-/// "ccBGSSSE001-Fish.esm"). Their ESL flags are the game's own business.
-fn shipped_with_game(data: &Path, plugin: &str) -> bool {
-    let l = plugin.to_ascii_lowercase();
+/// Club content by its name. Their ESL flags are the game's own business.
+/// Only the name counts, never Skyrim.ccc: the server has none, and the
+/// launcher empties the PC's for a session, so both decide the same way.
+fn shipped_with_game(plugin: &str) -> bool {
     if crate::health::MASTERS.iter().any(|m| m.eq_ignore_ascii_case(plugin)) {
         return true;
     }
-    // cc + creator code + "sse" + number, then a dash: ccBGSSSE025-AdvDSGS.esm.
-    let b = l.as_bytes();
-    let cc_name = l.starts_with("cc")
-        && l.find("sse").is_some_and(|i| {
-            (5..=8).contains(&i) && b[2..i].iter().all(u8::is_ascii_alphabetic) && b.get(i + 3..i + 6).is_some_and(|d| d.iter().all(u8::is_ascii_digit)) && b.get(i + 6) == Some(&b'-')
-        });
-    if cc_name {
-        return true;
-    }
-    let ccc = data.parent().map(|g| g.join("Skyrim.ccc"));
-    ccc.and_then(|p| std::fs::read_to_string(p).ok()).is_some_and(|t| t.lines().any(|n| n.trim().eq_ignore_ascii_case(plugin)))
+    // Creation Club names only: cc + a 3-letter creator code + "sse" + 3
+    // digits, then "-" or "_" and a name of letters and digits, as in
+    // ccBGSSSE025-AdvDSGS.esm or ccKRTSSE001_Altar.esl. A mod's own file
+    // such as "ccBGSSSE001-Fish - Patch.esp" has a space and doesn't match.
+    let b = plugin.as_bytes();
+    let Some(dot) = plugin.rfind('.') else { return false };
+    b.len() > 13
+        && b[..2].eq_ignore_ascii_case(b"cc")
+        && b[2..5].iter().all(u8::is_ascii_alphabetic)
+        && b[5..8].eq_ignore_ascii_case(b"sse")
+        && b[8..11].iter().all(u8::is_ascii_digit)
+        && matches!(b[11], b'-' | b'_')
+        && dot > 12
+        && b[12..dot].iter().all(u8::is_ascii_alphanumeric)
 }
 
 /// The whole TES4 header is there (at most 1 MiB, the most `head` reads),
@@ -166,11 +169,11 @@ fn full_header(bytes: &[u8]) -> bool {
 /// so every plugin after it would disagree (Kad_MoonMonkRobes.esp,
 /// 2026-09-27). Its canonical copy has the flag cleared. An .esl stays
 /// light whatever its flag says, and the game's own plugins are left alone.
-fn light_flagged(data: &Path, plugin: &str, bytes: &[u8]) -> bool {
+fn light_flagged(plugin: &str, bytes: &[u8]) -> bool {
     !plugin.to_ascii_lowercase().ends_with(".esl")
         && full_header(bytes)
         && u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) & LIGHT != 0
-        && !shipped_with_game(data, plugin)
+        && !shipped_with_game(plugin)
 }
 
 /// The canonical bytes of a plugin in `data`: masters that run under
@@ -178,7 +181,7 @@ fn light_flagged(data: &Path, plugin: &str, bytes: &[u8]) -> bool {
 /// when neither is needed (or the header can't be read).
 pub fn canonical_bytes(data: &Path, plugin: &str, bytes: &[u8]) -> Option<Vec<u8>> {
     let renamed = with_masters_in(data, bytes);
-    if !light_flagged(data, plugin, bytes) {
+    if !light_flagged(plugin, bytes) {
         return renamed;
     }
     let mut out = renamed.unwrap_or_else(|| bytes.to_vec());
@@ -194,7 +197,7 @@ fn rewritten_in(data: &Path, plugin: &str, depth: u8) -> bool {
     if depth > 32 {
         return false;
     }
-    if head(&data.join(plugin)).is_some_and(|h| light_flagged(data, plugin, &h)) {
+    if head(&data.join(plugin)).is_some_and(|h| light_flagged(plugin, &h)) {
         return true;
     }
     crate::loadorder::masters(&data.join(plugin)).unwrap_or_default().iter().any(|m| !client_can_load_name(m) || rewritten_in(data, m, depth + 1))
@@ -785,13 +788,14 @@ mod tests {
         let (g, out) = (t.path().join("game"), t.path().join("server"));
         let data = g.join("Data");
         std::fs::create_dir_all(&data).unwrap();
-        std::fs::write(g.join("Skyrim.ccc"), "ccBGSSSE001-Fish.esm\r\nccCustomListed.esm\r\n").unwrap();
         std::fs::write(data.join("Skyrim.esm"), plugin_with_masters(&[])).unwrap();
-        let game_own = ["Dawnguard.esm", "ccBGSSSE001-Fish.esm", "ccBGSSSE025-AdvDSGS.esm", "ccCustomListed.esm"];
+        let game_own = ["Dawnguard.esm", "ccBGSSSE001-Fish.esm", "ccBGSSSE025-AdvDSGS.esm", "ccKRTSSE001_Altar.esp"];
         for n in game_own {
             std::fs::write(data.join(n), esl(&["Skyrim.esm"])).unwrap();
         }
         std::fs::write(data.join("Other.esm"), esl(&["Skyrim.esm"])).unwrap();
+        // A mod's own file named like Creation Club is still a mod.
+        std::fs::write(data.join("ccBGSSSE001-Fish - Patch.esp"), esl(&["Skyrim.esm"])).unwrap();
         // The header says it's longer than the file: not read as flagged anywhere.
         let mut cut = esl(&["Skyrim.esm"]);
         cut.truncate(30);
@@ -801,9 +805,10 @@ mod tests {
         assert_eq!(
             names,
             [
+                ("ccBGSSSE001-Fish - Patch.esp", "ccBGSSSE001-Fish-Patch.esp", true),
                 ("ccBGSSSE001-Fish.esm", "ccBGSSSE001-Fish.esm", false),
                 ("ccBGSSSE025-AdvDSGS.esm", "ccBGSSSE025-AdvDSGS.esm", false),
-                ("ccCustomListed.esm", "ccCustomListed.esm", false),
+                ("ccKRTSSE001_Altar.esp", "ccKRTSSE001_Altar.esp", false),
                 ("Cut.esp", "Cut.esp", false),
                 ("Dawnguard.esm", "Dawnguard.esm", false),
                 ("Other.esm", "Other-AD.esm", true),
@@ -811,9 +816,9 @@ mod tests {
             ]
         );
         ensure(&g, None).unwrap();
-        let mut made: Vec<String> = std::fs::read_dir(&data).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.contains("-AD")).collect();
+        let mut made: Vec<String> = std::fs::read_dir(&data).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| !got.iter().any(|c| &c.original == n)).collect();
         made.sort();
-        assert_eq!(made, ["Other-AD.esm"], "the PC makes the same copies as the server, and no others");
+        assert_eq!(made, ["Other-AD.esm", "ccBGSSSE001-Fish-Patch.esp"], "the PC makes the same copies as the server, and no others");
         for n in game_own {
             assert_eq!(run_as(&g, n), n);
         }
