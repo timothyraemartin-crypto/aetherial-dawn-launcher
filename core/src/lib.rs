@@ -7,6 +7,7 @@ pub mod allowlist;
 pub mod auth;
 pub mod bsa;
 pub mod camera;
+pub mod clientstatus;
 pub mod community;
 pub mod downgrade;
 pub mod faces;

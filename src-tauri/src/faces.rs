@@ -31,7 +31,8 @@ pub async fn run(http: reqwest::Client, base: String, token: String, game_dir: P
     let own = dir.join(faces::SELF_FILE);
     let mut seen = modified(&own);
     let mut changed_at: Option<Instant> = None;
-    // (the file's modified time, when) for the one retry a 409 or 429 gets.
+    // (the file's modified time, when) for the one retry a 409, 429 or 503
+    // gets.
     let mut retry: Option<(Option<SystemTime>, Instant)> = None;
     let mut every = LIST_EVERY;
     let mut next_list = Instant::now();
@@ -61,6 +62,7 @@ pub async fn run(http: reqwest::Client, base: String, token: String, game_dir: P
                 if m == seen {
                     // The second and last try for this file.
                     if let Upload::SignedOut = upload(&http, &api, &token, &own).await {
+                        log::line("faces: the login service says signed out; stopping for this session");
                         break;
                     }
                 }
@@ -76,10 +78,17 @@ pub async fn run(http: reqwest::Client, base: String, token: String, game_dir: P
                         if stop.load(Ordering::SeqCst) {
                             break;
                         }
-                        fetch(&http, &api, &token, &dir, name).await;
+                        // Busy: the rest wait for the next list.
+                        if !fetch(&http, &api, &token, &dir, name).await {
+                            every = (every * 2).min(LIST_MAX);
+                            break;
+                        }
                     }
                     let set: BTreeSet<String> = names.into_iter().collect();
-                    faces::remember(&game_dir, &set);
+                    // Written only when the list changes.
+                    if last.as_ref() != Some(&set) {
+                        faces::remember(&game_dir, &set);
+                    }
                     last = Some(set);
                 }
                 Err(List::Slower) => every = (every * 2).min(LIST_MAX),
@@ -103,8 +112,8 @@ pub async fn run(http: reqwest::Client, base: String, token: String, game_dir: P
 /// (at launcher start).
 pub fn tidy(game_dir: &Path, keep: Option<BTreeSet<String>>) {
     let keep = keep.unwrap_or_else(|| faces::remembered(game_dir));
-    let dir = game_dir.join(faces::FOLDER);
-    if dir.is_dir() {
+    // A link in the ad folder's place is left alone (never followed).
+    if let Some(dir) = faces::existing_folder(game_dir) {
         let n = faces::tidy(&dir, &keep);
         if n > 0 {
             log::line(&format!("faces: removed {n} face(s) of characters no longer online"));
@@ -141,6 +150,7 @@ async fn upload(http: &reqwest::Client, api: &str, token: &str, own: &Path) -> U
         }
     };
     let status = r.status().as_u16();
+    let wait = retry_after(&r);
     let text = capped_text(r, 4096).await;
     match status {
         200 => {
@@ -151,7 +161,12 @@ async fn upload(http: &reqwest::Client, api: &str, token: &str, own: &Path) -> U
             log::line(&format!("faces: the server wasn't ready for your face ({}); trying once more in 15 s", short(&text)));
             Upload::RetryAfter(Duration::from_secs(15))
         }
-        429 => Upload::RetryAfter(Duration::from_secs(10)),
+        // Too many sends, or the face service busy: wait, then once more.
+        429 => Upload::RetryAfter(wait.unwrap_or(Duration::from_secs(10))),
+        503 => {
+            log::line("faces: the face service was busy; trying once more shortly");
+            Upload::RetryAfter(wait.unwrap_or(Duration::from_secs(5)))
+        }
         401 => Upload::SignedOut,
         400 | 413 => {
             log::line(&format!("faces: the server refused your face: {}", short(&text)));
@@ -177,18 +192,20 @@ async fn list(http: &reqwest::Client, api: &str, token: &str) -> Result<Vec<Stri
             let body = capped(r, faces::MAX_LIST).await.ok_or_else(|| List::Failed("the list was too long".into()))?;
             faces::list_names(&body).map_err(|e| List::Failed(e.to_string()))
         }
-        429 => Err(List::Slower),
+        429 | 503 => Err(List::Slower),
         401 => Err(List::SignedOut),
         s => Err(List::Failed(format!("answer {s}"))),
     }
 }
 
-async fn fetch(http: &reqwest::Client, api: &str, token: &str, dir: &Path, name: &str) {
+/// Fetches and saves one face; false when the service is busy and the rest
+/// should wait.
+async fn fetch(http: &reqwest::Client, api: &str, token: &str, dir: &Path, name: &str) -> bool {
     let r = match http.get(format!("{api}/f/{name}.jslot")).header("authorization", token).timeout(Duration::from_secs(15)).send().await {
         Ok(r) => r,
         Err(e) => {
             log::line(&format!("faces: couldn't fetch {name}: {}", launcher_core::scrub(&e.to_string())));
-            return;
+            return true;
         }
     };
     match r.status().as_u16() {
@@ -202,8 +219,16 @@ async fn fetch(http: &reqwest::Client, api: &str, token: &str, dir: &Path, name:
         },
         // Replaced since the list: the next list names the new one.
         404 => {}
+        429 | 503 => return false,
         s => log::line(&format!("faces: fetching {name} got {s}")),
     }
+    true
+}
+
+/// The server's Retry-After in seconds, kept between 1 and 60.
+fn retry_after(r: &reqwest::Response) -> Option<Duration> {
+    let s: u64 = r.headers().get(reqwest::header::RETRY_AFTER)?.to_str().ok()?.trim().parse().ok()?;
+    Some(Duration::from_secs(s.clamp(1, 60)))
 }
 
 /// The body, or None when it's longer than `cap`.

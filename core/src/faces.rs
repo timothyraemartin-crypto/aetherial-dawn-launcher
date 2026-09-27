@@ -22,8 +22,9 @@ pub const MAX_FACE: usize = 400 * 1024;
 pub const MAX_LIST: usize = 256 * 1024;
 const LIST_RECORD: &str = ".aetherial-dawn/faces-list.json";
 
-/// The ad/ folder, created when missing. A link in its place is refused, so
-/// nothing is written outside the game's own folder.
+/// The ad/ folder, created when missing. The ad folder itself being a link
+/// (or a junction) is refused; the folders above it are the game's own and
+/// aren't checked.
 pub fn folder(game_dir: &Path) -> Result<PathBuf> {
     let dir = game_dir.join(FOLDER);
     std::fs::create_dir_all(&dir)?;
@@ -31,6 +32,13 @@ pub fn folder(game_dir: &Path) -> Result<PathBuf> {
         return Err(Error::Game(format!("{FOLDER} is a link; faces aren't saved there")));
     }
     Ok(dir)
+}
+
+/// The ad/ folder when it's already there as a real folder (not a link),
+/// for tidying; never created.
+pub fn existing_folder(game_dir: &Path) -> Option<PathBuf> {
+    let dir = game_dir.join(FOLDER);
+    std::fs::symlink_metadata(&dir).ok().filter(|m| m.is_dir()).map(|_| dir)
 }
 
 /// A face name as the server gives it: "a<1-8 hex>-<16 hex>".
@@ -192,5 +200,15 @@ mod tests {
         std::fs::create_dir_all(t.path().join("Data/SKSE/Plugins/CharGen/Presets")).unwrap();
         std::os::unix::fs::symlink(&elsewhere, t.path().join(FOLDER)).unwrap();
         assert!(folder(t.path()).is_err());
+        assert!(existing_folder(t.path()).is_none());
+    }
+
+    #[test]
+    fn existing_folder_is_never_created() {
+        let t = tempfile::tempdir().unwrap();
+        assert!(existing_folder(t.path()).is_none());
+        assert!(!t.path().join(FOLDER).exists());
+        folder(t.path()).unwrap();
+        assert_eq!(existing_folder(t.path()), Some(t.path().join(FOLDER)));
     }
 }

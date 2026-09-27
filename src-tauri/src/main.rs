@@ -382,7 +382,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     if report.worst >= health::Status::Warn && config.share_health {
         send_health(&app, &state.http, &config, &m.build, "before play", None, None, &report).await;
     }
-    ensure_requirements(&state, &dir).await?;
+    ensure_requirements(&app, &state, &dir).await?;
     let token = token(&app).ok_or("SIGNED_OUT:Sign in with Discord to play.")?;
     let session = match auth::play(&state.http, AUTH_URL, &token).await {
         auth::Answer::Ok(p) => {
@@ -1283,15 +1283,36 @@ async fn install_missing_mods(http: &reqwest::Client, dir: &std::path::Path) -> 
     Ok(())
 }
 
-async fn ensure_requirements(state: &AppState, dir: &std::path::Path) -> CmdResult<()> {
+async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path::Path) -> CmdResult<()> {
     install_missing_mods(&state.http, dir).await?;
     let list = mods::full_list(state).await;
+    send_client_status(app, state, dir, &list).await;
     let missing: Vec<mods::Row> = launcher_core::modlist::missing(&list, dir).into_iter().map(|m| mods::row(m, dir)).collect();
     if !missing.is_empty() {
         log::line(&format!("play: stopped, {} mod(s) from the mod list are missing", missing.len()));
         return Err(format!("NEEDS_NEXUS_MODS:{}", serde_json::to_string(&missing).unwrap_or_default()));
     }
     Ok(())
+}
+
+/// Tells the login service, in the background, which of the server's mods
+/// and the required mods this PC has (names and counts only; see
+/// clientstatus.rs). Never holds up Play; a 404 (route not live yet) is
+/// silent.
+async fn send_client_status(app: &AppHandle, state: &AppState, dir: &std::path::Path, list: &[launcher_core::modlist::ModEntry]) {
+    let Some(token) = token(app) else { return };
+    let served: std::collections::BTreeSet<String> = mods::server_list(state).await.map(|l| l.mods.into_iter().map(|m| m.id).collect()).unwrap_or_default();
+    let version = state.manifest.lock().await.as_ref().and_then(|m| m.game.as_ref()).and_then(|g| g.version.clone());
+    let required = launcher_core::clientstatus::required(dir, version.as_deref());
+    let report = launcher_core::clientstatus::report(&app.package_info().version.to_string(), list, &served, |m| m.installed(dir), &required);
+    let (http, url) = (state.http.clone(), format!("{}/api/client-status", AUTH_URL.trim_end_matches('/')));
+    tauri::async_runtime::spawn(async move {
+        match http.post(&url).header("authorization", token).json(&report).timeout(std::time::Duration::from_secs(10)).send().await {
+            Ok(r) if r.status().is_success() || r.status().as_u16() == 404 => {}
+            Ok(r) => log::line(&format!("play: the install report got {}", r.status().as_u16())),
+            Err(e) => log::line(&format!("play: couldn't send the install report: {}", launcher_core::scrub(&e.to_string()))),
+        }
+    });
 }
 
 /// Skyrim Platform's built-in browser (CEF) keeps its profile in
