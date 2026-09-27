@@ -178,6 +178,14 @@ async fn set_prefs(app: AppHandle, state: State<'_, AppState>, prefs: Prefs) -> 
     save_config(&app, &config)
 }
 
+/// "Skip for now" while a mod's tool runs before the game: it stops and the
+/// game starts; it runs again on the next Play.
+#[tauri::command]
+fn skip_tool() {
+    launcher_core::tools::skip();
+    log::line("tools: the player skipped the running tool for now");
+}
+
 /// Puts back every file the launcher set aside (other mods, old plugins).
 #[tauri::command]
 async fn restore_set_aside(state: State<'_, AppState>) -> CmdResult<usize> {
@@ -289,6 +297,10 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
         match tokio::task::spawn_blocking(move || launcher_core::tools::run(&d, &e)).await {
             Ok(Ok(Some((code, took)))) => log::line(&format!("tools: {} ran in {} s, exit code {code}", m.name, took.as_secs())),
             Ok(Ok(None)) => {}
+            Ok(Err(launcher_core::Error::Game(e))) if e == launcher_core::tools::SKIPPED => {
+                log::line(&format!("tools: {} skipped for now; the rest wait for the next Play", m.name));
+                break;
+            }
             Ok(Err(e)) => log::line(&format!("tools: {} didn't run: {e}", m.name)),
             Err(e) => log::line(&format!("tools: {} stopped: {e}", m.name)),
         }
@@ -1817,7 +1829,7 @@ fn main() {
             mods::restore_left_handler(app.handle());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside])
+        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside, skip_tool])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }

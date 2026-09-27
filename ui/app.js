@@ -54,6 +54,7 @@
   }
   let statusMsg = null;
   function setStatus(msg, isError) { statusMsg = msg ? { msg, isError } : null; renderStatus(); }
+  let toolRunning = false;
   function renderStatus() {
     const parts = [];
     if (statusMsg) parts.push(`<span${statusMsg.isError ? ' class="error"' : ''}>${esc(statusMsg.msg)}</span>`);
@@ -65,6 +66,7 @@
       parts.push(`<span><i class="dot${on ? '' : ' off'}"></i>${!known ? 'Server status unavailable' : on ? 'Server online' : 'Server offline'}${who}</span>`);
       if (pending) parts.push(`<span>Build ${esc(pending.build)}</span>`);
     }
+    if (toolRunning) parts.push(`<button class="linkish" id="tool-skip">Skip for now</button>`);
     if (state) parts.push(`<span>v${esc(state.launcherVersion)}</span>`);
     $('status').innerHTML = parts.join('');
   }
@@ -782,7 +784,15 @@ let autoMods = false;
   try { asideNote(+localStorage.getItem('ad-set-aside') || 0); } catch { asideNote(0); }
   // A mod's tool running before the game starts ("Fitting armor to bodies").
   T.event.listen('tool-running', ({ payload: label }) => {
+    toolRunning = !!label;
     if (label) setStatus(`${label}. This can take a few minutes the first time.`);
+    else renderStatus();
+  });
+  $('status').addEventListener('click', e => {
+    if (e.target && e.target.id === 'tool-skip') {
+      e.target.disabled = true;
+      invoke('skip_tool').catch(() => {});
+    }
   });
   T.event.listen('mods-set-aside', ({ payload: n }) => {
     try { localStorage.setItem('ad-set-aside', String(n)); } catch {}

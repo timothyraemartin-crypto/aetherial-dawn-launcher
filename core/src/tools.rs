@@ -17,7 +17,22 @@ use crate::modlist::ModEntry;
 use crate::{Error, Result};
 
 const RECORD: &str = ".aetherial-dawn/mods/tools.json";
-const DEFAULT_TIMEOUT: u64 = 30 * 60;
+const DEFAULT_TIMEOUT: u64 = 10 * 60;
+/// Failed runs with the same inputs before the launcher stops trying until
+/// something changes.
+const MAX_FAILURES: u32 = 2;
+
+/// Set by the player's "Skip for now": the running tool is stopped and the
+/// game starts; it runs again on the next Play.
+static SKIP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn skip() {
+    SKIP.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn skipped() -> bool {
+    SKIP.load(std::sync::atomic::Ordering::SeqCst)
+}
 
 /// A mods.json entry's `run`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -33,15 +48,22 @@ pub struct ToolRun {
     /// again when any of them changes.
     #[serde(default)]
     pub inputs: Vec<String>,
-    /// Seconds before it is stopped (default 30 minutes).
+    /// Seconds before it is stopped (default 10 minutes).
     #[serde(default)]
     pub timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 struct Done {
+    #[serde(default)]
     stamp: String,
+    #[serde(default)]
     when: u64,
+    /// Failed runs with these inputs (a different stamp from the good one).
+    #[serde(default)]
+    failed_stamp: String,
+    #[serde(default)]
+    failures: u32,
 }
 
 fn load(game_dir: &Path) -> BTreeMap<String, Done> {
@@ -78,11 +100,16 @@ fn stamp(game_dir: &Path, run: &ToolRun) -> String {
         let root = game_dir.join(&rel);
         let mut stack = vec![root];
         while let Some(p) = stack.pop() {
-            if p.is_dir() {
+            // Links and junctions aren't followed (a loop, or a whole drive).
+            let Ok(md) = std::fs::symlink_metadata(&p) else { continue };
+            if md.file_type().is_symlink() {
+                continue;
+            }
+            if md.is_dir() {
                 if let Ok(rd) = std::fs::read_dir(&p) {
                     stack.extend(rd.flatten().map(|e| e.path()));
                 }
-            } else if p.is_file() {
+            } else if md.is_file() {
                 let r = p.strip_prefix(game_dir).unwrap_or(&p).to_string_lossy().replace('\\', "/").to_ascii_lowercase();
                 files.push((r, p));
             }
@@ -119,7 +146,7 @@ pub fn due(game_dir: &Path, m: &ModEntry) -> Result<Option<(PathBuf, Vec<String>
         return Err(Error::Game(format!("{} is missing", run.exe)));
     }
     let s = stamp(game_dir, run);
-    if load(game_dir).get(&m.id).is_some_and(|d| d.stamp == s) {
+    if load(game_dir).get(&m.id).is_some_and(|d| d.stamp == s || (d.failed_stamp == s && d.failures >= MAX_FAILURES)) {
         return Ok(None);
     }
     Ok(Some((exe, args_for(run, game_dir), s)))
@@ -132,16 +159,35 @@ pub fn run(game_dir: &Path, m: &ModEntry) -> Result<Option<(i32, Duration)>> {
     let Some((exe, args, s)) = due(game_dir, m)? else { return Ok(None) };
     let timeout = Duration::from_secs(m.run.as_ref().and_then(|r| r.timeout).unwrap_or(DEFAULT_TIMEOUT));
     let start = Instant::now();
-    let code = spawn_minimized_and_wait(&exe, &args, timeout)?;
+    SKIP.store(false, std::sync::atomic::Ordering::SeqCst);
+    let got = spawn_minimized_and_wait(&exe, &args, timeout);
     let took = start.elapsed();
-    if code == 0 {
-        let mut r = load(game_dir);
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        r.insert(m.id.clone(), Done { stamp: s, when: now });
-        save(game_dir, &r)?;
+    if matches!(&got, Err(Error::Game(e)) if e == SKIPPED) {
+        return got.map(|c| Some((c, took)));
     }
-    Ok(Some((code, took)))
+    let mut r = load(game_dir);
+    let d = r.entry(m.id.clone()).or_default();
+    match &got {
+        Ok(0) => {
+            d.stamp = s;
+            d.when = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            d.failed_stamp.clear();
+            d.failures = 0;
+        }
+        _ => {
+            if d.failed_stamp != s {
+                d.failed_stamp = s;
+                d.failures = 0;
+            }
+            d.failures += 1;
+        }
+    }
+    save(game_dir, &r)?;
+    got.map(|c| Some((c, took)))
 }
+
+/// The error text when the player skipped the run.
+pub const SKIPPED: &str = "skipped for now";
 
 /// Quotes one argument the way Windows programs split their command line.
 pub fn quote(arg: &str) -> String {
@@ -174,8 +220,11 @@ pub fn quote(arg: &str) -> String {
 fn spawn_minimized_and_wait(exe: &Path, args: &[String], timeout: Duration) -> Result<i32> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
     use windows_sys::Win32::System::Threading::{
-        CreateProcessW, GetExitCodeProcess, TerminateProcess, WaitForSingleObject, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, STARTF_USESHOWWINDOW, STARTUPINFOW,
+        CreateProcessW, GetExitCodeProcess, ResumeThread, TerminateProcess, WaitForSingleObject, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, STARTF_USESHOWWINDOW, STARTUPINFOW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWMINNOACTIVE;
 
@@ -189,31 +238,65 @@ fn spawn_minimized_and_wait(exe: &Path, args: &[String], timeout: Duration) -> R
     let mut cmd = wide(std::ffi::OsStr::new(&line));
     let dir = wide(exe.parent().unwrap_or(Path::new(".")).as_os_str());
     // SAFETY: plain Win32 calls with zeroed structs and NUL-terminated
-    // UTF-16 strings that outlive the calls; both handles are closed.
+    // UTF-16 strings that outlive the calls; every handle is closed.
     unsafe {
+        // A job that ends the tool and anything it started when it's
+        // stopped (or when the launcher closes).
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if !job.is_null() {
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info as *const _ as *const _, std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32);
+        }
         let mut si: STARTUPINFOW = std::mem::zeroed();
         si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
         si.dwFlags = STARTF_USESHOWWINDOW;
         si.wShowWindow = SW_SHOWMINNOACTIVE as u16;
         let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
-        if CreateProcessW(app.as_ptr(), cmd.as_mut_ptr(), std::ptr::null(), std::ptr::null(), 0, CREATE_UNICODE_ENVIRONMENT, std::ptr::null(), dir.as_ptr(), &si, &mut pi) == 0 {
-            return Err(Error::Game(format!("couldn't start {} ({})", exe.display(), std::io::Error::last_os_error())));
+        if CreateProcessW(app.as_ptr(), cmd.as_mut_ptr(), std::ptr::null(), std::ptr::null(), 0, CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED, std::ptr::null(), dir.as_ptr(), &si, &mut pi) == 0 {
+            let e = std::io::Error::last_os_error();
+            if !job.is_null() {
+                CloseHandle(job);
+            }
+            return Err(Error::Game(format!("couldn't start {} ({e})", exe.display())));
         }
-        let ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX - 1);
-        let waited = WaitForSingleObject(pi.hProcess, ms);
+        if !job.is_null() {
+            AssignProcessToJobObject(job, pi.hProcess);
+        }
+        ResumeThread(pi.hThread);
+        let start = Instant::now();
+        let mut stop: Option<String> = None;
+        loop {
+            if WaitForSingleObject(pi.hProcess, 250) != WAIT_TIMEOUT {
+                break;
+            }
+            if skipped() {
+                stop = Some(SKIPPED.to_string());
+            } else if start.elapsed() > timeout {
+                stop = Some(format!("{} was still running after {} minutes and was stopped", exe.display(), timeout.as_secs() / 60));
+            }
+            if stop.is_some() {
+                if job.is_null() {
+                    TerminateProcess(pi.hProcess, 1);
+                } else {
+                    TerminateJobObject(job, 1);
+                }
+                WaitForSingleObject(pi.hProcess, 5000);
+                break;
+            }
+        }
         let mut code: u32 = 1;
-        if waited == WAIT_TIMEOUT {
-            TerminateProcess(pi.hProcess, 1);
-            WaitForSingleObject(pi.hProcess, 5000);
-        } else {
-            GetExitCodeProcess(pi.hProcess, &mut code);
-        }
+        GetExitCodeProcess(pi.hProcess, &mut code);
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
-        if waited == WAIT_TIMEOUT {
-            return Err(Error::Game(format!("{} was still running after {} minutes and was stopped", exe.display(), timeout.as_secs() / 60)));
+        if !job.is_null() {
+            // Anything the tool left running ends with the job.
+            CloseHandle(job);
         }
-        Ok(code as i32)
+        match stop {
+            Some(e) => Err(Error::Game(e)),
+            None => Ok(code as i32),
+        }
     }
 }
 
@@ -225,9 +308,12 @@ fn spawn_minimized_and_wait(exe: &Path, args: &[String], timeout: Duration) -> R
         if let Some(st) = child.try_wait()? {
             return Ok(st.code().unwrap_or(1));
         }
-        if start.elapsed() > timeout {
+        if skipped() || start.elapsed() > timeout {
             let _ = child.kill();
             let _ = child.wait();
+            if skipped() {
+                return Err(Error::Game(SKIPPED.into()));
+            }
             return Err(Error::Game(format!("{} was still running after {} minutes and was stopped", exe.display(), timeout.as_secs() / 60)));
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -276,6 +362,18 @@ mod tests {
         assert!(run(g, &m).unwrap().is_none(), "nothing changed");
         std::fs::write(g.join("Data/CalienteTools/BodySlide/SliderPresets/b.xml"), "2").unwrap();
         assert!(run(g, &m).unwrap().is_some(), "a new preset runs it again");
+
+        // Two failures with the same inputs: no more tries until they change.
+        std::fs::write(&exe, "#!/bin/sh\nexit 3\n").unwrap();
+        assert_eq!(run(g, &m).unwrap().unwrap().0, 3);
+        assert_eq!(run(g, &m).unwrap().unwrap().0, 3);
+        assert!(run(g, &m).unwrap().is_none(), "gave up on these inputs");
+        std::fs::write(g.join("Data/CalienteTools/BodySlide/SliderPresets/c.xml"), "3").unwrap();
+        assert!(run(g, &m).unwrap().is_some(), "new inputs get another try");
+
+        // A linked folder isn't followed.
+        std::os::unix::fs::symlink(g, g.join("Data/CalienteTools/BodySlide/SliderPresets/loop")).unwrap();
+        let _ = stamp(g, m.run.as_ref().unwrap());
 
         // A program the mod didn't install is refused.
         let other = ModEntry { run: Some(ToolRun { exe: "Data/other.exe".into(), ..m.run.clone().unwrap() }), ..m.clone() };
