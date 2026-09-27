@@ -456,7 +456,9 @@ pub fn safe_rel(p: &str) -> Option<PathBuf> {
         if c.is_empty() || c == "." {
             continue;
         }
-        if c == ".." {
+        // Windows drops a trailing dot or space ("..." and ".. " name the
+        // folder above), so a part ending in one is refused.
+        if c == ".." || c.ends_with(['.', ' ']) {
             return None;
         }
         out.push(c);
@@ -1341,5 +1343,15 @@ mod served_list_check {
         let merged = super::merged(Some("1.6.1170.0"), Some(&list));
         let builtin = super::builtin(Some("1.6.1170.0")).len();
         assert_eq!(merged.len(), builtin + n);
+    }
+
+    #[test]
+    fn safe_rel_refuses_parts_windows_would_rename() {
+        for bad in ["...", "Data/.../x.esp", "Data/.. /x.esp", "Data/x.esp.", "Data/x.esp ", "Data/folder./x.esp", "../x", "C:/x", "/x"] {
+            assert!(super::safe_rel(bad).is_none(), "{bad}");
+        }
+        for ok in ["Data/x.esp", "Data/./x.esp", "Data\\a b\\.hidden", "Data/v1.2/x.esp"] {
+            assert!(super::safe_rel(ok).is_some(), "{ok}");
+        }
     }
 }
