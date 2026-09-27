@@ -318,6 +318,12 @@ pub fn missing_required_files(game_dir: &Path) -> Vec<String> {
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
+                // A too-new or wrong build set aside on purpose (e.g. the
+                // Unofficial Patch 4.3.9c) isn't a file to put back.
+                let name = e.file_name().to_string_lossy().to_ascii_lowercase();
+                if d == root && (name.contains("-too-new") || name.contains("-wrong-build")) {
+                    continue;
+                }
                 stack.push(p);
                 continue;
             }
@@ -697,6 +703,11 @@ mod tests {
         std::fs::create_dir_all(pl.join("SKSEMenuFrameworkThemes")).unwrap();
         std::fs::write(pl.join("SKSEMenuFrameworkThemes/modern.json"), b"{}").unwrap();
         std::fs::write(pl.join("SKSEMenuFrameworkStrings_EN.json"), b"{}").unwrap();
+        assert!(missing_required_files(g).is_empty());
+        // A too-new Unofficial Patch parked on purpose isn't missing.
+        std::fs::create_dir_all(g.join("Data/BashTags")).unwrap();
+        std::fs::write(g.join("Data/BashTags/unofficial skyrim special edition patch.txt"), b"x").unwrap();
+        crate::strays::move_aside(g, &["Data/BashTags/unofficial skyrim special edition patch.txt".into()], "1-too-new-ussep").unwrap();
         assert!(missing_required_files(g).is_empty());
     }
 }

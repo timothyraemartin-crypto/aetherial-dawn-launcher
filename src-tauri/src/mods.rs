@@ -469,9 +469,14 @@ async fn premium_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, gam
     // pull in old archived builds.
     let pinned_archived = n.file.is_some_and(|id| !files.iter().any(|f| f.file_id == id));
     if pinned_archived || n.pick.as_deref().is_some_and(|p| !nexus::pick_is_current(&files, p)) {
-        match api.archived_files(modlist::NEXUS_GAME, n.mod_id).await {
+        let every = match api.game_id(modlist::NEXUS_GAME).await {
+            Ok(g) => api.all_files(g, n.mod_id).await,
+            Err(e) => Err(e),
+        };
+        match every {
             Ok(more) => {
-                log::line(&format!("mods: {} has {} archived file(s) on Nexus", m.name, more.len()));
+                let archived: Vec<String> = more.iter().filter(|f| f.category_name.as_deref() == Some("ARCHIVED")).map(|f| format!("{} (id {})", f.version.as_deref().unwrap_or("?"), f.file_id)).collect();
+                log::line(&format!("mods: {} has {} archived file(s) on Nexus: {}", m.name, archived.len(), archived.join(", ")));
                 for f in more {
                     if !files.iter().any(|x| x.file_id == f.file_id) {
                         files.push(f);
@@ -546,7 +551,9 @@ async fn premium_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, gam
             }
         }
     }
-    if !unreachable.is_empty() && wrong.is_empty() && too_new.is_empty() {
+    // The picked file (4.3.8a) was found but Nexus wouldn't hand it over:
+    // say that, not that the other files are the wrong build.
+    if !unreachable.is_empty() && too_new.is_empty() {
         return Err("Nexus didn't hand over the file just now. The launcher tries again the next time you press Play".into());
     }
     if !wrong.is_empty() && too_new.is_empty() {

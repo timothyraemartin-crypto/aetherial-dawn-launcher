@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::{Error, Result};
 
 const API: &str = "https://api.nexusmods.com/v1";
+const GRAPHQL: &str = "https://api.nexusmods.com/v2/graphql";
 /// Where players make their personal API key.
 pub const API_KEY_PAGE: &str = "https://next.nexusmods.com/settings/api-keys";
 
@@ -88,10 +89,35 @@ impl Client<'_> {
         Ok(self.json::<FilesAnswer>(&format!("{API}/games/{game}/mods/{mod_id}/files.json")).await?.files)
     }
 
-    /// The page's archived files, which the default list leaves out (the
-    /// Unofficial Patch for Skyrim 1.6.1170, 4.3.8a, is archived).
-    pub async fn archived_files(&self, game: &str, mod_id: u64) -> Result<Vec<NexusFile>> {
-        Ok(self.json::<FilesAnswer>(&format!("{API}/games/{game}/mods/{mod_id}/files.json?category=archived")).await?.files)
+    /// Nexus's number for a game ("skyrimspecialedition" is 1704), which
+    /// the newer file list wants.
+    pub async fn game_id(&self, game: &str) -> Result<u64> {
+        #[derive(Deserialize)]
+        struct Game {
+            id: u64,
+        }
+        Ok(self.json::<Game>(&format!("{API}/games/{game}.json")).await?.id)
+    }
+
+    /// Every file on a mod's page, archived ones included, from Nexus's
+    /// newer (GraphQL) API: the older files.json leaves archived files out
+    /// even when asked for them ("0 archived file(s)", Timothy's Play at
+    /// 01:59 2026-09-27), and the Unofficial Patch 4.3.8a is archived.
+    pub async fn all_files(&self, game_id: u64, mod_id: u64) -> Result<Vec<NexusFile>> {
+        let query = "query ModFiles($modId: ID!, $gameId: ID!) { modFiles(modId: $modId, gameId: $gameId) { fileId name version category date uri sizeInBytes } }";
+        let body = serde_json::json!({ "query": query, "variables": { "modId": mod_id.to_string(), "gameId": game_id.to_string() } });
+        let r = self
+            .http
+            .post(GRAPHQL)
+            .header("apikey", self.key)
+            .header("Application-Name", "Aetherial Dawn Launcher")
+            .header("Application-Version", self.app_version)
+            .header("User-Agent", format!("AetherialDawnLauncher/{}", self.app_version))
+            .json(&body)
+            .send()
+            .await?;
+        let v: serde_json::Value = r.error_for_status()?.json().await?;
+        graph_files(&v)
     }
 
     /// A download address for a file. Premium members need nothing else; free
@@ -104,6 +130,29 @@ impl Client<'_> {
         let links: Vec<Link> = self.json(&url).await?;
         links.into_iter().next().map(|l| l.uri).filter(|u| u.starts_with("https://")).ok_or_else(|| Error::Game("Nexus Mods gave no download address".into()))
     }
+}
+
+/// The files in a GraphQL modFiles answer, in the older API's shape.
+fn graph_files(v: &serde_json::Value) -> Result<Vec<NexusFile>> {
+    let Some(list) = v["data"]["modFiles"].as_array() else {
+        let why = v["errors"][0]["message"].as_str().unwrap_or("no file list in the answer");
+        return Err(Error::Game(format!("Nexus Mods didn't list the files ({why})")));
+    };
+    let num = |x: &serde_json::Value| x.as_u64().or_else(|| x.as_str().and_then(|s| s.parse().ok()));
+    Ok(list
+        .iter()
+        .filter_map(|f| {
+            Some(NexusFile {
+                file_id: num(&f["fileId"])?,
+                name: f["name"].as_str().unwrap_or_default().to_string(),
+                version: f["version"].as_str().map(str::to_string),
+                category_name: f["category"].as_str().map(str::to_string),
+                uploaded_timestamp: num(&f["date"]).unwrap_or(0),
+                file_name: f["uri"].as_str().unwrap_or_default().to_string(),
+                size_in_bytes: num(&f["sizeInBytes"]),
+            })
+        })
+        .collect())
 }
 
 fn enc(s: &str) -> String {
@@ -339,6 +388,21 @@ mod tests {
         assert!(parse_nxm("nxm://skyrimspecialedition/mods/266/files/1").is_none());
         assert!(parse_nxm("https://example.com").is_none());
         assert!(parse_nxm("nxm://skyrimspecialedition/collections/x/revisions/1").is_none());
+    }
+
+    #[test]
+    fn reads_graphql_file_lists() {
+        let v = serde_json::json!({ "data": { "modFiles": [
+            { "fileId": 800977, "name": "Unofficial Skyrim Special Edition Patch", "version": "4.3.9c", "category": "MAIN", "date": 1790000000, "uri": "USSEP-266-4-3-9c.7z", "sizeInBytes": "300000000" },
+            { "fileId": 1, "name": "Unofficial Skyrim Special Edition Patch", "version": "4.3.8a", "category": "ARCHIVED", "date": 1780000000, "uri": "USSEP-266-4-3-8a.7z", "sizeInBytes": null }
+        ] } });
+        let files = graph_files(&v).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].size_in_bytes, Some(300000000));
+        assert_eq!(files[1].category_name.as_deref(), Some("ARCHIVED"));
+        let c = candidates(&files, None, Some(crate::ussep::NEXUS_PICK));
+        assert_eq!(c[0].file_id, 1);
+        assert!(graph_files(&serde_json::json!({ "errors": [{ "message": "nope" }] })).is_err());
     }
 
     #[test]
