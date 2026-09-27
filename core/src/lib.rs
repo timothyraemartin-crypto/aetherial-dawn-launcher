@@ -17,6 +17,7 @@ pub mod manifest;
 pub mod modlist;
 pub mod nexus;
 pub mod patcher;
+pub mod presets;
 pub mod pristine;
 pub mod requirements;
 pub mod settings;

@@ -426,6 +426,10 @@ async fn install(m: &ModEntry, archive: &Path, game_dir: &Path, file_id: Option<
             return Ok(Outcome::TooNew(newer));
         }
         let rec = modlist::apply(&m, &copies, &game_dir, file_id, version)?;
+        // The keys a preset can set, named exactly as the mod defines them.
+        for k in launcher_core::presets::mcm_keys(&game_dir, &rec.files) {
+            log::line(&format!("mods: {} MCM keys in {k}", m.name));
+        }
         let _ = std::fs::remove_dir_all(&work);
         // Only call it installed when the files really are in Data.
         if !m.installed(&game_dir) {

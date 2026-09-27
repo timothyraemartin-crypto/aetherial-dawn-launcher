@@ -86,6 +86,10 @@ pub struct ModEntry {
     /// and aren't copied.
     #[serde(default)]
     pub lift: Vec<String>,
+    /// The server's preset for this mod's settings files, written once
+    /// (presets.rs).
+    #[serde(default)]
+    pub settings: Vec<crate::presets::Setting>,
 }
 
 impl ModEntry {

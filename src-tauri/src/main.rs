@@ -264,6 +264,11 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     }
     game::inspect(&dir).map_err(err)?;
     tidy_game(&app, &dir, &m, config.only_server_mods)?;
+    // Each listed mod's settings as the server sets them, once; the
+    // player's later changes stay.
+    for l in launcher_core::presets::apply_all(&dir, &mods::full_list(&state).await) {
+        log::line(&format!("play: preset {l}"));
+    }
     let report = run_health(&app, &state.http, &config.base_url, &dir, Some(&m)).await;
     log::line(&format!("health before play: worst={:?}\n{}", report.worst, report.text()));
     if report.worst >= health::Status::Warn && config.share_health {
