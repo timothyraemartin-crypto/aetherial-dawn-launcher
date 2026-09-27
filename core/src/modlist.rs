@@ -106,7 +106,8 @@ pub fn cpu_supports() -> Vec<&'static str> {
     let mut out = Vec::new();
     #[cfg(target_arch = "x86_64")]
     {
-        if std::arch::is_x86_feature_detected!("avx512f") {
+        // FSMP's AVX-512 build uses the BW and VL extensions too.
+        if std::arch::is_x86_feature_detected!("avx512f") && std::arch::is_x86_feature_detected!("avx512bw") && std::arch::is_x86_feature_detected!("avx512vl") {
             out.push("avx512");
         }
         if std::arch::is_x86_feature_detected!("avx2") {
