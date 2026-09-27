@@ -287,18 +287,7 @@ fn crash_log_parts(path: &Path) -> String {
 /// ("Unhandled exception ...", "PROBABLE CALL STACK:") and Trainwreck
 /// ("Exception ...", "CALL STACK").
 pub fn crash_logger_summary(skse_log_dir: &Path, since: SystemTime) -> Option<String> {
-    let mut files = Vec::new();
-    walk(skse_log_dir, &mut files, 2);
-    let newest = files
-        .into_iter()
-        .filter(|p| {
-            let n = p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-            n.contains("crash") && n.ends_with(".log")
-        })
-        .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
-        .filter(|(t, _)| *t + Duration::from_secs(2) >= since)
-        .max_by_key(|(t, _)| *t)?
-        .1;
+    let newest = newest_crash_log(skse_log_dir, since)?;
     let text = String::from_utf8_lossy(&std::fs::read(&newest).ok()?).into_owned();
     let lines: Vec<&str> = text.lines().collect();
     let exception = lines.iter().find(|l| {
@@ -310,6 +299,44 @@ pub fn crash_logger_summary(skse_log_dir: &Path, since: SystemTime) -> Option<St
         out.extend(lines[i + 1..].iter().map(|l| l.trim()).filter(|l| !l.is_empty()).take(5).map(str::to_string));
     }
     Some(out.join("\n"))
+}
+
+/// Longest crash log sent to staff (the bot's crashLog field, CONTRACT.md).
+pub const CRASH_LOG_MAX: usize = 30_000;
+
+/// The newest crash logger log written since `since`, for staff: the whole
+/// file when it fits, else its header and plugin lists; never over
+/// `CRASH_LOG_MAX` characters.
+pub fn crash_log_for_staff(skse_log_dir: &Path, since: SystemTime) -> Option<String> {
+    let path = newest_crash_log(skse_log_dir, since)?;
+    let whole = String::from_utf8_lossy(&std::fs::read(&path).ok()?).into_owned();
+    let text = if whole.chars().count() <= CRASH_LOG_MAX { whole } else { crash_log_parts(&path) };
+    Some(cut_chars(&text, CRASH_LOG_MAX))
+}
+
+/// At most `max` characters, marking the cut.
+pub fn cut_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mark = "\n…(cut to fit)";
+    let keep: String = text.chars().take(max.saturating_sub(mark.chars().count())).collect();
+    keep + mark
+}
+
+fn newest_crash_log(skse_log_dir: &Path, since: SystemTime) -> Option<PathBuf> {
+    let mut files = Vec::new();
+    walk(skse_log_dir, &mut files, 2);
+    files
+        .into_iter()
+        .filter(|p| {
+            let n = p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+            n.contains("crash") && n.ends_with(".log")
+        })
+        .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
+        .filter(|(t, _)| *t + Duration::from_secs(2) >= since)
+        .max_by_key(|(t, _)| *t)
+        .map(|(_, p)| p)
 }
 
 #[cfg(test)]
@@ -330,6 +357,25 @@ mod tests {
         assert!(got.starts_with("Unhandled exception"));
         assert!(got.contains("[ 0] X.dll+1") && got.contains("[ 0] Skyrim.esm"));
         assert!(got.lines().count() < 200);
+    }
+
+    #[test]
+    fn sends_the_crash_log_whole_or_trimmed() {
+        let t = tempfile::tempdir().unwrap();
+        let since = SystemTime::now() - Duration::from_secs(60);
+        assert_eq!(crash_log_for_staff(t.path(), since), None);
+        std::fs::write(t.path().join("crash-1.log"), "Unhandled exception\nREGISTERS:\nRAX 0").unwrap();
+        assert_eq!(crash_log_for_staff(t.path(), since).unwrap(), "Unhandled exception\nREGISTERS:\nRAX 0");
+        let mut big = String::from("Unhandled exception at X.dll+1\nREGISTERS:\n");
+        for i in 0..5000 {
+            big.push_str(&format!("[RSP+{i}] 0x0000000000000000 (size_t) [0]\n"));
+        }
+        big.push_str("SKSE PLUGINS:\n\tX.dll\n");
+        std::fs::write(t.path().join("crash-1.log"), big).unwrap();
+        let got = crash_log_for_staff(t.path(), since).unwrap();
+        assert!(got.chars().count() <= CRASH_LOG_MAX && got.contains("X.dll+1") && got.contains("SKSE PLUGINS"));
+        assert_eq!(cut_chars("abcdef", 100), "abcdef");
+        assert!(cut_chars(&"é".repeat(50), 20).chars().count() <= 20);
     }
 
     #[test]

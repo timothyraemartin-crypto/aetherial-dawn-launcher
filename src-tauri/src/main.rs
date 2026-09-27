@@ -266,7 +266,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     let report = run_health(&app, &state.http, &config.base_url, &dir, Some(&m)).await;
     log::line(&format!("health before play: worst={:?}\n{}", report.worst, report.text()));
     if report.worst >= health::Status::Warn && config.share_health {
-        send_health(&app, &state.http, &config, &m.build, "before play", None, &report).await;
+        send_health(&app, &state.http, &config, &m.build, "before play", None, None, &report).await;
     }
     ensure_requirements(&state, &dir).await?;
     let token = token(&app).ok_or("SIGNED_OUT:Sign in with Discord to play.")?;
@@ -423,6 +423,7 @@ async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::
     let health = run_health(&app, &http, &config.base_url, &game_dir, manifest.as_ref()).await;
     report.push_str(&format!("\n===== game health =====\n{}", health.text()));
     let mut staff_summary = summary.clone();
+    let crash_log = if crashed { watch::crash_log_for_staff(&skse_logs, started) } else { None };
     if crashed {
         if let Some(cl) = watch::crash_logger_summary(&skse_logs, started) {
             log::line(&format!("game: crash logger says:\n{cl}"));
@@ -434,7 +435,7 @@ async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::
     if crashed && config.share_health {
         let (app2, http2, health2) = (app.clone(), http.clone(), health.clone());
         tauri::async_runtime::spawn(async move {
-            let f = send_health(&app2, &http2, &config, &build, "after a crash", Some(&staff_summary), &health2).await;
+            let f = send_health(&app2, &http2, &config, &build, "after a crash", Some(&staff_summary), crash_log, &health2).await;
             if f.report_id.is_some() {
                 let _ = app2.emit("crash-filed", CrashFiled { report_id: f.report_id, likely_cause: f.likely_cause });
             }
@@ -1406,9 +1407,21 @@ fn fit_report(mut body: serde_json::Value) -> serde_json::Value {
             }
         }
     }
-    if let Some(t) = body["text"].as_str() {
-        let lines: Vec<&str> = t.lines().filter(|l| !bad(l)).collect();
-        body["text"] = lines.join("\n").into();
+    for key in ["text", "crashLog"] {
+        if let Some(t) = body[key].as_str() {
+            let lines: Vec<&str> = t.lines().filter(|l| !bad(l)).collect();
+            body[key] = lines.join("\n").into();
+        }
+    }
+    // The crash log gives way first, down to 12000 characters, so the
+    // checks' text still fits beside it.
+    let size = |b: &serde_json::Value| serde_json::to_vec(b).map(|v| v.len()).unwrap_or(0);
+    let over = size(&body).saturating_sub(HEALTH_REPORT_MAX);
+    if over > 0 {
+        if let Some(cl) = body["crashLog"].as_str().map(str::to_string) {
+            let keep = cl.chars().count().saturating_sub(over + 200).max(12_000);
+            body["crashLog"] = watch::cut_chars(&cl, keep).into();
+        }
     }
     let mut n = 0;
     while serde_json::to_vec(&body).map(|v| v.len()).unwrap_or(0) > HEALTH_REPORT_MAX && n < 20 {
@@ -1430,7 +1443,17 @@ fn fit_report(mut body: serde_json::Value) -> serde_json::Value {
     body
 }
 
-async fn send_health(app: &AppHandle, http: &reqwest::Client, config: &Config, build: &str, when: &str, crash: Option<&str>, r: &health::Report) -> Filed {
+#[allow(clippy::too_many_arguments)]
+async fn send_health(
+    app: &AppHandle,
+    http: &reqwest::Client,
+    config: &Config,
+    build: &str,
+    when: &str,
+    crash: Option<&str>,
+    crash_log: Option<String>,
+    r: &health::Report,
+) -> Filed {
     let Some(url) = health_report_url() else {
         log::line(&format!("health: report {when} not sent: the staff endpoint isn't set up yet"));
         return Filed::default();
@@ -1441,6 +1464,10 @@ async fn send_health(app: &AppHandle, http: &reqwest::Client, config: &Config, b
     };
     let mut body = health_payload(app, config, build, when, crash, r);
     body["consent"] = true.into();
+    if let Some(cl) = crash_log {
+        // The newest crash logger log as is (optional crashLog, bot CONTRACT.md).
+        body["crashLog"] = cl.into();
+    }
     let body = fit_report(body);
     for attempt in 0..2 {
         match post_report(http, &url, &token, &body, when).await {
