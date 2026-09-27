@@ -6,6 +6,14 @@
 //! (never shown or logged) that it trades for a game session on every Play.
 //! Being banned from, or leaving, the Discord makes the service refuse the
 //! token, which signs the player out.
+//!
+//! The state alone must not be enough to collect the token (a crafted link
+//! with a state someone else chose could hand them the player's sign-in;
+//! quality check 2026-09-27). So, PKCE style (RFC 7636, S256): the launcher
+//! keeps a secret verifier, sends only its SHA-256 as `code_challenge` with
+//! the state, and shows the verifier on the status call in the
+//! `x-code-verifier` header. A service that doesn't know about challenges
+//! ignores both.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -44,8 +52,8 @@ pub enum Answer<T> {
     Offline(String),
 }
 
-pub fn login_url(base: &str, state: &str) -> String {
-    format!("{}/api/users/login-discord?state={state}", base.trim_end_matches('/'))
+pub fn login_url(base: &str, state: &str, challenge: &str) -> String {
+    format!("{}/api/users/login-discord?state={state}&code_challenge={challenge}&code_challenge_method=S256", base.trim_end_matches('/'))
 }
 
 pub fn new_state() -> String {
@@ -53,6 +61,29 @@ pub fn new_state() -> String {
     let mut b = [0u8; 32];
     rand::rng().fill_bytes(&mut b);
     hex::encode(b)
+}
+
+/// A PKCE verifier: 64 hex characters (within RFC 7636's 43-128 unreserved).
+pub fn new_verifier() -> String {
+    new_state()
+}
+
+/// RFC 7636 S256: base64url (no padding) of the SHA-256 of the verifier.
+pub fn challenge(verifier: &str) -> String {
+    use sha2::{Digest, Sha256};
+    base64url(&Sha256::digest(verifier.as_bytes()))
+}
+
+fn base64url(bytes: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::new();
+    for c in bytes.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..=c.len() {
+            out.push(A[(n >> (18 - 6 * i) & 63) as usize] as char);
+        }
+    }
+    out
 }
 
 fn message(v: &Value, fallback: &str) -> String {
@@ -90,9 +121,9 @@ pub struct SignedIn {
 }
 
 /// One poll of the browser sign-in.
-pub async fn poll(client: &reqwest::Client, base: &str, state: &str) -> Answer<SignedIn> {
+pub async fn poll(client: &reqwest::Client, base: &str, state: &str, verifier: &str) -> Answer<SignedIn> {
     let url = format!("{}/api/users/login-discord/status?state={state}", base.trim_end_matches('/'));
-    classify(client.get(url).send().await, true).await
+    classify(client.get(url).header("x-code-verifier", verifier).send().await, true).await
 }
 
 /// Checks the token and re-reads the player's profile.
@@ -169,6 +200,15 @@ mod tests {
         assert_eq!(s.len(), 64);
         assert!(s.bytes().all(|b| b.is_ascii_hexdigit()));
         assert_ne!(s, new_state());
+    }
+
+    #[test]
+    fn challenge_is_rfc7636_s256() {
+        // RFC 7636 appendix B.
+        assert_eq!(challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+        let v = new_verifier();
+        assert_eq!(challenge(&v).len(), 43);
+        assert!(login_url("https://x/ad/", "s", "c").ends_with("/ad/api/users/login-discord?state=s&code_challenge=c&code_challenge_method=S256"));
     }
 
     #[test]
