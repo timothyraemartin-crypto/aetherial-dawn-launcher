@@ -66,7 +66,7 @@ fn key_path(app: &AppHandle) -> Option<PathBuf> {
     app.path().app_config_dir().ok().map(|d| d.join("nexus.bin"))
 }
 
-fn nexus_key(app: &AppHandle) -> Option<String> {
+pub(crate) fn nexus_key(app: &AppHandle) -> Option<String> {
     key_path(app).and_then(|p| auth::load_token(&p))
 }
 

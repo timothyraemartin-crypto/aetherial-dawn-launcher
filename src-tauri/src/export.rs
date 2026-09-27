@@ -1,0 +1,174 @@
+//! The server-mods export (staging runbook A1): when the server publishes
+//! server-lane.json naming this PC's Discord account, the launcher fetches
+//! those pinned Nexus files with the signed-in Premium account, in the
+//! background, into %LOCALAPPDATA%\gg.aetherialdawn.launcher\server-lane
+//! (never the Skyrim folder), keeps their plugins and zips them to
+//! server-lane.zip next to a sha256 line. It uploads nothing: the zip stays
+//! on this PC.
+
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use launcher_core::{modlist, nexus, serverlane};
+use tauri::{AppHandle, Manager};
+
+use crate::{log, AppState};
+
+static RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Starts an export in the background when one is due. Only one runs at a time.
+pub fn start(app: &AppHandle) {
+    if RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = run(&app).await {
+            log::line(&format!("export: stopped: {e}"));
+        }
+        RUNNING.store(false, Ordering::SeqCst);
+    });
+}
+
+async fn run(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let (base, me) = {
+        let c = state.config.lock().await;
+        (c.base_url.clone(), c.account.as_ref().and_then(|a| a.discord_id.clone()))
+    };
+    let url = format!("{}/server-lane.json", base.trim_end_matches('/'));
+    let lane: serverlane::ServerLane = match state.http.get(&url).send().await {
+        Ok(r) if r.status().is_success() => r.json().await.map_err(|e| format!("server-lane.json: {e}"))?,
+        // Not published: nothing to export (every other player's case).
+        _ => return Ok(()),
+    };
+    if me.as_deref() != Some(lane.for_discord_id.as_str()) {
+        return Ok(());
+    }
+    serverlane::check(&lane).map_err(|e| e.to_string())?;
+    let root = serverlane::lane_dir(&app.path().app_local_data_dir().map_err(|e| e.to_string())?);
+    let hash = serverlane::list_hash(&lane);
+    if serverlane::done(&root, &hash) {
+        return Ok(());
+    }
+    let Some(key) = crate::mods::nexus_key(app) else {
+        log::line("export: the server lane waits for a Nexus sign-in");
+        return Ok(());
+    };
+    let version = app.package_info().version.to_string();
+    let api = nexus::Client { http: &state.http, key: &key, app_version: &version };
+    if !api.validate().await.map_err(|e| e.to_string())?.is_premium {
+        log::line("export: the server lane needs a Premium Nexus account; nothing downloaded");
+        return Ok(());
+    }
+    log::line(&format!("export: server lane of {} mods into {}", lane.mods.len(), root.display()));
+    {
+        let root = root.clone();
+        tokio::task::spawn_blocking(move || serverlane::start_over(&root)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+    }
+    let mut plugins = std::collections::BTreeMap::new();
+    let mut failed = Vec::new();
+    for m in &lane.mods {
+        match one(&api, &root, m).await {
+            Ok(picked) => {
+                let names: Vec<&str> = picked.iter().map(|p| p.1.as_str()).collect();
+                log::line(&format!("export: {} gave {}", m.entry.name, names.join(", ")));
+                if let Err(e) = serverlane::collect(&root, &m.entry.id, &picked, &mut plugins) {
+                    failed.push(format!("{}: {e}", m.entry.name));
+                }
+            }
+            Err(e) => failed.push(format!("{}: {e}", m.entry.name)),
+        }
+    }
+    if !failed.is_empty() {
+        for f in &failed {
+            log::line(&format!("export: failed {f}"));
+        }
+        return Err(format!("{} of {} mods didn't export; it tries again the next time the launcher starts", failed.len(), lane.mods.len()));
+    }
+    let rec = {
+        let root = root.clone();
+        tokio::task::spawn_blocking(move || serverlane::finish(&root, &hash, plugins)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?
+    };
+    let _ = std::fs::remove_dir_all(root.join("downloads"));
+    let _ = std::fs::remove_dir_all(root.join("unpacked"));
+    log::line(&format!(
+        "export: {} ready: {} plugins, {} bytes, sha256 {}",
+        root.join(serverlane::ZIP_NAME).display(),
+        rec.plugins.len(),
+        rec.zip_bytes,
+        rec.zip_sha256
+    ));
+    Ok(())
+}
+
+/// Downloads (or reuses) one pinned file, unpacks it and picks its plugins.
+async fn one(api: &nexus::Client<'_>, root: &Path, m: &serverlane::LaneMod) -> Result<Vec<(std::path::PathBuf, String)>, String> {
+    let n = m.entry.nexus.as_ref().ok_or("not a Nexus mod")?;
+    let file = n.file.ok_or("not pinned to one file")?;
+    let downloads = root.join("downloads");
+    let prefix = format!("{}-{file}.", m.entry.id);
+    let have = std::fs::read_dir(&downloads).ok().and_then(|rd| rd.flatten().map(|e| e.path()).find(|p| p.file_name().is_some_and(|f| f.to_string_lossy().starts_with(&prefix) && !f.to_string_lossy().ends_with(".part"))));
+    let archive = match have.filter(|p| modlist::verify(&m.entry, p).is_ok()) {
+        Some(p) => p,
+        None => {
+            let url = api.download_link(modlist::NEXUS_GAME, n.mod_id, file, None).await.map_err(|e| e.to_string())?;
+            let name = url.split('?').next().unwrap_or("").rsplit('/').next().unwrap_or("");
+            let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).filter(|e| e.len() <= 4 && e.bytes().all(|b| b.is_ascii_alphanumeric())).unwrap_or_else(|| "bin".into());
+            let path = downloads.join(format!("{prefix}{ext}"));
+            log::line(&format!("export: downloading {} (mod {}, file {file})", m.entry.name, n.mod_id));
+            fetch(api.http, &url, &path).await?;
+            modlist::verify(&m.entry, &path).map_err(|e| e.to_string())?;
+            path
+        }
+    };
+    let (m, root) = (m.clone(), root.to_path_buf());
+    tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let work = root.join("unpacked").join(&m.entry.id);
+        let _ = std::fs::remove_dir_all(&work);
+        modlist::extract(&archive, &work).map_err(|e| e.to_string())?;
+        if let Some(r) = modlist::fomod_report(&m.entry, &work) {
+            log::line(&format!("export: {} installer options (picks {:?}): {}", m.entry.name, m.entry.fomod, r.join(" || ")));
+        }
+        let picked = serverlane::pick(&m, &work).map_err(|e| e.to_string());
+        // The picked files are copied out before the folder goes.
+        let out = picked.and_then(|p| {
+            let keep = root.join("unpacked").join(format!("{}.keep", m.entry.id));
+            let _ = std::fs::remove_dir_all(&keep);
+            std::fs::create_dir_all(&keep).map_err(|e| e.to_string())?;
+            p.into_iter()
+                .map(|(from, name)| {
+                    let to = keep.join(&name);
+                    std::fs::copy(&from, &to).map_err(|e| e.to_string())?;
+                    Ok((to, name))
+                })
+                .collect::<Result<Vec<_>, String>>()
+        });
+        let _ = std::fs::remove_dir_all(&work);
+        out
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// A plain download to `path` (through a .part file). Only https.
+async fn fetch(http: &reqwest::Client, url: &str, path: &Path) -> Result<(), String> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    if !url.starts_with("https://") {
+        return Err("the download address isn't secure".into());
+    }
+    let resp = http.get(url).send().await.and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
+    if let Some(p) = path.parent() {
+        tokio::fs::create_dir_all(p).await.map_err(|e| e.to_string())?;
+    }
+    let tmp = path.with_extension("part");
+    let mut f = tokio::fs::File::create(&tmp).await.map_err(|e| e.to_string())?;
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        f.write_all(&chunk.map_err(|e| e.to_string())?).await.map_err(|e| e.to_string())?;
+    }
+    f.flush().await.map_err(|e| e.to_string())?;
+    drop(f);
+    tokio::fs::rename(&tmp, path).await.map_err(|e| e.to_string())
+}

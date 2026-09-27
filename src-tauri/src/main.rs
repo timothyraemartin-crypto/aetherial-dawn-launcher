@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
+mod export;
 mod log;
 mod mods;
 mod music;
@@ -467,8 +468,10 @@ async fn end_when_window_closed(pid: u32) {
 /// Follows Skyrim from launch to exit. Every session leaves a report in the
 /// log folder; a crash brings the launcher back with that report on screen.
 async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::time::SystemTime, close_on_launch: bool) {
-    watch_game_inner(app, &game_dir, started, close_on_launch).await;
+    watch_game_inner(app.clone(), &game_dir, started, close_on_launch).await;
     restore_ccc(&game_dir, "the game closed");
+    // The server lane downloads while nobody's playing.
+    export::start(&app);
 }
 
 async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: std::time::SystemTime, close_on_launch: bool) {
@@ -1895,6 +1898,8 @@ fn main() {
                     restore_ccc(&dir, "the launcher started and the game isn't running");
                 }
             }
+            // The server-mods export, only on the PC the server names.
+            export::start(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside, skip_tool])

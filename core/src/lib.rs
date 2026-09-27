@@ -20,6 +20,7 @@ pub mod patcher;
 pub mod presets;
 pub mod pristine;
 pub mod requirements;
+pub mod serverlane;
 pub mod serverorder;
 pub mod settings;
 pub mod skse;
