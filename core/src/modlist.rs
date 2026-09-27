@@ -483,6 +483,7 @@ pub fn extract(archive: &Path, dir: &Path) -> Result<()> {
     }
     if head.starts_with(b"PK") {
         let mut zip = zip::ZipArchive::new(std::fs::File::open(archive)?).map_err(|e| Error::Game(format!("the download isn't a readable zip: {e}")))?;
+        let mut total = 0u64;
         for i in 0..zip.len() {
             // LZMA entries (method 14) go through lzma-rust2; the rest
             // through the zip crate (deflate, deflate64, bzip2, zstd).
@@ -500,11 +501,16 @@ pub fn extract(archive: &Path, dir: &Path) -> Result<()> {
                 std::fs::create_dir_all(p)?;
             }
             let mut out = std::fs::File::create(&dest)?;
+            total += f.size();
+            if f.size() > MAX_ENTRY || total > MAX_TOTAL {
+                return Err(Error::Game(format!("the download unpacks to more than the launcher allows ({} is {} bytes)", f.name(), f.size())));
+            }
             if lzma {
-                let size = f.size();
+                let (size, crc) = (f.size(), f.crc32());
                 let got = std::io::copy(&mut zip_lzma(&mut f, size)?, &mut out)?;
-                if got != size {
-                    return Err(Error::Game(format!("couldn't unpack {}: it came out {got} bytes, not {size}", f.name())));
+                drop(out);
+                if got != size || crate::serverorder::crc32(&dest) != Some(crc) {
+                    return Err(Error::Game(format!("couldn't unpack {}: the download is damaged", f.name())));
                 }
             } else {
                 std::io::copy(&mut f, &mut out)?;
@@ -537,6 +543,12 @@ pub fn extract(archive: &Path, dir: &Path) -> Result<()> {
     }
 }
 
+/// Limits on what one download may unpack to (a crafted archive can claim
+/// anything): one file, the whole archive, and an LZMA dictionary.
+const MAX_ENTRY: u64 = 8 << 30;
+const MAX_TOTAL: u64 = 40 << 30;
+const MAX_LZMA_DICT: u32 = 256 << 20;
+
 /// A zip entry's LZMA stream (APPNOTE 5.8.8: a 2-byte version, a 2-byte
 /// properties length, the 5 properties bytes, then raw LZMA data).
 fn zip_lzma<R: std::io::Read>(mut r: R, size: u64) -> Result<lzma_rust2::LzmaReader<R>> {
@@ -549,6 +561,10 @@ fn zip_lzma<R: std::io::Read>(mut r: R, size: u64) -> Result<lzma_rust2::LzmaRea
     let mut props = vec![0u8; len];
     r.read_exact(&mut props)?;
     let dict = u32::from_le_bytes([props[1], props[2], props[3], props[4]]);
+    // The decoder allocates the dictionary up front; mods use 64 MB at most.
+    if dict > MAX_LZMA_DICT {
+        return Err(Error::Game(format!("a zip entry asks for a {} MB LZMA dictionary", dict >> 20)));
+    }
     lzma_rust2::LzmaReader::new_with_props(r, size, props[0], dict, None).map_err(|e| Error::Game(format!("couldn't unpack an LZMA entry: {e}")))
 }
 
@@ -768,16 +784,23 @@ pub fn option_fits_game(name: &str) -> bool {
             }
             let tok = l[start..i].trim_end_matches('.');
             let parts: Vec<u32> = tok.split('.').filter_map(|x| x.parse().ok()).collect();
+            let before = l[..start].trim_end_matches(['v', ' ']);
+            let upto = before.ends_with("pre-") || before.ends_with("pre") || before.ends_with("before") || before.ends_with('<') || before.ends_with("below");
             if parts.len() == 3 && parts[0] == 1 && (5..=7).contains(&parts[1]) {
                 let rest = l[i..].trim_start_matches([' ', ')']);
                 let open = ["+", "and newer", "and up", "or newer", "or later", "and later"].iter().any(|w| rest.starts_with(w));
-                versions.push(((parts[0], parts[1], parts[2]), open));
+                let v = (parts[0], parts[1], parts[2]);
+                // "pre-1.6.1170" / "before 1.6.640": only below that version.
+                versions.push(if upto { GAME < v } else { v == GAME || (open && v <= GAME) });
+            } else if parts.len() == 2 && parts[0] == 1 && (5..=7).contains(&parts[1]) {
+                // "1.6" names the whole AE line.
+                versions.push(if upto { false } else { parts[1] == 6 });
             }
             continue;
         }
         i += 1;
     }
-    versions.is_empty() || versions.iter().any(|&(v, open)| v == GAME || (open && v <= GAME))
+    versions.is_empty() || versions.iter().any(|&fits| fits)
 }
 
 /// FOMOD configs are UTF-8 or UTF-16 (with a byte order mark).
@@ -871,9 +894,12 @@ pub fn fomod_pick(xml: &str, choose: &[String]) -> Result<(Vec<FomodFile>, Vec<S
                 let all: Vec<_> = children(plugins, "plugin").filter(|p| !banned(p)).collect();
                 let mut named: Vec<_> = all.iter().filter(|p| wanted.iter().any(|w| p.attribute("name").unwrap_or("").to_ascii_lowercase().contains(w.as_str()))).copied().collect();
                 // "AE" also matches "SSE/AE v1.7.99+" (Moons and Stars,
-                // 2026-09-27): an option naming only other Skyrim versions
-                // goes after the ones that fit 1.6.1170.
-                named.sort_by_key(|p| !option_fits_game(p.attribute("name").unwrap_or("")));
+                // 2026-09-27): when any named option fits 1.6.1170, the ones
+                // naming only other Skyrim versions are dropped (in a
+                // SelectAny group they would all install, the last winning).
+                if named.iter().any(|p| option_fits_game(p.attribute("name").unwrap_or(""))) {
+                    named.retain(|p| option_fits_game(p.attribute("name").unwrap_or("")));
+                }
                 let mut picked: Vec<_> = if !named.is_empty() {
                     named
                 } else {
@@ -1097,6 +1123,12 @@ mod tests {
         assert!(super::option_fits_game("AE 1.6.1130 and newer"));
         assert!(super::option_fits_game("AE"));
         assert!(super::option_fits_game("Version 2.1.0"));
+        assert!(super::option_fits_game("SE/AE"));
+        assert!(super::option_fits_game("1.5.97 and 1.6"), "names the AE line too");
+        assert!(!super::option_fits_game("pre-1.6.1170"));
+        assert!(!super::option_fits_game("AE before 1.6.640"));
+        assert!(super::option_fits_game("pre-1.7.99"));
+        assert!(!super::option_fits_game("SE 1.5"));
         let xml = r#"<config><installSteps><installStep name="s"><optionalFileGroups><group name="Game version" type="SelectExactlyOne"><plugins>
             <plugin name="SSE/AE v1.7.99+"><files><file source="new/po3_MoonMod.dll" destination="SKSE/Plugins/po3_MoonMod.dll"/></files><typeDescriptor><type name="Optional"/></typeDescriptor></plugin>
             <plugin name="AE v1.6.1170"><files><file source="old/po3_MoonMod.dll" destination="SKSE/Plugins/po3_MoonMod.dll"/></files><typeDescriptor><type name="Optional"/></typeDescriptor></plugin>
@@ -1104,6 +1136,14 @@ mod tests {
         </plugins></group></optionalFileGroups></installStep></installSteps></config>"#;
         let (files, report) = super::fomod_pick(xml, &["AE".into()]).unwrap();
         assert_eq!(files.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(), vec!["old/po3_MoonMod.dll"], "{report:?}");
+        // In a SelectAny group every named option installs: the one for
+        // another Skyrim is dropped, not just moved last.
+        let any = xml.replace("SelectExactlyOne", "SelectAny");
+        let (files, report) = super::fomod_pick(&any, &["AE".into()]).unwrap();
+        assert_eq!(files.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(), vec!["old/po3_MoonMod.dll"], "{report:?}");
+        // When none fits, the pick still stands (nothing better to take).
+        let (files, _) = super::fomod_pick(&any, &["SSE/AE v1.7".into()]).unwrap();
+        assert_eq!(files.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(), vec!["new/po3_MoonMod.dll"]);
     }
 
     #[test]
@@ -1115,6 +1155,23 @@ mod tests {
             super::extract(&a, &t.path().join("out")).unwrap();
             assert_eq!(std::fs::read(t.path().join("out/SKSE/Plugins/x.dll")).unwrap(), b"hello world".repeat(50), "{name}");
         }
+        // A huge LZMA dictionary, or a changed checksum, is refused.
+        let lz = include_bytes!("../testdata/lzma.zip").to_vec();
+        let name_len = u16::from_le_bytes([lz[26], lz[27]]) as usize;
+        let extra_len = u16::from_le_bytes([lz[28], lz[29]]) as usize;
+        let props = 30 + name_len + extra_len + 4;
+        let mut big = lz.clone();
+        big[props + 1..props + 5].copy_from_slice(&(1u32 << 31).to_le_bytes());
+        let t = tempfile::tempdir().unwrap();
+        std::fs::write(t.path().join("big.zip"), &big).unwrap();
+        let e = super::extract(&t.path().join("big.zip"), &t.path().join("out")).unwrap_err().to_string();
+        assert!(e.contains("dictionary"), "{e}");
+        let mut bad = lz.clone();
+        let cd = bad.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+        bad[cd + 16] ^= 0xFF;
+        std::fs::write(t.path().join("bad.zip"), &bad).unwrap();
+        let e = super::extract(&t.path().join("bad.zip"), &t.path().join("out2")).unwrap_err().to_string();
+        assert!(e.contains("damaged"), "{e}");
         // Zstandard, written here.
         let t = tempfile::tempdir().unwrap();
         let a = t.path().join("zstd.zip");
