@@ -111,6 +111,12 @@ async fn run(app: &AppHandle) -> Result<(), String> {
             wait_for_game_to_close().await;
             got = one(&api, &root, m).await;
         }
+        // Playing isn't a failure: stop without counting a try, and carry
+        // on (finished downloads kept) when the game next closes.
+        if got.as_ref().is_err_and(|e| e == GAME_RUNNING) {
+            say("export: stopped for the game; it carries on after the game closes");
+            return Ok(());
+        }
         match got {
             Ok(picked) => {
                 let names: Vec<&str> = picked.iter().map(|p| p.1.as_str()).collect();
@@ -161,17 +167,20 @@ async fn one(api: &nexus::Client<'_>, root: &Path, m: &serverlane::LaneMod) -> R
             let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).filter(|e| e.len() <= 4 && e.bytes().all(|b| b.is_ascii_alphanumeric())).unwrap_or_else(|| "bin".into());
             let path = downloads.join(format!("{prefix}{ext}"));
             say(&format!("export: downloading {} (mod {}, file {file})", m.entry.name, n.mod_id));
-            fetch(api.http, &url, &path).await?;
+            let tmp = fetch(api.http, &url, &path).await?;
             if let Some(want) = m.archive.as_ref().and_then(|a| a.size_bytes) {
-                let got = std::fs::metadata(&path).map(|md| md.len()).unwrap_or(0);
+                let got = std::fs::metadata(&tmp).map(|md| md.len()).unwrap_or(0);
                 if got != want {
                     say(&format!("export: {} came as {got} bytes; the list expected {want} ({})", m.entry.name, m.archive.as_ref().and_then(|a| a.version.as_deref()).unwrap_or("?")));
                 }
             }
-            if let Err(e) = serverlane::verify(m, &path) {
-                let _ = std::fs::remove_file(&path);
+            // Checked while still a .part file, so a bad download is never
+            // taken for a finished one.
+            if let Err(e) = serverlane::verify(m, &tmp) {
+                let _ = std::fs::remove_file(&tmp);
                 return Err(e.to_string());
             }
+            std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
             path
         }
     };
@@ -204,9 +213,10 @@ async fn one(api: &nexus::Client<'_>, root: &Path, m: &serverlane::LaneMod) -> R
     .map_err(|e| e.to_string())?
 }
 
-/// A plain download to `path` (through a .part file). Only https. Stops
-/// when the connection stalls or the game starts.
-async fn fetch(http: &reqwest::Client, url: &str, path: &Path) -> Result<(), String> {
+/// A plain download into `path`'s .part file, which it returns for the
+/// caller to check and rename. Only https. Stops when the connection stalls,
+/// runs too slowly, or the game starts.
+async fn fetch(http: &reqwest::Client, url: &str, path: &Path) -> Result<std::path::PathBuf, String> {
     use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
     if !url.starts_with("https://") {
@@ -220,6 +230,8 @@ async fn fetch(http: &reqwest::Client, url: &str, path: &Path) -> Result<(), Str
     let mut f = tokio::fs::File::create(&tmp).await.map_err(|e| e.to_string())?;
     let mut stream = resp.bytes_stream();
     let mut checked = std::time::Instant::now();
+    let started = std::time::Instant::now();
+    let mut got = 0u64;
     loop {
         let chunk = match tokio::time::timeout(STALL, stream.next()).await {
             Ok(Some(c)) => c.map_err(|e| e.to_string())?,
@@ -227,6 +239,12 @@ async fn fetch(http: &reqwest::Client, url: &str, path: &Path) -> Result<(), Str
             Err(_) => return Err(format!("the download stalled for {} seconds", STALL.as_secs())),
         };
         f.write_all(&chunk).await.map_err(|e| e.to_string())?;
+        got += chunk.len() as u64;
+        if serverlane::too_slow(got, started.elapsed()) {
+            drop(f);
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(format!("the download ran slower than {} KB/s", serverlane::MIN_RATE / 1024));
+        }
         if checked.elapsed() > Duration::from_secs(5) {
             checked = std::time::Instant::now();
             if game_running() {
@@ -238,5 +256,5 @@ async fn fetch(http: &reqwest::Client, url: &str, path: &Path) -> Result<(), Str
     }
     f.flush().await.map_err(|e| e.to_string())?;
     drop(f);
-    tokio::fs::rename(&tmp, path).await.map_err(|e| e.to_string())
+    Ok(tmp)
 }

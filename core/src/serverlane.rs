@@ -57,6 +57,17 @@ pub struct ArchiveInfo {
     pub size_bytes: Option<u64>,
 }
 
+/// A download slower than this on average (after its first two minutes)
+/// is stopped, so a trickle that beats the stall timeout can't hold the
+/// export forever.
+pub const MIN_RATE: u64 = 16 * 1024;
+const RATE_GRACE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// True when `got` bytes in `took` is below MIN_RATE, after the grace time.
+pub fn too_slow(got: u64, took: std::time::Duration) -> bool {
+    took > RATE_GRACE && (got as u128) < MIN_RATE as u128 * took.as_millis() / 1000
+}
+
 /// Checks a downloaded archive against the list's size and sha256.
 pub fn verify(m: &LaneMod, archive: &Path) -> Result<()> {
     if let Some(want) = m.size {
@@ -444,6 +455,16 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join("server-lane.zip.sha256")).unwrap(), format!("{}  server-lane.zip\n", rec.zip_sha256));
         start_over(&root).unwrap();
         assert!(!done(&root, &h) && !root.join("Data").exists());
+    }
+
+    #[test]
+    fn a_trickle_is_too_slow() {
+        use std::time::Duration;
+        assert!(!too_slow(1, Duration::from_secs(119)), "grace time first");
+        // One byte every 59 seconds, 3 minutes in.
+        assert!(too_slow(3, Duration::from_secs(180)));
+        assert!(!too_slow(180 * 1024 * 1024, Duration::from_secs(180)));
+        assert!(too_slow(MIN_RATE * 180 - 1, Duration::from_secs(180)));
     }
 
     #[test]
