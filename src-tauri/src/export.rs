@@ -48,7 +48,7 @@ async fn run(app: &AppHandle) -> Result<(), String> {
     serverlane::check(&lane).map_err(|e| e.to_string())?;
     let root = serverlane::lane_dir(&app.path().app_local_data_dir().map_err(|e| e.to_string())?);
     let hash = serverlane::list_hash(&lane);
-    if serverlane::done(&root, &hash) {
+    if serverlane::done(&root, &hash) || serverlane::gave_up(&root, &hash) {
         return Ok(());
     }
     let Some(key) = crate::mods::nexus_key(app) else {
@@ -84,7 +84,9 @@ async fn run(app: &AppHandle) -> Result<(), String> {
         for f in &failed {
             log::line(&format!("export: failed {f}"));
         }
-        return Err(format!("{} of {} mods didn't export; it tries again the next time the launcher starts", failed.len(), lane.mods.len()));
+        let tries = serverlane::failed(&root, &hash).map_err(|e| e.to_string())?;
+        let next = if tries >= serverlane::MAX_FAILURES { "it stops trying until the server's list changes" } else { "it tries again the next time the launcher starts or the game closes" };
+        return Err(format!("{} of {} mods didn't export (try {tries}); {next}", failed.len(), lane.mods.len()));
     }
     let rec = {
         let root = root.clone();

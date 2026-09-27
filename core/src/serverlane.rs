@@ -48,6 +48,38 @@ pub struct Record {
 pub const LANE_DIR: &str = "server-lane";
 pub const ZIP_NAME: &str = "server-lane.zip";
 const RECORD: &str = "export.json";
+const FAILURES: &str = "failures.json";
+/// Failed exports of one list before the launcher stops trying until the
+/// list changes.
+pub const MAX_FAILURES: u32 = 2;
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct Failures {
+    list: String,
+    count: u32,
+}
+
+fn failures(root: &Path) -> Failures {
+    std::fs::read(root.join(FAILURES)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// True when this list already failed MAX_FAILURES times.
+pub fn gave_up(root: &Path, hash: &str) -> bool {
+    let f = failures(root);
+    f.list == hash && f.count >= MAX_FAILURES
+}
+
+/// Records one failed export of this list; returns how many so far.
+pub fn failed(root: &Path, hash: &str) -> Result<u32> {
+    let mut f = failures(root);
+    if f.list != hash {
+        f = Failures { list: hash.to_string(), count: 0 };
+    }
+    f.count += 1;
+    std::fs::create_dir_all(root)?;
+    std::fs::write(root.join(FAILURES), serde_json::to_vec(&f)?)?;
+    Ok(f.count)
+}
 
 /// A stable fingerprint of the list: a changed list exports again.
 pub fn list_hash(lane: &ServerLane) -> String {
@@ -223,6 +255,7 @@ pub fn finish(root: &Path, hash: &str, plugins: BTreeMap<String, String>) -> Res
     }
     let rec = Record { list: hash.to_string(), plugins, zip_sha256: format!("{:x}", h.finalize()), zip_bytes: bytes };
     std::fs::write(root.join(RECORD), serde_json::to_vec_pretty(&rec)?)?;
+    let _ = std::fs::remove_file(root.join(FAILURES));
     // The sha256sum line the VPS checks the carried zip against.
     std::fs::write(root.join(format!("{ZIP_NAME}.sha256")), format!("{}  {ZIP_NAME}\n", rec.zip_sha256))?;
     Ok(rec)
@@ -313,5 +346,21 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join("server-lane.zip.sha256")).unwrap(), format!("{}  server-lane.zip\n", rec.zip_sha256));
         start_over(&root).unwrap();
         assert!(!done(&root, &h) && !root.join("Data").exists());
+    }
+
+    #[test]
+    fn stops_after_two_failures_until_the_list_changes() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join(LANE_DIR);
+        assert!(!gave_up(&root, "a"));
+        assert_eq!(failed(&root, "a").unwrap(), 1);
+        assert!(!gave_up(&root, "a"));
+        assert_eq!(failed(&root, "a").unwrap(), 2);
+        assert!(gave_up(&root, "a"));
+        assert!(!gave_up(&root, "b"), "a changed list gets tries again");
+        assert_eq!(failed(&root, "b").unwrap(), 1);
+        // A good export clears the count.
+        finish(&root, "b", BTreeMap::new()).unwrap();
+        assert!(!gave_up(&root, "b") && failed(&root, "b").unwrap() == 1);
     }
 }
