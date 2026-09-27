@@ -135,23 +135,26 @@ const LIGHT: u32 = 0x200;
 /// Only the name counts, never Skyrim.ccc: the server has none, and the
 /// launcher empties the PC's for a session, so both decide the same way.
 fn shipped_with_game(plugin: &str) -> bool {
-    if crate::health::MASTERS.iter().any(|m| m.eq_ignore_ascii_case(plugin)) {
+    if crate::health::MASTERS.iter().any(|m| m.eq_ignore_ascii_case(plugin)) || plugin.eq_ignore_ascii_case("_ResourcePack.esl") {
         return true;
     }
-    // Creation Club names only: cc + a 3-letter creator code + "sse" + 3
-    // digits, then "-" or "_" and a name of letters and digits, as in
-    // ccBGSSSE025-AdvDSGS.esm or ccKRTSSE001_Altar.esl. A mod's own file
-    // such as "ccBGSSSE001-Fish - Patch.esp" has a space and doesn't match.
+    // Names shaped like Creation Club files: cc + a 3-letter creator code +
+    // "sse" + 3 digits, then "-" or "_" and a name of letters, digits and
+    // "_", then .esm, .esp or .esl, as in ccBGSSSE025-AdvDSGS.esm or
+    // ccKRTSSE001_Altar.esl. A mod's own file such as "ccBGSSSE001-Fish -
+    // Patch.esp" has a space and doesn't match.
     let b = plugin.as_bytes();
     let Some(dot) = plugin.rfind('.') else { return false };
+    let ext = &plugin[dot..];
     b.len() > 13
+        && [".esm", ".esp", ".esl"].iter().any(|e| e.eq_ignore_ascii_case(ext))
         && b[..2].eq_ignore_ascii_case(b"cc")
         && b[2..5].iter().all(u8::is_ascii_alphabetic)
         && b[5..8].eq_ignore_ascii_case(b"sse")
         && b[8..11].iter().all(u8::is_ascii_digit)
         && matches!(b[11], b'-' | b'_')
         && dot > 12
-        && b[12..dot].iter().all(u8::is_ascii_alphanumeric)
+        && b[12..dot].iter().all(|&c| c.is_ascii_alphanumeric() || c == b'_')
 }
 
 /// The whole TES4 header is there (at most 1 MiB, the most `head` reads),
@@ -823,6 +826,16 @@ mod tests {
             assert_eq!(run_as(&g, n), n);
         }
         assert_eq!(run_as(&g, "Cut.esp"), "Cut.esp");
+    }
+
+    #[test]
+    fn creation_club_names_are_told_apart_by_shape() {
+        for n in ["ccBGSSSE001-Fish.esm", "ccKRTSSE001_Altar.esl", "CCQDRSSE001-SurvivalMode.ESL", "ccBGSSSE064-Some_Name.esp", "_ResourcePack.esl", "Skyrim.esm"] {
+            assert!(shipped_with_game(n), "{n}");
+        }
+        for n in ["ccBGSSSE001-Fish - Patch.esp", "ccBGSSSE001-Fish.bsa", "ccBGSSSE001-.esp", "ccBGSSE001-Fish.esp", "ccBGSSSE01-Fish.esp", "ccBGSSSE001Fish.esp", "cc.esp", "Other.esp"] {
+            assert!(!shipped_with_game(n), "{n}");
+        }
     }
 
     #[test]
