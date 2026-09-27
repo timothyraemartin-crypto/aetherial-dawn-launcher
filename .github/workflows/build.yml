@@ -82,3 +82,40 @@ jobs:
           body: |
             Windows installer for the Aetherial Dawn launcher.
             Download **AetherialDawn-Launcher-…-setup.exe** below and run it. Windows may warn that the app is unrecognised because it isn't code-signed yet; choose **More info → Run anyway**.
+
+  # The canonical-plugins tool for the server (staging runbook C): the VPS has
+  # no Rust, so it downloads this build from the release instead. Static
+  # (musl), so it runs on any Linux x86_64. It runs after the Windows job so
+  # both add to the one release.
+  canonical-plugins-linux:
+    needs: windows
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - name: Install musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build
+        shell: bash
+        run: |
+          cargo build --locked --release -p launcher-core --bin canonical-plugins --target x86_64-unknown-linux-musl
+          mkdir dist
+          cp target/x86_64-unknown-linux-musl/release/canonical-plugins dist/canonical-plugins-linux-x86_64
+          (cd dist && sha256sum canonical-plugins-linux-x86_64 | tee canonical-plugins-linux-x86_64.sha256)
+          echo "VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: canonical-plugins-linux-x86_64
+          path: dist/*
+      - name: Add to the release
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          overwrite_files: true
+          files: dist/*
