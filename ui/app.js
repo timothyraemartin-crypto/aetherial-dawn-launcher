@@ -92,6 +92,9 @@
     if (p === 'mods') loadFiles();
   }
   function showSheet(id) {
+    // Leaving the mods sheet stops a Nexus sign-in that is still waiting,
+    // so the clipboard is never read once the player has moved on.
+    if (id !== 'reqs' && !$('reqs').hidden) invoke('nexus_sso_cancel').catch(() => {});
     $('first').hidden = id !== 'first';
     $('settings').hidden = id !== 'settings';
     $('downgrade').hidden = id !== 'downgrade';

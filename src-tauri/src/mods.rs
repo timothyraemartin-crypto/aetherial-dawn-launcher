@@ -243,7 +243,7 @@ pub async fn nexus_copy_sign_in(app: AppHandle, state: State<'_, AppState>) -> C
         open_url(&app, nexus::API_KEY_PAGE)?;
         log::line("mods: opened the Nexus key page; waiting for the player to copy their key");
         let mut tried: Vec<String> = vec![before];
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10 * 60);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3 * 60);
         loop {
             if stop.load(Ordering::SeqCst) {
                 return Err("sign-in cancelled".to_string());
