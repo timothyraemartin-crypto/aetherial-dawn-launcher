@@ -12,6 +12,10 @@ use crate::requirements::USSEP_PLUGIN;
 pub const NEWEST_FOR_1170: (u32, u32, u32) = (4, 3, 8);
 /// Picks the 1.6.1170 file on the Nexus page (matched against the version).
 pub const NEXUS_PICK: &str = "4.3.8";
+/// Nexus's file id for 4.3.8a (archived; the newer file list showed it on
+/// 2026-09-27, /mnt/project-files/reference/ussep-files.json). Pinned so
+/// the launcher asks for it directly.
+pub const NEXUS_FILE: u64 = 733846;
 pub const USSEP_ARCHIVE: &str = "Unofficial Skyrim Special Edition Patch.bsa";
 
 /// The first "4.3.9"-style version in a text ("4-3-9c" too), with no digit

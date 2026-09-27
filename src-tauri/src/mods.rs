@@ -467,8 +467,13 @@ async fn premium_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, gam
     // Archived files only when no current file matches the pick (one extra
     // call, for the Unofficial Patch 4.3.8a), so broad picks like "AE" never
     // pull in old archived builds.
-    let pinned_archived = n.file.is_some_and(|id| !files.iter().any(|f| f.file_id == id));
-    if pinned_archived || n.pick.as_deref().is_some_and(|p| !nexus::pick_is_current(&files, p)) {
+    // A pinned file the list leaves out (an archived one, like the
+    // Unofficial Patch 4.3.8a) is asked for by its id directly: no extra
+    // lookups, and it still works if Nexus changes its lists.
+    if let Some(id) = n.file.filter(|id| !files.iter().any(|f| f.file_id == *id)) {
+        log::line(&format!("mods: {} asking Nexus for pinned file id {id}", m.name));
+        files.push(nexus::NexusFile { file_id: id, name: m.name.clone(), version: None, category_name: Some("PINNED".into()), uploaded_timestamp: 0, file_name: String::new(), size_in_bytes: None });
+    } else if n.file.is_none() && n.pick.as_deref().is_some_and(|p| !nexus::pick_is_current(&files, p)) {
         let every = match api.game_id(modlist::NEXUS_GAME).await {
             Ok(g) => api.all_files(g, n.mod_id).await,
             Err(e) => Err(e),
@@ -534,7 +539,9 @@ async fn premium_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, gam
             }
         };
         log::line(&format!("mods: {} downloading {} {} ({cat}, id {})", m.name, f.name, f.version.as_deref().unwrap_or(""), f.file_id));
-        let path = archive_path(game_dir, m, &f.file_name);
+        // A pinned file has no name from the list: the address ends in it.
+        let name = if f.file_name.is_empty() { url.split('?').next().unwrap_or("") } else { &f.file_name };
+        let path = archive_path(game_dir, m, name);
         download(app, api.http, m, &url, &path, cancel).await?;
         emit(app, m, "install", 0, 0, "");
         match install(m, &path, game_dir, Some(f.file_id), f.version.clone(), n.file.is_some()).await? {

@@ -164,7 +164,7 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
         id: "ussep".into(),
         name: "Unofficial Skyrim Special Edition Patch".into(),
         // 4.3.9 and later need Skyrim 1.7.99 and crash 1.6.1170 (crate::ussep).
-        nexus: Some(NexusRef { mod_id: 266, file: None, pick: Some(crate::ussep::NEXUS_PICK.into()) }),
+        nexus: Some(NexusRef { mod_id: 266, file: Some(crate::ussep::NEXUS_FILE), pick: Some(crate::ussep::NEXUS_PICK.into()) }),
         check: vec![format!("Data/{}", r::USSEP_PLUGIN)],
         hint: Some("version 4.3.8a, the one for Skyrim 1.6.1170, in the archived files at the bottom of the Files tab (not 4.3.9 or newer)".into()),
         ..Default::default()
@@ -886,6 +886,9 @@ mod tests {
         assert!(m.iter().all(|e| e.id != "bad" && e.id != "plain"));
         assert_eq!(m.last().unwrap().id, "new");
         assert_eq!(m.iter().find(|e| e.id == "ussep").unwrap().page().unwrap(), "https://www.nexusmods.com/skyrimspecialedition/mods/266?tab=files&file_id=9");
+        // Built in: the Unofficial Patch is pinned to 4.3.8a (file 733846).
+        let b = merged(Some("1.6.1170.0"), None);
+        assert_eq!(b.iter().find(|e| e.id == "ussep").unwrap().page().unwrap(), "https://www.nexusmods.com/skyrimspecialedition/mods/266?tab=files&file_id=733846");
     }
 
     #[test]
