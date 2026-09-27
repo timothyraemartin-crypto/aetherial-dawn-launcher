@@ -292,7 +292,10 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
         return Err(gc.reason.unwrap_or_else(|| "Your Skyrim version doesn't match the server.".into()));
     }
     if gc.installed.is_some() {
-        install_missing_mods(&state.http, &dir).await?;
+        if let Err(e) = install_missing_mods(&state.http, &dir).await {
+            send_client_status(&app, &dir);
+            return Err(e);
+        }
     }
     game::inspect(&dir).map_err(err)?;
     tidy_game(&app, &dir, &m, config.only_server_mods)?;
@@ -1284,9 +1287,12 @@ async fn install_missing_mods(http: &reqwest::Client, dir: &std::path::Path) -> 
 }
 
 async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path::Path) -> CmdResult<()> {
-    install_missing_mods(&state.http, dir).await?;
+    let got = install_missing_mods(&state.http, dir).await;
+    // Sent whether or not the installs worked: a failed one is the case
+    // staff most want to see.
+    send_client_status(app, dir);
+    got?;
     let list = mods::full_list(state).await;
-    send_client_status(app, state, dir, &list).await;
     let missing: Vec<mods::Row> = launcher_core::modlist::missing(&list, dir).into_iter().map(|m| mods::row(m, dir)).collect();
     if !missing.is_empty() {
         log::line(&format!("play: stopped, {} mod(s) from the mod list are missing", missing.len()));
@@ -1297,16 +1303,26 @@ async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path:
 
 /// Tells the login service, in the background, which of the server's mods
 /// and the required mods this PC has (names and counts only; see
-/// clientstatus.rs). Never holds up Play; a 404 (route not live yet) is
-/// silent.
-async fn send_client_status(app: &AppHandle, state: &AppState, dir: &std::path::Path, list: &[launcher_core::modlist::ModEntry]) {
+/// clientstatus.rs). Nothing is awaited here, so Play never waits: it uses
+/// the mods.json already fetched (never fetches again). A 404 (route not
+/// live yet) is silent.
+fn send_client_status(app: &AppHandle, dir: &std::path::Path) {
     let Some(token) = token(app) else { return };
-    let served: std::collections::BTreeSet<String> = mods::server_list(state).await.map(|l| l.mods.into_iter().map(|m| m.id).collect()).unwrap_or_default();
-    let version = state.manifest.lock().await.as_ref().and_then(|m| m.game.as_ref()).and_then(|g| g.version.clone());
-    let required = launcher_core::clientstatus::required(dir, version.as_deref());
-    let report = launcher_core::clientstatus::report(&app.package_info().version.to_string(), list, &served, |m| m.installed(dir), &required);
-    let (http, url) = (state.http.clone(), format!("{}/api/client-status", AUTH_URL.trim_end_matches('/')));
+    let (app, dir) = (app.clone(), dir.to_path_buf());
     tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let server = mods::fetched_server_list(&state).await;
+        let version = state.manifest.lock().await.as_ref().and_then(|m| m.game.as_ref()).and_then(|g| g.version.clone());
+        let launcher = app.package_info().version.to_string();
+        let report = tauri::async_runtime::spawn_blocking(move || {
+            let list = launcher_core::modlist::merged(version.as_deref(), server.as_ref());
+            let served: Option<std::collections::BTreeSet<String>> = server.map(|l| l.mods.into_iter().map(|m| m.id).collect());
+            let required = launcher_core::clientstatus::required(&dir, version.as_deref());
+            launcher_core::clientstatus::report(&launcher, &list, served.as_ref(), |m| m.installed(&dir), &required)
+        })
+        .await;
+        let Ok(report) = report else { return };
+        let (http, url) = (state.http.clone(), format!("{}/api/client-status", AUTH_URL.trim_end_matches('/')));
         match http.post(&url).header("authorization", token).json(&report).timeout(std::time::Duration::from_secs(10)).send().await {
             Ok(r) if r.status().is_success() || r.status().as_u16() == 404 => {}
             Ok(r) => log::line(&format!("play: the install report got {}", r.status().as_u16())),

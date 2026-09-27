@@ -10,8 +10,9 @@ use serde::Serialize;
 use crate::modlist::ModEntry;
 use crate::requirements as r;
 
-/// Most names sent in one list.
-const MAX_NAMES: usize = 200;
+/// Most names sent in one list, and the longest name (the bot's limits).
+const MAX_NAMES: usize = 100;
+const MAX_NAME: usize = 120;
 
 #[derive(Serialize, Debug, PartialEq)]
 pub struct Report {
@@ -22,9 +23,10 @@ pub struct Report {
 
 #[derive(Serialize, Debug, PartialEq)]
 pub struct Mods {
-    /// Mods the server's mods.json lists.
-    pub served: usize,
-    pub installed: usize,
+    /// Mods the server's mods.json lists; null when the launcher couldn't
+    /// read mods.json (so it isn't taken for "nothing missing").
+    pub served: Option<usize>,
+    pub installed: Option<usize>,
     pub missing: Vec<String>,
 }
 
@@ -52,17 +54,26 @@ pub fn required(game_dir: &Path, game_version: Option<&str>) -> Vec<(&'static st
     out
 }
 
+/// A name as the bot takes it: no ':' or control characters, at most 120
+/// characters.
+fn clean(name: &str) -> String {
+    name.chars().filter(|c| *c != ':' && !c.is_control()).take(MAX_NAME).collect::<String>().trim().to_string()
+}
+
 /// The report: `list` is the merged mod list, `served` the ids the server's
-/// mods.json names, `installed` whether a listed mod is installed.
-pub fn report(launcher: &str, list: &[ModEntry], served: &BTreeSet<String>, installed: impl Fn(&ModEntry) -> bool, required: &[(&str, bool)]) -> Report {
-    let from_server: Vec<&ModEntry> = list.iter().filter(|m| served.contains(&m.id)).collect();
-    let missing: Vec<String> = from_server.iter().filter(|m| !installed(m)).map(|m| m.name.clone()).collect();
-    let req_missing: Vec<String> = required.iter().filter(|(_, ok)| !ok).map(|(n, _)| n.to_string()).collect();
-    Report {
-        launcher: launcher.to_string(),
-        mods: Mods { served: from_server.len(), installed: from_server.len() - missing.len(), missing: missing.into_iter().take(MAX_NAMES).collect() },
-        required: Required { ok: req_missing.is_empty(), missing: req_missing },
-    }
+/// mods.json names (None when it couldn't be read), `installed` whether a
+/// listed mod is installed.
+pub fn report(launcher: &str, list: &[ModEntry], served: Option<&BTreeSet<String>>, installed: impl Fn(&ModEntry) -> bool, required: &[(&str, bool)]) -> Report {
+    let mods = match served {
+        Some(served) => {
+            let from_server: Vec<&ModEntry> = list.iter().filter(|m| served.contains(&m.id)).collect();
+            let missing: Vec<&ModEntry> = from_server.iter().copied().filter(|m| !installed(m)).collect();
+            Mods { served: Some(from_server.len()), installed: Some(from_server.len() - missing.len()), missing: missing.iter().map(|m| clean(&m.name)).take(MAX_NAMES).collect() }
+        }
+        None => Mods { served: None, installed: None, missing: vec![] },
+    };
+    let req_missing: Vec<String> = required.iter().filter(|(_, ok)| !ok).map(|(n, _)| clean(n)).collect();
+    Report { launcher: launcher.to_string(), mods, required: Required { ok: req_missing.is_empty(), missing: req_missing } }
 }
 
 #[cfg(test)]
@@ -77,14 +88,30 @@ mod tests {
     fn counts_only_the_servers_mods_and_names_what_is_missing() {
         let list = vec![entry("address-library", "Address Library"), entry("fsmp", "Faster HDT-SMP"), entry("racemenu", "RaceMenu"), entry("skyui", "SkyUI")];
         let served: BTreeSet<String> = ["fsmp", "racemenu", "skyui"].map(String::from).into();
-        let r = report("0.1.80", &list, &served, |m| m.id == "skyui", &[("SKSE64", true), ("Crash Logger", false)]);
-        assert_eq!(r.mods, Mods { served: 3, installed: 1, missing: vec!["Faster HDT-SMP".into(), "RaceMenu".into()] });
+        let r = report("0.1.80", &list, Some(&served), |m| m.id == "skyui", &[("SKSE64", true), ("Crash Logger", false)]);
+        assert_eq!(r.mods, Mods { served: Some(3), installed: Some(1), missing: vec!["Faster HDT-SMP".into(), "RaceMenu".into()] });
         assert_eq!(r.required, Required { ok: false, missing: vec!["Crash Logger".into()] });
         let json = serde_json::to_value(&r).unwrap();
         assert_eq!(json["launcher"], "0.1.80");
         assert_eq!(json["required"]["ok"], false);
         // Nothing but names and counts.
         assert!(!json.to_string().contains('/') && !json.to_string().contains('\\'));
+    }
+
+    #[test]
+    fn names_fit_the_bots_limits_and_an_unread_list_is_null() {
+        let mut list: Vec<ModEntry> = (0..150).map(|i| entry(&format!("m{i}"), &format!("Mod {i}"))).collect();
+        list.push(entry("colon", &format!("Moons: and Stars{}", "x".repeat(200))));
+        let served: BTreeSet<String> = list.iter().map(|m| m.id.clone()).collect();
+        let r = report("0.1.81", &list, Some(&served), |_| false, &[]);
+        assert_eq!(r.mods.served, Some(151));
+        assert_eq!(r.mods.missing.len(), 100);
+        assert!(r.required.ok);
+        let long = clean(&list[150].name);
+        assert!(!long.contains(':') && long.chars().count() == 120 && long.starts_with("Moons and Stars"));
+        let none = report("0.1.81", &list, None, |_| false, &[]);
+        let json = serde_json::to_value(&none).unwrap();
+        assert!(json["mods"]["served"].is_null() && json["mods"]["installed"].is_null());
     }
 
     #[test]

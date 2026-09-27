@@ -106,6 +106,11 @@ pub fn on_second_launch(app: &AppHandle, args: &[String]) {
     }
 }
 
+/// The server's mods.json as already fetched; never fetches.
+pub async fn fetched_server_list(state: &AppState) -> Option<modlist::ModList> {
+    state.mods.server_list.lock().await.clone()
+}
+
 pub async fn server_list(state: &AppState) -> Option<modlist::ModList> {
     if let Some(l) = state.mods.server_list.lock().await.clone() {
         return Some(l);
