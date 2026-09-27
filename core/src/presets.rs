@@ -197,7 +197,9 @@ pub fn json_set(doc: &mut Value, key: &str, value: &Value) -> bool {
 /// Finds `<name>` or `<name .../>` in text[from..to]: (start of the tag,
 /// end of the opening tag, and for a non-empty element the start and end of
 /// its closing tag).
-fn xml_find(text: &str, name: &str, from: usize, to: usize) -> Option<(usize, usize, Option<(usize, usize)>)> {
+type XmlSpan = (usize, usize, Option<(usize, usize)>);
+
+fn xml_find(text: &str, name: &str, from: usize, to: usize) -> Option<XmlSpan> {
     let mut at = from;
     while let Some(i) = text[at..to].find(&format!("<{name}")) {
         let start = at + i;
@@ -387,7 +389,7 @@ fn write_one(game_dir: &Path, s: &Setting, todo: &[(&String, &Value)], stamp: &s
             };
             for (k, v) in todo {
                 if v.as_str().is_some_and(|t| t.contains(['\n', '\r'])) || !k.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')) {
-                    skipped.push(((*k).clone(), "a value or key can't span lines"));
+                    skipped.push(((*k).clone(), "not a one-line value or a plain element name"));
                     continue;
                 }
                 match xml_set(&text, k, v) {
