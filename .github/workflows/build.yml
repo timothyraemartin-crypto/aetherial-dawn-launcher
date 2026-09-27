@@ -35,7 +35,7 @@ jobs:
       - name: Install Tauri CLI
         uses: taiki-e/install-action@v2
         with:
-          tool: tauri-cli@2
+          tool: tauri-cli@2.12.0
       - name: Build installer
         shell: bash
         run: |
@@ -87,7 +87,8 @@ jobs:
           files: dist/*
           body: |
             Windows installer for the Aetherial Dawn launcher.
-            Download **AetherialDawn-Launcher-…-setup.exe** below and run it. Windows may warn that the app is unrecognised because it isn't code-signed yet; choose **More info → Run anyway**.
+            Download **AetherialDawn-Launcher-…-setup.exe** below and run it. It installs with no pages to click through and opens the launcher when it's done. Windows may warn that the app is unrecognised because it isn't code-signed yet; choose **More info → Run anyway**.
+            Running the installer again by hand closes a running launcher and quietly reinstalls; your settings and downloads are kept.
 
   # The canonical-plugins tool for the server (staging runbook C): the VPS has
   # no Rust, so it downloads this build from the release instead. Static
