@@ -18,7 +18,7 @@ use crate::{log, AppState, CmdResult};
 /// How long to wait for a free member to press a mod's download button.
 const WAIT_FOR_CLICK: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 /// How long a Premium member's own file page gets to hand over its nxm:// link.
-const WAIT_FOR_PAGE: std::time::Duration = std::time::Duration::from_secs(120);
+const WAIT_FOR_PAGE: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// Catches nxm:// links for one Download all. The launcher only takes over
 /// nxm:// when it needs a link (always for free members; for Premium only
@@ -26,6 +26,9 @@ const WAIT_FOR_PAGE: std::time::Duration = std::time::Duration::from_secs(120);
 struct Catcher {
     rx: tokio::sync::mpsc::UnboundedReceiver<nexus::Nxm>,
     claimed: bool,
+    /// Mods whose Nexus page was already opened in this run: one browser tab
+    /// per mod per Play, retries included (quality check P3).
+    paged: std::collections::HashSet<u64>,
 }
 
 impl Catcher {
@@ -460,7 +463,24 @@ fn archive_path(game_dir: &Path, m: &ModEntry, file: &str) -> PathBuf {
 /// a file).
 async fn premium_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, game_dir: &Path, cancel: &AtomicBool, catcher: &mut Catcher) -> Result<(), String> {
     let n = m.nexus.as_ref().unwrap();
-    let files = api.files(modlist::NEXUS_GAME, n.mod_id).await.map_err(|e| e.to_string())?;
+    let mut files = api.files(modlist::NEXUS_GAME, n.mod_id).await.map_err(|e| e.to_string())?;
+    // Archived files only when no current file matches the pick (one extra
+    // call, for the Unofficial Patch 4.3.8a), so broad picks like "AE" never
+    // pull in old archived builds.
+    let pinned_archived = n.file.is_some_and(|id| !files.iter().any(|f| f.file_id == id));
+    if pinned_archived || n.pick.as_deref().is_some_and(|p| !nexus::pick_is_current(&files, p)) {
+        match api.archived_files(modlist::NEXUS_GAME, n.mod_id).await {
+            Ok(more) => {
+                log::line(&format!("mods: {} has {} archived file(s) on Nexus", m.name, more.len()));
+                for f in more {
+                    if !files.iter().any(|x| x.file_id == f.file_id) {
+                        files.push(f);
+                    }
+                }
+            }
+            Err(e) => log::line(&format!("mods: couldn't list {}'s archived files on Nexus: {e}", m.name)),
+        }
+    }
     let mut cands = nexus::candidates(&files, n.file, n.pick.as_deref());
     // After the picked files, the page's other files, in case the picked
     // one is a build for another Skyrim (True Directional Movement, 2026-09-26).
@@ -477,7 +497,6 @@ async fn premium_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, gam
     let mut too_new = Vec::new();
     let mut wrong = Vec::new();
     let mut unreachable = Vec::new();
-    let mut pages_asked = 0;
     for f in cands.iter().take(8) {
         if cancel.load(Ordering::SeqCst) {
             return Err("cancelled".into());
@@ -492,13 +511,12 @@ async fn premium_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, gam
                 // for it instead, which answers Premium members with an nxm://
                 // link at once.
                 log::line(&format!("mods: Nexus API gave no link for {} file {} {} ({cat}, id {}): {e}", m.name, f.name, f.version.as_deref().unwrap_or(""), f.file_id));
-                // The page is asked for the best two files at most, so a
-                // refusing API doesn't open a browser tab per file.
-                if pages_asked >= 2 {
+                // One page per mod per run (the best file), so a refusing API
+                // doesn't open a tab per file or per retry.
+                if !catcher.paged.insert(n.mod_id) {
                     unreachable.push(f.name.clone());
                     continue;
                 }
-                pages_asked += 1;
                 match via_page(app, api, m, f.file_id, cancel, catcher).await {
                     Ok(u) => u,
                     Err(e) if e == "cancelled" => return Err(e),
@@ -547,7 +565,7 @@ async fn via_page(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, file_i
     catcher.claim(app);
     while catcher.rx.try_recv().is_ok() {}
     open_url(app, &format!("https://www.nexusmods.com/{}/mods/{}?tab=files&file_id={file_id}&nmm=1", modlist::NEXUS_GAME, n.mod_id))?;
-    emit(app, m, "waiting", 0, 0, "Getting it from Nexus in your browser. Nothing to press.");
+    emit(app, m, "waiting", 0, 0, "Getting it from Nexus in your browser. If the browser asks to open Aetherial Dawn Launcher, allow it.");
     let deadline = tokio::time::Instant::now() + WAIT_FOR_PAGE;
     let link = loop {
         if cancel.load(Ordering::SeqCst) {
@@ -680,7 +698,7 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
     // API won't hand a file over. Held while waiting, then given back.
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     *state.mods.nxm_tx.lock().unwrap() = Some(tx);
-    let mut catcher = Catcher { rx, claimed: false };
+    let mut catcher = Catcher { rx, claimed: false, paged: Default::default() };
     if needs_nexus && !premium {
         catcher.claim(&app);
     }

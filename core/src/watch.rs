@@ -265,7 +265,10 @@ pub fn collect(skse_log_dir: &Path, temp_dir: &Path, since: SystemTime) -> Strin
 /// the end. The last lines alone were all stack dump (2026-09-26).
 fn crash_log_parts(path: &Path) -> String {
     let bytes = std::fs::read(path).unwrap_or_default();
-    let text = String::from_utf8_lossy(&bytes);
+    crash_log_text_parts(&String::from_utf8_lossy(&bytes))
+}
+
+fn crash_log_text_parts(text: &str) -> String {
     let all: Vec<&str> = text.lines().collect();
     let stack_end = all.iter().position(|l| {
         let u = l.trim().to_ascii_uppercase();
@@ -307,21 +310,33 @@ pub const CRASH_LOG_MAX: usize = 30_000;
 /// The newest crash logger log written since `since`, for staff: the whole
 /// file when it fits, else its header and plugin lists; never over
 /// `CRASH_LOG_MAX` characters.
-pub fn crash_log_for_staff(skse_log_dir: &Path, since: SystemTime) -> Option<String> {
+pub fn crash_log_for_staff(skse_log_dir: &Path, since: SystemTime, home: Option<&Path>) -> Option<String> {
     let path = newest_crash_log(skse_log_dir, since)?;
-    let whole = String::from_utf8_lossy(&std::fs::read(&path).ok()?).into_owned();
-    let text = if whole.chars().count() <= CRASH_LOG_MAX { whole } else { crash_log_parts(&path) };
+    let mut whole = String::from_utf8_lossy(&std::fs::read(&path).ok()?).into_owned();
+    // The Windows user folder stays private, as in the health checks (L1).
+    if let Some(h) = home.map(|h| h.display().to_string()).filter(|h| h.len() > 3) {
+        whole = whole.replace(&h, "%USERPROFILE%");
+    }
+    let text = if whole.chars().count() <= CRASH_LOG_MAX { whole } else { crash_log_text_parts(&whole) };
     Some(cut_chars(&text, CRASH_LOG_MAX))
 }
 
-/// At most `max` characters, marking the cut.
+/// At most `max` characters, cut from the middle so both the top (the
+/// exception, call stack and objects) and the end (module and plugin lists)
+/// stay (quality check L3).
 pub fn cut_chars(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
+    let n = text.chars().count();
+    if n <= max {
         return text.to_string();
     }
-    let mark = "\n…(cut to fit)";
-    let keep: String = text.chars().take(max.saturating_sub(mark.chars().count())).collect();
-    keep + mark
+    let mark = "\n…(middle cut to fit)…\n";
+    let room = max.saturating_sub(mark.chars().count());
+    let head = room * 2 / 5;
+    let tail = room - head;
+    let mut out: String = text.chars().take(head).collect();
+    out.push_str(mark);
+    out.extend(text.chars().skip(n - tail));
+    out
 }
 
 fn newest_crash_log(skse_log_dir: &Path, since: SystemTime) -> Option<PathBuf> {
@@ -363,19 +378,24 @@ mod tests {
     fn sends_the_crash_log_whole_or_trimmed() {
         let t = tempfile::tempdir().unwrap();
         let since = SystemTime::now() - Duration::from_secs(60);
-        assert_eq!(crash_log_for_staff(t.path(), since), None);
+        assert_eq!(crash_log_for_staff(t.path(), since, None), None);
         std::fs::write(t.path().join("crash-1.log"), "Unhandled exception\nREGISTERS:\nRAX 0").unwrap();
-        assert_eq!(crash_log_for_staff(t.path(), since).unwrap(), "Unhandled exception\nREGISTERS:\nRAX 0");
+        assert_eq!(crash_log_for_staff(t.path(), since, None).unwrap(), "Unhandled exception\nREGISTERS:\nRAX 0");
         let mut big = String::from("Unhandled exception at X.dll+1\nREGISTERS:\n");
         for i in 0..5000 {
             big.push_str(&format!("[RSP+{i}] 0x0000000000000000 (size_t) [0]\n"));
         }
         big.push_str("SKSE PLUGINS:\n\tX.dll\n");
         std::fs::write(t.path().join("crash-1.log"), big).unwrap();
-        let got = crash_log_for_staff(t.path(), since).unwrap();
+        let got = crash_log_for_staff(t.path(), since, None).unwrap();
         assert!(got.chars().count() <= CRASH_LOG_MAX && got.contains("X.dll+1") && got.contains("SKSE PLUGINS"));
         assert_eq!(cut_chars("abcdef", 100), "abcdef");
-        assert!(cut_chars(&"é".repeat(50), 20).chars().count() <= 20);
+        assert!(cut_chars(&"é".repeat(50), 40).chars().count() <= 40);
+        let cut = cut_chars(&format!("TOP{}END", "x".repeat(1000)), 100);
+        assert!(cut.starts_with("TOP") && cut.ends_with("END") && cut.chars().count() <= 100);
+        std::fs::write(t.path().join("crash-1.log"), "at C:\\Users\\Tim\\Documents\\x").unwrap();
+        let got = crash_log_for_staff(t.path(), since, Some(Path::new("C:\\Users\\Tim"))).unwrap();
+        assert!(got.contains("%USERPROFILE%") && !got.contains("Tim"));
     }
 
     #[test]

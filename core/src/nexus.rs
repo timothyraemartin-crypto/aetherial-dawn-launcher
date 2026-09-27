@@ -85,18 +85,13 @@ impl Client<'_> {
     }
 
     pub async fn files(&self, game: &str, mod_id: u64) -> Result<Vec<NexusFile>> {
-        let a: FilesAnswer = self.json(&format!("{API}/games/{game}/mods/{mod_id}/files.json")).await?;
-        let mut files = a.files;
-        // Archived files aren't in the default list; the Unofficial Patch for
-        // Skyrim 1.6.1170 (4.3.8a) is archived on its page.
-        if let Ok(b) = self.json::<FilesAnswer>(&format!("{API}/games/{game}/mods/{mod_id}/files.json?category=archived")).await {
-            for f in b.files {
-                if !files.iter().any(|x| x.file_id == f.file_id) {
-                    files.push(f);
-                }
-            }
-        }
-        Ok(files)
+        Ok(self.json::<FilesAnswer>(&format!("{API}/games/{game}/mods/{mod_id}/files.json")).await?.files)
+    }
+
+    /// The page's archived files, which the default list leaves out (the
+    /// Unofficial Patch for Skyrim 1.6.1170, 4.3.8a, is archived).
+    pub async fn archived_files(&self, game: &str, mod_id: u64) -> Result<Vec<NexusFile>> {
+        Ok(self.json::<FilesAnswer>(&format!("{API}/games/{game}/mods/{mod_id}/files.json?category=archived")).await?.files)
     }
 
     /// A download address for a file. Premium members need nothing else; free
@@ -121,6 +116,14 @@ fn enc(s: &str) -> String {
 /// one; otherwise main files (then updates and optional ones), newest first,
 /// preferring names that contain `pick`. Old versions come last so a newer
 /// file made for a newer Skyrim can fall back to an older one.
+/// Whether any current (not archived or deleted) file matches the pick.
+pub fn pick_is_current(files: &[NexusFile], pick: &str) -> bool {
+    let p = pick.to_ascii_lowercase();
+    files.iter().filter(|f| !matches!(f.category_name.as_deref(), Some("ARCHIVED") | Some("DELETED"))).any(|f| {
+        f.name.to_ascii_lowercase().contains(&p) || f.file_name.to_ascii_lowercase().contains(&p) || f.version.as_deref().is_some_and(|v| v.to_ascii_lowercase().starts_with(&p))
+    })
+}
+
 pub fn candidates(files: &[NexusFile], file: Option<u64>, pick: Option<&str>) -> Vec<NexusFile> {
     if let Some(id) = file {
         return files.iter().filter(|f| f.file_id == id).cloned().collect();
@@ -336,6 +339,15 @@ mod tests {
         assert!(parse_nxm("nxm://skyrimspecialedition/mods/266/files/1").is_none());
         assert!(parse_nxm("https://example.com").is_none());
         assert!(parse_nxm("nxm://skyrimspecialedition/collections/x/revisions/1").is_none());
+    }
+
+    #[test]
+    fn archived_only_when_the_pick_is_gone() {
+        let mut cur = f(1, "USSEP 4.3.9c", "MAIN", 2);
+        cur.version = Some("4.3.9c".into());
+        let old = f(2, "USSEP 4.3.8a", "ARCHIVED", 1);
+        assert!(!pick_is_current(&[cur.clone(), old], "4.3.8"));
+        assert!(pick_is_current(&[cur], "4.3.9"));
     }
 
     #[test]

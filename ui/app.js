@@ -721,7 +721,9 @@
   }
 
 let autoMods = false;
-  async function onPlay() {
+  // Play is waiting for Nexus sign-in; it carries on by itself after it.
+  let playAfterNexus = false;
+  async function onPlay(auto = false) {
     if (busy) return;
     if (playMode === 'strays') return openStrays();
     if (playMode === 'retry') return check();
@@ -744,15 +746,17 @@ let autoMods = false;
         await showRequiredMods();
         // Play installs what's missing by itself, then carries on (once, so a
         // mod that won't install can't loop).
-        if (!autoMods && !$('rq-nx-in').hidden) {
+        if (!auto && !autoMods && !$('rq-nx-in').hidden) {
           autoMods = true;
           setStatus(`Installing ${mods.length === 1 ? mods[0].name : `${mods.length} required mods`}, then starting Skyrim…`);
           const ok = await downloadAll();
           autoMods = false;
-          if (ok) { showSheet(null); return onPlay(); }
+          // auto: a mod that "installed" but still counts as missing can't loop.
+          if (ok) { showSheet(null); return onPlay(true); }
           setStatus('A required mod isn\'t in yet. The launcher tries again the next time you press Play.', true);
           return;
         }
+        playAfterNexus = !auto;
         setStatus(`Sign in to Nexus below; the launcher then installs ${mods.length === 1 ? mods[0].name : `${mods.length} required mods`} by itself.`, true);
         return;
       }
@@ -890,7 +894,7 @@ let autoMods = false;
   $('w-min').onclick = () => win.minimize();
   $('w-close').onclick = () => win.close();
   $('w-settings').onclick = $('nav-settings').onclick = $('t-settings').onclick = () => showSheet('settings');
-  $('play').onclick = onPlay;
+  $('play').onclick = () => onPlay();
   for (const [name, nav] of Object.entries(PAGES)) $(nav).onclick = () => { if (ready_() && signedIn()) showPage(name); else leaveSheet(); };
   $('news-all').onclick = () => showPage('news');
   $('set-done').onclick = leaveSheet;
@@ -997,13 +1001,19 @@ let autoMods = false;
     $('cr-note').hidden = false;
   };
   $('rq-close').onclick = () => showPage(page);
-  $('rq-all').onclick = downloadAll;
+  $('rq-all').onclick = () => downloadAll();
+  // After Nexus sign-in, the Play that asked for it carries on by itself.
+  function resumePlay() {
+    if (!playAfterNexus || $('rq-nx-in').hidden) return;
+    playAfterNexus = false;
+    onPlay();
+  }
   $('rq-stop').onclick = () => invoke('cancel_mods');
   $('rq-getkey').onclick = () => invoke('open_nexus_key_page').catch(rqError);
   $('rq-signin').onclick = async () => {
     rqError(null);
     $('rq-signin').disabled = true;
-    try { await invoke('nexus_sign_in', { key: $('rq-key').value }); $('rq-key').value = ''; await refreshMods(); }
+    try { await invoke('nexus_sign_in', { key: $('rq-key').value }); $('rq-key').value = ''; await refreshMods(); resumePlay(); }
     catch (e) { rqError(e); }
     finally { $('rq-signin').disabled = false; }
   };
@@ -1017,7 +1027,7 @@ let autoMods = false;
     $('rq-sso-note').innerHTML = ssoReady
       ? 'Nexus opened in your browser. Click <b>Authorise</b> there and come back.'
       : 'Nexus opened your API keys page in your browser. Copy your <i>Personal API Key</i> at the bottom (its Copy button, or select it and press Ctrl+C) and the launcher signs you in by itself.';
-    try { await invoke(ssoReady ? 'nexus_sso' : 'nexus_copy_sign_in'); await refreshMods(); }
+    try { await invoke(ssoReady ? 'nexus_sso' : 'nexus_copy_sign_in'); await refreshMods(); resumePlay(); }
     catch (e) { if (!String(e).includes('cancelled')) rqError(e); }
     finally { $('rq-sso-go').disabled = false; $('rq-sso-go').textContent = 'Sign in with Nexus'; $('rq-sso-stop').hidden = true; }
   };

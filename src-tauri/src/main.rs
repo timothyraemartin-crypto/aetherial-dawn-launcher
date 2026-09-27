@@ -428,7 +428,7 @@ async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::
     let health = run_health(&app, &http, &config.base_url, &game_dir, manifest.as_ref()).await;
     report.push_str(&format!("\n===== game health =====\n{}", health.text()));
     let mut staff_summary = summary.clone();
-    let crash_log = if crashed { watch::crash_log_for_staff(&skse_logs, started) } else { None };
+    let crash_log = if crashed { watch::crash_log_for_staff(&skse_logs, started, app.path().home_dir().ok().as_deref()) } else { None };
     if crashed {
         if let Some(cl) = watch::crash_logger_summary(&skse_logs, started) {
             log::line(&format!("game: crash logger says:\n{cl}"));
