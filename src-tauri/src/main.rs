@@ -137,7 +137,7 @@ async fn get_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Snap
     let (game, game_error) = match &config.game_dir {
         Some(dir) => match game::inspect(dir) {
             Ok(g) => (Some(g), None),
-            Err(e) => (None, Some(e.to_string())),
+            Err(e) => (None, Some(err(e))),
         },
         None => (None, Some("Skyrim Special Edition wasn't found. Pick its folder.".into())),
     };
@@ -423,12 +423,15 @@ async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::
     };
     let health = run_health(&app, &http, &config.base_url, &game_dir, manifest.as_ref()).await;
     report.push_str(&format!("\n===== game health =====\n{}", health.text()));
-    let mut staff_summary = summary.clone();
-    let crash_log = if crashed { watch::crash_log_for_staff(&skse_logs, started, app.path().home_dir().ok().as_deref()) } else { None };
+    // The player's own folders stay private in what staff get (quality L1).
+    let private: Vec<PathBuf> = [app.path().home_dir().ok(), app.path().document_dir().ok()].into_iter().flatten().collect();
+    let private: Vec<&std::path::Path> = private.iter().map(|p| p.as_path()).collect();
+    let mut staff_summary = watch::redact_paths(&summary, &private);
+    let crash_log = if crashed { watch::crash_log_for_staff(&skse_logs, started, &private) } else { None };
     if crashed {
         if let Some(cl) = watch::crash_logger_summary(&skse_logs, started) {
             log::line(&format!("game: crash logger says:\n{cl}"));
-            staff_summary.push_str(&format!("\n\nCrash logger:\n{cl}"));
+            staff_summary.push_str(&format!("\n\nCrash logger:\n{}", watch::redact_paths(&cl, &private)));
         }
     }
     // Sent in the background: the staff service can ask for a short wait
@@ -745,6 +748,13 @@ async fn auth_poll(app: AppHandle, state: State<'_, AppState>, st: String) -> Cm
         // The code is traded once, so a failed trade means starting again.
         auth::Answer::Offline(message) => r("expired", Some(format!("Couldn't finish signing in: {message}. Try again."))),
     })
+}
+
+/// A command's error in plain words for the player (the UI's invoke
+/// wrapper asks for every failure); the raw text is already in the log.
+#[tauri::command]
+fn plain_error(text: String) -> String {
+    launcher_core::plain_ui(&text)
 }
 
 #[tauri::command]
@@ -1722,7 +1732,7 @@ fn main() {
             mods::restore_left_handler(app.handle());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside])
+        .invoke_handler(tauri::generate_handler![plain_error, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
 }
