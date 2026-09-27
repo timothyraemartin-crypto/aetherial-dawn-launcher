@@ -497,28 +497,33 @@ pub fn extract(archive: &Path, dir: &Path) -> Result<()> {
                 std::fs::create_dir_all(&dest)?;
                 continue;
             }
+            // The declared size is checked before anything is created, and
+            // the bytes really written are counted as they come.
+            if f.size() > MAX_ENTRY || total + f.size() > MAX_TOTAL {
+                return Err(too_big(f.name()));
+            }
             if let Some(p) = dest.parent() {
                 std::fs::create_dir_all(p)?;
             }
             let mut out = std::fs::File::create(&dest)?;
-            total += f.size();
-            if f.size() > MAX_ENTRY || total > MAX_TOTAL {
-                return Err(Error::Game(format!("the download unpacks to more than the launcher allows ({} is {} bytes)", f.name(), f.size())));
-            }
-            if lzma {
+            let name = f.name().to_string();
+            let got = if lzma {
                 let (size, crc) = (f.size(), f.crc32());
-                let got = std::io::copy(&mut zip_lzma(&mut f, size)?, &mut out)?;
+                let got = copy_capped(&mut zip_lzma(&mut f, size)?, &mut out, &dest, total, &name)?;
                 drop(out);
                 if got != size || crate::serverorder::crc32(&dest) != Some(crc) {
-                    return Err(Error::Game(format!("couldn't unpack {}: the download is damaged", f.name())));
+                    return Err(Error::Game(format!("couldn't unpack {name}: the download is damaged")));
                 }
+                got
             } else {
-                std::io::copy(&mut f, &mut out)?;
-            }
+                copy_capped(&mut f, &mut out, &dest, total, &name)?
+            };
+            total += got;
         }
         Ok(())
     } else if head == [b'7', b'z', 0xBC, 0xAF, 0x27, 0x1C] {
         let mut reader = sevenz_rust2::ArchiveReader::open(archive, sevenz_rust2::Password::empty()).map_err(|e| Error::Game(format!("the download isn't a readable 7z: {e}")))?;
+        let mut total = 0u64;
         reader
             .for_each_entries(|entry, data| {
                 let Some(rel) = safe_rel(entry.name()) else { return Ok(true) };
@@ -530,8 +535,11 @@ pub fn extract(archive: &Path, dir: &Path) -> Result<()> {
                 if let Some(p) = dest.parent() {
                     std::fs::create_dir_all(p)?;
                 }
+                if entry.size() > MAX_ENTRY || total + entry.size() > MAX_TOTAL {
+                    return Err(std::io::Error::other(too_big(entry.name()).to_string()).into());
+                }
                 let mut out = std::fs::File::create(&dest)?;
-                std::io::copy(data, &mut out)?;
+                total += copy_capped(data, &mut out, &dest, total, entry.name()).map_err(|e| std::io::Error::other(e.to_string()))?;
                 Ok(true)
             })
             .map_err(|e| Error::Game(format!("couldn't unpack the download: {e}")))?;
@@ -548,6 +556,25 @@ pub fn extract(archive: &Path, dir: &Path) -> Result<()> {
 const MAX_ENTRY: u64 = 8 << 30;
 const MAX_TOTAL: u64 = 40 << 30;
 const MAX_LZMA_DICT: u32 = 256 << 20;
+
+fn too_big(name: &str) -> Error {
+    Error::Game(format!("the download unpacks to more than the launcher allows ({name})"))
+}
+
+/// Copies at most what the caps leave (one file, and the archive so far),
+/// counting the bytes really written; past that the file is removed.
+fn copy_capped(src: &mut dyn std::io::Read, out: &mut std::fs::File, dest: &Path, total: u64, name: &str) -> Result<u64> {
+    copy_within(src, out, dest, MAX_ENTRY.min(MAX_TOTAL.saturating_sub(total)), name)
+}
+
+fn copy_within(src: &mut dyn std::io::Read, out: &mut std::fs::File, dest: &Path, left: u64, name: &str) -> Result<u64> {
+    let got = std::io::copy(&mut std::io::Read::take(src, left + 1), out)?;
+    if got > left {
+        let _ = std::fs::remove_file(dest);
+        return Err(too_big(name));
+    }
+    Ok(got)
+}
 
 /// A zip entry's LZMA stream (APPNOTE 5.8.8: a 2-byte version, a 2-byte
 /// properties length, the 5 properties bytes, then raw LZMA data).
@@ -1172,6 +1199,15 @@ mod tests {
         std::fs::write(t.path().join("bad.zip"), &bad).unwrap();
         let e = super::extract(&t.path().join("bad.zip"), &t.path().join("out2")).unwrap_err().to_string();
         assert!(e.contains("damaged"), "{e}");
+        // More bytes than an entry declared are cut off at the cap and the
+        // file removed (the cap counts what's written, not the header).
+        let t2 = tempfile::tempdir().unwrap();
+        let dest = t2.path().join("x.dll");
+        let mut out = std::fs::File::create(&dest).unwrap();
+        assert!(super::copy_within(&mut &[7u8; 100][..], &mut out, &dest, 99, "x.dll").is_err());
+        assert!(!dest.exists());
+        let mut out = std::fs::File::create(&dest).unwrap();
+        assert_eq!(super::copy_within(&mut &[7u8; 100][..], &mut out, &dest, 100, "x.dll").unwrap(), 100);
         // Zstandard, written here.
         let t = tempfile::tempdir().unwrap();
         let a = t.path().join("zstd.zip");
