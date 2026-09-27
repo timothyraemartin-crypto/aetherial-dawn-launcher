@@ -673,8 +673,17 @@ async fn auth_status(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Au
 async fn auth_begin(app: AppHandle) -> CmdResult<String> {
     use tauri_plugin_opener::OpenerExt;
     let st = auth::new_state();
-    app.opener().open_url(auth::login_url(AUTH_URL, &st), None::<&str>).map_err(|e| e.to_string())?;
+    let verifier = auth::new_verifier();
+    // The verifier never leaves this process except on the status call.
+    login_verifiers().lock().unwrap().insert(st.clone(), verifier.clone());
+    app.opener().open_url(auth::login_url(AUTH_URL, &st, &auth::challenge(&verifier)), None::<&str>).map_err(|e| e.to_string())?;
     Ok(st)
+}
+
+/// Each sign-in's secret verifier, by state (kept only in memory).
+fn login_verifiers() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
+    static V: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> = std::sync::OnceLock::new();
+    V.get_or_init(Default::default)
 }
 
 #[derive(Serialize)]
@@ -689,7 +698,13 @@ struct PollResult {
 #[tauri::command]
 async fn auth_poll(app: AppHandle, state: State<'_, AppState>, st: String) -> CmdResult<PollResult> {
     let r = |status, message: Option<String>| PollResult { status, message, account: None };
-    let answer = auth::poll(&state.http, AUTH_URL, &st).await;
+    let Some(verifier) = login_verifiers().lock().unwrap().get(&st).cloned() else {
+        return Ok(r("expired", Some("The sign-in link expired. Try again.".into())));
+    };
+    let answer = auth::poll(&state.http, AUTH_URL, &st, &verifier).await;
+    if !matches!(answer, auth::Answer::Pending) {
+        login_verifiers().lock().unwrap().remove(&st);
+    }
     if !matches!(answer, auth::Answer::Pending) {
         log::line(&format!("sign-in: {}", answer_kind(&answer)));
     }
