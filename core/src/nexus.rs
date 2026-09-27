@@ -282,7 +282,7 @@ pub async fn sso(app: &str, open: impl FnOnce(&str) -> Result<()>, stop: &std::s
         .await
         .map_err(|e| Error::Game(format!("Nexus sign-in: {e}")))?;
     let mut opened = Some(open);
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10 * 60);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3 * 60);
     let mut ping = tokio::time::interval(std::time::Duration::from_secs(20));
     loop {
         if stop.load(std::sync::atomic::Ordering::SeqCst) {

@@ -192,9 +192,14 @@ async fn nexus_app(state: &AppState) -> Option<String> {
     from_server.or_else(|| option_env!("AD_NEXUS_APP").map(str::to_string))
 }
 
-async fn keep_key(app: &AppHandle, state: &AppState, key: &str) -> CmdResult<nexus::User> {
+/// `stop`: a sign-in the player left while Nexus was checking the key; the
+/// key is then not kept.
+async fn keep_key(app: &AppHandle, state: &AppState, key: &str, stop: Option<&AtomicBool>) -> CmdResult<nexus::User> {
     let version = app.package_info().version.to_string();
     let user = nexus::Client { http: &state.http, key, app_version: &version }.validate().await.map_err(|e| e.to_string())?;
+    if stop.is_some_and(|s| s.load(Ordering::SeqCst)) {
+        return Err("sign-in cancelled".to_string());
+    }
     let path = key_path(app).ok_or("Couldn't find the launcher's settings folder.")?;
     auth::save_token(&path, key).map_err(|e| e.to_string())?;
     let mut c = state.config.lock().await;
@@ -219,7 +224,7 @@ pub async fn nexus_sso(app: AppHandle, state: State<'_, AppState>) -> CmdResult<
         log::line(&format!("mods: Nexus sign-in didn't finish: {e}"));
         e.to_string()
     })?;
-    keep_key(&app, &state, &key).await
+    keep_key(&app, &state, &key, None).await
 }
 
 /// A Nexus personal API key: one long token of base64-style characters.
@@ -252,13 +257,17 @@ pub async fn nexus_copy_sign_in(app: AppHandle, state: State<'_, AppState>) -> C
                 return Err("No key was copied. Click Sign in with Nexus to try again.".to_string());
             }
             tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            // Left during the wait: the clipboard is not read again.
+            if stop.load(Ordering::SeqCst) {
+                return Err("sign-in cancelled".to_string());
+            }
             let text = app.clipboard().read_text().unwrap_or_default();
             let key = text.trim().to_string();
             if tried.contains(&text) || !looks_like_key(&key) {
                 continue;
             }
             tried.push(text);
-            match keep_key(&app, &state, &key).await {
+            match keep_key(&app, &state, &key, Some(&stop)).await {
                 Ok(user) => {
                     let _ = app.clipboard().write_text(String::new());
                     if let Some(w) = app.get_webview_window("main") {
@@ -289,7 +298,7 @@ pub async fn nexus_sign_in(app: AppHandle, state: State<'_, AppState>, key: Stri
     if key.len() < 20 || key.chars().any(char::is_whitespace) {
         return Err("That doesn't look like a Nexus API key. Copy the whole key from the Nexus page.".into());
     }
-    keep_key(&app, &state, &key).await
+    keep_key(&app, &state, &key, None).await
 }
 
 #[tauri::command]
