@@ -303,28 +303,30 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     // Tools the mods ship (BodySlide's batch build), run minimized and only
     // when what they read changed. A failed run doesn't stop Play; it runs
     // again next time.
-    for m in list.iter().filter(|m| m.run.is_some()) {
-        let label = m.run.as_ref().map(|r| r.label.clone()).unwrap_or_default();
-        let (d, e) = (dir.clone(), m.clone());
-        match launcher_core::tools::due(&dir, m) {
-            Ok(Some(_)) => {
-                let _ = app.emit("tool-running", &label);
+    'tools: for m in list.iter() {
+        for (i, r) in m.run.iter().enumerate() {
+            let label = r.label.clone();
+            match launcher_core::tools::due(&dir, m, i) {
+                Ok(Some(_)) => {
+                    let _ = app.emit("tool-running", &label);
+                }
+                Ok(None) => continue,
+                Err(e) => {
+                    log::line(&format!("tools: {} didn't run: {e}", m.name));
+                    continue;
+                }
             }
-            Ok(None) => continue,
-            Err(e) => {
-                log::line(&format!("tools: {} didn't run: {e}", m.name));
-                continue;
+            let (d, e) = (dir.clone(), m.clone());
+            match tokio::task::spawn_blocking(move || launcher_core::tools::run(&d, &e, i)).await {
+                Ok(Ok(Some((code, took)))) => log::line(&format!("tools: {} ({label}) ran in {} s, exit code {code}", m.name, took.as_secs())),
+                Ok(Ok(None)) => {}
+                Ok(Err(launcher_core::Error::Game(e))) if e == launcher_core::tools::SKIPPED => {
+                    log::line(&format!("tools: {} skipped for now; the rest wait for the next Play", m.name));
+                    break 'tools;
+                }
+                Ok(Err(e)) => log::line(&format!("tools: {} didn't run: {e}", m.name)),
+                Err(e) => log::line(&format!("tools: {} stopped: {e}", m.name)),
             }
-        }
-        match tokio::task::spawn_blocking(move || launcher_core::tools::run(&d, &e)).await {
-            Ok(Ok(Some((code, took)))) => log::line(&format!("tools: {} ran in {} s, exit code {code}", m.name, took.as_secs())),
-            Ok(Ok(None)) => {}
-            Ok(Err(launcher_core::Error::Game(e))) if e == launcher_core::tools::SKIPPED => {
-                log::line(&format!("tools: {} skipped for now; the rest wait for the next Play", m.name));
-                break;
-            }
-            Ok(Err(e)) => log::line(&format!("tools: {} didn't run: {e}", m.name)),
-            Err(e) => log::line(&format!("tools: {} stopped: {e}", m.name)),
         }
     }
     let _ = app.emit("tool-running", "");

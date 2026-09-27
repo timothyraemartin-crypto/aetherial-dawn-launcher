@@ -326,6 +326,19 @@ pub fn apply_all(game_dir: &Path, list: &[ModEntry]) -> Vec<String> {
     log
 }
 
+/// Writes every key of a setting now, without recording it (a tool's
+/// settings right before it runs). Returns the keys it had to leave, with
+/// why.
+pub fn write_now(game_dir: &Path, s: &Setting) -> std::io::Result<Vec<String>> {
+    if !safe(&s.file) {
+        return Err(std::io::Error::other(format!("{} isn't a settings file under Data", s.file)));
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let todo: Vec<(&String, &Value)> = s.set.iter().collect();
+    let (_, skipped) = write_one(game_dir, s, &todo, &format!("{now}-tool-settings"))?;
+    Ok(skipped.into_iter().map(|(k, why)| format!("{k} in {}: {why}", s.file)).collect())
+}
+
 type Written = (Vec<String>, Vec<(String, &'static str)>);
 
 fn write_one(game_dir: &Path, s: &Setting, todo: &[(&String, &Value)], stamp: &str) -> std::io::Result<Written> {

@@ -98,8 +98,8 @@ pub struct ModEntry {
     pub cpu: BTreeMap<String, String>,
     /// A program the mod ships that the launcher runs itself, minimized,
     /// before the game starts (BodySlide's batch build; tools.rs).
-    #[serde(default)]
-    pub run: Option<crate::tools::ToolRun>,
+    #[serde(default, deserialize_with = "crate::tools::one_or_many")]
+    pub run: Vec<crate::tools::ToolRun>,
 }
 
 /// CPU levels a `cpu` map can name, best first.

@@ -4,8 +4,14 @@
 //! after the mods install and before the game starts, and only again when
 //! something they read changes (Timothy's one-button rule).
 //!
-//! The program must be a file the launcher installed for that same mod, so a
-//! list can only start a tool that came from Nexus with the mod.
+//! The program must be a file of that same mod, installed by the launcher or
+//! named in the mod's own checks (installed through Vortex), so a list can
+//! only start a tool that came from Nexus with the mod.
+//!
+//! A mod can list several runs (BodySlide once with the women's preset and
+//! once with the men's). A run can build into its own folder first; its
+//! files are then moved into Data, replacing what's there rather than
+//! writing through Vortex's hard links into its staging folder.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -51,6 +57,42 @@ pub struct ToolRun {
     /// Seconds before it is stopped (default 10 minutes).
     #[serde(default)]
     pub timeout: Option<u64>,
+    /// Settings written right before each run (BodySlide's Config.xml
+    /// SelectedPreset, which 5.8.x reads instead of its -p option).
+    #[serde(default)]
+    pub before: Vec<crate::presets::Setting>,
+    /// A folder under ".aetherial-dawn/tools/" ("{out}" in args) the tool
+    /// builds into; after a clean run its files move into Data.
+    #[serde(default)]
+    pub output: Option<String>,
+}
+
+/// `run` in mods.json: one run or a list of them.
+pub fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<ToolRun>, D::Error> {
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(Box<ToolRun>),
+        Many(Vec<ToolRun>),
+    }
+    Ok(match <Option<OneOrMany> as serde::Deserialize>::deserialize(d)? {
+        None => Vec::new(),
+        Some(OneOrMany::One(r)) => vec![*r],
+        Some(OneOrMany::Many(v)) => v,
+    })
+}
+
+
+/// The record key of a mod's run: its id for the first, "<id>#<n>" after.
+fn key(m: &ModEntry, i: usize) -> String {
+    if i == 0 { m.id.clone() } else { format!("{}#{i}", m.id) }
+}
+
+/// The folder a run builds into, when it's a safe one.
+fn output_dir(game_dir: &Path, run: &ToolRun) -> Result<Option<PathBuf>> {
+    let Some(o) = &run.output else { return Ok(None) };
+    let rel = crate::modlist::safe_rel(o).filter(|r| r.to_string_lossy().replace('\\', "/").to_ascii_lowercase().starts_with(".aetherial-dawn/tools/")).ok_or_else(|| Error::UnsafePath(o.clone()))?;
+    Ok(Some(game_dir.join(rel)))
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -82,7 +124,8 @@ fn save(game_dir: &Path, r: &BTreeMap<String, Done>) -> Result<()> {
 fn args_for(run: &ToolRun, game_dir: &Path) -> Vec<String> {
     let game = game_dir.to_string_lossy();
     let data = game_dir.join("Data").to_string_lossy().into_owned();
-    run.args.iter().map(|a| a.replace("{game}", &game).replace("{data}", &data)).collect()
+    let out = run.output.as_ref().and_then(|o| crate::modlist::safe_rel(o)).map(|r| game_dir.join(r).to_string_lossy().into_owned()).unwrap_or_default();
+    run.args.iter().map(|a| a.replace("{game}", &game).replace("{data}", &data).replace("{out}", &out)).collect()
 }
 
 /// Every file under the inputs (path, size, modified time), hashed with the
@@ -94,6 +137,8 @@ fn stamp(game_dir: &Path, run: &ToolRun) -> String {
         h.update([0]);
         h.update(a.as_bytes());
     }
+    // The settings it's given count too (a changed preset builds again).
+    h.update(serde_json::to_vec(&run.before).unwrap_or_default());
     let mut files: Vec<(String, PathBuf)> = Vec::new();
     for i in std::iter::once(&run.exe).chain(&run.inputs) {
         let Some(rel) = crate::modlist::safe_rel(i) else { continue };
@@ -129,15 +174,18 @@ fn stamp(game_dir: &Path, run: &ToolRun) -> String {
 /// The program to run for a mod, when its `run` is due: the mod is
 /// installed, the program is one of its installed files, and its inputs
 /// changed since the last good run.
-pub fn due(game_dir: &Path, m: &ModEntry) -> Result<Option<(PathBuf, Vec<String>, String)>> {
-    let Some(run) = &m.run else { return Ok(None) };
+pub fn due(game_dir: &Path, m: &ModEntry, i: usize) -> Result<Option<(PathBuf, Vec<String>, String)>> {
+    let Some(run) = m.run.get(i) else { return Ok(None) };
     if !m.installed(game_dir) {
         return Ok(None);
     }
     let rel = crate::modlist::safe_rel(&run.exe).ok_or_else(|| Error::UnsafePath(run.exe.clone()))?;
     let rel_s = rel.to_string_lossy().replace('\\', "/");
     let installed = crate::modlist::load_installed(game_dir);
-    let ours = installed.mods.get(&m.id).map(|r| r.files.iter().chain(&r.skipped).any(|f| f.eq_ignore_ascii_case(&rel_s))).unwrap_or(false);
+    // The launcher's own record, or the mod's checks (Vortex installed it:
+    // installed() above already found every checked file).
+    let ours = installed.mods.get(&m.id).map(|r| r.files.iter().chain(&r.skipped).any(|f| f.eq_ignore_ascii_case(&rel_s))).unwrap_or(false)
+        || m.check.iter().any(|c| c.eq_ignore_ascii_case(&rel_s));
     if !ours || !rel_s.to_ascii_lowercase().ends_with(".exe") {
         return Err(Error::Game(format!("{} isn't a program {} installed", run.exe, m.name)));
     }
@@ -145,8 +193,9 @@ pub fn due(game_dir: &Path, m: &ModEntry) -> Result<Option<(PathBuf, Vec<String>
     if !exe.is_file() {
         return Err(Error::Game(format!("{} is missing", run.exe)));
     }
+    output_dir(game_dir, run)?;
     let s = stamp(game_dir, run);
-    if load(game_dir).get(&m.id).is_some_and(|d| d.stamp == s || (d.failed_stamp == s && d.failures >= MAX_FAILURES)) {
+    if load(game_dir).get(&key(m, i)).is_some_and(|d| d.stamp == s || (d.failed_stamp == s && d.failures >= MAX_FAILURES)) {
         return Ok(None);
     }
     Ok(Some((exe, args_for(run, game_dir), s)))
@@ -155,9 +204,21 @@ pub fn due(game_dir: &Path, m: &ModEntry) -> Result<Option<(PathBuf, Vec<String>
 /// Runs a mod's tool when it's due. Returns its exit code and how long it
 /// took, or None when nothing needed running. Only a clean exit (0) is
 /// recorded, so a failed run is tried again on the next Play.
-pub fn run(game_dir: &Path, m: &ModEntry) -> Result<Option<(i32, Duration)>> {
-    let Some((exe, args, s)) = due(game_dir, m)? else { return Ok(None) };
-    let timeout = Duration::from_secs(m.run.as_ref().and_then(|r| r.timeout).unwrap_or(DEFAULT_TIMEOUT));
+pub fn run(game_dir: &Path, m: &ModEntry, i: usize) -> Result<Option<(i32, Duration)>> {
+    let Some((exe, args, s)) = due(game_dir, m, i)? else { return Ok(None) };
+    let spec = &m.run[i];
+    let timeout = Duration::from_secs(spec.timeout.unwrap_or(DEFAULT_TIMEOUT));
+    for b in &spec.before {
+        let left = crate::presets::write_now(game_dir, b)?;
+        if !left.is_empty() {
+            return Err(Error::Game(format!("couldn't set {} before running it", left.join(", "))));
+        }
+    }
+    let out = output_dir(game_dir, spec)?;
+    if let Some(o) = &out {
+        let _ = std::fs::remove_dir_all(o);
+        std::fs::create_dir_all(o)?;
+    }
     let start = Instant::now();
     SKIP.store(false, std::sync::atomic::Ordering::SeqCst);
     let got = spawn_minimized_and_wait(&exe, &args, timeout);
@@ -165,8 +226,11 @@ pub fn run(game_dir: &Path, m: &ModEntry) -> Result<Option<(i32, Duration)>> {
     if matches!(&got, Err(Error::Game(e)) if e == SKIPPED) {
         return got.map(|c| Some((c, took)));
     }
+    if let (Ok(0), Some(o)) = (&got, &out) {
+        move_into_data(o, &game_dir.join("Data"))?;
+    }
     let mut r = load(game_dir);
-    let d = r.entry(m.id.clone()).or_default();
+    let d = r.entry(key(m, i)).or_default();
     match &got {
         Ok(0) => {
             d.stamp = s;
@@ -184,6 +248,42 @@ pub fn run(game_dir: &Path, m: &ModEntry) -> Result<Option<(i32, Duration)>> {
     }
     save(game_dir, &r)?;
     got.map(|c| Some((c, took)))
+}
+
+/// Moves everything a tool built into Data at the same paths. An existing
+/// file is removed first, so a Vortex hard link is replaced and its staging
+/// copy stays as it was.
+fn move_into_data(out: &Path, data: &Path) -> Result<usize> {
+    let mut n = 0;
+    let mut stack = vec![out.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d)?.flatten() {
+            let p = e.path();
+            let ft = e.file_type()?;
+            if ft.is_symlink() {
+                continue;
+            }
+            if ft.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            let rel = p.strip_prefix(out).map_err(|_| Error::UnsafePath(p.display().to_string()))?;
+            let dest = data.join(rel);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            if dest.exists() {
+                std::fs::remove_file(&dest)?;
+            }
+            if std::fs::rename(&p, &dest).is_err() {
+                std::fs::copy(&p, &dest)?;
+                std::fs::remove_file(&p)?;
+            }
+            n += 1;
+        }
+    }
+    let _ = std::fs::remove_dir_all(out);
+    Ok(n)
 }
 
 /// The error text when the player skipped the run.
@@ -351,32 +451,81 @@ mod tests {
             "label": "Fitting armor to bodies", "exe": exe_rel, "args": ["--groupbuild", "3BA", "-t", "{data}"],
             "inputs": ["Data/CalienteTools/BodySlide/SliderPresets"]}})).unwrap();
         // Not installed by the launcher: never run.
-        assert!(due(g, &m).unwrap().is_none());
+        assert!(due(g, &m, 0).unwrap().is_none());
         let rec = json!({"mods": {"bodyslide": {"name": "BodySlide", "files": [exe_rel], "when": 1}}});
         std::fs::create_dir_all(g.join(".aetherial-dawn/mods")).unwrap();
         std::fs::write(g.join(".aetherial-dawn/mods/installed.json"), rec.to_string()).unwrap();
-        let (code, _) = run(g, &m).unwrap().unwrap();
+        let (code, _) = run(g, &m, 0).unwrap().unwrap();
         assert_eq!(code, 0);
         let ran = std::fs::read_to_string(exe.parent().unwrap().join("ran.txt")).unwrap();
         assert_eq!(ran.trim(), format!("--groupbuild 3BA -t {}", g.join("Data").display()));
-        assert!(run(g, &m).unwrap().is_none(), "nothing changed");
+        assert!(run(g, &m, 0).unwrap().is_none(), "nothing changed");
         std::fs::write(g.join("Data/CalienteTools/BodySlide/SliderPresets/b.xml"), "2").unwrap();
-        assert!(run(g, &m).unwrap().is_some(), "a new preset runs it again");
+        assert!(run(g, &m, 0).unwrap().is_some(), "a new preset runs it again");
 
         // Two failures with the same inputs: no more tries until they change.
         std::fs::write(&exe, "#!/bin/sh\nexit 3\n").unwrap();
-        assert_eq!(run(g, &m).unwrap().unwrap().0, 3);
-        assert_eq!(run(g, &m).unwrap().unwrap().0, 3);
-        assert!(run(g, &m).unwrap().is_none(), "gave up on these inputs");
+        assert_eq!(run(g, &m, 0).unwrap().unwrap().0, 3);
+        assert_eq!(run(g, &m, 0).unwrap().unwrap().0, 3);
+        assert!(run(g, &m, 0).unwrap().is_none(), "gave up on these inputs");
         std::fs::write(g.join("Data/CalienteTools/BodySlide/SliderPresets/c.xml"), "3").unwrap();
-        assert!(run(g, &m).unwrap().is_some(), "new inputs get another try");
+        assert!(run(g, &m, 0).unwrap().is_some(), "new inputs get another try");
 
         // A linked folder isn't followed.
         std::os::unix::fs::symlink(g, g.join("Data/CalienteTools/BodySlide/SliderPresets/loop")).unwrap();
-        let _ = stamp(g, m.run.as_ref().unwrap());
+        let _ = stamp(g, &m.run[0]);
 
         // A program the mod didn't install is refused.
-        let other = ModEntry { run: Some(ToolRun { exe: "Data/other.exe".into(), ..m.run.clone().unwrap() }), ..m.clone() };
-        assert!(due(g, &other).is_err());
+        let other = ModEntry { run: vec![ToolRun { exe: "Data/other.exe".into(), ..m.run[0].clone() }], ..m.clone() };
+        assert!(due(g, &other, 0).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bodyslide_twice_into_a_side_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        let bs = g.join("Data/CalienteTools/BodySlide");
+        std::fs::create_dir_all(bs.join("SliderPresets")).unwrap();
+        std::fs::write(bs.join("Config.xml"), "<Config>\n    <SelectedPreset>CBBE</SelectedPreset>\n</Config>\n").unwrap();
+        // A stand-in BodySlide: builds a mesh named after the selected preset into -t.
+        let exe = bs.join("BodySlide.exe");
+        std::fs::write(&exe, "#!/bin/sh\np=$(sed -n 's/.*<SelectedPreset>\\(.*\\)<.*/\\1/p' Config.xml)\nmkdir -p \"$4/meshes/armor\"\necho \"$p\" > \"$4/meshes/armor/$2.nif\"\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Vortex's deployed mesh, hard-linked from its staging folder.
+        std::fs::create_dir_all(g.join("staging/meshes/armor")).unwrap();
+        std::fs::write(g.join("staging/meshes/armor/3BA.nif"), "vortex").unwrap();
+        std::fs::create_dir_all(g.join("Data/meshes/armor")).unwrap();
+        std::fs::hard_link(g.join("staging/meshes/armor/3BA.nif"), g.join("Data/meshes/armor/3BA.nif")).unwrap();
+        let spec = |group: &str, preset: &str| {
+            json!({"label": "Fitting armor to bodies", "exe": "Data/CalienteTools/BodySlide/BodySlide.exe",
+                "args": ["--groupbuild", group, "--targetdir", "{out}", "-p", preset, "--trimorphs"],
+                "inputs": ["Data/CalienteTools/BodySlide/SliderPresets"], "output": ".aetherial-dawn/tools/bodyslide",
+                "before": [{"file": "Data/CalienteTools/BodySlide/Config.xml", "format": "xml", "set": {"Config.SelectedPreset": preset}}]})
+        };
+        // Installed through Vortex: no launcher record, the program is in the checks.
+        let m: ModEntry = serde_json::from_value(json!({"id": "bodyslide", "name": "BodySlide", "check": ["Data/CalienteTools/BodySlide/BodySlide.exe"],
+            "run": [spec("3BA", "3BA Natural"), spec("HIMBO", "HIMBO Default")]})).unwrap();
+        assert_eq!(m.run.len(), 2);
+        assert_eq!(run(g, &m, 0).unwrap().unwrap().0, 0);
+        assert_eq!(run(g, &m, 1).unwrap().unwrap().0, 0);
+        assert_eq!(std::fs::read_to_string(g.join("Data/meshes/armor/3BA.nif")).unwrap().trim(), "3BA Natural");
+        assert_eq!(std::fs::read_to_string(g.join("Data/meshes/armor/HIMBO.nif")).unwrap().trim(), "HIMBO Default");
+        assert_eq!(std::fs::read_to_string(g.join("staging/meshes/armor/3BA.nif")).unwrap(), "vortex", "Vortex's staging copy is untouched");
+        assert!(!g.join(".aetherial-dawn/tools/bodyslide").exists());
+        // Both recorded: nothing runs again until something changes.
+        assert!(due(g, &m, 0).unwrap().is_none() && due(g, &m, 1).unwrap().is_none());
+        // A new preset in the list builds that run again.
+        let m2: ModEntry = serde_json::from_value(json!({"id": "bodyslide", "name": "BodySlide", "check": ["Data/CalienteTools/BodySlide/BodySlide.exe"],
+            "run": [spec("3BA", "3BA Curvy"), spec("HIMBO", "HIMBO Default")]})).unwrap();
+        assert!(due(g, &m2, 0).unwrap().is_some() && due(g, &m2, 1).unwrap().is_none());
+        // One run as an object still reads.
+        let one: ModEntry = serde_json::from_value(json!({"id": "x", "name": "X", "run": spec("3BA", "a")})).unwrap();
+        assert_eq!(one.run.len(), 1);
+        // An output folder outside the launcher's tools folder is refused.
+        let bad: ModEntry = serde_json::from_value(json!({"id": "y", "name": "Y", "check": ["Data/CalienteTools/BodySlide/BodySlide.exe"],
+            "run": {"label": "x", "exe": "Data/CalienteTools/BodySlide/BodySlide.exe", "output": "Data/meshes"}})).unwrap();
+        assert!(due(g, &bad, 0).is_err());
     }
 }
