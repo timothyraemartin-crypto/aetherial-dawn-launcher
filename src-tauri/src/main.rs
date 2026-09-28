@@ -1401,6 +1401,17 @@ async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path:
     // Both inventories, named, so the log never lets a small game-files
     // gap stand for Vortex.
     log::line(&format!("play: {}", launcher_core::inventory::count(&list, dir).1.describe()));
+    // Once the server serves a client set, Play waits for Vortex's own state
+    // to hold it in the Aetherial Dawn profile (never the direct-to-Data
+    // ledger). Unpaired launchers aren't gated yet.
+    if let Some(set) = mods::served_client_set(state).await {
+        if let Some(step) = mods::vortex_step(app, state, &set).await {
+            log::line(&format!("play: {}", step.describe()));
+            if !step.ok() {
+                return Err(format!("{}. Then press Play again.", step.describe()));
+            }
+        }
+    }
     let missing: Vec<mods::Row> = launcher_core::modlist::missing(&list, dir).into_iter().map(|m| mods::row(m, dir)).collect();
     if !missing.is_empty() {
         log::line(&format!("play: stopped, {} mod(s) from the mod list are missing", missing.len()));
@@ -2145,7 +2156,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, report_problem, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside, skip_tool, window_ready, open_invite])
+        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, report_problem, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, mods::vortex_connect, restore_set_aside, skip_tool, window_ready, open_invite])
         .build(tauri::generate_context!())
         .expect("error while running the launcher")
         .run(|_, event| {

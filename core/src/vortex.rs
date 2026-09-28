@@ -141,9 +141,19 @@ pub async fn call(http: &reqwest::Client, home: &Path, token: &str, verb: &str, 
 /// The extension's `status` answer.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct Status {
+    /// The one Skyrim SE profile named "Aetherial Dawn", when there is
+    /// exactly one.
     pub profile: Option<Profile>,
+    /// How many Skyrim SE profiles are named "Aetherial Dawn".
+    #[serde(default, rename = "aetherialProfiles")]
+    pub aetherial_profiles: usize,
+    /// The active Skyrim SE profile.
+    #[serde(default, rename = "activeProfile")]
+    pub active_profile: Option<ActiveProfile>,
     #[serde(default)]
     pub mods: Vec<VortexMod>,
+    #[serde(default)]
+    pub collections: Vec<Collection>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -151,6 +161,13 @@ pub struct Profile {
     pub id: String,
     pub name: String,
     pub active: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct ActiveProfile {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -164,6 +181,133 @@ pub struct VortexMod {
     pub nexus_file_id: Option<u64>,
     #[serde(default)]
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct Collection {
+    pub id: String,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub slug: Option<String>,
+    #[serde(default)]
+    pub revision: Option<u64>,
+}
+
+/// The client set the launcher expects in the "Aetherial Dawn" profile
+/// (docs/vortex-collection-design.md 6.1): the required Nexus files and,
+/// once there is one, the Aetherial Dawn collection by slug and revision.
+/// Milestone 1 (Timothy's existing profile, PR #7 5876324959) has no
+/// collection yet: only the files are checked.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct ClientSet {
+    #[serde(default)]
+    pub collection: Option<CollectionRef>,
+    pub mods: Vec<ModEntry>,
+}
+
+/// A collection by slug and revision. How Vortex 2.7.1 records these on an
+/// installed collection is unverified until observed on the disposable
+/// profile.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct CollectionRef {
+    pub slug: String,
+    pub revision: u64,
+}
+
+/// One step line of the Requirements window (design section 3), for Vortex,
+/// the profile and the collection.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Step {
+    /// The extension didn't answer: Vortex closed, or not paired.
+    VortexNotRunning,
+    NoProfile,
+    TwoProfiles(usize),
+    OtherProfileActive(Option<String>),
+    CollectionNotAdded,
+    WrongRevision { has: Option<u64>, needs: u64 },
+    /// Counts of the required files, from Vortex's own state only (never the
+    /// launcher's direct-to-Data ledger): installed (state "installed") and
+    /// switched on in the profile, with the ones still to come named, and
+    /// any other file of a listed mod still switched on.
+    Counts { required: usize, installed: usize, enabled: usize, waiting: Vec<String>, other_versions_on: Vec<String> },
+    Ready,
+}
+
+impl Step {
+    pub fn ok(&self) -> bool {
+        *self == Step::Ready
+    }
+
+    /// The line the player reads.
+    pub fn describe(&self) -> String {
+        match self {
+            Step::VortexNotRunning => "Vortex: open Vortex (with the Aetherial Dawn extension) so the launcher can check your mods".into(),
+            Step::NoProfile => "Vortex: make a profile named \"Aetherial Dawn\" for Skyrim Special Edition".into(),
+            Step::TwoProfiles(n) => format!("Vortex: {n} profiles are named \"Aetherial Dawn\"; keep one"),
+            Step::OtherProfileActive(name) => format!("Vortex: switch from {} to the \"Aetherial Dawn\" profile", name.as_deref().map(|n| format!("\"{n}\"")).unwrap_or_else(|| "another profile".into())),
+            Step::CollectionNotAdded => "Collection: add the Aetherial Dawn collection in Vortex".into(),
+            Step::WrongRevision { has, needs } => match has {
+                Some(h) => format!("Collection: revision {h} is installed; update to revision {needs}"),
+                None => format!("Collection: update to revision {needs}"),
+            },
+            Step::Counts { required, installed, enabled, waiting, other_versions_on } => format!(
+                "Aetherial Dawn profile: {installed} of {required} installed · {enabled} of {required} switched on{}{}",
+                if waiting.is_empty() { String::new() } else { format!(" · waiting: {}", waiting.join(", ")) },
+                if other_versions_on.is_empty() { String::new() } else { format!(" · another version still on: {}", other_versions_on.join(", ")) }
+            ),
+            Step::Ready => "Aetherial Dawn profile: every required mod installed and switched on".into(),
+        }
+    }
+}
+
+/// The Vortex step from the extension's status (None: it didn't answer).
+/// Pure, so each state has a fixture test. Ready only from Vortex's state.
+pub fn step(set: &ClientSet, status: Option<&Status>) -> Step {
+    let Some(st) = status else { return Step::VortexNotRunning };
+    match st.aetherial_profiles {
+        0 => return Step::NoProfile,
+        1 => {}
+        n => return Step::TwoProfiles(n),
+    }
+    if !st.profile.as_ref().is_some_and(|p| p.active) {
+        return Step::OtherProfileActive(st.active_profile.as_ref().and_then(|a| a.name.clone()));
+    }
+    if let Some(c) = &set.collection {
+        let mine: Vec<&Collection> = st.collections.iter().filter(|x| x.slug.as_deref() == Some(c.slug.as_str())).collect();
+        if mine.is_empty() {
+            return Step::CollectionNotAdded;
+        }
+        if !mine.iter().any(|x| x.revision == Some(c.revision)) {
+            return Step::WrongRevision { has: mine.iter().filter_map(|x| x.revision).max(), needs: c.revision };
+        }
+    }
+    let installed_state = |m: &VortexMod| m.state.as_deref().is_none_or(|s| s == "installed");
+    let mut required = 0;
+    let (mut installed, mut enabled) = (0, 0);
+    let mut waiting = Vec::new();
+    for e in &set.mods {
+        let Some(n) = &e.nexus else { continue };
+        let Some(file) = n.file else { continue };
+        required += 1;
+        let found: Vec<&VortexMod> = st.mods.iter().filter(|m| m.nexus_mod_id == Some(n.mod_id) && m.nexus_file_id == Some(file) && installed_state(m)).collect();
+        if !found.is_empty() {
+            installed += 1;
+        }
+        if found.iter().any(|m| m.enabled) {
+            enabled += 1;
+        } else {
+            waiting.push(e.name.clone());
+        }
+    }
+    let other_versions_on = membership(&set.mods, st).other_versions_on;
+    if required > 0 && installed == required && enabled == required && other_versions_on.is_empty() {
+        Step::Ready
+    } else {
+        Step::Counts { required, installed, enabled, waiting, other_versions_on }
+    }
 }
 
 /// What the Ready gate knows from Vortex: per listed mod, whether the
@@ -235,6 +379,92 @@ pub fn token(home: &Path) -> Result<String> {
     }
 }
 
+/// The extension's folder name inside Vortex's plugins folder.
+pub const EXT_DIR: &str = "aetherial-dawn";
+
+/// The extension as this launcher carries it (vortex-extension/), top-level
+/// files only. Its version is the one in its info.json.
+pub const EXTENSION: &[(&str, &[u8])] = &[
+    ("index.js", include_bytes!("../../vortex-extension/index.js")),
+    ("jobs.js", include_bytes!("../../vortex-extension/jobs.js")),
+    ("info.json", include_bytes!("../../vortex-extension/info.json")),
+];
+
+/// Vortex's per-user extensions folder under the roaming app data folder,
+/// `%APPDATA%\Vortex\plugins` (verify on Timothy's PC, design 2).
+pub fn plugins_dir(roaming: &Path) -> PathBuf {
+    roaming.join("Vortex").join("plugins")
+}
+
+/// What installing the extension did.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Installed {
+    /// It wasn't there; Vortex loads it on its next start.
+    Fresh,
+    /// An older or changed copy was replaced; Vortex needs a restart.
+    Updated { from: Option<String> },
+    /// The same files are already there.
+    Current,
+    /// A newer launcher already put a later version there; it's kept.
+    NewerKept { installed: String },
+}
+
+impl Installed {
+    /// Vortex has to be (re)started before it runs these files.
+    pub fn needs_restart(&self) -> bool {
+        matches!(self, Installed::Fresh | Installed::Updated { .. })
+    }
+}
+
+fn info_version(info: &[u8]) -> Option<String> {
+    serde_json::from_slice::<serde_json::Value>(info).ok()?.get("version")?.as_str().map(str::to_string)
+}
+
+fn version_parts(v: &str) -> Vec<u64> {
+    v.split('.').map(|p| p.trim().parse().unwrap_or(0)).collect()
+}
+
+/// Puts the extension into `plugins/aetherial-dawn`. Each file is written in
+/// full beside Vortex's folder, then renamed over the old one, info.json
+/// last, so Vortex never loads a half-written file and a stopped install is
+/// finished by the next one. Files there that aren't the extension's are
+/// left alone, and a later version put there by a newer launcher is kept.
+pub fn install_extension(plugins: &Path, files: &[(&str, &[u8])]) -> Result<Installed> {
+    let vortex = plugins.parent().ok_or_else(|| Error::Game("Vortex's folder has no parent".into()))?;
+    if !vortex.is_dir() {
+        return Err(Error::Game("Vortex isn't set up for this Windows user (no Vortex folder in AppData)".into()));
+    }
+    let info = files.iter().find(|(n, _)| *n == "info.json").map(|(_, b)| *b).ok_or_else(|| Error::Game("the extension has no info.json".into()))?;
+    let bundled = info_version(info).ok_or_else(|| Error::Game("the extension's info.json has no version".into()))?;
+    for (name, _) in files {
+        if name.is_empty() || name.contains(['/', '\\', ':']) || name.starts_with('.') {
+            return Err(Error::Game(format!("the extension file name {name:?} isn't a plain file name")));
+        }
+    }
+    let dir = plugins.join(EXT_DIR);
+    let installed = std::fs::read(dir.join("info.json")).ok().and_then(|b| info_version(&b));
+    if files.iter().all(|(n, b)| std::fs::read(dir.join(n)).is_ok_and(|have| have == *b)) {
+        return Ok(Installed::Current);
+    }
+    if let Some(v) = installed.as_deref().filter(|v| version_parts(v) > version_parts(&bundled)) {
+        return Ok(Installed::NewerKept { installed: v.to_string() });
+    }
+    let staging = vortex.join("aetherial-dawn-extension.staging");
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging)?;
+    for (name, bytes) in files {
+        std::fs::write(staging.join(name), bytes)?;
+    }
+    std::fs::create_dir_all(&dir)?;
+    let fresh = !dir.join("info.json").exists();
+    let (last, rest): (Vec<_>, Vec<_>) = files.iter().partition(|(n, _)| *n == "info.json");
+    for (name, _) in rest.iter().chain(last.iter()) {
+        std::fs::rename(staging.join(name), dir.join(name))?;
+    }
+    let _ = std::fs::remove_dir_all(&staging);
+    Ok(if fresh { Installed::Fresh } else { Installed::Updated { from: installed } })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +509,89 @@ mod tests {
         assert_eq!((v1["verb"].as_str(), v1["revision"].as_str(), v1["ts"].as_u64()), (Some("status"), Some("r1"), Some(5)));
     }
 
+    fn e(id: &str, m: u64, f: u64) -> ModEntry {
+        ModEntry { id: id.into(), name: id.to_uppercase(), nexus: Some(NexusRef { mod_id: m, file: Some(f), pick: None }), ..Default::default() }
+    }
+
+    fn vm(id: &str, m: u64, f: u64, on: bool) -> VortexMod {
+        VortexMod { id: id.into(), state: Some("installed".into()), nexus_mod_id: Some(m), nexus_file_id: Some(f), enabled: on }
+    }
+
+    fn active(mods: Vec<VortexMod>) -> Status {
+        Status {
+            profile: Some(Profile { id: "p1".into(), name: "Aetherial Dawn".into(), active: true }),
+            aetherial_profiles: 1,
+            active_profile: Some(ActiveProfile { id: "p1".into(), name: Some("Aetherial Dawn".into()) }),
+            mods,
+            collections: vec![],
+        }
+    }
+
+    #[test]
+    fn each_vortex_state_has_its_own_line() {
+        let set = ClientSet { collection: Some(CollectionRef { slug: "adcol".into(), revision: 2 }), mods: vec![e("ussep", 266, 733846), e("skyui", 12604, 35407)] };
+        let mut good = active(vec![vm("u", 266, 733846, true), vm("s", 12604, 35407, true)]);
+        good.collections = vec![Collection { id: "c".into(), state: Some("installed".into()), enabled: true, slug: Some("adcol".into()), revision: Some(2) }];
+        assert_eq!(step(&set, None), Step::VortexNotRunning);
+        assert_eq!(step(&set, Some(&good)), Step::Ready);
+        assert!(step(&set, Some(&good)).ok());
+        let with = |f: &dyn Fn(&mut Status)| {
+            let mut s = good.clone();
+            f(&mut s);
+            step(&set, Some(&s))
+        };
+        assert_eq!(with(&|s| { s.aetherial_profiles = 0; s.profile = None }), Step::NoProfile);
+        assert_eq!(with(&|s| { s.aetherial_profiles = 2; s.profile = None }), Step::TwoProfiles(2));
+        let other = with(&|s| { s.profile.as_mut().unwrap().active = false; s.active_profile = Some(ActiveProfile { id: "p2".into(), name: Some("Default".into()) }) });
+        assert_eq!(other, Step::OtherProfileActive(Some("Default".into())));
+        assert!(other.describe().contains("switch from \"Default\""));
+        assert_eq!(with(&|s| s.collections.clear()), Step::CollectionNotAdded);
+        assert_eq!(with(&|s| s.collections[0].revision = Some(1)), Step::WrongRevision { has: Some(1), needs: 2 });
+        // Downloading: SkyUI not there yet.
+        let dl = with(&|s| { s.mods.pop(); });
+        assert_eq!(dl, Step::Counts { required: 2, installed: 1, enabled: 1, waiting: vec!["SKYUI".into()], other_versions_on: vec![] });
+        assert_eq!(dl.describe(), "Aetherial Dawn profile: 1 of 2 installed · 1 of 2 switched on · waiting: SKYUI");
+        // Installed but off.
+        assert_eq!(with(&|s| s.mods[1].enabled = false), Step::Counts { required: 2, installed: 2, enabled: 1, waiting: vec!["SKYUI".into()], other_versions_on: vec![] });
+        // Mid-install doesn't count as installed.
+        assert_eq!(with(&|s| s.mods[1].state = Some("installing".into())), Step::Counts { required: 2, installed: 1, enabled: 1, waiting: vec!["SKYUI".into()], other_versions_on: vec![] });
+        // Another file of a listed mod still on (the 4.3.9c case): not ready, and said.
+        let two = with(&|s| s.mods.push(vm("u439c", 266, 999999, true)));
+        assert!(!two.ok());
+        assert!(two.describe().ends_with("another version still on: u439c"), "{}", two.describe());
+    }
+
+    /// Milestone 1: Timothy's existing profile, with no collection yet. His
+    /// 11 Vortex rows (2026-09-28 screenshot) against a larger client set
+    /// read as incomplete, and the launcher's own Data installs never count.
+    #[test]
+    fn the_existing_11_row_profile_reads_as_incomplete_not_ready() {
+        // Stand-in ids: the real file ids come from the Mods chat's
+        // read-only inventory of his profile.
+        let his: Vec<VortexMod> = (0..10).map(|i| vm(&format!("m{i}"), 1000 + i, 5000 + i, true)).chain([vm("ussep439c", 266, 999999, true)]).collect();
+        let mut set = ClientSet { collection: None, mods: (0..10).map(|i| e(&format!("m{i}"), 1000 + i, 5000 + i)).collect() };
+        set.mods.push(e("ussep", 266, 733846));
+        set.mods.push(e("address-library", 32444, 720756));
+        set.mods.push(e("mcm-helper", 53000, 746161));
+        let st = active(his);
+        let got = step(&set, Some(&st));
+        assert_eq!(got, Step::Counts { required: 13, installed: 10, enabled: 10, waiting: vec!["USSEP".into(), "ADDRESS-LIBRARY".into(), "MCM-HELPER".into()], other_versions_on: vec!["ussep439c".into()] });
+        assert!(!got.ok());
+        // No collection is asked for while none is pinned.
+        assert!(!matches!(got, Step::CollectionNotAdded | Step::WrongRevision { .. }));
+        // An empty client set is never "ready".
+        assert!(!step(&ClientSet::default(), Some(&st)).ok());
+    }
+
+    #[test]
+    fn reads_the_extensions_status_answer() {
+        let json = r#"{"ok":true,"activeProfile":{"id":"p1","name":"Aetherial Dawn"},"aetherialProfiles":1,"profile":{"id":"p1","name":"Aetherial Dawn","active":true},
+            "mods":[{"id":"u","state":"installed","nexusModId":266,"nexusFileId":733846,"enabled":true,"installerChoices":null}],
+            "collections":[{"id":"c","state":"installed","enabled":true,"slug":"adcol","revision":2}]}"#;
+        let s: Status = serde_json::from_str(json).unwrap();
+        assert_eq!((s.aetherial_profiles, s.mods[0].nexus_file_id, s.collections[0].revision), (1, Some(733846), Some(2)));
+    }
+
     #[test]
     fn port_file_reads_or_says_not_running() {
         let t = tempfile::tempdir().unwrap();
@@ -291,11 +604,9 @@ mod tests {
 
     #[test]
     fn membership_is_by_exact_nexus_file_in_the_active_profile() {
-        let e = |id: &str, m: u64, f: u64| ModEntry { id: id.into(), name: id.into(), nexus: Some(NexusRef { mod_id: m, file: Some(f), pick: None }), ..Default::default() };
         let list = vec![e("ussep", 266, 733846), e("skyui", 12604, 35407), ModEntry { id: "github-one".into(), ..Default::default() }];
-        let vm = |id: &str, m: u64, f: u64, on: bool| VortexMod { id: id.into(), state: Some("installed".into()), nexus_mod_id: Some(m), nexus_file_id: Some(f), enabled: on };
         // Timothy's profile today: 4.3.9c on, SkyUI on.
-        let mut st = Status { profile: Some(Profile { id: "p1".into(), name: "Aetherial Dawn".into(), active: true }), mods: vec![vm("u439c", 266, 999999, true), vm("skyui", 12604, 35407, true)] };
+        let mut st = Status { profile: Some(Profile { id: "p1".into(), name: "Aetherial Dawn".into(), active: true }), mods: vec![vm("u439c", 266, 999999, true), vm("skyui", 12604, 35407, true)], ..Default::default() };
         let m = membership(&list, &st);
         assert_eq!((m.missing.clone(), m.other_versions_on.clone()), (vec!["ussep".to_string()], vec!["u439c".to_string()]));
         assert!(!m.ready());
@@ -316,5 +627,66 @@ mod tests {
         // Approved for "Only the server's mods": the listed files only.
         let a = approved(&list, &st);
         assert_eq!(a.iter().map(|a| a.vortex_id.as_str()).collect::<Vec<_>>(), ["skyui", "u438a"]);
+    }
+
+    fn fake_vortex() -> (tempfile::TempDir, PathBuf) {
+        let t = tempfile::tempdir().unwrap();
+        let plugins = plugins_dir(t.path());
+        std::fs::create_dir_all(t.path().join("Vortex")).unwrap();
+        (t, plugins)
+    }
+
+    #[test]
+    fn the_carried_extension_is_the_read_only_one_with_a_version() {
+        let info = EXTENSION.iter().find(|(n, _)| *n == "info.json").unwrap().1;
+        assert!(info_version(info).is_some());
+        let jobs = std::str::from_utf8(EXTENSION.iter().find(|(n, _)| *n == "jobs.js").unwrap().1).unwrap();
+        assert!(jobs.contains("VERBS = ['status']") || jobs.contains("VERBS=['status']"), "the extension answers status only");
+    }
+
+    #[test]
+    fn installs_once_then_reads_as_current() {
+        let (_t, plugins) = fake_vortex();
+        assert_eq!(install_extension(&plugins, EXTENSION).unwrap(), Installed::Fresh);
+        for (n, b) in EXTENSION {
+            assert_eq!(std::fs::read(plugins.join(EXT_DIR).join(n)).unwrap(), *b);
+        }
+        assert_eq!(install_extension(&plugins, EXTENSION).unwrap(), Installed::Current);
+        assert!(!plugins.parent().unwrap().join("aetherial-dawn-extension.staging").exists());
+    }
+
+    #[test]
+    fn an_update_replaces_its_own_files_and_keeps_others() {
+        let (_t, plugins) = fake_vortex();
+        let dir = plugins.join(EXT_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("info.json"), r#"{"version":"0.1.0"}"#).unwrap();
+        std::fs::write(dir.join("index.js"), "old").unwrap();
+        std::fs::write(dir.join("notes.txt"), "mine").unwrap();
+        std::fs::create_dir_all(plugins.parent().unwrap().join("aetherial-dawn-extension.staging")).unwrap();
+        assert_eq!(install_extension(&plugins, EXTENSION).unwrap(), Installed::Updated { from: Some("0.1.0".into()) });
+        assert_eq!(std::fs::read_to_string(dir.join("notes.txt")).unwrap(), "mine");
+        assert_eq!(install_extension(&plugins, EXTENSION).unwrap(), Installed::Current);
+    }
+
+    #[test]
+    fn a_later_version_from_a_newer_launcher_is_kept() {
+        let (_t, plugins) = fake_vortex();
+        let dir = plugins.join(EXT_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("info.json"), r#"{"version":"0.10.0"}"#).unwrap();
+        assert_eq!(install_extension(&plugins, EXTENSION).unwrap(), Installed::NewerKept { installed: "0.10.0".into() });
+        assert!(!dir.join("index.js").exists());
+    }
+
+    #[test]
+    fn without_vortex_nothing_is_written() {
+        let t = tempfile::tempdir().unwrap();
+        let plugins = plugins_dir(t.path());
+        assert!(install_extension(&plugins, EXTENSION).is_err());
+        assert!(!t.path().join("Vortex").exists());
+        let (_t, plugins) = fake_vortex();
+        assert!(install_extension(&plugins, &[("../x.js", b"x"), ("info.json", br#"{"version":"1"}"#)]).is_err());
+        assert!(!plugins.exists());
     }
 }

@@ -579,6 +579,11 @@
     $('rq-keybox').hidden = !useKey;
     $('rq-vortex').hidden = !view.vortex;
     $('rq-counts').textContent = (view.counts_text || '') + (view.feed ? ` (${view.feed})` : " (the server's mod list couldn't be read; the launcher's own list only)");
+    // Vortex's own view of the Aetherial Dawn profile, once paired with the extension.
+    $('rq-vortex-step').hidden = !view.vortex_line;
+    $('rq-vortex-step').textContent = view.vortex_line || '';
+    // Adds the read-only helper to Vortex so the counts come from Vortex itself.
+    $('rq-vortex-connect').hidden = !view.vortex || !!view.vortex_paired;
     const list = $('rq-list');
     list.replaceChildren();
     for (const m of view.mods) {
@@ -1058,6 +1063,14 @@ let autoMods = false;
   };
   $('rq-signout').onclick = async () => { await invoke('nexus_sign_out').catch(rqError); await refreshMods(); };
   $('files-mods').onclick = () => showRequiredMods();
+  $('rq-vortex-go').onclick = async () => {
+    rqError('');
+    try {
+      $('rq-vortex-said').textContent = await invoke('vortex_connect');
+      $('rq-vortex-said').hidden = false;
+    } catch (e) { rqError(e); return; }
+    await refreshMods();
+  };
   $('rq-again').onclick = () => { showPage(page); onPlay(); };
   $('cr-logs').onclick = () => invoke('open_log_folder').catch(() => {});
   $('cr-close').onclick = () => showPage(page);

@@ -1,6 +1,6 @@
 {
   "name": "Aetherial Dawn",
   "author": "Aetherial Dawn",
-  "version": "0.1.0",
-  "description": "Lets the Aetherial Dawn launcher install, switch on and deploy the server's mods in your Aetherial Dawn profile. Accepts only signed requests from the launcher on this PC."
+  "version": "0.2.0",
+  "description": "Tells the Aetherial Dawn launcher on this PC, read-only, whether your Aetherial Dawn profile and collection are installed and switched on. Answers only signed requests from the launcher; changes nothing in Vortex."
 }

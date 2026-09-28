@@ -1,21 +1,18 @@
-// Aetherial Dawn for Vortex: lets the Aetherial Dawn launcher install,
-// switch on and deploy the server's mods in the "Aetherial Dawn" profile
-// through Vortex's own extension API (Package C, PR #7). Listens on
-// 127.0.0.1 only; every request must be signed with the token the launcher
-// keeps in this Windows user's local app data. See jobs.js for the rules.
+// Aetherial Dawn for Vortex: tells the Aetherial Dawn launcher, read-only,
+// what Vortex holds (profiles, mods, the Aetherial Dawn collection), so the
+// launcher can show exact counts and decide when Play is ready. Vortex
+// installs the collection itself (Package C re-scope, PR #7 5876088533).
+// Listens on 127.0.0.1 only; every request must be signed with the token the
+// launcher keeps in this Windows user's local app data. See jobs.js.
 //
-// Vortex 2.7.1 API used (checked at tag v2.7.1, c8ea03d):
-//   events 'start-install' (archivePath, cb(err, modId)) and 'deploy-mods'
-//   (cb(err)); actions.setModEnabled(profileId, modId, enabled) and
-//   actions.setModAttribute(gameId, modId, key, value); api.getState().
+// Vortex 2.7.1 API used: api.getState() only.
 
 'use strict';
 
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { actions } = require('vortex-api');
-const { Jobs, GAME } = require('./jobs');
+const { Jobs } = require('./jobs');
 
 const HOME = path.join(process.env.LOCALAPPDATA || '', 'gg.aetherialdawn.launcher', 'vortex');
 
@@ -28,23 +25,7 @@ function start(api) {
     return;
   }
   if (!/^[0-9a-f]{64}$/.test(token)) return;
-  const vortex = {
-    state: () => api.getState(),
-    dispatch: a => api.store.dispatch(a),
-    actions,
-    install: archive => new Promise((resolve, reject) => {
-      api.events.emit('start-install', archive, (err, modId) => (err ? reject(err) : resolve(modId)));
-    }),
-    deploy: () => new Promise((resolve, reject) => {
-      api.events.emit('deploy-mods', err => (err ? reject(err) : resolve()));
-    }),
-    setAttribute: (modId, key, value) => api.store.dispatch(actions.setModAttribute(GAME, modId, key, value)),
-  };
-  const jobs = new Jobs(vortex, {
-    token,
-    downloads: path.join(HOME, '..', 'vortex-downloads'),
-    journalPath: path.join(HOME, 'journal.json'),
-  });
+  const jobs = new Jobs({ state: () => api.getState() }, { token });
   const server = http.createServer((req, res) => {
     if (req.method !== 'POST' || req.url !== '/job') {
       res.writeHead(404).end();
