@@ -597,7 +597,7 @@
     const missing = view.mods.filter(m => !m.installed).length;
     $('rq-all').disabled = modsRunning || missing === 0;
     const free = !!(nx && !nx.is_premium);
-    $('rq-nx-free-text').textContent = `${plural(missing, 'mod')} to get. When you press Start, the launcher opens each file's page on Nexus in turn; press Slow download there and it does the rest. You can stop and carry on later.`;
+    $('rq-nx-free-text').textContent = `${plural(missing, 'mod')} to get. When you press Start, the launcher opens each mod's page on Nexus in turn; press Slow download there, and the launcher does the rest. You can stop and carry on later.`;
     $('rq-all').textContent = missing === 0 ? 'ALL INSTALLED' : `${free ? 'START' : 'DOWNLOAD ALL'} (${missing})`;
     $('rq-stop').hidden = !modsRunning;
   }
@@ -723,7 +723,7 @@ let autoMods = false;
         const freeNexus = !!(lastModsView && lastModsView.nexus && !lastModsView.nexus.is_premium);
         if (!auto && !autoMods && !$('rq-nx-in').hidden && freeNexus) {
           playAfterMods = true;
-          setStatus(`A free Nexus account needs one press per file. Press Start in the mods window when you're ready; Skyrim starts after.`);
+          setStatus(`A free Nexus account needs one press per mod. Press Start in the mods window when you're ready. Skyrim starts once they're all in.`);
           return;
         }
         if (!auto && !autoMods && !$('rq-nx-in').hidden) {

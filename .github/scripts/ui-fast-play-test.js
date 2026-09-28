@@ -141,7 +141,7 @@ const scenarios = [
   ] },
   { name: 'free Nexus account: told first, and the list waits for Start', s: { ...base, playError: 'NEEDS_NEXUS_MODS:[{"id":"a","name":"A"},{"id":"b","name":"B"}]', modsState: { mods: [{ id: 'a', name: 'A', installed: false }, { id: 'b', name: 'B', installed: false }], nexus: { name: 'Player', is_premium: false }, vortex: false, running: false, sso: true } }, expect: r => [
     ['the mods window is open', r.modsShown],
-    ['it says a free account needs one press per file, and Premium is one button', /one press per file/.test(r.freeNote || '') && /Premium it's one button/.test(r.freeNote || ''), r.freeNote],
+    ['it says a free account needs one press per mod, and Premium is one button', /one press per mod/.test(r.freeNote || '') && /Premium it's one button/.test(r.freeNote || ''), r.freeNote],
     ['it says how many', /2 mods to get/.test(r.freeNote || '')],
     ['the button reads START (2)', r.modsButton === 'START (2)', r.modsButton],
     ['nothing starts before Start is pressed', askedAt(r, 'download_all_mods') === null],
