@@ -2079,6 +2079,22 @@ fn open_invite(app: tauri::AppHandle, url: String) -> CmdResult<()> {
     Ok(())
 }
 
+/// Shrinks the still-hidden window to the usable part of its screen, so the
+/// frameless window and its PLAY button never open under the taskbar.
+fn fit_window(app: &tauri::AppHandle) {
+    let Some(w) = app.get_webview_window("main") else { return };
+    let (Ok(Some(monitor)), Ok(size)) = (w.current_monitor(), w.inner_size()) else { return };
+    let scale = monitor.scale_factor();
+    let work = monitor.work_area().size.to_logical::<f64>(scale);
+    let want = size.to_logical::<f64>(scale);
+    let (width, height) = launcher_core::window::fit((want.width, want.height), (work.width, work.height));
+    if (width, height) != (want.width, want.height) {
+        log::line(&format!("window: {}x{} doesn't fit the screen's {}x{}, opening at {width}x{height}", want.width, want.height, work.width, work.height));
+        let _ = w.set_size(tauri::LogicalSize::new(width, height));
+        let _ = w.center();
+    }
+}
+
 #[tauri::command]
 fn window_ready(app: tauri::AppHandle) {
     show_window_once(&app, "page");
@@ -2135,6 +2151,7 @@ fn main() {
             }
             // The server-mods export, only on the PC the server names.
             export::start(app.handle());
+            fit_window(app.handle());
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(3));
