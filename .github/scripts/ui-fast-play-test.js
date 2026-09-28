@@ -43,6 +43,9 @@ function fakeBackEnd() {
     mods_state: () => S.modsState || ({ mods: [], nexus: null, vortex: false, running: false, sso: false }),
     download_all_mods: () => ({ installed: [], failed: [], cancelled: false }),
     plain_error: a => a.text,
+    auth_begin: () => 'st',
+    // S.signIn: when the launcher has the answer, and an error each poll gives.
+    auth_poll: () => at() - (S.signInAt || 0) >= S.signIn.doneAfter ? { status: 'done', account: { discordUsername: 'Player' } } : { status: 'pending' },
   };
   const delay = Object.assign({ get_state: 20, auth_status: 300, check: 900, update: 600, server_status: 300, play: 50, default: 10 }, S.delay || {});
   window.__TAURI__ = {
@@ -51,6 +54,7 @@ function fakeBackEnd() {
       setTimeout(() => {
         log.invokes.push([at(), 'answer', cmd]);
         if (cmd === 'auth_status' && S.authFails) return rej('network down');
+        if (cmd === 'auth_poll' && S.signIn.error) return rej(S.signIn.error);
         if (cmd === 'play' && S.playError && !S.played) { S.played = true; return rej(S.playError); }
         res(answers[cmd] ? answers[cmd](args || {}) : null);
       }, delay[cmd] ?? delay.default);
@@ -72,6 +76,7 @@ function fakeBackEnd() {
     box();
     setInterval(box, 100);
     // The player presses Play as soon as it shows enabled (and once more later).
+    if (S.signIn) setTimeout(() => { S.signInAt = at(); document.getElementById('si-go').click(); }, 1500);
     for (const t of S.clicks || []) setTimeout(() => { log.invokes.push([at(), 'click', label.textContent]); btn.click(); }, t);
     setTimeout(() => {
       try { log.lastReady = JSON.parse(localStorage.getItem('ad.lastReady')); } catch (_) {}
@@ -87,6 +92,8 @@ function fakeBackEnd() {
       log.freeNote = free.hidden ? null : free.textContent;
       log.modsButton = document.getElementById('rq-all').textContent;
       log.modsShown = !document.getElementById('reqs').hidden;
+      log.signInError = document.getElementById('si-error').hidden ? null : document.getElementById('si-error').textContent;
+      log.me = document.getElementById('me').hidden ? null : document.getElementById('me-name').textContent;
       const pre = document.createElement('pre');
       pre.id = 'ui-test-result';
       pre.textContent = JSON.stringify(log);
@@ -193,6 +200,17 @@ const scenarios = [
   ] },
 ];
 
+// Signing in: the launcher can take up to 5 minutes and a few seconds to
+// answer, and a sign-in it couldn't save is tried again, then told.
+const signedOut = { ...base, auth: { signedIn: false }, seed: null, clicks: [] };
+scenarios.push({ name: 'a sign-in the launcher finishes just after 5 minutes is kept', s: { ...signedOut, signIn: { doneAfter: 5 * 60 * 1000 + 4000 }, end: 5 * 60 * 1000 + 12000 }, expect: r => [
+  ['the player ends up signed in', r.me === 'Player', JSON.stringify([r.me, r.signInError])],
+] });
+scenarios.push({ name: 'a sign-in that can never be saved says why', s: { ...signedOut, signIn: { doneAfter: 0, error: "Couldn't save your sign-in: Access is denied" }, end: 6 * 60 * 1000 + 10000 }, expect: r => [
+  ['the sign-in window says the save failed', /Couldn't save your sign-in: Access is denied/.test(r.signInError || ''), JSON.stringify(r.signInError)],
+  ['the player is not signed in', r.me === null],
+] });
+
 const chrome = findChrome();
 let failed = 0;
 for (const sc of scenarios) {
@@ -208,7 +226,7 @@ for (const sc of scenarios) {
     const root = process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : [];
     out = execFileSync(chrome, [...root, '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
       `--user-data-dir=${path.join(dir, 'profile')}`, '--allow-file-access-from-files', '--window-size=1360,880',
-      '--virtual-time-budget=8000', '--dump-dom', url], { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] });
+      `--virtual-time-budget=${(sc.s.end || 6000) + 2000}`, '--dump-dom', url], { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] });
   } catch (e) { out = String(e.stdout || ''); }
   const m = out.match(/<pre id="ui-test-result">([\s\S]*?)<\/pre>/);
   console.log(`== ${sc.name}`);

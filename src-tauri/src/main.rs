@@ -964,6 +964,19 @@ async fn auth_poll(app: AppHandle, state: State<'_, AppState>, st: String) -> Cm
         }
     };
     let answer = match answer {
+        // Removed only once it is used, so a failed save can be tried again.
+        Some(auth::Answer::Ok(done)) => {
+            let saved = token_path(&app).ok_or_else(|| "No place to save the sign-in.".to_string()).and_then(|path| auth::save_token(&path, &done.token).map_err(err));
+            if let Err(e) = saved {
+                log::line(&format!("sign-in: couldn't save it, will try again: {e}"));
+                if let Some(slot) = logins().lock().unwrap().get_mut(&st) {
+                    *slot = Some(auth::Answer::Ok(done));
+                }
+                return Err(format!("Couldn't save your sign-in: {e}"));
+            }
+            logins().lock().unwrap().remove(&st);
+            auth::Answer::Ok(done)
+        }
         Some(a) => {
             logins().lock().unwrap().remove(&st);
             a
@@ -976,8 +989,6 @@ async fn auth_poll(app: AppHandle, state: State<'_, AppState>, st: String) -> Cm
     Ok(match answer {
         auth::Answer::Pending => r("pending", None),
         auth::Answer::Ok(done) => {
-            let path = token_path(&app).ok_or("No place to save the sign-in.")?;
-            auth::save_token(&path, &done.token).map_err(err)?;
             signed_in(&app, &state, done.profile.clone()).await?;
             PollResult { status: "done", message: None, account: Some(done.profile) }
         }
