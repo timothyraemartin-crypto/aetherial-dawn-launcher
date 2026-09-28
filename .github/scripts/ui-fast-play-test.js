@@ -40,6 +40,7 @@ function fakeBackEnd() {
     update: () => null,
     server_status: () => ({ online: true, players: 1, maxPlayers: 50, discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
     files: () => [], game_check: () => game, play: () => null,
+    game_running: () => !!S.outsideGame,
     mods_state: () => S.modsState || ({ mods: [], nexus: null, vortex: false, running: false, sso: false }),
     download_all_mods: () => ({ installed: [], failed: [], cancelled: false }),
     plain_error: a => a.text,
@@ -51,6 +52,7 @@ function fakeBackEnd() {
       setTimeout(() => {
         log.invokes.push([at(), 'answer', cmd]);
         if (cmd === 'auth_status' && S.authFails) return rej('network down');
+        if (cmd === 'game_running' && (S.gameCheckFails || (S.gameCheckFailsFrom && (S.gameChecks = (S.gameChecks || 0) + 1) >= S.gameCheckFailsFrom))) return rej('process list unavailable');
         if (cmd === 'play' && S.playError && !S.played) { S.played = true; return rej(S.playError); }
         res(answers[cmd] ? answers[cmd](args || {}) : null);
       }, delay[cmd] ?? delay.default);
@@ -193,6 +195,19 @@ const scenarios = [
   { name: 'launcher update found while Play is starting the game: it waits', s: { ...base, update: '9.9.10', delay: { play: 3000 } }, expect: r => [
     ['the game starts', played(r)],
     ['the launcher never installs its update while Play runs or the game is up', askedAt(r, 'updater_install') === null, JSON.stringify(r.invokes.filter(i => /updater|play/.test(i[2])))],
+  ] },
+  { name: 'launcher update found while Skyrim runs from Steam or Vortex: it waits', s: { ...base, update: '9.9.10', outsideGame: true, clicks: [] }, expect: r => [
+    ['the launcher asks Windows whether Skyrim runs', askedAt(r, 'game_running') !== null],
+    ['the update never installs while that Skyrim runs', askedAt(r, 'updater_install') === null, JSON.stringify(r.invokes.filter(i => /updater|game_running/.test(i[2])))],
+  ] },
+  { name: 'launcher update found but the game check fails: it waits', s: { ...base, update: '9.9.10', gameCheckFails: true, clicks: [] }, expect: r => [
+    ['the launcher asked whether Skyrim runs', askedAt(r, 'game_running') !== null],
+    ['the update never installs while the game state is unknown', askedAt(r, 'updater_install') === null, JSON.stringify(r.invokes.filter(i => /updater|game_running/.test(i[2])))],
+  ] },
+  { name: 'the game check fails between download and install: it waits', s: { ...base, update: '9.9.10', gameCheckFailsFrom: 2, clicks: [] }, expect: r => [
+    ['the update downloads', askedAt(r, 'updater_download') !== null],
+    ['it asks again right before installing', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'game_running').length >= 2],
+    ['the update never installs while the game state is unknown', askedAt(r, 'updater_install') === null, JSON.stringify(r.invokes.filter(i => /updater|game_running/.test(i[2])))],
   ] },
   { name: 'launcher update found with nothing running: it installs', s: { ...base, update: '9.9.10', clicks: [] }, expect: r => [
     ['the update installs', askedAt(r, 'updater_install') !== null],

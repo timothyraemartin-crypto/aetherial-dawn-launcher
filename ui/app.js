@@ -4,7 +4,7 @@
   // Every command's failure (and the outcome of the important ones) goes to the
   // launcher log, so Copy diagnostics shows what happened. Nothing secret
   // reaches the UI, so nothing secret can be logged from here.
-  const QUIET = new Set(['log_ui', 'diagnostics', 'files', 'server_status', 'auth_poll']);
+  const QUIET = new Set(['log_ui', 'diagnostics', 'files', 'server_status', 'auth_poll', 'game_running']);
   const logUi = msg => { try { T.core.invoke('log_ui', { msg: String(msg) }).catch(() => {}); } catch {} };
   const invoke = async (cmd, args) => {
     const t = performance.now();
@@ -823,8 +823,19 @@ let autoMods = false;
   // An update downloaded while Play was starting, installed once it's safe.
   let downloaded = null;
   const updateWaits = () => gameRunning || playing || busy || modsRunning;
+  // gameRunning only knows a game Play started; Skyrim started from Steam,
+  // Vortex or MO2 is found by asking Windows. When that question fails, the
+  // game might be running, so the update waits (installing closes the
+  // launcher) and the next minute's check asks again.
+  let gameCheckFailed = false;
+  const skyrimUp = async () => {
+    try { const up = !!(await T.core.invoke('game_running')); gameCheckFailed = false; return up; }
+    catch (e) { gameCheckFailed = true; logUi('game_running failed, the launcher update waits: ' + e); return true; }
+  };
+  const waitReason = () => gameCheckFailed ? 'unknown' : 'busy';
   async function checkSelfUpdate(byHand) {
     if (updating || updateWaits()) return byHand ? 'busy' : undefined;
+    if (await skyrimUp()) return byHand ? waitReason() : undefined;
     try {
       const upd = downloaded || await T.updater.check();
       if (!upd) {
@@ -844,11 +855,14 @@ let autoMods = false;
           downloaded = upd;
         }
         // And again after the download: installing closes the launcher.
-        if (updateWaits()) {
+        const held = updateWaits() || await skyrimUp();
+        if (held) {
           updating = false;
-          $('self-update-text').textContent = `Launcher ${upd.version} is ready. It installs once you're done playing.`;
+          $('self-update-text').textContent = gameCheckFailed
+            ? `Launcher ${upd.version} is ready. It installs once the launcher can check that Skyrim isn't running.`
+            : `Launcher ${upd.version} is ready. It installs once you're done playing.`;
           logUi(`launcher ${upd.version} downloaded; install waits for Play and the game`);
-          return byHand ? 'busy' : undefined;
+          return byHand ? waitReason() : undefined;
         }
         await upd.install();
         await T.process.relaunch();
@@ -873,7 +887,7 @@ let autoMods = false;
     b.textContent = 'Checking…';
     const r = await checkSelfUpdate(true);
     b.disabled = false;
-    b.textContent = r === 'latest' ? 'Up to date' : r === 'busy' ? 'Try again after the game or download' : r === 'failed' ? "Couldn't check, try again" : 'Check for updates';
+    b.textContent = r === 'latest' ? 'Up to date' : r === 'busy' ? 'Try again after the game or download' : r === 'unknown' ? "Couldn't check the game, try again" : r === 'failed' ? "Couldn't check, try again" : 'Check for updates';
     setTimeout(() => { b.textContent = 'Check for updates'; }, 4000);
   };
 
