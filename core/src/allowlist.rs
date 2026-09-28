@@ -35,6 +35,12 @@ pub fn save_server_list(game_dir: &Path, list: &ModList) {
     }
 }
 
+/// Whether a server list was ever saved here (without one the list is only
+/// the launcher's own, and nothing may be taken for removed).
+pub fn has_server_list(game_dir: &Path) -> bool {
+    saved_list_path(game_dir).is_file()
+}
+
 /// The built-in list plus the last server list seen.
 pub fn listed(game_dir: &Path) -> Vec<ModEntry> {
     let server: Option<ModList> = std::fs::read(saved_list_path(game_dir)).ok().and_then(|b| serde_json::from_slice(&b).ok());

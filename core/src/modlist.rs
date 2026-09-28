@@ -144,6 +144,11 @@ impl ModEntry {
 
 impl ModEntry {
     pub fn installed(&self, game_dir: &Path) -> bool {
+        // An install that stopped part way (the launcher closed while files
+        // were moving into Data) never counts, whatever files are there.
+        if installing_path(game_dir, &self.id).exists() {
+            return false;
+        }
         // The list now pins another file, or picks other installer options,
         // than the launcher installed: install it again.
         if let Some(r) = load_installed(game_dir).mods.get(&self.id) {
@@ -242,6 +247,23 @@ pub const TRUE_DIRECTIONAL_MOVEMENT_FILE: u64 = 798770;
 /// `requirements` before Play and aren't repeated here.
 /// A download of unknown size counts as this much (see `ModEntry::sizes`).
 pub const UNKNOWN_ARCHIVE: u64 = 64 << 20;
+
+/// (id, download bytes, unpacked bytes) of the launcher's own mods.
+const BUILTIN_SIZES: [(&str, u64, u64); 13] = [
+    ("address-library", 2_412_602, 9_283_200),
+    ("engine-fixes", 5_607_605, 32_699_114),
+    ("ussep", 168_852_028, 282_223_050),
+    ("menu-framework", 10_715_519, 32_146_557),
+    ("imgui-icons", 3_062_080, 6_392_717),
+    ("skyui", 2_693_003, 2_902_400),
+    ("display-tweaks", 187_137, 561_411),
+    ("black-screen-fix", 1_800, 2_700),
+    ("mcm-helper", 8_187_265, 24_561_795),
+    ("smoothcam", 36_638_690, 104_909_236),
+    ("smoothcam-modern-preset", 2_186, 51_900),
+    ("true-directional-movement", 5_210_375, 15_631_125),
+    ("truehud", 4_387_378, 13_162_134),
+];
 
 pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
     use crate::requirements as r;
@@ -386,6 +408,14 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
         hint: Some("the main file".into()),
         ..Default::default()
     });
+    // The Mod Curator's sizes (world-mods/tools/mods-sizes.json, "builtin",
+    // 2026-09-28), for the disk check and the time left.
+    for m in &mut out {
+        if let Some((_, a, u)) = BUILTIN_SIZES.iter().find(|(id, _, _)| *id == m.id) {
+            m.archive_bytes.get_or_insert(*a);
+            m.unpacked_bytes.get_or_insert(*u);
+        }
+    }
     out
 }
 
@@ -1104,6 +1134,76 @@ fn record_path(game_dir: &Path) -> PathBuf {
     game_dir.join(MODS_DIR).join("installed.json")
 }
 
+/// Written before an install moves anything into the game folder and
+/// removed once its record is saved: while it's there, the mod isn't
+/// installed (a half-installed Data folder never passes for a whole one).
+pub fn installing_path(game_dir: &Path, id: &str) -> PathBuf {
+    game_dir.join(MODS_DIR).join("installing").join(id)
+}
+
+/// Mods whose install stopped part way.
+pub fn half_installed(game_dir: &Path) -> Vec<String> {
+    let mut out: Vec<String> = std::fs::read_dir(game_dir.join(MODS_DIR).join("installing")).map(|r| r.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+    out.sort();
+    out
+}
+
+fn save_installed(game_dir: &Path, all: &Installed) -> Result<()> {
+    let path = record_path(game_dir);
+    if let Some(p) = path.parent() {
+        std::fs::create_dir_all(p)?;
+    }
+    let tmp = path.with_extension("json.part");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(all)?)?;
+    std::fs::rename(tmp, path)?;
+    Ok(())
+}
+
+/// Files a record names that no other record claims, for moving aside.
+fn only_theirs(all: &Installed, id: &str, files: &[String], keep: &[String]) -> Vec<String> {
+    files
+        .iter()
+        .filter(|f| !keep.iter().any(|k| k.eq_ignore_ascii_case(f)))
+        .filter(|f| !all.mods.iter().any(|(other, r)| other != id && r.files.iter().chain(&r.skipped).any(|o| o.eq_ignore_ascii_case(f))))
+        .filter(|f| !crate::allowlist::required_file(f))
+        .cloned()
+        .collect()
+}
+
+/// Every id the launcher's own list can hold, whatever the game version.
+pub fn builtin_ids() -> HashSet<String> {
+    builtin(None).into_iter().chain(builtin(Some(crate::community::TARGET))).map(|m| m.id).collect()
+}
+
+/// Mods the launcher installed that the list no longer has (an entry
+/// removed from mods.json): their files that no listed mod uses are moved
+/// to `.aetherial-dawn/disabled/<stamp>/` (never deleted), and their records
+/// go. The launcher's own required mods are never touched. Returns
+/// (mod name, files moved).
+pub fn retire_unlisted(game_dir: &Path, list: &[ModEntry], stamp: &str) -> Result<Vec<(String, Vec<String>)>> {
+    let mut all = load_installed(game_dir);
+    let builtin = builtin_ids();
+    let gone: Vec<String> = all.mods.keys().filter(|id| !builtin.contains(*id) && !list.iter().any(|m| &m.id == *id)).cloned().collect();
+    // A list that lost most of what's installed (an empty or cut-short
+    // mods.json from a misbehaving server) is never taken at its word.
+    let theirs = all.mods.keys().filter(|id| !builtin.contains(*id)).count();
+    if gone.is_empty() || list.iter().all(|m| builtin.contains(&m.id)) || gone.len() * 2 > theirs {
+        return Ok(Vec::new());
+    }
+    let keep: Vec<String> = list.iter().flat_map(|m| m.check.iter().chain(&m.owns).map(|c| c.replace('\\', "/"))).collect();
+    let mut out = Vec::new();
+    for id in gone {
+        let rec = all.mods.get(&id).cloned().unwrap_or_default();
+        let files = only_theirs(&all, &id, &rec.files, &keep);
+        crate::strays::move_aside(game_dir, &files, stamp)?;
+        all.mods.remove(&id);
+        save_installed(game_dir, &all)?;
+        let _ = std::fs::remove_file(installing_path(game_dir, &id));
+        out.push((rec.name, files));
+    }
+    Ok(out)
+}
+
 pub fn load_installed(game_dir: &Path) -> Installed {
     std::fs::read(record_path(game_dir)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
@@ -1129,6 +1229,15 @@ pub fn apply(entry: &ModEntry, copies: &[Copy], game_dir: &Path, file_id: Option
     let mut files = Vec::new();
     let mut skipped = Vec::new();
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let marker = installing_path(game_dir, &entry.id);
+    if let Some(p) = marker.parent() {
+        std::fs::create_dir_all(p)?;
+    }
+    std::fs::write(&marker, entry.name.as_bytes())?;
+    // A copy the launcher was closed during, from an earlier try.
+    for c in copies {
+        let _ = std::fs::remove_file(game_dir.join(&c.to).with_extension("aetherial-part"));
+    }
     for c in copies {
         let dest = game_dir.join(&c.to);
         let rel = c.to.to_string_lossy().replace('\\', "/");
@@ -1161,8 +1270,11 @@ pub fn apply(entry: &ModEntry, copies: &[Copy], game_dir: &Path, file_id: Option
         });
         if left != Some(0) || std::fs::rename(&c.from, &dest).is_err() {
             let tmp = dest.with_extension("aetherial-part");
-            std::fs::copy(&c.from, &tmp)?;
-            std::fs::rename(&tmp, &dest)?;
+            if let Err(e) = std::fs::copy(&c.from, &tmp).and_then(|_| std::fs::rename(&tmp, &dest)) {
+                // No half-copied file stays in Data.
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e.into());
+            }
         }
         files.push(rel);
     }
@@ -1177,13 +1289,120 @@ pub fn apply(entry: &ModEntry, copies: &[Copy], game_dir: &Path, file_id: Option
         cpu: (!entry.cpu.is_empty()).then(|| entry.cpu_pick().map(|p| p.0)).flatten(),
     };
     let mut all = load_installed(game_dir);
-    all.mods.insert(entry.id.clone(), rec.clone());
-    let path = record_path(game_dir);
-    if let Some(p) = path.parent() {
-        std::fs::create_dir_all(p)?;
+    // Files the version installed before brought and this one doesn't (a
+    // changed pin) go aside, so nothing of the old version is left in Data.
+    if let Some(old) = all.mods.get(&entry.id) {
+        let dropped: Vec<String> = old.files.iter().filter(|f| !rec.files.iter().chain(&rec.skipped).any(|n| n.eq_ignore_ascii_case(f))).cloned().collect();
+        let dropped = only_theirs(&all, &entry.id, &dropped, &[]);
+        if !dropped.is_empty() {
+            crate::strays::move_aside(game_dir, &dropped, &format!("{secs}-old-version-{}", entry.id))?;
+        }
     }
-    std::fs::write(path, serde_json::to_vec_pretty(&all)?)?;
+    all.mods.insert(entry.id.clone(), rec.clone());
+    save_installed(game_dir, &all)?;
+    std::fs::remove_file(&marker)?;
     Ok(rec)
+}
+
+/// What installing one archive came to.
+#[derive(Debug, PartialEq)]
+pub enum Outcome {
+    Installed,
+    /// Made for a newer Skyrim than the game's masters.
+    TooNew(Vec<String>),
+    /// Has an SKSE DLL built for another Skyrim.
+    WrongBuild(Vec<String>),
+}
+
+/// Unpacks, checks and installs one downloaded archive: the launcher's
+/// installer after the download (mods.rs), and the cutover rehearsal's.
+/// `plugins_txt` gets the new plugins switched on, as Vortex would.
+#[allow(clippy::too_many_arguments)]
+pub fn install_archive(m: &ModEntry, archive: &Path, game_dir: &Path, file_id: Option<u64>, version: Option<String>, allow_too_new: bool, plugins_txt: Option<&Path>, log: &dyn Fn(&str)) -> Result<Outcome> {
+    verify(m, archive)?;
+    let work = game_dir.join(MODS_DIR).join("unpacked").join(&m.id);
+    let _ = std::fs::remove_dir_all(&work);
+    extract(archive, &work)?;
+    if let Some(r) = fomod_report(m, &work) {
+        log(&format!("mods: {} installer options (picks {:?}): {}", m.name, m.fomod, r.join(" || ")));
+    }
+    let mut copies = plan(m, &work)?;
+    if let Some((level, folder)) = m.cpu_pick().filter(|_| !m.cpu.is_empty()) {
+        log(&format!("mods: {} takes the {level} build ({folder}) for this processor", m.name));
+    }
+    // An SKSE DLL for another Skyrim never goes in; the next file is tried.
+    let mut wrong = fix_wrong_builds(&mut copies, &work);
+    // The Unofficial Patch for Skyrim 1.7.99 crashes 1.6.1170.
+    for c in &copies {
+        if c.to.file_name().map(|n| n.to_string_lossy().eq_ignore_ascii_case(crate::requirements::USSEP_PLUGIN)).unwrap_or(false) {
+            if let Some(v) = crate::ussep::plugin_too_new(&c.from) {
+                wrong.push((format!("Unofficial Patch {v}"), "made for Skyrim 1.7.99".into()));
+            }
+        }
+    }
+    if !wrong.is_empty() {
+        // What was read from each refused DLL, and a copy kept aside, so
+        // a wrong call can be checked (RaceMenu 0.4.20, 2026-09-27).
+        // One folder per mod, replaced each time, so retries don't pile up.
+        let keep = game_dir.join(crate::strays::DISABLED_DIR).join("refused-download").join(&m.id);
+        for c in copies.iter().filter(|c| wrong.iter().any(|(n, _)| c.to.file_name().is_some_and(|f| f.to_string_lossy().eq_ignore_ascii_case(n)))) {
+            log(&format!("mods: {} {} read as: {}", m.name, c.to.display(), crate::skse::describe(&c.from)));
+            if std::fs::create_dir_all(&keep).is_ok() {
+                let _ = std::fs::copy(&c.from, keep.join(c.to.file_name().unwrap()));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&work);
+        log(&format!("mods: {} download has the wrong build: {}", m.name, wrong.iter().map(|(n, w)| format!("{n} ({w})")).collect::<Vec<_>>().join(", ")));
+        return Ok(Outcome::WrongBuild(wrong.into_iter().map(|(n, _)| n).collect()));
+    }
+    let newer = too_new_plugins(&copies, game_dir);
+    if !newer.is_empty() && !allow_too_new {
+        let _ = std::fs::remove_dir_all(&work);
+        return Ok(Outcome::TooNew(newer));
+    }
+    let rec = apply(m, &copies, game_dir, file_id, version)?;
+    // The keys a preset can set, named exactly as the mod defines them.
+    for k in crate::presets::mcm_keys(game_dir, &rec.files) {
+        log(&format!("mods: {} MCM keys in {k}", m.name));
+    }
+    let _ = std::fs::remove_dir_all(&work);
+    // Only call it installed when the files really are in Data.
+    if !m.installed(game_dir) {
+        let gone: Vec<&str> = m.check.iter().map(String::as_str).filter(|c| !m.clone_with_check(c).installed(game_dir)).collect();
+        log(&format!("mods: {} unpacked but {} isn't in the game folder (copied {}, left {})", m.name, gone.join(", "), rec.files.join(", "), rec.skipped.join(", ")));
+        return Err(Error::Game(format!("{} downloaded, but {} didn't end up in your Skyrim folder", m.name, gone.join(" and "))));
+    }
+    let _ = std::fs::remove_file(archive);
+    // And switch its plugins on, as Vortex would.
+    if let Some(txt) = plugins_txt {
+        let mut names: Vec<String> = m.check.iter().filter_map(|c| c.strip_prefix("Data/")).filter(|n| !n.contains('/') && [".esp", ".esm", ".esl"].iter().any(|x| n.to_ascii_lowercase().ends_with(x))).map(str::to_string).collect();
+        names.retain(|n| {
+            let ok = crate::loadorder::masters_present(game_dir, n);
+            if !ok {
+                log(&format!("mods: {} left {n} off: a master it needs isn't installed", m.name));
+            }
+            ok
+        });
+        // And the plugins it installed whose masters are all here (a
+        // patch for a mod the player doesn't have stays off).
+        for n in top_plugins(&rec.files) {
+            if names.iter().any(|x| x.eq_ignore_ascii_case(&n)) {
+                continue;
+            }
+            if crate::loadorder::masters_present(game_dir, &n) {
+                names.push(n);
+            } else {
+                log(&format!("mods: {} left {n} off: a master it needs isn't installed", m.name));
+            }
+        }
+        match crate::loadorder::switch_on(txt, &names) {
+            Ok(on) if !on.is_empty() => log(&format!("mods: switched on in plugins.txt: {}", on.join(", "))),
+            Ok(_) => {}
+            Err(e) => log(&format!("mods: couldn't switch {} on in plugins.txt: {e}", names.join(", "))),
+        }
+    }
+    log(&format!("mods: installed {} ({} files, {} left to Vortex or kept)", m.name, rec.files.len(), rec.skipped.len()));
+    Ok(Outcome::Installed)
 }
 
 /// Moves a DLL SKSE would refuse to `.aetherial-dawn/disabled/<time>-wrong-build/`
@@ -1508,6 +1727,34 @@ mod tests {
         assert_eq!(to, ["Data/Embers XD.esp", "Data/meshes/fire.nif"]);
         let bad = ModEntry { lift: vec!["plugins/none.esp".into()], ..e };
         assert!(plan(&bad, &u).is_err());
+    }
+
+    #[test]
+    fn an_empty_or_cut_short_list_retires_nothing() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        let mut all = Installed::default();
+        for i in 0..6 {
+            std::fs::create_dir_all(g.join("Data")).unwrap();
+            std::fs::write(g.join(format!("Data/m{i}.esp")), b"x").unwrap();
+            all.mods.insert(format!("m{i}"), InstalledMod { name: format!("m{i}"), files: vec![format!("Data/m{i}.esp")], ..Default::default() });
+        }
+        save_installed(g, &all).unwrap();
+        let entry = |i: usize| ModEntry { id: format!("m{i}"), ..Default::default() };
+        assert!(retire_unlisted(g, &builtin(None), "a").unwrap().is_empty());
+        assert!(retire_unlisted(g, &[entry(0), entry(1)], "b").unwrap().is_empty());
+        let gone = retire_unlisted(g, &[entry(0), entry(1), entry(2), entry(3), entry(4)], "c").unwrap();
+        assert_eq!(gone, vec![("m5".to_string(), vec!["Data/m5.esp".to_string()])]);
+        assert!(!g.join("Data/m5.esp").exists() && g.join(crate::strays::DISABLED_DIR).join("c/Data/m5.esp").is_file());
+        assert!(!load_installed(g).mods.contains_key("m5"));
+    }
+
+    #[test]
+    fn every_builtin_mod_has_the_curators_sizes() {
+        for m in builtin(Some("1.6.1170.0")) {
+            assert!(m.archive_bytes.is_some() && m.unpacked_bytes.is_some(), "{}", m.id);
+        }
+        assert_eq!(builtin_ids().len(), BUILTIN_SIZES.len());
     }
 
     #[test]

@@ -126,9 +126,13 @@ pub async fn server_list(state: &AppState) -> Option<modlist::ModList> {
     if let Some(l) = state.mods.server_list.lock().await.clone() {
         return Some(l);
     }
+    fetch_server_list(state).await
+}
+
+async fn fetch_server_list(state: &AppState) -> Option<modlist::ModList> {
     let base = state.config.lock().await.base_url.clone();
     let url = format!("{}/mods.json", base.trim_end_matches('/'));
-    let got = match state.http.get(&url).send().await {
+    let got = match state.http.get(&url).timeout(std::time::Duration::from_secs(8)).send().await {
         Ok(r) if r.status().is_success() => r.json::<modlist::ModList>().await.ok(),
         _ => None,
     };
@@ -136,6 +140,23 @@ pub async fn server_list(state: &AppState) -> Option<modlist::ModList> {
         *state.mods.server_list.lock().await = Some(l.clone());
     }
     got
+}
+
+/// Play fetches mods.json again, so a list changed while the launcher was
+/// open (cutover day) is the one used; when the server doesn't answer, the
+/// last one stays.
+pub async fn refresh_server_list(state: &AppState) {
+    let before = state.mods.server_list.lock().await.as_ref().map(|l| l.mods.len());
+    let got = fetch_server_list(state).await;
+    // Saved now, so Play's tidying (removed mods) goes by this list.
+    if let (Some(l), Some(dir)) = (&got, state.config.lock().await.game_dir.clone()) {
+        launcher_core::allowlist::save_server_list(&dir, l);
+    }
+    match got {
+        Some(l) if before.is_some_and(|b| b != l.mods.len()) => log::line(&format!("mods: the server's list changed while the launcher was open ({} entries, was {})", l.mods.len(), before.unwrap_or(0))),
+        Some(_) => {}
+        None => log::line("mods: couldn't fetch the server's list again; using the last one"),
+    }
 }
 
 pub async fn full_list(state: &AppState) -> Vec<ModEntry> {
@@ -480,106 +501,15 @@ fn gb(n: u64) -> String {
     format!("{:.1} GB", n as f64 / 1e9)
 }
 
-enum Outcome {
-    Installed,
-    /// Made for a newer Skyrim than the game's masters.
-    TooNew(Vec<String>),
-    /// Has an SKSE DLL built for another Skyrim.
-    WrongBuild(Vec<String>),
-}
+use launcher_core::modlist::Outcome;
 
-/// Unpacks, checks and installs one downloaded archive.
+/// Unpacks, checks and installs one downloaded archive (modlist::install_archive).
 async fn install(m: &ModEntry, archive: &Path, game_dir: &Path, file_id: Option<u64>, version: Option<String>, allow_too_new: bool) -> Result<Outcome, String> {
     let (m, archive, game_dir) = (m.clone(), archive.to_path_buf(), game_dir.to_path_buf());
-    tokio::task::spawn_blocking(move || -> Result<Outcome, Error> {
-        modlist::verify(&m, &archive)?;
-        let work = game_dir.join(modlist::MODS_DIR).join("unpacked").join(&m.id);
-        let _ = std::fs::remove_dir_all(&work);
-        modlist::extract(&archive, &work)?;
-        if let Some(r) = modlist::fomod_report(&m, &work) {
-            log::line(&format!("mods: {} installer options (picks {:?}): {}", m.name, m.fomod, r.join(" || ")));
-        }
-        let mut copies = modlist::plan(&m, &work)?;
-        if let Some((level, folder)) = m.cpu_pick().filter(|_| !m.cpu.is_empty()) {
-            log::line(&format!("mods: {} takes the {level} build ({folder}) for this processor", m.name));
-        }
-        // An SKSE DLL for another Skyrim never goes in; the next file is tried.
-        let mut wrong = modlist::fix_wrong_builds(&mut copies, &work);
-        // The Unofficial Patch for Skyrim 1.7.99 crashes 1.6.1170.
-        for c in &copies {
-            if c.to.file_name().map(|n| n.to_string_lossy().eq_ignore_ascii_case(launcher_core::requirements::USSEP_PLUGIN)).unwrap_or(false) {
-                if let Some(v) = launcher_core::ussep::plugin_too_new(&c.from) {
-                    wrong.push((format!("Unofficial Patch {v}"), "made for Skyrim 1.7.99".into()));
-                }
-            }
-        }
-        if !wrong.is_empty() {
-            // What was read from each refused DLL, and a copy kept aside, so
-            // a wrong call can be checked (RaceMenu 0.4.20, 2026-09-27).
-            // One folder per mod, replaced each time, so retries don't pile up.
-            let keep = game_dir.join(launcher_core::strays::DISABLED_DIR).join("refused-download").join(&m.id);
-            for c in copies.iter().filter(|c| wrong.iter().any(|(n, _)| c.to.file_name().is_some_and(|f| f.to_string_lossy().eq_ignore_ascii_case(n)))) {
-                log::line(&format!("mods: {} {} read as: {}", m.name, c.to.display(), launcher_core::skse::describe(&c.from)));
-                if std::fs::create_dir_all(&keep).is_ok() {
-                    let _ = std::fs::copy(&c.from, keep.join(c.to.file_name().unwrap()));
-                }
-            }
-            let _ = std::fs::remove_dir_all(&work);
-            log::line(&format!("mods: {} download has the wrong build: {}", m.name, wrong.iter().map(|(n, w)| format!("{n} ({w})")).collect::<Vec<_>>().join(", ")));
-            return Ok(Outcome::WrongBuild(wrong.into_iter().map(|(n, _)| n).collect()));
-        }
-        let newer = modlist::too_new_plugins(&copies, &game_dir);
-        if !newer.is_empty() && !allow_too_new {
-            let _ = std::fs::remove_dir_all(&work);
-            return Ok(Outcome::TooNew(newer));
-        }
-        let rec = modlist::apply(&m, &copies, &game_dir, file_id, version)?;
-        // The keys a preset can set, named exactly as the mod defines them.
-        for k in launcher_core::presets::mcm_keys(&game_dir, &rec.files) {
-            log::line(&format!("mods: {} MCM keys in {k}", m.name));
-        }
-        let _ = std::fs::remove_dir_all(&work);
-        // Only call it installed when the files really are in Data.
-        if !m.installed(&game_dir) {
-            let gone: Vec<&str> = m.check.iter().map(String::as_str).filter(|c| !m.clone_with_check(c).installed(&game_dir)).collect();
-            log::line(&format!("mods: {} unpacked but {} isn't in the game folder (copied {}, left {})", m.name, gone.join(", "), rec.files.join(", "), rec.skipped.join(", ")));
-            return Err(Error::Game(format!("{} downloaded, but {} didn't end up in your Skyrim folder", m.name, gone.join(" and "))));
-        }
-        let _ = std::fs::remove_file(&archive);
-        // And switch its plugins on, as Vortex would.
-        if let Some(txt) = plugins_txt() {
-            let mut names: Vec<String> = m.check.iter().filter_map(|c| c.strip_prefix("Data/")).filter(|n| !n.contains('/') && [".esp", ".esm", ".esl"].iter().any(|x| n.to_ascii_lowercase().ends_with(x))).map(str::to_string).collect();
-            names.retain(|n| {
-                let ok = launcher_core::loadorder::masters_present(&game_dir, n);
-                if !ok {
-                    log::line(&format!("mods: {} left {n} off: a master it needs isn't installed", m.name));
-                }
-                ok
-            });
-            // And the plugins it installed whose masters are all here (a
-            // patch for a mod the player doesn't have stays off).
-            for n in modlist::top_plugins(&rec.files) {
-                if names.iter().any(|x| x.eq_ignore_ascii_case(&n)) {
-                    continue;
-                }
-                if launcher_core::loadorder::masters_present(&game_dir, &n) {
-                    names.push(n);
-                } else {
-                    log::line(&format!("mods: {} left {n} off: a master it needs isn't installed", m.name));
-                }
-            }
-            match launcher_core::loadorder::switch_on(&txt, &names) {
-                Ok(on) if !on.is_empty() => log::line(&format!("mods: switched on in plugins.txt: {}", on.join(", "))),
-                Ok(_) => {}
-                Err(e) => log::line(&format!("mods: couldn't switch {} on in plugins.txt: {e}", names.join(", "))),
-            }
-        }
-        log::line(&format!("mods: installed {} ({} files, {} left to Vortex or kept)", m.name, rec.files.len(), rec.skipped.len()));
-        Ok(Outcome::Installed)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())
+    tokio::task::spawn_blocking(move || modlist::install_archive(&m, &archive, &game_dir, file_id, version, allow_too_new, plugins_txt().as_deref(), &|l: &str| log::line(l)))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 /// Skyrim's load order, %LOCALAPPDATA%\\Skyrim Special Edition\\plugins.txt.

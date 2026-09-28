@@ -27,7 +27,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Test
-        run: cargo test -p launcher-core
+        run: cargo test -p launcher-core -- --skip rehearsal
+      # Cutover day from a player's side with stand-in archives made by the
+      # test (no Nexus files): a returning and a new player go from today's
+      # list to one shaped like 3.4.6 and then an append, through the
+      # launcher's own download and install code, with dropped connections
+      # and a closed launcher. Prints the numbers (core/src/rehearsal.rs).
+      - name: Cutover rehearsal
+        run: cargo test -p launcher-core rehearsal -- --nocapture
       # The launcher's page in headless Chrome with a fake back end: PLAY from
       # the last session never starts the game for a banned account, an update
       # or a wrong game version, and the news box never jumps.

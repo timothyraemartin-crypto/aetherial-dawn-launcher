@@ -35,6 +35,9 @@ pub mod ussep;
 pub mod version;
 pub mod watch;
 
+#[cfg(test)]
+mod rehearsal;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("network error: {0}")]

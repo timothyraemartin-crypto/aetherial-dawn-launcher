@@ -322,7 +322,19 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     }
     game::inspect(&dir).map_err(err)?;
     play_step(&app, "Getting your mods ready…");
+    // The mod list as the server has it now (it may have changed while the
+    // launcher was open, as on cutover day); the last one when it doesn't
+    // answer.
+    mods::refresh_server_list(&state).await;
     tidy_game(&app, &dir, &m, config.only_server_mods)?;
+    let half = launcher_core::modlist::half_installed(&dir);
+    if !half.is_empty() {
+        log::line(&format!("play: install stopped part way for {}; installed again before Play", half.join(", ")));
+    }
+    // Missing mods come before the load order: a changed list names plugins
+    // this PC doesn't have yet, and the order check would refuse Play
+    // before the downloads were ever offered.
+    ensure_requirements(&app, &state, &dir).await?;
     // Each listed mod's settings as the server sets them, once; the
     // player's later changes stay.
     let list = mods::full_list(&state).await;
@@ -418,7 +430,6 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     if report.worst >= health::Status::Warn && config.share_health {
         send_health(&app, &state.http, &config, &m.build, "before play", None, None, &report).await;
     }
-    ensure_requirements(&app, &state, &dir).await?;
     let token = token(&app).ok_or("SIGNED_OUT:Sign in with Discord to play.")?;
     play_step(&app, "Getting your game session…");
     let session = match auth::play(&state.http, AUTH_URL, &token).await {
@@ -1189,6 +1200,19 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_m
         Ok(Some((dest, why))) => log::line(&format!("play: {why}; set it aside to {}", dest.display())),
         Ok(None) => {}
         Err(e) => return Err(format!("Couldn't move the Unofficial Patch made for a newer Skyrim out of the way ({e}). Close Skyrim and Vortex, then try again.")),
+    }
+    // A mod taken off the server's list goes from Data too (its files
+    // moved aside, never deleted), so nothing of it loads.
+    if launcher_core::allowlist::has_server_list(dir) {
+        let stamp = format!("{}-removed-mods", log::timestamp().replace([':', ' '], "-"));
+        match launcher_core::modlist::retire_unlisted(dir, &launcher_core::allowlist::listed(dir), &stamp) {
+            Ok(v) => {
+                for (name, files) in v {
+                    log::line(&format!("play: {name} is no longer on the server's list; moved {} file(s) to {}: {}", files.len(), launcher_core::strays::DISABLED_DIR, files.join(", ")));
+                }
+            }
+            Err(e) => return Err(format!("Couldn't move a mod the server no longer uses out of the way ({e}). Close Skyrim and Vortex, then try again.")),
+        }
     }
     // Plugins whose names the SkyMP client can't load run under a
     // dash-named copy (Timothy 2026-09-26: correct it, don't switch it off).
