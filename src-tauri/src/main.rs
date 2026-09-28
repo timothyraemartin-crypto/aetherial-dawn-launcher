@@ -395,7 +395,12 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     // session, and plugins.txt in the server's order (serverorder.rs).
     play_step(&app, "Setting the server's load order…");
     let mut ccc_guard = CccGuard { dir: dir.clone(), armed: false };
-    if let Some(order) = fetch_masters(&state.http, &config.base_url).await.map(|v| serverorder::server_order(&v)).filter(|o| serverorder::beyond_base(o)) {
+    // Fetched once for the load order and the health check. Without it the
+    // order can't be set, and the game would be refused at the server.
+    let masters = masters_for_play(&app, &state.http, &config.base_url)
+        .await
+        .ok_or("Couldn't load the server's plugin list. Check your internet connection and try again.")?;
+    if let Some(order) = Some(serverorder::server_order(&masters)).filter(|o| serverorder::beyond_base(o)) {
         match serverorder::hide_ccc(&dir) {
             Ok(h) => {
                 ccc_guard.armed = true;
@@ -414,7 +419,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
         }
     }
     play_step(&app, "Checking your game…");
-    let report = run_health(&app, &state.http, &config.base_url, &dir, Some(&m)).await;
+    let report = run_health_with(&app, &dir, Some(&m), Some(masters)).await;
     log::line(&format!("health before play: worst={:?}\n{}", report.worst, report.text()));
     // The game would stop with SkyMP's "LOAD ORDER ERROR"; say it here.
     if let Some(c) = report.checks.iter().find(|c| c.id == "serverorder" && c.status == health::Status::Fail) {
@@ -1504,8 +1509,29 @@ async fn fetch_masters(http: &reqwest::Client, base: &str) -> Option<serde_json:
     }
 }
 
+/// masters.json for Play: the server's, kept as the last good copy, or that
+/// copy when the server doesn't answer (logged). None when neither exists.
+async fn masters_for_play(app: &AppHandle, http: &reqwest::Client, base: &str) -> Option<serde_json::Value> {
+    let kept = app.path().app_local_data_dir().ok().map(|d| d.join("masters-last.json"));
+    if let Some(v) = fetch_masters(http, base).await {
+        if let Some(p) = &kept {
+            let _ = std::fs::write(p, serde_json::to_vec(&v).unwrap_or_default());
+        }
+        return Some(v);
+    }
+    let v = kept.and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok());
+    if v.is_some() {
+        log::line("play: using the last server plugin list this PC loaded");
+    }
+    v
+}
+
 async fn run_health(app: &AppHandle, http: &reqwest::Client, base: &str, dir: &std::path::Path, m: Option<&Manifest>) -> health::Report {
     let masters = fetch_masters(http, base).await;
+    run_health_with(app, dir, m, masters).await
+}
+
+async fn run_health_with(app: &AppHandle, dir: &std::path::Path, m: Option<&Manifest>, masters: Option<serde_json::Value>) -> health::Report {
     let appdata = app.path().local_data_dir().ok().map(|d| d.join("Skyrim Special Edition"));
     let docs = app.path().document_dir().or_else(|_| app.path().home_dir().map(|h| h.join("Documents"))).ok();
     let cache = app.path().app_local_data_dir().ok().map(|d| health::cache_path(&d));
