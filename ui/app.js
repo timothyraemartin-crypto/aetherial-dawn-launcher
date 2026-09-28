@@ -65,7 +65,12 @@
   }
   const STOPS = ['update', 'retry', 'downgrade', 'signin', 'strays', 'WRONG VERSION', 'OFFLINE'];
   let statusMsg = null;
-  function setStatus(msg, isError) { statusMsg = msg ? { msg, isError } : null; renderStatus(); }
+  function setStatus(msg, isError) {
+    statusMsg = msg ? { msg, isError } : null;
+    renderStatus();
+    const live = $('status-live');
+    if (live && live.textContent !== (msg || '')) live.textContent = msg || '';
+  }
   let toolRunning = false;
   function renderStatus() {
     const parts = [];
