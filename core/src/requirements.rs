@@ -247,13 +247,142 @@ pub fn skse_ok(game_dir: &Path) -> bool {
 /// Downloads SKSE 2.2.6 from its official GitHub release, checks it, and puts
 /// the loader, DLL and scripts in the game folder (readme files are skipped).
 pub async fn install_skse(client: &reqwest::Client, game_dir: &Path) -> Result<()> {
-    let bytes = client.get(SKSE_URL).header("User-Agent", "AetherialDawnLauncher").send().await?.error_for_status()?.bytes().await?;
+    install_skse_from(client, game_dir, &Sources::official().skse).await
+}
+
+async fn install_skse_from(client: &reqwest::Client, game_dir: &Path, src: &Source) -> Result<()> {
+    let bytes = download_checked(client, src, "SKSE").await?;
+    unpack_skse(&bytes, game_dir)
+}
+
+/// Where a required helper is downloaded from and the SHA-256 it must have.
+#[derive(Debug, Clone)]
+pub struct Source {
+    pub url: String,
+    pub sha256: String,
+}
+
+/// Where the three helpers Play installs come from (tests use a local server).
+#[derive(Debug, Clone)]
+pub struct Sources {
+    pub skse: Source,
+    pub crash_logger: Source,
+    pub souls: Source,
+}
+
+impl Sources {
+    /// The pinned official GitHub releases.
+    pub fn official() -> Sources {
+        let s = |url: &str, sha256: &str| Source { url: url.into(), sha256: sha256.into() };
+        Sources { skse: s(SKSE_URL, SKSE_SHA256), crash_logger: s(CRASH_LOGGER_URL, CRASH_LOGGER_SHA256), souls: s(SOULS_URL, SOULS_SHA256) }
+    }
+}
+
+async fn download_checked(client: &reqwest::Client, src: &Source, label: &str) -> Result<Vec<u8>> {
+    let bytes = client.get(&src.url).header("User-Agent", "AetherialDawnLauncher").send().await?.error_for_status()?.bytes().await?;
     use sha2::{Digest, Sha256};
     let got = hex::encode(Sha256::digest(&bytes));
-    if !got.eq_ignore_ascii_case(SKSE_SHA256) {
-        return Err(Error::HashMismatch { path: "SKSE".into(), expected: SKSE_SHA256.into(), actual: got });
+    if !got.eq_ignore_ascii_case(&src.sha256) {
+        return Err(Error::HashMismatch { path: label.into(), expected: src.sha256.clone(), actual: got });
     }
-    unpack_skse(&bytes, game_dir)
+    Ok(bytes.to_vec())
+}
+
+/// A required helper Play couldn't install, and why.
+#[derive(Debug)]
+pub struct HelperFailed {
+    pub name: &'static str,
+    pub version: &'static str,
+    pub cause: Error,
+}
+
+impl HelperFailed {
+    /// The warning Play shows when it starts the game without this helper.
+    pub fn warning(&self) -> String {
+        let (n, v) = (self.name, self.version);
+        let why = match &self.cause {
+            Error::Http(_) => "the download didn't get through".to_string(),
+            Error::HashMismatch { .. } => "the download was damaged".to_string(),
+            Error::Io(e) => format!("it couldn't be written into your Skyrim folder ({e})"),
+            e => e.to_string(),
+        };
+        format!("{n} {v} isn't installed: {why}. Skyrim starts without it; Play tries again next time.")
+    }
+
+    /// The sentence Play shows, worded from what actually went wrong.
+    pub fn message(&self) -> String {
+        let (n, v) = (self.name, self.version);
+        match &self.cause {
+            Error::Http(e) => format!("Couldn't download {n} {v} ({}). Check your internet connection and try again.", crate::scrub(&e.to_string())),
+            Error::HashMismatch { .. } => format!("The {n} {v} download was damaged, so it wasn't installed. Try again."),
+            Error::Io(e) => format!("Couldn't write {n} {v} into your Skyrim folder ({e}). Close Skyrim and Vortex, then try again."),
+            e => format!("Couldn't install {n} {v}: {e}."),
+        }
+    }
+}
+
+/// What Play does before anything else: installs SKSE 2.2.6, Crash Logger
+/// and Skyrim Souls RE when they're missing or SKSE wouldn't load the copy
+/// there, and checks each again afterwards. SKSE is needed to join at all,
+/// so its failure is the Err that stops Play. Crash Logger and Souls RE that
+/// can't be installed come back in the Ok list: Play warns and carries on,
+/// and tries them again next time (the default chosen 2026-09-28 until
+/// Timothy decides between blocking and warning). `log` gets a line per step.
+pub async fn ensure_helpers(client: &reqwest::Client, game_dir: &Path, src: &Sources, log: &mut (dyn FnMut(&str) + Send)) -> std::result::Result<Vec<HelperFailed>, HelperFailed> {
+    let cleaned = clean_partials(game_dir);
+    if !cleaned.is_empty() {
+        log(&format!("removed half-written mod files: {}", cleaned.join(", ")));
+    }
+    let fail = |name, version, cause| HelperFailed { name, version, cause };
+    if !skse_ok(game_dir) {
+        install_skse_from(client, game_dir, &src.skse).await.map_err(|e| fail("SKSE", SKSE_VERSION, e))?;
+        if !skse_ok(game_dir) {
+            return Err(fail("SKSE", SKSE_VERSION, Error::Game("its files weren't there after installing".into())));
+        }
+        log(&format!("installed SKSE {SKSE_VERSION}"));
+    }
+    if !crash_logger_ok(game_dir) {
+        // A good copy set aside by an older launcher beats a download (and
+        // works with GitHub unreachable).
+        match restore_crash_logger(game_dir) {
+            Ok(Some(stamp)) => log(&format!("put the crash logger back from {}", stamp.display())),
+            Ok(None) => {}
+            Err(e) => log(&format!("couldn't put the crash logger back: {e}")),
+        }
+    }
+    let mut missing = Vec::new();
+    if !crash_logger_ok(game_dir) {
+        let why = crash_logger_state(game_dir);
+        match install_crash_logger_from(client, game_dir, &src.crash_logger).await {
+            Ok(()) if crash_logger_ok(game_dir) => log(&format!("installed Crash Logger {CRASH_LOGGER_VERSION} ({why})")),
+            Ok(()) => missing.push(fail("Crash Logger", CRASH_LOGGER_VERSION, Error::Game("SKSE wouldn't load the copy it installed".into()))),
+            Err(e) => missing.push(fail("Crash Logger", CRASH_LOGGER_VERSION, e)),
+        }
+    }
+    if !souls_ok(game_dir) {
+        let why = dll_state(&plugins_dir(game_dir).join("SkyrimSoulsRE.dll"));
+        match install_souls_from(client, game_dir, &src.souls).await {
+            Ok(()) if souls_ok(game_dir) => log(&format!("installed Skyrim Souls RE {SOULS_VERSION} ({why})")),
+            Ok(()) => missing.push(fail("Skyrim Souls RE", SOULS_VERSION, Error::Game("SKSE wouldn't load the copy it installed".into()))),
+            Err(e) => missing.push(fail("Skyrim Souls RE", SOULS_VERSION, e)),
+        }
+    }
+    Ok(missing)
+}
+
+fn crash_logger_state(game_dir: &Path) -> String {
+    dll_state(&plugins_dir(game_dir).join("CrashLogger.dll"))
+}
+
+/// Why a helper DLL is being installed, for the log.
+fn dll_state(dll: &Path) -> String {
+    if !dll.is_file() {
+        return "it was missing".into();
+    }
+    match crate::skse::build_of(dll) {
+        crate::skse::Build::Wrong(w) => format!("the copy there was refused: {w}"),
+        _ => "the copy there couldn't be read as an SKSE plugin".into(),
+    }
 }
 
 fn unpack_skse(archive: &[u8], game_dir: &Path) -> Result<()> {
@@ -303,19 +432,63 @@ pub fn address_library_ok(game_dir: &Path, game_version: &str) -> bool {
     plugins_dir(game_dir).join(address_library_file(game_version)).is_file()
 }
 
+/// A required helper DLL counts as installed only when SKSE 2.2.6 would load
+/// it on 1.6.1170. A copy built for another Skyrim, or one that can't be read
+/// as an SKSE plugin (cut short, damaged), is installed again.
+fn loads(dll: &Path) -> bool {
+    dll.is_file() && crate::skse::build_of(dll) == crate::skse::Build::Fits
+}
+
 pub fn crash_logger_ok(game_dir: &Path) -> bool {
-    plugins_dir(game_dir).join("CrashLogger.dll").is_file()
+    loads(&plugins_dir(game_dir).join("CrashLogger.dll"))
+}
+
+/// Launchers before 0.1.20 moved crash loggers aside with other SKSE plugins.
+/// Puts the newest one back when none is in the game, so the next crash
+/// names the module that failed. Copies set aside because SKSE would refuse
+/// them (`-wrong-build`, `-too-new`) and any copy SKSE wouldn't load are
+/// left where they are. Returns the folder it came from.
+pub fn restore_crash_logger(game_dir: &Path) -> Result<Option<PathBuf>> {
+    let plugins = plugins_dir(game_dir);
+    let current = plugins.join("CrashLogger.dll");
+    // A working crash logger is in place; a CrashLogger.dll SKSE wouldn't
+    // load doesn't count, and is set aside when a good copy replaces it.
+    if loads(&current) || crate::strays::CRASH_LOGGERS[1..].iter().any(|n| plugins.join(n).is_file()) {
+        return Ok(None);
+    }
+    let Ok(rd) = std::fs::read_dir(game_dir.join(crate::strays::DISABLED_DIR)) else { return Ok(None) };
+    let mut stamps: Vec<PathBuf> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().is_some_and(|n| !n.to_string_lossy().contains("-wrong-build") && !n.to_string_lossy().contains("-too-new")))
+        .collect();
+    stamps.sort();
+    for stamp in stamps.iter().rev() {
+        let from = stamp.join("Data").join("SKSE").join("Plugins").join("CrashLogger.dll");
+        if loads(&from) {
+            std::fs::create_dir_all(&plugins)?;
+            if current.is_file() {
+                let why = match crate::skse::build_of(&current) {
+                    crate::skse::Build::Wrong(w) => w,
+                    _ => "it couldn't be read as an SKSE plugin".into(),
+                };
+                crate::modlist::set_aside_wrong_build(game_dir, "Data/SKSE/Plugins/CrashLogger.dll", &why)?;
+            }
+            std::fs::rename(&from, &current)?;
+            return Ok(Some(stamp.clone()));
+        }
+    }
+    Ok(None)
 }
 
 /// Downloads the pinned Crash Logger release from GitHub, checks it, and puts
 /// its files in Data/SKSE/Plugins.
 pub async fn install_crash_logger(client: &reqwest::Client, game_dir: &Path) -> Result<()> {
-    let bytes = client.get(CRASH_LOGGER_URL).header("User-Agent", "AetherialDawnLauncher").send().await?.error_for_status()?.bytes().await?;
-    use sha2::{Digest, Sha256};
-    let got = hex::encode(Sha256::digest(&bytes));
-    if !got.eq_ignore_ascii_case(CRASH_LOGGER_SHA256) {
-        return Err(Error::HashMismatch { path: "Crash Logger".into(), expected: CRASH_LOGGER_SHA256.into(), actual: got });
-    }
+    install_crash_logger_from(client, game_dir, &Sources::official().crash_logger).await
+}
+
+async fn install_crash_logger_from(client: &reqwest::Client, game_dir: &Path, src: &Source) -> Result<()> {
+    let bytes = download_checked(client, src, "Crash Logger").await?;
     let dir = plugins_dir(game_dir);
     std::fs::create_dir_all(&dir)?;
     unpack_crash_logger(&bytes, &dir)
@@ -324,49 +497,85 @@ pub async fn install_crash_logger(client: &reqwest::Client, game_dir: &Path) -> 
 fn unpack_crash_logger(archive: &[u8], dir: &Path) -> Result<()> {
     let mut reader = sevenz_rust2::ArchiveReader::new(std::io::Cursor::new(archive), sevenz_rust2::Password::empty())
         .map_err(|e| Error::Game(format!("Crash Logger download is damaged: {e}")))?;
-    let mut wrote = 0;
-    reader
-        .for_each_entries(|entry, data| {
-            let name = entry.name().replace('\\', "/");
-            let Some(file) = name.strip_prefix("SKSE/Plugins/") else { return Ok(true) };
-            if entry.is_directory() || file.contains('/') || !CRASH_LOGGER_FILES.iter().any(|f| f.eq_ignore_ascii_case(file)) {
-                return Ok(true);
-            }
-            let tmp = dir.join(format!("{file}.part"));
-            let mut out = std::fs::File::create(&tmp)?;
-            std::io::copy(data, &mut out)?;
-            drop(out);
-            std::fs::rename(&tmp, dir.join(file))?;
-            wrote += 1;
-            Ok(true)
-        })
-        .map_err(|e| Error::Game(format!("couldn't unpack Crash Logger: {e}")))?;
-    if wrote == 0 {
+    let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
+    // A failure writing to the game folder stays an IO error (disk full,
+    // folder locked); a failure reading the archive is a damaged download.
+    let mut write_err: Option<std::io::Error> = None;
+    let unpacked = reader.for_each_entries(|entry, data| {
+        let name = entry.name().replace('\\', "/");
+        let Some(file) = name.strip_prefix("SKSE/Plugins/") else { return Ok(true) };
+        if entry.is_directory() || file.contains('/') || !CRASH_LOGGER_FILES.iter().any(|f| f.eq_ignore_ascii_case(file)) {
+            return Ok(true);
+        }
+        let mut bytes = Vec::new();
+        data.read_to_end(&mut bytes)?;
+        let tmp = dir.join(format!("{file}.part"));
+        staged.push((tmp.clone(), dir.join(file)));
+        if let Err(e) = std::fs::write(&tmp, &bytes) {
+            write_err = Some(e);
+            return Ok(false);
+        }
+        Ok(true)
+    });
+    if let Some(e) = write_err {
+        discard(&staged);
+        return Err(e.into());
+    }
+    if let Err(e) = unpacked {
+        discard(&staged);
+        return Err(Error::Game(format!("couldn't unpack Crash Logger: {e}")));
+    }
+    if !staged.iter().any(|(_, d)| is_named(d, "CrashLogger.dll")) {
+        discard(&staged);
         return Err(Error::Game("the Crash Logger download didn't contain CrashLogger.dll".into()));
+    }
+    put_in_place(staged, "CrashLogger.dll")
+}
+
+fn is_named(p: &Path, name: &str) -> bool {
+    p.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(name))
+}
+
+/// Removes the `.part` files of an unpack that didn't finish.
+fn discard(staged: &[(PathBuf, PathBuf)]) {
+    for (tmp, _) in staged {
+        let _ = std::fs::remove_file(tmp);
+    }
+}
+
+/// Renames every unpacked `.part` file into place with the DLL last, so the
+/// DLL (what the installed check reads) is only there when all its files are.
+fn put_in_place(mut staged: Vec<(PathBuf, PathBuf)>, dll: &str) -> Result<()> {
+    staged.sort_by_key(|(_, d)| is_named(d, dll));
+    for (i, (tmp, dest)) in staged.iter().enumerate() {
+        if let Err(e) = std::fs::rename(tmp, dest) {
+            discard(&staged[i..]);
+            return Err(e.into());
+        }
     }
     Ok(())
 }
 
 pub fn souls_ok(game_dir: &Path) -> bool {
-    plugins_dir(game_dir).join("SkyrimSoulsRE.dll").is_file()
+    loads(&plugins_dir(game_dir).join("SkyrimSoulsRE.dll"))
 }
 
 /// Downloads Skyrim Souls RE 2.4.0 from its GitHub release, checks it, and
 /// puts its files in Data (SKSE plugin, its ini unless one exists, Interface
 /// and Scripts). The Scripts/Source folder is skipped.
 pub async fn install_souls(client: &reqwest::Client, game_dir: &Path) -> Result<()> {
-    let bytes = client.get(SOULS_URL).header("User-Agent", "AetherialDawnLauncher").send().await?.error_for_status()?.bytes().await?;
-    use sha2::{Digest, Sha256};
-    let got = hex::encode(Sha256::digest(&bytes));
-    if !got.eq_ignore_ascii_case(SOULS_SHA256) {
-        return Err(Error::HashMismatch { path: "Skyrim Souls RE".into(), expected: SOULS_SHA256.into(), actual: got });
-    }
+    install_souls_from(client, game_dir, &Sources::official().souls).await
+}
+
+async fn install_souls_from(client: &reqwest::Client, game_dir: &Path, src: &Source) -> Result<()> {
+    let bytes = download_checked(client, src, "Skyrim Souls RE").await?;
     unpack_souls(&bytes, &game_dir.join("Data"))
 }
 
 fn unpack_souls(archive: &[u8], data: &Path) -> Result<()> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive)).map_err(|e| Error::Game(format!("Skyrim Souls RE download is damaged: {e}")))?;
-    let mut dll = false;
+    let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let unpacked = (|| -> Result<()> {
     for i in 0..zip.len() {
         let mut f = zip.by_index(i).map_err(|e| Error::Game(e.to_string()))?;
         let name = f.name().replace('\\', "/");
@@ -385,17 +594,27 @@ fn unpack_souls(archive: &[u8], data: &Path) -> Result<()> {
         if let Some(p) = dest.parent() {
             std::fs::create_dir_all(p)?;
         }
-        let tmp = dest.with_extension("part");
-        let mut out = std::fs::File::create(&tmp)?;
-        std::io::copy(&mut f, &mut out)?;
-        drop(out);
-        std::fs::rename(&tmp, &dest)?;
-        dll |= name.eq_ignore_ascii_case("SKSE/Plugins/SkyrimSoulsRE.dll");
-    }
-    if !dll {
-        return Err(Error::Game("the Skyrim Souls RE download didn't contain SkyrimSoulsRE.dll".into()));
+        // `<file>.part`, the name clean_partials looks for (the dll, ini
+        // and pdb share a stem, so the extension can't simply be swapped).
+        let tmp = dest.with_file_name(format!("{}.part", dest.file_name().unwrap_or_default().to_string_lossy()));
+        staged.push((tmp.clone(), dest));
+        // Reading (a damaged archive) and writing (disk full, folder
+        // locked) fail differently, so the player is told the right thing.
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut f, &mut bytes).map_err(|e| Error::Game(format!("couldn't unpack {name}: {e}")))?;
+        std::fs::write(&tmp, &bytes)?;
     }
     Ok(())
+    })();
+    if let Err(e) = unpacked {
+        discard(&staged);
+        return Err(e);
+    }
+    if !staged.iter().any(|(_, d)| is_named(d, "SkyrimSoulsRE.dll") && d.parent().is_some_and(|p| is_named(p, "Plugins"))) {
+        discard(&staged);
+        return Err(Error::Game("the Skyrim Souls RE download didn't contain SkyrimSoulsRE.dll".into()));
+    }
+    put_in_place(staged, "SkyrimSoulsRE.dll")
 }
 
 #[cfg(test)]
@@ -491,5 +710,201 @@ mod tests {
         for f in CRASH_LOGGER_FILES {
             assert!(tmp.path().join(f).is_file(), "{f}");
         }
+    }
+
+    /// Serves `routes` (path, status, body) over plain HTTP and counts requests per path.
+    async fn serve(routes: Vec<(&'static str, u16, Vec<u8>)>) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        let hits = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let h = hits.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut c, _)) = l.accept().await else { return };
+                let mut buf = vec![0u8; 4096];
+                let n = c.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = req.split_whitespace().nth(1).unwrap_or("").to_string();
+                h.lock().unwrap().push(path.clone());
+                let (status, body) = routes.iter().find(|r| r.0 == path).map(|r| (r.1, r.2.clone())).unwrap_or((404, Vec::new()));
+                let head = format!("HTTP/1.1 {status} X\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len());
+                let _ = c.write_all(head.as_bytes()).await;
+                let _ = c.write_all(&body).await;
+            }
+        });
+        (base, hits)
+    }
+
+    fn sha(b: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        hex::encode(Sha256::digest(b))
+    }
+
+    /// A Souls-like zip, stored (not compressed) so a test can damage one file.
+    fn souls_zip(dll: &[u8]) -> Vec<u8> {
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let o = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        w.start_file("SKSE/Plugins/SkyrimSoulsRE.dll", o).unwrap();
+        std::io::Write::write_all(&mut w, dll).unwrap();
+        w.start_file("Interface/CombatAlertOverlayMenu.swf", o).unwrap();
+        std::io::Write::write_all(&mut w, b"SWF-MENU-CONTENT").unwrap();
+        w.finish().unwrap().into_inner()
+    }
+
+    /// A game folder with SKSE and a Crash Logger SKSE would load.
+    fn game_with_skse() -> tempfile::TempDir {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(plugins_dir(t.path())).unwrap();
+        std::fs::write(t.path().join("skse64_loader.exe"), b"x").unwrap();
+        std::fs::write(t.path().join("skse64_1_6_1170.dll"), b"x").unwrap();
+        std::fs::write(plugins_dir(t.path()).join("CrashLogger.dll"), crate::skse::tests::good_dll()).unwrap();
+        t
+    }
+
+    fn sources(base: &str, cl: &[u8], souls: &[u8]) -> Sources {
+        let s = |p: &str, b: &[u8]| Source { url: format!("{base}{p}"), sha256: sha(b) };
+        Sources { skse: s("/skse", b""), crash_logger: s("/cl", cl), souls: s("/souls", souls) }
+    }
+
+    #[tokio::test]
+    async fn a_helper_that_cant_be_installed_stops_play_with_its_own_reason() {
+        let http = reqwest::Client::new();
+        let mut log = |_: &str| {};
+        let good = souls_zip(&crate::skse::tests::good_dll());
+        let dll = |t: &tempfile::TempDir| plugins_dir(t.path()).join("SkyrimSoulsRE.dll");
+
+        // Download fails: Play stops and names the mod and the connection.
+        let t = game_with_skse();
+        let (base, _) = serve(vec![("/souls", 500, Vec::new())]).await;
+        let e = ensure_helpers(&http, t.path(), &sources(&base, b"", &good), &mut log).await.unwrap().remove(0);
+        assert_eq!(e.name, "Skyrim Souls RE");
+        assert!(e.message().contains("internet"), "{}", e.message());
+        // Play warns and carries on without it.
+        assert!(e.warning().contains("Skyrim starts without it"), "{}", e.warning());
+
+        // A damaged download: not blamed on the internet, nothing written.
+        let (base, _) = serve(vec![("/souls", 200, b"not the zip".to_vec())]).await;
+        let e = ensure_helpers(&http, t.path(), &sources(&base, b"", &good), &mut log).await.unwrap().remove(0);
+        assert!(e.message().contains("damaged") && !e.message().contains("internet"), "{}", e.message());
+        assert!(!dll(&t).exists());
+
+        // Cut short part way through unpacking (the second file is damaged):
+        // the DLL isn't left behind, so the next Play installs again.
+        let mut broken = good.clone();
+        let at = broken.windows(16).position(|w| w == b"SWF-MENU-CONTENT").unwrap();
+        broken[at] ^= 0xff;
+        let (base, _) = serve(vec![("/souls", 200, broken.clone())]).await;
+        let e = ensure_helpers(&http, t.path(), &sources(&base, b"", &broken), &mut log).await.unwrap().remove(0);
+        assert!(e.message().contains("Couldn't install Skyrim Souls RE"), "{}", e.message());
+        assert!(!dll(&t).exists());
+        assert!(std::fs::read_dir(plugins_dir(t.path())).unwrap().flatten().all(|f| !f.file_name().to_string_lossy().ends_with(".part")));
+
+        // A copy SKSE wouldn't load after installing still stops Play.
+        let old = souls_zip(&crate::skse::tests::old_dll());
+        let (base, _) = serve(vec![("/souls", 200, old.clone())]).await;
+        let e = ensure_helpers(&http, t.path(), &sources(&base, b"", &old), &mut log).await.unwrap().remove(0);
+        assert!(e.message().contains("wouldn't load"), "{}", e.message());
+
+        // That wrong copy is replaced by the right one on the next try.
+        let (base, hits) = serve(vec![("/souls", 200, good.clone())]).await;
+        assert!(ensure_helpers(&http, t.path(), &sources(&base, b"", &good), &mut log).await.unwrap().is_empty());
+        assert!(souls_ok(t.path()));
+        assert!(t.path().join("Data/Interface/CombatAlertOverlayMenu.swf").is_file());
+        assert_eq!(hits.lock().unwrap().as_slice(), ["/souls"]);
+        // With everything in place, nothing is downloaded.
+        let (base, hits) = serve(vec![]).await;
+        assert!(ensure_helpers(&http, t.path(), &sources(&base, b"", &good), &mut log).await.unwrap().is_empty());
+        assert!(hits.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_wrong_build_crash_logger_is_not_put_back_or_counted() {
+        let t = game_with_skse();
+        let g = t.path();
+        let set_aside = |stamp: &str, b: &[u8]| {
+            let d = g.join(crate::strays::DISABLED_DIR).join(stamp).join("Data/SKSE/Plugins");
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("CrashLogger.dll"), b).unwrap();
+            d.join("CrashLogger.dll")
+        };
+        std::fs::remove_file(plugins_dir(g).join("CrashLogger.dll")).unwrap();
+        let good = set_aside("100-plugins", &crate::skse::tests::good_dll());
+        let cut = set_aside("200-plugins", &crate::skse::tests::good_dll()[..300]);
+        let wrong = set_aside("300-wrong-build", &crate::skse::tests::old_dll());
+        let too_new = set_aside("400-too-new", &crate::skse::tests::good_dll());
+        // The newest copy SKSE would load, from a folder that isn't a refusal.
+        assert_eq!(restore_crash_logger(g).unwrap(), Some(g.join(crate::strays::DISABLED_DIR).join("100-plugins")));
+        assert!(!good.exists() && cut.exists() && wrong.exists() && too_new.exists());
+        assert!(crash_logger_ok(g));
+        // A wrong-build or cut-short copy in the game isn't counted as installed,
+        // so Play downloads it again (and stops when it can't).
+        for bad in [crate::skse::tests::old_dll(), crate::skse::tests::good_dll()[..300].to_vec()] {
+            std::fs::write(plugins_dir(g).join("CrashLogger.dll"), &bad).unwrap();
+            assert!(!crash_logger_ok(g));
+            let (base, hits) = serve(vec![("/cl", 503, Vec::new())]).await;
+            let e = ensure_helpers(&reqwest::Client::new(), g, &sources(&base, b"cl", b""), &mut |_| {}).await.unwrap().remove(0);
+            assert_eq!(e.name, "Crash Logger");
+            assert_eq!(hits.lock().unwrap().first().map(String::as_str), Some("/cl"));
+            // Nothing is put back over a copy that's there, even a wrong one.
+            assert_eq!(restore_crash_logger(g).unwrap(), None);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_good_set_aside_crash_logger_is_used_before_downloading() {
+        let t = game_with_skse();
+        let g = t.path();
+        let d = g.join(crate::strays::DISABLED_DIR).join("100-plugins/Data/SKSE/Plugins");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("CrashLogger.dll"), crate::skse::tests::good_dll()).unwrap();
+        // The copy in the game is the wrong build, and GitHub is unreachable.
+        std::fs::write(plugins_dir(g).join("CrashLogger.dll"), crate::skse::tests::old_dll()).unwrap();
+        let (base, hits) = serve(vec![("/cl", 503, Vec::new())]).await;
+        ensure_helpers(&reqwest::Client::new(), g, &sources(&base, b"cl", b""), &mut |_| {}).await.unwrap().remove(0);
+        // Souls RE is missing in this fixture, so Play still stops, but on
+        // Souls RE: Crash Logger came back from the backup with no download.
+        assert!(crash_logger_ok(g));
+        assert!(!hits.lock().unwrap().iter().any(|p| p == "/cl"));
+        // The wrong copy was set aside as a wrong build, not deleted.
+        let aside: Vec<_> = std::fs::read_dir(g.join(crate::strays::DISABLED_DIR)).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        assert!(aside.iter().any(|n| n.ends_with("-wrong-build")), "{aside:?}");
+    }
+
+    #[tokio::test]
+    async fn a_write_failure_is_told_as_one() {
+        let t = game_with_skse();
+        let good = souls_zip(&crate::skse::tests::good_dll());
+        // Something the launcher can't write over where the file goes.
+        std::fs::create_dir_all(t.path().join("Data/Interface/CombatAlertOverlayMenu.swf.part/x")).unwrap();
+        let (base, _) = serve(vec![("/souls", 200, good.clone())]).await;
+        let e = ensure_helpers(&reqwest::Client::new(), t.path(), &sources(&base, b"", &good), &mut |_| {}).await.unwrap().remove(0);
+        assert!(matches!(e.cause, Error::Io(_)), "{e:?}");
+        assert!(e.message().contains("Couldn't write Skyrim Souls RE"), "{}", e.message());
+        assert!(!plugins_dir(t.path()).join("SkyrimSoulsRE.dll").exists());
+    }
+
+    /// The real pinned archives (AD_CRASH_LOGGER_7Z, AD_SOULS_ZIP), served
+    /// locally: both install, and SKSE 2.2.6 would load both DLLs.
+    #[tokio::test]
+    async fn real_helpers_install_and_load_when_available() {
+        let (Ok(cl), Ok(souls)) = (std::env::var("AD_CRASH_LOGGER_7Z"), std::env::var("AD_SOULS_ZIP")) else { return };
+        let (cl, souls) = (std::fs::read(cl).unwrap(), std::fs::read(souls).unwrap());
+        let t = game_with_skse();
+        std::fs::remove_file(plugins_dir(t.path()).join("CrashLogger.dll")).unwrap();
+        let (base, _) = serve(vec![("/cl", 200, cl.clone()), ("/souls", 200, souls.clone())]).await;
+        let src = sources(&base, &cl, &souls);
+        assert_eq!(src.crash_logger.sha256, CRASH_LOGGER_SHA256);
+        assert_eq!(src.souls.sha256, SOULS_SHA256);
+        assert!(ensure_helpers(&reqwest::Client::new(), t.path(), &src, &mut |_| {}).await.unwrap().is_empty());
+        assert!(crash_logger_ok(t.path()) && souls_ok(t.path()));
+    }
+
+    #[tokio::test]
+    async fn only_skse_stops_play() {
+        let t = tempfile::tempdir().unwrap();
+        let (base, _) = serve(vec![]).await;
+        let e = ensure_helpers(&reqwest::Client::new(), t.path(), &sources(&base, b"", b""), &mut |_| {}).await.unwrap_err();
+        assert_eq!(e.name, "SKSE");
     }
 }
