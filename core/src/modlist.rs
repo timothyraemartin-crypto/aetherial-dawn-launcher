@@ -205,6 +205,11 @@ pub struct ModList {
     pub nexus_app: Option<String>,
 }
 
+/// Nexus file ids the launcher installs for its own required mods where the
+/// newest or best-named file is the wrong one for Skyrim 1.6.1170.
+pub const ADDRESS_LIBRARY_FILE: u64 = 470707;
+pub const TRUE_DIRECTIONAL_MOVEMENT_FILE: u64 = 798770;
+
 /// The mods the launcher requires on its own (Skyrim Souls RE's
 /// dependencies and the Address Library). The GitHub-hosted required mods
 /// (SKSE, Crash Logger, Souls RE, Engine Fixes part 1) are installed by
@@ -216,9 +221,14 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
         out.push(ModEntry {
             id: "address-library".into(),
             name: "Address Library for SKSE Plugins".into(),
-            nexus: Some(NexusRef { mod_id: 32444, file: None, pick: Some("All in one (Anniversary Edition)".into()) }),
+            // Pinned: the files named "All in one (Anniversary Edition)" are
+            // all archived and the newest (v8, 2022) has no 1.6.1170
+            // database, while today's main files are for newer Skyrim.
+            // v11 "All in one (1.6.X)" carries versionlib-1-6-1170-0.bin
+            // (Mod Curator's pin check, 2026-09-28).
+            nexus: Some(NexusRef { mod_id: 32444, file: Some(ADDRESS_LIBRARY_FILE), pick: Some("All in one (1.6.X)".into()) }),
             check: vec![format!("Data/SKSE/Plugins/{}", r::address_library_file(v))],
-            hint: Some("All in one (Anniversary Edition)".into()),
+            hint: Some("All in one (1.6.X), version 11".into()),
             ..Default::default()
         });
     }
@@ -322,9 +332,11 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
     out.push(ModEntry {
         id: "true-directional-movement".into(),
         name: "True Directional Movement".into(),
-        nexus: Some(NexusRef { mod_id: 51614, file: None, pick: Some("AE".into()) }),
+        // Pinned: the "AE" pick matched seven 2022 builds SKSE rejects on
+        // 1.6.1170 before reaching the one that works (2.3.1).
+        nexus: Some(NexusRef { mod_id: 51614, file: Some(TRUE_DIRECTIONAL_MOVEMENT_FILE), pick: Some("2.3.1".into()) }),
         check: vec!["Data/SKSE/Plugins/TrueDirectionalMovement.dll".into()],
-        hint: Some("the main file for Anniversary Edition (1.6)".into()),
+        hint: Some("the main file, version 2.3.1".into()),
         ..Default::default()
     });
     out.push(ModEntry {
@@ -1311,6 +1323,16 @@ mod tests {
         apply(&e, &copies, &game, Some(1), None).unwrap();
         assert!(e.installed(&game));
         assert_eq!(load_installed(&game).mods["p"].files.len(), 3);
+    }
+
+    #[test]
+    fn address_library_and_tdm_are_pinned_to_files_that_run_on_1_6_1170() {
+        let list = builtin(Some("1.6.1170.0"));
+        let pin = |id: &str| list.iter().find(|e| e.id == id).and_then(|e| e.nexus.as_ref()).map(|n| (n.mod_id, n.file)).unwrap();
+        assert_eq!(pin("address-library"), (32444, Some(470707)));
+        assert_eq!(pin("true-directional-movement"), (51614, Some(798770)));
+        let al = list.iter().find(|e| e.id == "address-library").unwrap();
+        assert_eq!(al.check, ["Data/SKSE/Plugins/versionlib-1-6-1170-0.bin"]);
     }
 
     #[test]
