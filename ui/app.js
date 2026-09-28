@@ -36,6 +36,7 @@
 
   const ICON_OK = '<path d="M5 12.5l4.5 4.5L19 7.5"/>';
   const ICON_BAD = '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/>';
+  const ICON_INFO = '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.5v.01"/>';
   const ICON_BUSY = '<path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/>';
   const THUMBS = ['art/thumb-castle.jpg', 'art/thumb-peak.jpg', 'art/thumb-lake.jpg', 'art/thumb-city.jpg'];
 
@@ -145,21 +146,23 @@
     if (!pending && !busy) check();
   }
 
+  // ok: true (done), false (needs the player), null (the launcher does it).
   function renderRow(el, ok, title, detail) {
-    el.classList.remove('ok', 'bad'); el.classList.add(ok ? 'ok' : 'bad');
-    el.querySelector('svg').innerHTML = ok ? ICON_OK : ICON_BAD;
+    el.classList.remove('ok', 'bad', 'info'); el.classList.add(ok === null ? 'info' : ok ? 'ok' : 'bad');
+    el.querySelector('svg').innerHTML = ok === null ? ICON_INFO : ok ? ICON_OK : ICON_BAD;
     el.querySelector('b').textContent = title;
     el.querySelector('small').textContent = detail;
   }
   function renderGame() {
     const g = state.game;
     const gameRow = [!!g, g ? 'Skyrim Special Edition' : 'Skyrim not found', g ? g.dir : (state.gameError || 'Pick the folder that has SkyrimSE.exe in it.')];
-    const skseRow = [!!(g && g.hasSkse), g && g.hasSkse ? 'SKSE installed' : 'SKSE is missing', g && g.hasSkse ? 'skse64_loader.exe' : 'The launcher installs it for you when you press Play.'];
+    // SKSE is the launcher's job: nothing here asks the player to get it.
+    const skseRow = g && g.hasSkse ? [true, 'SKSE installed', ''] : [null, 'SKSE', 'Installed for you when you press Play.'];
     renderRow($('g-game'), ...gameRow); renderRow($('g-skse'), ...skseRow);
     renderVersion();
     renderRow($('c-game'), ...gameRow); renderRow($('c-skse'), ...skseRow);
     $('c-game-pick').textContent = g ? 'Change' : 'Choose folder';
-    $('c-skse-recheck').hidden = !!(g && g.hasSkse);
+    $('c-skse-recheck').hidden = true;
     $('f-go').disabled = !ready_();
   }
 
@@ -363,7 +366,14 @@
     if (!signedIn()) { ready(); showSignIn(auth.message); }
     else if (playMode === 'play' || playMode === 'wait') ready();
   }
+  // The invite the login service publishes; the last one seen stands in.
+  function renderInvite() {
+    const invite = (status && status.discordInvite) || lastSeen.invite;
+    $('si-join').hidden = !invite;
+    if (invite) $('si-join-go').textContent = invite.replace('https://', '');
+  }
   function showSignIn(message) {
+    renderInvite();
     $('si-error').textContent = message || '';
     $('si-error').hidden = !message;
     $('si-wait').hidden = true;
@@ -720,7 +730,8 @@ let autoMods = false;
   async function loadStatus() {
     status = await invoke('server_status').catch(() => null);
     statusAsked = true;
-    if (status) remember({ status: { online: status.online, players: status.players, maxPlayers: status.maxPlayers }, news: Array.isArray(status.news) ? status.news.slice(0, 20) : lastSeen.news });
+    if (status) remember({ status: { online: status.online, players: status.players, maxPlayers: status.maxPlayers }, news: Array.isArray(status.news) ? status.news.slice(0, 20) : lastSeen.news, invite: status.discordInvite || lastSeen.invite });
+    renderInvite();
     renderStatus();
     const online = $('srv-online');
     if (!status) {
@@ -1004,6 +1015,7 @@ let autoMods = false;
     try { dgDone(await invoke('mark_game_ok')); } catch (e) { dgFail(e); }
   };
   $('c-skse-recheck').onclick = refreshState;
+  $('si-join-go').onclick = () => invoke('open_invite', { url: (status && status.discordInvite) || lastSeen.invite }).catch(() => {});
   $('f-go').onclick = () => { if (!signedIn()) { showSignIn(); return; } showPage('home'); check(); };
   $('si-go').onclick = beginSignIn;
   $('si-cancel').onclick = () => { signInRun++; $('si-wait').hidden = true; $('si-go').disabled = false; };

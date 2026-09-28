@@ -1869,6 +1869,11 @@ async fn server_status(state: State<'_, AppState>) -> CmdResult<Option<serde_jso
             None => format!("server status: no answer from {health_url}"),
         });
     }
+    // The Discord invite for the sign-in window ("Not a member yet?").
+    out.remove("discordInvite");
+    if let Some(invite) = health.as_ref().and_then(|h| h.get("discordInvite")).and_then(|v| v.as_str()).and_then(launcher_core::discord_invite) {
+        out.insert("discordInvite".into(), invite.into());
+    }
     if let (Some(seen), Some(h)) = (seen, health.as_ref()) {
         out.insert("online".into(), seen.into());
         for key in ["players", "maxPlayers"] {
@@ -2041,6 +2046,15 @@ fn show_window_once(app: &tauri::AppHandle, by: &str) {
     }
 }
 
+/// Opens the Discord invite in the browser; nothing but a plain invite link.
+#[tauri::command]
+fn open_invite(app: tauri::AppHandle, url: String) -> CmdResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let invite = launcher_core::discord_invite(&url).ok_or("That isn't a Discord invite.")?;
+    app.opener().open_url(invite, None::<&str>).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 fn window_ready(app: tauri::AppHandle) {
     show_window_once(&app, "page");
@@ -2104,7 +2118,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, report_problem, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside, skip_tool, window_ready])
+        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, report_problem, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside, skip_tool, window_ready, open_invite])
         .build(tauri::generate_context!())
         .expect("error while running the launcher")
         .run(|_, event| {

@@ -34,11 +34,11 @@ function fakeBackEnd() {
   try { localStorage.clear(); if (S.seed) localStorage.setItem('ad.lastReady', JSON.stringify(S.seed)); } catch (_) {}
   const game = Object.assign({ needed: false, installed: '1.6.1170.0', target: '1.6.1170.0', skseOk: true, canDowngrade: true }, S.game || {});
   const answers = {
-    get_state: () => ({ launcherVersion: S.version, config: { gameDir: S.dir, closeOnLaunch: false, backgroundUpdates: !!S.backgroundUpdates, shareHealth: true, music: false, onlyServerMods: true }, game: { dir: S.dir, hasSkse: true } }),
+    get_state: () => ({ launcherVersion: S.version, config: { gameDir: S.dir, closeOnLaunch: false, backgroundUpdates: !!S.backgroundUpdates, shareHealth: true, music: false, onlyServerMods: true }, game: { dir: S.dir, hasSkse: S.hasSkse !== false } }),
     auth_status: () => S.auth,
     check: () => Object.assign({ build: 'B2', server: { name: 'Aetherial Dawn', ip: '127.0.0.1', port: 7777 }, files: 0, remove: 0, bytes: 0, strays: [], game }, S.check || {}),
     update: () => null,
-    server_status: () => ({ online: true, players: 1, maxPlayers: 50, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
+    server_status: () => ({ online: true, players: 1, maxPlayers: 50, discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
     files: () => [], game_check: () => game, play: () => null,
     mods_state: () => ({ mods: [], nexus: null, vortex: false, running: false, sso: false }),
   };
@@ -74,6 +74,10 @@ function fakeBackEnd() {
       try { log.lastReady = JSON.parse(localStorage.getItem('ad.lastReady')); } catch (_) {}
       log.signinShown = !document.getElementById('signin').hidden;
       log.status = document.getElementById('status').textContent;
+      const join = document.getElementById('si-join');
+      log.join = join.hidden ? null : join.textContent;
+      log.skse = ['g-skse', 'c-skse'].map(id => { const el = document.getElementById(id); return el.querySelector('b').textContent + el.querySelector('small').textContent; });
+      log.skseRecheck = !document.getElementById('c-skse-recheck').hidden;
       const pre = document.createElement('pre');
       pre.id = 'ui-test-result';
       pre.textContent = JSON.stringify(log);
@@ -108,6 +112,16 @@ const scenarios = [
     ['the button ends on SIGN IN', lastLabel(r) === 'SIGN IN'],
     ['the sign-in window is open', r.signinShown],
     ['next start does not open on PLAY', r.lastReady && r.lastReady.play === false],
+  ] },
+  { name: 'not a member: the sign-in window links the Discord invite', s: { ...base, auth: { signedIn: false }, invite: 'https://discord.gg/aetherial' }, expect: r => [
+    ['the invite shows', r.join === 'Not a member yet? Join here: discord.gg/aetherial', r.join],
+  ] },
+  { name: 'SKSE not installed yet: nothing asks the player to get it', s: { ...base, hasSkse: false, seed: null, clicks: [] }, expect: r => [
+    ['the row reads "SKSE / Installed for you when you press Play."', r.skse.every(t => t === 'SKSEInstalled for you when you press Play.'), JSON.stringify(r.skse)],
+    ['no Check again button', !r.skseRecheck],
+  ] },
+  { name: 'SKSE installed: no file name under it', s: base, expect: r => [
+    ['the row reads "SKSE installed" alone', r.skse.every(t => t === 'SKSE installed'), JSON.stringify(r.skse)],
   ] },
   { name: 'Discord cannot be reached: SIGN IN, the game never starts', s: { ...base, authFails: true }, expect: r => [
     ['the game never starts', !played(r)],

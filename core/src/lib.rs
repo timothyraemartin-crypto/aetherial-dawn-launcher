@@ -111,6 +111,15 @@ pub fn plain(raw: &str) -> String {
     scrub(raw)
 }
 
+/// A Discord invite link the launcher may show and open: https only, on
+/// discord.gg or discord.com/invite, with a plain invite code.
+pub fn discord_invite(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    let code = t.strip_prefix("https://discord.gg/").or_else(|| t.strip_prefix("https://discord.com/invite/"))?;
+    let ok = (2..=32).contains(&code.len()) && code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    ok.then(|| format!("https://discord.gg/{code}"))
+}
+
 /// Removes web addresses and "(os error N)" leftovers from otherwise plain
 /// text, so signed download links never reach a screenshot.
 pub fn scrub(raw: &str) -> String {
@@ -148,6 +157,15 @@ pub fn plain_ui(raw: &str) -> String {
 
 #[cfg(test)]
 mod plain_tests {
+    #[test]
+    fn only_plain_discord_invites_are_shown() {
+        assert_eq!(super::discord_invite("https://discord.gg/AbC-12"), Some("https://discord.gg/AbC-12".into()));
+        assert_eq!(super::discord_invite(" https://discord.com/invite/xyz "), Some("https://discord.gg/xyz".into()));
+        for bad in ["http://discord.gg/abc", "https://discord.gg/", "https://discord.gg/a/b", "https://discord.gg/abc?x=1", "https://evil.example/discord.gg/abc", "javascript:alert(1)", "https://discord.gg/a"] {
+            assert_eq!(super::discord_invite(bad), None, "{bad}");
+        }
+    }
+
     #[test]
     fn words_errors_plainly() {
         assert!(super::plain("file error: Access is denied. (os error 5)").starts_with("Windows wouldn't let"));

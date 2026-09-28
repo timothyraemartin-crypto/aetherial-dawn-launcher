@@ -172,7 +172,7 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .rows { display: grid; gap: 11px; }
 .row { display: grid; grid-template-columns: 20px 1fr auto; gap: 10px; align-items: center; }
 .row svg { width: 18px; height: 18px; fill: none; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
-.row.ok svg { stroke: var(--ok); } .row.bad svg { stroke: var(--warn); }
+.row.ok svg { stroke: var(--ok); } .row.bad svg { stroke: var(--warn); } .row.info svg { stroke: var(--muted); }
 .row b { display: block; font-weight: 500; }
 .row small { display: block; font: 400 11px/1.45 var(--mono); color: var(--faint); overflow-wrap: anywhere; }
 .tools { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -216,7 +216,7 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .check { display: grid; grid-template-columns: 20px 1fr auto; gap: 12px; align-items: center; padding: 13px 14px; }
 .check + .check { border-top: 1px solid var(--line); }
 .check svg { width: 18px; height: 18px; fill: none; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
-.check.ok svg { stroke: var(--ok); } .check.bad svg { stroke: var(--warn); }
+.check.ok svg { stroke: var(--ok); } .check.bad svg { stroke: var(--warn); } .check.info svg { stroke: var(--muted); }
 .check b { font-weight: 500; display: block; }
 .check small { font: 400 11px/1.45 var(--mono); color: var(--faint); overflow-wrap: anywhere; }
 .actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
@@ -290,3 +290,6 @@ html.animated .nav { background: linear-gradient(180deg, rgba(6,10,15,.9), rgba(
 #aside-line { display: flex; gap: 10px; align-items: center; justify-content: space-between; margin-top: 10px; }
 #aside-line small { opacity: .75; }
 #aside-line .btn { flex: none; }
+
+.si-join { margin: -4px 0 12px; font-size: 13px; color: var(--muted); }
+.si-join .linkish { font-size: 13px; }
