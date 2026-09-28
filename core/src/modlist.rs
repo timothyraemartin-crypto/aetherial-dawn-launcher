@@ -1788,10 +1788,16 @@ mod tests {
                 }
             }
             all.sort();
-            // RAR5 names use '/', so unrar turns a '\\' inside one into '_':
-            // "..\\evil2.esp" is then one harmless name inside the folder.
-            let want: &[&str] = if v == "4" { &["a.rar", "deep/out/ok.esp"] } else { &["a.rar", "deep/out/.._evil2.esp", "deep/out/_abs2.esp", "deep/out/ok.esp"] };
-            assert_eq!(all, want, "RAR{v}");
+            // Nothing lands outside the folder. unrar itself turns some names
+            // into harmless ones inside it, and differently per system ("C:"
+            // becomes "C_" on Windows; a '\\' in a RAR5 name becomes '_' on
+            // Linux), so only the invariant is checked, not those names.
+            assert!(all.iter().all(|f| f == "a.rar" || f.starts_with("deep/out/")), "RAR{v}: {all:?}");
+            assert!(all.iter().any(|f| f == "deep/out/ok.esp"), "RAR{v}: {all:?}");
+            assert!(all.iter().all(|f| !f.split('/').any(|c| c == "..") && !f.contains(':')), "RAR{v}: {all:?}");
+            for abs in ["/abs.esp", "/abs2.esp", "C:/drive.esp", "C:/drive2.esp"] {
+                assert!(!Path::new(abs).exists(), "RAR{v}: {abs}");
+            }
         }
     }
 
