@@ -245,6 +245,9 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
     }
     let mut ef_check = vec!["Data/SKSE/Plugins/EngineFixes.dll".to_string()];
     ef_check.push("Data/SKSE/Plugins/EngineFixes_preload.txt".to_string());
+    // The settings file it can't start without (health.rs required files):
+    // missing, Play installs the mod again (text audit A6).
+    ef_check.push("Data/SKSE/Plugins/EngineFixes.toml".to_string());
     out.push(ModEntry {
         id: "engine-fixes".into(),
         name: "SSE Engine Fixes (All-In-One)".into(),
@@ -261,14 +264,21 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
         // 4.3.9 and later need Skyrim 1.7.99 and crash 1.6.1170 (crate::ussep).
         nexus: Some(NexusRef { mod_id: 266, file: Some(crate::ussep::NEXUS_FILE), pick: Some(crate::ussep::NEXUS_PICK.into()) }),
         check: vec![format!("Data/{}", r::USSEP_PLUGIN)],
-        hint: Some("version 4.3.8a, the one for Skyrim 1.6.1170, in the archived files at the bottom of the Files tab (not 4.3.9 or newer)".into()),
+        hint: Some("version 4.3.8a, the one for Skyrim 1.6.1170".into()),
         ..Default::default()
     });
     out.push(ModEntry {
         id: "menu-framework".into(),
         name: "SKSE Menu Framework".into(),
         nexus: Some(NexusRef { mod_id: 120352, file: None, pick: None }),
-        check: vec![format!("Data/SKSE/Plugins/{}", r::MENU_FRAMEWORK_DLL)],
+        // With the strings, fonts and themes it can't start without (health.rs
+        // required files): any missing, Play installs it again (text audit A6).
+        check: vec![
+            format!("Data/SKSE/Plugins/{}", r::MENU_FRAMEWORK_DLL),
+            "Data/SKSE/Plugins/SKSEMenuFrameworkStrings*.json".into(),
+            "Data/SKSE/Plugins/fonts/*.ttf".into(),
+            "Data/SKSE/Plugins/SKSEMenuFrameworkThemes/*.json".into(),
+        ],
         hint: Some("the main file".into()),
         ..Default::default()
     });
@@ -613,7 +623,7 @@ pub fn extract(archive: &Path, dir: &Path) -> Result<()> {
             .map_err(|e| Error::Game(format!("couldn't unpack the download: {e}")))?;
         Ok(())
     } else if head.starts_with(b"Rar!") {
-        Err(Error::Game("this mod is packed as RAR, which the launcher can't unpack yet. Install it with Vortex".into()))
+        Err(Error::Game("This mod is packed in a way the launcher can't install automatically yet (RAR). The launcher tries it again next time".into()))
     } else {
         Err(Error::Game("the download isn't a zip or 7z archive".into()))
     }
@@ -792,7 +802,7 @@ pub fn plan_for(entry: &ModEntry, unpacked: &Path, supports: &[&str]) -> Result<
     } else if let Some(root) = data_root(unpacked) {
         copy_tree(&root, Path::new("Data"), &mut out);
     } else if entry.cpu.is_empty() {
-        return Err(Error::Game(format!("couldn't tell where {}'s files go. Install it with Vortex", entry.name)));
+        return Err(Error::Game(format!("{} couldn't be installed automatically: the launcher couldn't tell where its files go. The launcher tries it again next time", entry.name)));
     }
     // One CPU build: nothing from the other builds' folders, and the chosen
     // folder's files over whatever the installer picked.
@@ -1689,5 +1699,30 @@ mod free_account_tests {
         assert_eq!(e.download_page().unwrap(), "https://www.nexusmods.com/skyrimspecialedition/mods/266?tab=files&file_id=733846&nmm=1");
         let loose = ModEntry { nexus: Some(NexusRef { mod_id: 266, file: None, pick: None }), ..Default::default() };
         assert_eq!(loose.download_page(), loose.page());
+    }
+
+    #[test]
+    fn a_required_mod_missing_its_support_files_is_installed_again() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        let b = builtin(None);
+        let mf = b.iter().find(|m| m.id == "menu-framework").unwrap();
+        let p = g.join("Data/SKSE/Plugins");
+        std::fs::create_dir_all(p.join("fonts")).unwrap();
+        std::fs::create_dir_all(p.join("SKSEMenuFrameworkThemes")).unwrap();
+        std::fs::write(p.join(crate::requirements::MENU_FRAMEWORK_DLL), b"dll").unwrap();
+        // The DLL alone (Vortex left the fonts out, 0.1.38) isn't installed.
+        assert!(!mf.installed(g));
+        std::fs::write(p.join("SKSEMenuFrameworkStrings_EN.json"), b"{}").unwrap();
+        std::fs::write(p.join("fonts/a.ttf"), b"f").unwrap();
+        assert!(!mf.installed(g));
+        std::fs::write(p.join("SKSEMenuFrameworkThemes/dark.json"), b"{}").unwrap();
+        assert!(mf.installed(g));
+        // The strings file under its other name counts too.
+        std::fs::remove_file(p.join("SKSEMenuFrameworkStrings_EN.json")).unwrap();
+        std::fs::write(p.join("SKSEMenuFrameworkStrings.json"), b"{}").unwrap();
+        assert!(mf.installed(g));
+        let ef = b.iter().find(|m| m.id == "engine-fixes").unwrap();
+        assert!(ef.check.iter().any(|c| c.ends_with("EngineFixes.toml")));
     }
 }

@@ -245,6 +245,9 @@ pub struct Swap {
     pub to: String,
 }
 
+/// Starts the error for a game file the patches need that isn't there.
+pub const MISSING_FILE: &str = "NO_PATCH_FILES:";
+
 /// Makes every new file in `stage`: applies each `<file>.xdelta` to the
 /// game's `<file>` (the result goes to `<stage>/<file>`), and takes any other
 /// file as a whole file shipped with the patches. Nothing in the game changes.
@@ -256,7 +259,9 @@ pub fn build_swaps(tool: &Path, game_dir: &Path, stage: &Path, files: &[String],
         report("patch", target, i as u64, deltas.len() as u64);
         let old = game_dir.join(target);
         if !old.is_file() {
-            return Err(Error::Game(format!("{target} is missing from the game folder. Let Steam verify the game files, then try again.")));
+            // The launcher has Steam repair it (text audit A9: NO_PATCH_FILES
+            // runs the UI's Steam repair, then patching carries on).
+            return Err(Error::Game(format!("{MISSING_FILE}{target} is missing from the game folder.")));
         }
         let out = stage.join(format!("{target}.new"));
         apply_xdelta(tool, &old, &stage.join(rel), &out).map_err(|e| Error::Game(format!("couldn't patch {target}: {e}")))?;
@@ -379,6 +384,8 @@ mod tests {
         assert_eq!(std::fs::read(game.join("steam_api64.dll")).unwrap(), b"whole file");
         // A missing source file stops before anything is written.
         let files = vec!["Data/Gone.esm.xdelta".to_string()];
-        assert!(build_swaps(Path::new("xdelta3"), &game, &stage, &files, &mut log).is_err());
+        let e = build_swaps(Path::new("xdelta3"), &game, &stage, &files, &mut log).unwrap_err().to_string();
+        // With the prefix that has Steam repair the game (text audit A9).
+        assert!(e.starts_with(MISSING_FILE), "{e}");
     }
 }

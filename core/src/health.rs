@@ -185,9 +185,9 @@ fn masters(i: &Inputs) -> Check {
     let Some(want) = i.masters.map(parse_masters).filter(|w| !w.is_empty()) else {
         let missing: Vec<String> = MASTERS.iter().filter(|m| !data.join(m).is_file()).map(|m| m.to_string()).collect();
         return if missing.is_empty() {
-            check("masters", "Game masters", Status::Info, "Present. The server's list of masters couldn't be loaded, so they weren't compared.", vec![])
+            check("masters", "Base game files", Status::Info, "Present. The server's list of masters couldn't be loaded, so they weren't compared.", vec![])
         } else {
-            check("masters", "Game masters", Status::Fail, "Missing from Data. Verify Skyrim in Steam, then click Fix version.", missing)
+            check("masters", "Base game files", Status::Fail, "Missing from Data. Verify Skyrim in Steam, then click Fix version.", missing)
         };
     };
     let mut cache: HashCache = i.hash_cache.and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
@@ -218,9 +218,9 @@ fn masters(i: &Inputs) -> Check {
         }
     }
     if bad.is_empty() {
-        check("masters", "Game masters", Status::Ok, format!("All {} match the server.", want.len()), vec![])
+        check("masters", "Base game files", Status::Ok, format!("All {} match the server.", want.len()), vec![])
     } else {
-        check("masters", "Game masters", Status::Fail, "Don't match the server's. Click Fix version to download the right build.", bad)
+        check("masters", "Base game files", Status::Fail, "Don't match the server's. Press Play and the launcher puts the right ones in place.", bad)
     }
 }
 
@@ -255,7 +255,7 @@ fn server_order(i: &Inputs) -> Check {
     if bad.is_empty() {
         check("serverorder", "Server plugin order", Status::Ok, format!("The game loads the server's {} plugins in the same order.", order.len()), vec![])
     } else {
-        check("serverorder", "Server plugin order", Status::Fail, "The game's plugins don't match the server's order; SkyMP would stop with a load order error.", bad)
+        check("serverorder", "Server plugin order", Status::Fail, "The game's plugins don't match the server's order, so the game would refuse to connect. The launcher sets the order before Play.", bad)
     }
 }
 
@@ -276,7 +276,7 @@ fn plugin_names(i: &Inputs) -> Check {
     if items.is_empty() {
         check("pluginnames", "Plugin names", Status::Ok, "Every plugin's name is one the game client accepts.", vec![])
     } else {
-        check("pluginnames", "Plugin names", Status::Info, "The SkyMP client can't load plugin names with spaces, so before Play the launcher gives these a copy under a name it accepts. Nothing is renamed.", items)
+        check("pluginnames", "Plugin names", Status::Info, "The game can't load these plugin names as they are, so before Play the launcher loads a copy under a name it accepts. Nothing is renamed.", items)
     }
 }
 
@@ -302,9 +302,9 @@ fn load_order_file(i: &Inputs) -> Check {
         }
     }
     if items.is_empty() {
-        check("loadorderfile", "Load order file", Status::Ok, "loadorder.txt starts with the five base masters.", vec![])
+        check("loadorderfile", "Load order file", Status::Ok, "Your load order starts with the five base game files.", vec![])
     } else {
-        check("loadorderfile", "Load order file", Status::Info, "loadorder.txt is out of date. The launcher puts the five base masters first before Play; this doesn't crash the game.", items)
+        check("loadorderfile", "Load order file", Status::Info, "Your load order is out of date. The launcher fixes it before Play; this doesn't crash the game.", items)
     }
 }
 
@@ -364,7 +364,7 @@ fn required_files(i: &Inputs) -> Check {
     if items.is_empty() {
         check("requiredfiles", "Required mods' files", Status::Ok, "Every required mod has its support files.", vec![])
     } else {
-        check("requiredfiles", "Required mods' files", Status::Fail, "A required mod is missing files it needs to start, which crashes the game a few seconds in. The launcher puts files it set aside back before Play; otherwise reinstall the mod.", items)
+        check("requiredfiles", "Required mods' files", Status::Fail, "A required mod is missing files it needs to start, which crashes the game a few seconds in. Before Play the launcher puts back files it set aside and reinstalls the mod if anything is still missing.", items)
     }
 }
 
@@ -440,7 +440,7 @@ pub fn likely_cause(r: &Report) -> Option<String> {
     }
     for (id, why) in [
         ("exe", "Wrong Skyrim version"),
-        ("masters", "Game masters don't match the server"),
+        ("masters", "Base game files don't match the server"),
         ("newer", "Plugins made for a newer Skyrim"),
         ("strays", "SKSE plugins or loose menus from other mods"),
     ] {
@@ -469,9 +469,9 @@ fn stub_plugins(i: &Inputs) -> Check {
     }
     items.sort();
     if items.is_empty() {
-        check("stubs", "Plugin files", Status::Ok, "No broken plugin files in Data.", vec![])
+        check("stubs", "Plugin files", Status::Ok, "No broken plugin files.", vec![])
     } else {
-        check("stubs", "Plugin files", Status::Warn, "Broken plugin files in Data. Switched off, they're harmless.", items)
+        check("stubs", "Plugin files", Status::Warn, "Some plugin files are broken. They're switched off, so they can't hurt.", items)
     }
 }
 
@@ -486,7 +486,7 @@ fn newer_plugins(i: &Inputs) -> Check {
 
 fn ini_archives(i: &Inputs) -> Check {
     let Some(docs) = i.documents else {
-        return check("ini", "Skyrim.ini archives", Status::Info, "Couldn't find the Documents folder.", vec![]);
+        return check("ini", "Game settings file", Status::Info, "Couldn't find the Documents folder.", vec![]);
     };
     let mut items = Vec::new();
     for ini in gameini::ini_paths(docs) {
@@ -501,9 +501,9 @@ fn ini_archives(i: &Inputs) -> Check {
         }
     }
     if items.is_empty() {
-        check("ini", "Skyrim.ini archives", Status::Ok, "Every archive the ini names is in Data.", vec![])
+        check("ini", "Game settings file", Status::Ok, "Every file Skyrim's settings file lists is there.", vec![])
     } else {
-        check("ini", "Skyrim.ini archives", Status::Warn, "The ini names archives that aren't there. The launcher cleans this before Play.", items)
+        check("ini", "Game settings file", Status::Warn, "Skyrim's settings file lists files that aren't there. The launcher cleans this before Play.", items)
     }
 }
 
@@ -519,9 +519,10 @@ fn stray_plugins(i: &Inputs) -> Check {
     }
 }
 
-fn injectors(i: &Inputs) -> Check {
+/// ENB, ReShade and other injector files next to SkyrimSE.exe.
+pub fn injector_files(game_dir: &Path) -> Vec<String> {
     let mut items = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(i.game_dir) {
+    if let Ok(rd) = std::fs::read_dir(game_dir) {
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
             let l = n.to_ascii_lowercase();
@@ -531,10 +532,15 @@ fn injectors(i: &Inputs) -> Check {
         }
     }
     items.sort();
+    items
+}
+
+fn injectors(i: &Inputs) -> Check {
+    let items = injector_files(i.game_dir);
     if items.is_empty() {
         check("injectors", "Injectors next to Skyrim", Status::Ok, "No ENB, ReShade or other injector files.", vec![])
     } else {
-        check("injectors", "Injectors next to Skyrim", Status::Warn, "These load into Skyrim and can crash SkyrimPlatform's browser. Move them out if the game crashes.", items)
+        check("injectors", "Injectors next to Skyrim", Status::Warn, "These load into Skyrim and can crash the game's menus. If the game crashes, the launcher sets them aside before the next Play.", items)
     }
 }
 
@@ -580,7 +586,7 @@ fn steam_updates(i: &Inputs) -> Check {
     if behavior == "1" && readonly {
         check("steam", "Steam updates", Status::Ok, detail, vec![])
     } else {
-        check("steam", "Steam updates", Status::Warn, format!("{detail}. Steam can update Skyrim past the server's version. Fix version holds it."), vec![])
+        check("steam", "Steam updates", Status::Warn, format!("{detail}. If Steam updates Skyrim, the launcher puts the right files back before you play."), vec![])
     }
 }
 

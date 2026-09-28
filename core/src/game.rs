@@ -86,14 +86,61 @@ pub fn steam_roots() -> Vec<PathBuf> {
 pub fn launch(dir: &Path) -> Result<std::process::Child> {
     let info = inspect(dir)?;
     if !info.has_skse {
-        return Err(Error::Game("SKSE isn't installed. Install it from skse.silverlock.org, then try again.".into()));
+        return Err(Error::Game("SKSE didn't install. Press Play to try again.".into()));
     }
+    clear_run_as_admin(dir);
     let mut cmd = std::process::Command::new(dir.join(SKSE_LOADER));
     cmd.current_dir(dir);
     for name in GOOGLE_ENV {
         cmd.env_remove(name);
     }
     Ok(cmd.spawn()?)
+}
+
+/// Windows' compatibility flags for a program ("~ RUNASADMIN WIN7RTM")
+/// without "run as administrator": the rest to keep, or None when nothing
+/// else was set (the value then goes).
+pub fn without_run_as_admin(flags: &str) -> Option<String> {
+    let kept: Vec<&str> = flags.split_whitespace().filter(|f| !f.eq_ignore_ascii_case("RUNASADMIN")).collect();
+    if kept.iter().all(|f| *f == "~") {
+        None
+    } else {
+        Some(kept.join(" "))
+    }
+}
+
+/// Turns off "run as administrator" on the game and the SKSE loader for this
+/// Windows account: the launcher can't start a program that asks for it
+/// (os error 740). Returns the programs changed. (Text audit A8.)
+#[cfg(windows)]
+pub fn clear_run_as_admin(dir: &Path) -> Vec<String> {
+    use winreg::{enums::*, RegKey};
+    let mut changed = Vec::new();
+    let Ok(layers) = RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(r"Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers", KEY_READ | KEY_WRITE) else {
+        return changed;
+    };
+    for exe in [GAME_EXE, SKSE_LOADER] {
+        let want = dir.join(exe).to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+        let names: Vec<(String, String)> = layers.enum_values().flatten().filter(|(n, _)| n.to_ascii_lowercase() == want).map(|(n, v)| (n, v.to_string())).collect();
+        for (name, flags) in names {
+            if !flags.split_whitespace().any(|f| f.eq_ignore_ascii_case("RUNASADMIN")) {
+                continue;
+            }
+            let ok = match without_run_as_admin(&flags) {
+                Some(rest) => layers.set_value(&name, &rest).is_ok(),
+                None => layers.delete_value(&name).is_ok(),
+            };
+            if ok {
+                changed.push(exe.to_string());
+            }
+        }
+    }
+    changed
+}
+
+#[cfg(not(windows))]
+pub fn clear_run_as_admin(_dir: &Path) -> Vec<String> {
+    Vec::new()
 }
 
 /// Skyrim Platform watches every folder named by PluginFolders in
@@ -243,5 +290,13 @@ mod tests {
             assert!(p.starts_with("A:\\steam\\steamapps\\common\\Skyrim Special Edition"));
             assert!(p.ends_with("SkyrimSE.exe"));
         }
+    }
+
+    #[test]
+    fn run_as_administrator_is_taken_off_and_the_rest_kept() {
+        assert_eq!(super::without_run_as_admin("~ RUNASADMIN"), None);
+        assert_eq!(super::without_run_as_admin("RUNASADMIN"), None);
+        assert_eq!(super::without_run_as_admin("~ RUNASADMIN WIN7RTM"), Some("~ WIN7RTM".into()));
+        assert_eq!(super::without_run_as_admin("~ HIGHDPIAWARE runasadmin"), Some("~ HIGHDPIAWARE".into()));
     }
 }

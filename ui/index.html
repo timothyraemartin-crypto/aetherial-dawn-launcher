@@ -63,7 +63,7 @@
         <div><b id="srv-players">–</b><span>players online</span></div>
         <div><b id="srv-addr">–</b><span>address</span></div>
         <div><b id="srv-reset">–</b><span>since the last reset</span></div>
-        <div><b id="srv-build">–</b><span>client build</span></div>
+        <div><b id="srv-build">–</b><span>game files version</span></div>
       </div>
     </div>
     <div class="section">
@@ -140,7 +140,6 @@
       </div>
       <div class="actions">
         <button class="btn primary" id="f-go" disabled>CONTINUE</button>
-        <span class="note">SKSE comes from skse.silverlock.org. Install the build that matches your Skyrim version.</span>
       </div>
     </div>
   </div>
@@ -176,7 +175,7 @@
       <div class="bar" id="dg-bar" hidden><i id="dg-bar-i"></i></div>
       <span class="error" id="dg-error" hidden></span>
       <div class="actions">
-        <button class="btn primary" id="dg-go">DOWNGRADE</button>
+        <button class="btn primary" id="dg-go">FIX VERSION</button>
         <button class="btn" id="dg-cancel">Not now</button>
         <button class="linkish" id="dg-skip">My game is already on this version</button>
       </div>
@@ -188,7 +187,7 @@
     <div class="panel">
       <div class="eyebrow">OTHER MODS FOUND</div>
       <h2>These plugins can crash the game</h2>
-      <p class="lead">Your Skyrim folder has plugins that aren't part of Aetherial Dawn. They load together with the multiplayer files and often crash Skyrim before the main menu. The launcher moves SKSE and Platform plugins to a backup folder and switches extra game plugins off in your load order. Nothing is deleted.</p>
+      <p class="lead">Your Skyrim folder has plugins that aren't part of Aetherial Dawn. They load together with the multiplayer files and often crash Skyrim before the main menu. The launcher moves them to a backup folder or switches them off. Nothing is deleted, and you can put them back in Settings.</p>
       <ul class="notes files-list" id="st-list"></ul>
       <span class="error" id="st-error" hidden></span>
       <div class="actions">
@@ -238,7 +237,7 @@
       <h2>Skyrim closed unexpectedly</h2>
       <p class="lead" id="cr-summary"></p>
       <p class="note staff" id="cr-staff" hidden></p>
-      <p class="note">The launcher saved a report with the game's logs. Click <b>Copy report</b> and paste it to staff (or in the launcher thread) so we can see what went wrong.</p>
+      <p class="note" id="cr-ask">The launcher saved a report with the game's logs. Click <b>Copy report</b> and paste it to staff on Discord so they can see what went wrong.</p>
       <pre class="report" id="cr-report"></pre>
       <span class="note" id="cr-note" hidden></span>
       <div class="actions">
@@ -253,7 +252,7 @@
     <div class="panel">
       <div class="eyebrow">GAME HEALTH</div>
       <h2 id="hl-title">Checking your game…</h2>
-      <p class="lead" id="hl-lead">The launcher checks your Skyrim folder for the problems that most often crash SkyMP before the main menu.</p>
+      <p class="lead" id="hl-lead">The launcher checks your Skyrim folder for the problems that most often crash the game before the main menu.</p>
       <ul class="health-list" id="hl-list"></ul>
       <details class="hl-sent"><summary id="hl-sent-sum">What gets sent to staff</summary><pre class="report" id="hl-payload"></pre></details>
       <span class="note" id="hl-note" hidden></span>

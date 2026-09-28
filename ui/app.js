@@ -24,6 +24,14 @@
   window.addEventListener('error', e => logUi(`script error: ${e.message} at ${e.filename}:${e.lineno}`));
   window.addEventListener('unhandledrejection', e => logUi(`unhandled: ${e.reason}`));
   const HELP = ' If it keeps happening, open Settings, click Copy diagnostics and send it to staff.';
+  // An error with HELP on it: when health sharing is on, the launcher sends
+  // staff a report itself and says so instead (text audit C2).
+  function helpStatus(msg, what) {
+    setStatus(msg + HELP, true);
+    invoke('report_problem', { what }).then(id => {
+      if (id && statusMsg && statusMsg.msg === msg + HELP) setStatus(`${msg} Staff have been sent a report (${id}).`, true);
+    }).catch(() => {});
+  }
   const $ = id => document.getElementById(id);
 
   const ICON_OK = '<path d="M5 12.5l4.5 4.5L19 7.5"/>';
@@ -254,7 +262,7 @@
     } catch (e) {
       setPlay('retry', 'RETRY');
       setChip('warn', 'Update failed');
-      setStatus(`The game file update stopped: ${e}. Click Retry.` + HELP, true);
+      helpStatus(`The game file update stopped: ${e}. Click Retry.`, `update stopped: ${e}`);
       pending = null;
     } finally {
       off();
@@ -563,7 +571,13 @@
     let stoppedNote = false;
     try {
       const r = await invoke('download_all_mods');
-      if (r.failed.length) rqError(`Not installed yet: ${r.failed.map(f => f[0]).join(', ')}. The launcher tries again the next time you press Play.`);
+      if (r.failed.length) {
+        const msg = `Not installed yet: ${r.failed.map(f => f[0]).join(', ')}. The launcher tries again the next time you press Play.`;
+        rqError(msg);
+        // Staff get a report when sharing is on (text audit A3, A4).
+        invoke('report_problem', { what: `mods not installed: ${r.failed.map(f => `${f[0]} (${f[1]})`).join('; ')}` })
+          .then(id => { if (id && $('rq-error').textContent === msg) rqError(`${msg} Staff have been sent a report (${id}).`); }).catch(() => {});
+      }
       else if (r.cancelled) stoppedNote = true;
       else ok = true;
     } catch (e) {
@@ -635,7 +649,7 @@ let autoMods = false;
         return;
       }
       setPlay('play', 'PLAY');
-      setStatus(`Skyrim didn't start: ${msg}` + HELP, true);
+      helpStatus(`Skyrim didn't start: ${msg}`, `game didn't start: ${msg}`);
     }
   }
 
@@ -855,6 +869,8 @@ let autoMods = false;
         ? `Staff already have this report as ${g.reportId}.` + (g.likelyCause ? ` Likely cause: ${g.likelyCause}` : '') + ' Mention the number if you ask for help.'
         : '';
     }
+    // Staff already have it: no need to ask the player to paste it.
+    $('cr-ask').hidden = !staff.hidden;
     showSheet('crash');
     invoke('game_check').then(c => { gameCheck = c; renderVersion(); ready(); }).catch(() => {});
     ready();
@@ -866,6 +882,7 @@ let autoMods = false;
     const staff = $('cr-staff');
     staff.textContent = `Staff already have this report as ${f.reportId}.` + (f.likelyCause ? ` Likely cause: ${f.likelyCause}` : '') + ' Mention the number if you ask for help.';
     staff.hidden = false;
+    $('cr-ask').hidden = true;
   });
   $('cr-copy').onclick = async () => {
     try { await navigator.clipboard.writeText(lastReport); $('cr-note').textContent = 'Copied. Paste it with Ctrl+V.'; }

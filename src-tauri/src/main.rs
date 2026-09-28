@@ -236,6 +236,21 @@ async fn game_dir(state: &AppState) -> CmdResult<PathBuf> {
     state.config.lock().await.game_dir.clone().ok_or_else(|| "Pick your Skyrim folder first.".to_string())
 }
 
+/// The server's file list: the one the last check fetched, or fetched now
+/// (text audit C4: the player is never told to check for updates first).
+async fn manifest_now(state: &AppState) -> CmdResult<Manifest> {
+    if let Some(m) = state.manifest.lock().await.clone() {
+        return Ok(m);
+    }
+    let base = state.config.lock().await.base_url.clone();
+    let m = Manifest::fetch(&state.http, &base).await.map_err(|e| {
+        log::line(&format!("server file list: {e}"));
+        "The server's file list hasn't loaded yet. The launcher is fetching it; try again in a moment.".to_string()
+    })?;
+    *state.manifest.lock().await = Some(m.clone());
+    Ok(m)
+}
+
 /// Downloads the server's file list and works out what needs updating.
 #[tauri::command]
 async fn check(app: AppHandle, state: State<'_, AppState>, verify_all: bool) -> CmdResult<CheckResult> {
@@ -285,7 +300,7 @@ async fn update(app: AppHandle, state: State<'_, AppState>, verify_all: bool) ->
 async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     let config = state.config.lock().await.clone();
     let dir = config.game_dir.clone().ok_or("Pick your Skyrim folder first.")?;
-    let m = state.manifest.lock().await.clone().ok_or("Check for updates before playing.")?;
+    let m = state.manifest.lock().await.clone().ok_or("The server's file list hasn't loaded yet. The launcher is fetching it; try again in a moment.")?;
     let gc = auto_version(&dir, m.game.as_ref());
     log::line(&format!("play: game folder {}, build {}, version needed={} skseOk={}", dir.display(), m.build, gc.needed, gc.skse_ok));
     if gc.needed {
@@ -388,7 +403,14 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     log::line(&format!("health before play: worst={:?}\n{}", report.worst, report.text()));
     // The game would stop with SkyMP's "LOAD ORDER ERROR"; say it here.
     if let Some(c) = report.checks.iter().find(|c| c.id == "serverorder" && c.status == health::Status::Fail) {
-        return Err(format!("Your plugins don't match the server's order, so the game would refuse to connect: {}. Send Copy diagnostics to staff.", c.items.iter().take(3).cloned().collect::<Vec<_>>().join("; ")));
+        let which = c.items.iter().take(3).cloned().collect::<Vec<_>>().join("; ");
+        // Sent to staff by the launcher when sharing is on (text audit C2).
+        let filed = if config.share_health { send_health(&app, &state.http, &config, &m.build, "before play", None, None, &report).await } else { Filed::default() };
+        let tell = match filed.report_id {
+            Some(id) => format!("Staff have been sent a report ({id})."),
+            None => "Send Copy diagnostics to staff.".into(),
+        };
+        return Err(format!("Your plugins don't match the server's order, so the game would refuse to connect: {which}. {tell}"));
     }
     if report.worst >= health::Status::Warn && config.share_health {
         send_health(&app, &state.http, &config, &m.build, "before play", None, None, &report).await;
@@ -599,6 +621,19 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
         if let Some(cl) = watch::crash_logger_summary(&skse_logs, started) {
             log::line(&format!("game: crash logger says:\n{cl}"));
             staff_summary.push_str(&format!("\n\nCrash logger:\n{}", watch::redact_paths(&cl, &private)));
+        }
+    }
+    // ENB, ReShade and other injectors go to the backup folder after a
+    // crash, so the next Play starts without them (text audit A7); "Put my
+    // other mods back" in Settings brings them back.
+    if crashed {
+        let inj = health::injector_files(&game_dir);
+        if !inj.is_empty() {
+            let stamp = format!("{}-injectors", log::timestamp().replace([':', ' '], "-"));
+            match strays::move_aside(&game_dir, &inj, &stamp) {
+                Ok(dest) => log::line(&format!("game: set the injectors aside after the crash, in {}: {}", dest.display(), inj.join(", "))),
+                Err(e) => log::line(&format!("game: couldn't set the injectors aside ({e}): {}", inj.join(", "))),
+            }
         }
     }
     // Sent in the background: the staff service can ask for a short wait
@@ -1026,7 +1061,12 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
         };
         let changed = community::downgrade(&state.http, &dir, &mut report).await.map_err(|e| {
             log::line(&format!("patch: MulderLoad patches failed: {e}"));
-            format!("Couldn't patch the game: {e}")
+            // A missing game file keeps its prefix, so the UI has Steam repair it.
+            let e = e.to_string();
+            match e.strip_prefix(community::MISSING_FILE) {
+                Some(rest) => format!("{}{rest}", community::MISSING_FILE),
+                None => format!("Couldn't patch the game: {e}"),
+            }
         })?;
         log::line(&format!("patch: {} file(s) changed: {}", changed.len(), changed.join(", ")));
         let _ = app.emit("patch-progress", PatchProgress { stage: "verify", file: String::new(), done: 1, total: 1 });
@@ -1129,7 +1169,7 @@ fn patch_build_dir(game_dir: &std::path::Path) -> PathBuf {
 
 
 async fn game_spec(state: &AppState) -> CmdResult<launcher_core::manifest::GameSpec> {
-    let m = state.manifest.lock().await.clone().ok_or("Check for updates first.")?;
+    let m = manifest_now(state).await?;
     m.game.ok_or_else(|| "The server doesn't ask for a particular Skyrim version.".into())
 }
 
@@ -1634,6 +1674,24 @@ struct HealthOut {
     share: bool,
 }
 
+/// Sends staff a health report for a problem the player just hit, when
+/// sharing is on, so the player isn't asked to copy diagnostics (text audit
+/// C2). Returns the report's number, or nothing when it wasn't sent.
+#[tauri::command]
+async fn report_problem(app: AppHandle, state: State<'_, AppState>, what: String) -> CmdResult<Option<String>> {
+    let config = state.config.lock().await.clone();
+    if !config.share_health {
+        return Ok(None);
+    }
+    let Some(dir) = config.game_dir.clone() else { return Ok(None) };
+    let m = state.manifest.lock().await.clone();
+    let report = run_health(&app, &state.http, &config.base_url, &dir, m.as_ref()).await;
+    let what: String = what.chars().filter(|c| !c.is_control()).take(200).collect();
+    log::line(&format!("health: sending staff a report for: {what}"));
+    let filed = send_health(&app, &state.http, &config, m.as_ref().map(|m| m.build.as_str()).unwrap_or(""), &what, None, None, &report).await;
+    Ok(filed.report_id)
+}
+
 /// Runs the checks for the Settings screen.
 #[tauri::command]
 async fn health_check(app: AppHandle, state: State<'_, AppState>) -> CmdResult<HealthOut> {
@@ -1667,7 +1725,7 @@ fn all_strays(app: &AppHandle, dir: &std::path::Path, m: &Manifest) -> Vec<Strin
 #[tauri::command]
 async fn move_strays(app: AppHandle, state: State<'_, AppState>) -> CmdResult<String> {
     let dir = game_dir(&state).await?;
-    let m = state.manifest.lock().await.clone().ok_or("Check for updates first.")?;
+    let m = manifest_now(&state).await?;
     let list = strays::find(&dir, &m);
     let mut said = Vec::new();
     if !list.is_empty() {
@@ -1682,7 +1740,8 @@ async fn move_strays(app: AppHandle, state: State<'_, AppState>) -> CmdResult<St
             let names: Vec<String> = extras.iter().map(|e| e.name.clone()).collect();
             loadorder::switch_off(&txt, &names).map_err(|e| format!("Couldn't change your load order ({e}). Close Skyrim and Vortex, then try again."))?;
             log::line(&format!("switched off in {}: {}", txt.display(), extras.iter().map(|e| e.describe()).collect::<Vec<_>>().join(", ")));
-            said.push(format!("Switched off {} in your load order. If you use Vortex, switch {} off in its Plugins tab too, or it switches {} back on.", names.join(", "), if names.len() == 1 { "it" } else { "them" }, if names.len() == 1 { "it" } else { "them" }));
+            let them = if names.len() == 1 { "it" } else { "them" };
+            said.push(format!("Switched off {} in your load order. If Vortex switches {them} back on, the launcher switches {them} off again before every Play.", names.join(", ")));
         }
     }
     Ok(said.join(" "))
@@ -1692,7 +1751,7 @@ async fn move_strays(app: AppHandle, state: State<'_, AppState>) -> CmdResult<St
 #[tauri::command]
 async fn mark_game_ok(state: State<'_, AppState>) -> CmdResult<version::GameCheck> {
     let dir = game_dir(&state).await?;
-    let m = state.manifest.lock().await.clone().ok_or("Check for updates first.")?;
+    let m = manifest_now(&state).await?;
     let spec = m.game.clone().ok_or("The server doesn't ask for a particular Skyrim version.")?;
     let before = version::check(&dir, Some(&spec));
     log::line(&format!("player says Skyrim is already on the server's version (check said: {})", before.reason.as_deref().unwrap_or("ok")));
@@ -2010,7 +2069,7 @@ fn main() {
             export::start(app.handle());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside, skip_tool])
+        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, report_problem, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside, skip_tool])
         .build(tauri::generate_context!())
         .expect("error while running the launcher")
         .run(|_, event| {
