@@ -196,6 +196,26 @@ pub async fn vortex_step(app: &AppHandle, state: &AppState, set: &launcher_core:
     Some(vortex::step(set, status.as_ref()))
 }
 
+/// "Connect Vortex": keeps (or, with `fresh`, replaces) the pairing token
+/// and puts the read-only Aetherial Dawn extension into Vortex's plugins
+/// folder. Changes nothing else in Vortex. Says what the player does next.
+#[tauri::command]
+pub async fn vortex_connect(app: AppHandle, state: State<'_, AppState>, fresh: Option<bool>) -> CmdResult<String> {
+    use launcher_core::vortex;
+    let home = vortex::home(&app.path().app_local_data_dir().map_err(|e| e.to_string())?);
+    let token = if fresh.unwrap_or(false) { vortex::rotate(&home) } else { vortex::pair(&home) }.map_err(|e| e.to_string())?;
+    let roaming = app.path().data_dir().map_err(|e| e.to_string())?;
+    let done = vortex::install_extension(&vortex::plugins_dir(&roaming), vortex::EXTENSION).map_err(|e| e.to_string())?;
+    log::line(&format!("vortex: extension {done:?}{}", if fresh.unwrap_or(false) { ", new pairing" } else { "" }));
+    let answers = vortex::call(&state.http, &home, &token, "status", &serde_json::json!({}), "").await.is_ok();
+    Ok(match (&done, answers) {
+        (_, true) if !done.needs_restart() => "Vortex is connected.".into(),
+        (vortex::Installed::NewerKept { installed }, false) => format!("A newer Aetherial Dawn helper ({installed}) is already in Vortex. Start or restart Vortex and it connects."),
+        (d, _) if d.needs_restart() => "The Aetherial Dawn helper is now in Vortex. Close Vortex and open it again once, then press Check again.".into(),
+        _ => "The Aetherial Dawn helper is in Vortex. Start or restart Vortex, then press Check again.".into(),
+    })
+}
+
 pub async fn full_list(state: &AppState) -> Vec<ModEntry> {
     let version = state.manifest.lock().await.as_ref().and_then(|m| m.game.as_ref()).and_then(|g| g.version.clone());
     let server = server_list(state).await;
@@ -256,6 +276,8 @@ pub struct ModsView {
     /// launcher is paired with the extension.
     vortex_line: Option<String>,
     vortex_ready: Option<bool>,
+    /// The launcher has a Vortex pairing token.
+    vortex_paired: bool,
 }
 
 #[tauri::command]
@@ -285,6 +307,7 @@ pub async fn mods_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult
         feed,
         vortex_line: step.as_ref().map(|s| s.describe()),
         vortex_ready: step.as_ref().map(|s| s.ok()),
+        vortex_paired: step.is_some(),
     })
 }
 

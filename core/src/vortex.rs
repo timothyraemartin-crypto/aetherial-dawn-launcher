@@ -379,6 +379,92 @@ pub fn token(home: &Path) -> Result<String> {
     }
 }
 
+/// The extension's folder name inside Vortex's plugins folder.
+pub const EXT_DIR: &str = "aetherial-dawn";
+
+/// The extension as this launcher carries it (vortex-extension/), top-level
+/// files only. Its version is the one in its info.json.
+pub const EXTENSION: &[(&str, &[u8])] = &[
+    ("index.js", include_bytes!("../../vortex-extension/index.js")),
+    ("jobs.js", include_bytes!("../../vortex-extension/jobs.js")),
+    ("info.json", include_bytes!("../../vortex-extension/info.json")),
+];
+
+/// Vortex's per-user extensions folder under the roaming app data folder,
+/// `%APPDATA%\Vortex\plugins` (verify on Timothy's PC, design 2).
+pub fn plugins_dir(roaming: &Path) -> PathBuf {
+    roaming.join("Vortex").join("plugins")
+}
+
+/// What installing the extension did.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Installed {
+    /// It wasn't there; Vortex loads it on its next start.
+    Fresh,
+    /// An older or changed copy was replaced; Vortex needs a restart.
+    Updated { from: Option<String> },
+    /// The same files are already there.
+    Current,
+    /// A newer launcher already put a later version there; it's kept.
+    NewerKept { installed: String },
+}
+
+impl Installed {
+    /// Vortex has to be (re)started before it runs these files.
+    pub fn needs_restart(&self) -> bool {
+        matches!(self, Installed::Fresh | Installed::Updated { .. })
+    }
+}
+
+fn info_version(info: &[u8]) -> Option<String> {
+    serde_json::from_slice::<serde_json::Value>(info).ok()?.get("version")?.as_str().map(str::to_string)
+}
+
+fn version_parts(v: &str) -> Vec<u64> {
+    v.split('.').map(|p| p.trim().parse().unwrap_or(0)).collect()
+}
+
+/// Puts the extension into `plugins/aetherial-dawn`. Each file is written in
+/// full beside Vortex's folder, then renamed over the old one, info.json
+/// last, so Vortex never loads a half-written file and a stopped install is
+/// finished by the next one. Files there that aren't the extension's are
+/// left alone, and a later version put there by a newer launcher is kept.
+pub fn install_extension(plugins: &Path, files: &[(&str, &[u8])]) -> Result<Installed> {
+    let vortex = plugins.parent().ok_or_else(|| Error::Game("Vortex's folder has no parent".into()))?;
+    if !vortex.is_dir() {
+        return Err(Error::Game("Vortex isn't set up for this Windows user (no Vortex folder in AppData)".into()));
+    }
+    let info = files.iter().find(|(n, _)| *n == "info.json").map(|(_, b)| *b).ok_or_else(|| Error::Game("the extension has no info.json".into()))?;
+    let bundled = info_version(info).ok_or_else(|| Error::Game("the extension's info.json has no version".into()))?;
+    for (name, _) in files {
+        if name.is_empty() || name.contains(['/', '\\', ':']) || name.starts_with('.') {
+            return Err(Error::Game(format!("the extension file name {name:?} isn't a plain file name")));
+        }
+    }
+    let dir = plugins.join(EXT_DIR);
+    let installed = std::fs::read(dir.join("info.json")).ok().and_then(|b| info_version(&b));
+    if files.iter().all(|(n, b)| std::fs::read(dir.join(n)).is_ok_and(|have| have == *b)) {
+        return Ok(Installed::Current);
+    }
+    if let Some(v) = installed.as_deref().filter(|v| version_parts(v) > version_parts(&bundled)) {
+        return Ok(Installed::NewerKept { installed: v.to_string() });
+    }
+    let staging = vortex.join("aetherial-dawn-extension.staging");
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging)?;
+    for (name, bytes) in files {
+        std::fs::write(staging.join(name), bytes)?;
+    }
+    std::fs::create_dir_all(&dir)?;
+    let fresh = !dir.join("info.json").exists();
+    let (last, rest): (Vec<_>, Vec<_>) = files.iter().partition(|(n, _)| *n == "info.json");
+    for (name, _) in rest.iter().chain(last.iter()) {
+        std::fs::rename(staging.join(name), dir.join(name))?;
+    }
+    let _ = std::fs::remove_dir_all(&staging);
+    Ok(if fresh { Installed::Fresh } else { Installed::Updated { from: installed } })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,5 +627,66 @@ mod tests {
         // Approved for "Only the server's mods": the listed files only.
         let a = approved(&list, &st);
         assert_eq!(a.iter().map(|a| a.vortex_id.as_str()).collect::<Vec<_>>(), ["skyui", "u438a"]);
+    }
+
+    fn fake_vortex() -> (tempfile::TempDir, PathBuf) {
+        let t = tempfile::tempdir().unwrap();
+        let plugins = plugins_dir(t.path());
+        std::fs::create_dir_all(t.path().join("Vortex")).unwrap();
+        (t, plugins)
+    }
+
+    #[test]
+    fn the_carried_extension_is_the_read_only_one_with_a_version() {
+        let info = EXTENSION.iter().find(|(n, _)| *n == "info.json").unwrap().1;
+        assert!(info_version(info).is_some());
+        let jobs = std::str::from_utf8(EXTENSION.iter().find(|(n, _)| *n == "jobs.js").unwrap().1).unwrap();
+        assert!(jobs.contains("VERBS = ['status']") || jobs.contains("VERBS=['status']"), "the extension answers status only");
+    }
+
+    #[test]
+    fn installs_once_then_reads_as_current() {
+        let (_t, plugins) = fake_vortex();
+        assert_eq!(install_extension(&plugins, EXTENSION).unwrap(), Installed::Fresh);
+        for (n, b) in EXTENSION {
+            assert_eq!(std::fs::read(plugins.join(EXT_DIR).join(n)).unwrap(), *b);
+        }
+        assert_eq!(install_extension(&plugins, EXTENSION).unwrap(), Installed::Current);
+        assert!(!plugins.parent().unwrap().join("aetherial-dawn-extension.staging").exists());
+    }
+
+    #[test]
+    fn an_update_replaces_its_own_files_and_keeps_others() {
+        let (_t, plugins) = fake_vortex();
+        let dir = plugins.join(EXT_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("info.json"), r#"{"version":"0.1.0"}"#).unwrap();
+        std::fs::write(dir.join("index.js"), "old").unwrap();
+        std::fs::write(dir.join("notes.txt"), "mine").unwrap();
+        std::fs::create_dir_all(plugins.parent().unwrap().join("aetherial-dawn-extension.staging")).unwrap();
+        assert_eq!(install_extension(&plugins, EXTENSION).unwrap(), Installed::Updated { from: Some("0.1.0".into()) });
+        assert_eq!(std::fs::read_to_string(dir.join("notes.txt")).unwrap(), "mine");
+        assert_eq!(install_extension(&plugins, EXTENSION).unwrap(), Installed::Current);
+    }
+
+    #[test]
+    fn a_later_version_from_a_newer_launcher_is_kept() {
+        let (_t, plugins) = fake_vortex();
+        let dir = plugins.join(EXT_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("info.json"), r#"{"version":"0.10.0"}"#).unwrap();
+        assert_eq!(install_extension(&plugins, EXTENSION).unwrap(), Installed::NewerKept { installed: "0.10.0".into() });
+        assert!(!dir.join("index.js").exists());
+    }
+
+    #[test]
+    fn without_vortex_nothing_is_written() {
+        let t = tempfile::tempdir().unwrap();
+        let plugins = plugins_dir(t.path());
+        assert!(install_extension(&plugins, EXTENSION).is_err());
+        assert!(!t.path().join("Vortex").exists());
+        let (_t, plugins) = fake_vortex();
+        assert!(install_extension(&plugins, &[("../x.js", b"x"), ("info.json", br#"{"version":"1"}"#)]).is_err());
+        assert!(!plugins.exists());
     }
 }

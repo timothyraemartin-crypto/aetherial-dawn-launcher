@@ -90,6 +90,7 @@ function fakeBackEnd() {
       log.counts = document.getElementById('rq-counts').textContent;
       const vx = document.getElementById('rq-vortex-step');
       log.vortexLine = vx.hidden ? null : vx.textContent;
+      log.vortexConnect = !document.getElementById('rq-vortex-connect').hidden;
       log.rows = [...document.querySelectorAll('#rq-list .rq-sub')].map(e => e.textContent);
       const pre = document.createElement('pre');
       pre.id = 'ui-test-result';
@@ -162,7 +163,8 @@ const scenarios = [
     ['a mod in the game files but not in Vortex says both', r.rows && r.rows[0] === 'In the game files · not in Vortex', JSON.stringify(r.rows)],
     ['no row says just "Installed"', r.rows && !r.rows.some(t => t === 'Installed'), JSON.stringify(r.rows)],
   ] },
-  { name: 'mods window: the Aetherial Dawn profile line comes from Vortex and says what is missing', s: { ...base, playError: 'NEEDS_NEXUS_MODS:[{"id":"r","name":"RaceMenu"}]', modsState: { mods: [{ id: 'r', name: 'RaceMenu', installed: false, in_vortex: false }], nexus: { name: 'Player', is_premium: false }, vortex: true, running: false, sso: true, counts_text: 'Game files: 37 of 37 present · Vortex: 10 of 37 deployed', feed: 'x', vortex_line: 'Aetherial Dawn profile: 10 of 13 installed · 10 of 13 switched on · waiting: USSEP, Address Library, MCM Helper · another version still on: ussep439c', vortex_ready: false } }, expect: r => [
+  { name: 'mods window: the Aetherial Dawn profile line comes from Vortex and says what is missing', s: { ...base, playError: 'NEEDS_NEXUS_MODS:[{"id":"r","name":"RaceMenu"}]', modsState: { mods: [{ id: 'r', name: 'RaceMenu', installed: false, in_vortex: false }], nexus: { name: 'Player', is_premium: false }, vortex: true, running: false, sso: true, counts_text: 'Game files: 37 of 37 present · Vortex: 10 of 37 deployed', feed: 'x', vortex_line: 'Aetherial Dawn profile: 10 of 13 installed · 10 of 13 switched on · waiting: USSEP, Address Library, MCM Helper · another version still on: ussep439c', vortex_ready: false, vortex_paired: true } }, expect: r => [
+    ['Connect Vortex is not offered once paired', r.vortexConnect === false, r.vortexConnect],
     ['the profile line is shown as Vortex reports it', r.vortexLine === 'Aetherial Dawn profile: 10 of 13 installed · 10 of 13 switched on · waiting: USSEP, Address Library, MCM Helper · another version still on: ussep439c', r.vortexLine],
   ] },
   { name: 'Play gated by Vortex: the game never starts and the reason is shown', s: { ...base, playError: 'Aetherial Dawn profile: 10 of 13 installed · 10 of 13 switched on · waiting: USSEP. Then press Play again.' }, expect: r => [
@@ -170,6 +172,7 @@ const scenarios = [
   ] },
   { name: 'mods window: no profile line before the launcher is paired with Vortex', s: { ...base, playError: 'NEEDS_NEXUS_MODS:[{"id":"r","name":"RaceMenu"}]', modsState: { mods: [{ id: 'r', name: 'RaceMenu', installed: false, in_vortex: false }], nexus: null, vortex: true, running: false, sso: true, counts_text: 'Game files: 36 of 37 present', feed: 'x' } }, expect: r => [
     ['nothing about the profile is claimed', r.vortexLine === null, r.vortexLine],
+    ['Connect Vortex is offered', r.vortexConnect === true, r.vortexConnect],
   ] },
   { name: 'Discord cannot be reached: SIGN IN, the game never starts', s: { ...base, authFails: true }, expect: r => [
     ['the game never starts', !played(r)],

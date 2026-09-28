@@ -102,6 +102,10 @@ The launcher shows one line per step, with exact counts and a per-item error lis
 ## 5. Extension install and pairing (Codex 5876119420 / 5875974143)
 
 - The launcher copies the extension into `%APPDATA%\Vortex\plugins\aetherial-dawn\` **(verify)**. The copy goes into a versioned temp folder and is renamed into place. Unknown files there are preserved.
+  - Built (`vortex::install_extension`): only when the player presses **Connect Vortex** in the mods window, which shows when Vortex manages the game and the launcher isn't paired yet.
+  - The launcher carries the extension's files. Each file is written in full to `%APPDATA%\Vortex\aetherial-dawn-extension.staging`, then renamed over the old one. `info.json` goes last, so a stopped install is finished by the next one.
+  - If the files are identical, nothing is written. A later version (by `info.json`) left by a newer launcher is kept. With no `%APPDATA%\Vortex` folder, nothing is written.
+  - Afterwards the player is told to restart Vortex once. The command `vortex_connect { fresh: true }` is the re-pair; it has no button yet.
   - Manual ZIP install stays documented as a recovery route.
 - Pairing uses a persistent 32-byte token in `%LOCALAPPDATA%\gg.aetherialdawn.launcher\vortex\token`.
   - It is rotated only on an explicit re-pair or a security failure.
