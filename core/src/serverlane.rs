@@ -92,6 +92,60 @@ pub struct Record {
     /// Per-file receipt: plugin name -> its sha256 and size in the zip.
     #[serde(default)]
     pub files: BTreeMap<String, FileReceipt>,
+    /// Where the list came from: the served server-lane.json, or the local
+    /// override (then with the sha256 of override.json's exact bytes).
+    #[serde(default)]
+    pub source: Source,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct Source {
+    /// "served" or "local-override".
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_sha256: Option<String>,
+}
+
+impl Source {
+    pub fn served() -> Source {
+        Source { kind: "served".into(), override_sha256: None }
+    }
+    pub fn local(sha256: &str) -> Source {
+        Source { kind: "local-override".into(), override_sha256: Some(sha256.to_string()) }
+    }
+}
+
+/// The test-only local list (PR #7, Codex 5875976813): `override.json` in
+/// the export folder with `override.sha256` beside it holding the sha256 of
+/// its exact bytes. Both files present turns it on; it is never fetched and
+/// never served. Its runs keep their own state in `OVERRIDE_RUN`, apart from
+/// the served list's.
+pub const OVERRIDE_LIST: &str = "override.json";
+pub const OVERRIDE_SHA: &str = "override.sha256";
+pub const OVERRIDE_RUN: &str = "override-run";
+
+/// The local override list and the sha256 of its bytes, or None when there
+/// is none. Fails closed: one file without the other, a sha256 line that
+/// doesn't match the bytes, or a list that doesn't read is an error, never a
+/// fall back to the served list. The bytes are read once, hashed and parsed
+/// from that same read.
+pub fn local_override(root: &Path) -> Result<Option<(ServerLane, String)>> {
+    use sha2::{Digest, Sha256};
+    let (list, sha) = (root.join(OVERRIDE_LIST), root.join(OVERRIDE_SHA));
+    match (list.exists(), sha.exists()) {
+        (false, false) => return Ok(None),
+        (true, false) => return Err(Error::Game(format!("{OVERRIDE_LIST} is there without {OVERRIDE_SHA}; the export won't run until both are there or both are gone"))),
+        (false, true) => return Err(Error::Game(format!("{OVERRIDE_SHA} is there without {OVERRIDE_LIST}; the export won't run until both are there or both are gone"))),
+        (true, true) => {}
+    }
+    let bytes = std::fs::read(&list)?;
+    let got = format!("{:x}", Sha256::digest(&bytes));
+    let want = std::fs::read_to_string(&sha)?.split_whitespace().next().unwrap_or_default().to_ascii_lowercase();
+    if want != got {
+        return Err(Error::Game(format!("{OVERRIDE_LIST} has sha256 {got}, not the {} in {OVERRIDE_SHA}; the export won't run", if want.is_empty() { "(empty)" } else { &want })));
+    }
+    let lane: ServerLane = serde_json::from_slice(&bytes).map_err(|e| Error::Game(format!("{OVERRIDE_LIST} doesn't read: {e}")))?;
+    Ok(Some((lane, got)))
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -396,7 +450,7 @@ pub fn collect(root: &Path, mod_id: &str, picked: &[(PathBuf, String)], seen: &m
 /// Zips `<root>/Data` to `<root>/server-lane.zip` (entries "Data/<name>",
 /// stored: plugins barely compress and the VPS unzips quicker) and writes the
 /// record. Returns it.
-pub fn finish(root: &Path, lane: &ServerLane, hash: &str, plugins: BTreeMap<String, String>) -> Result<Record> {
+pub fn finish(root: &Path, lane: &ServerLane, hash: &str, plugins: BTreeMap<String, String>, source: Source) -> Result<Record> {
     use sha2::{Digest, Sha256};
     use std::io::{Read, Write};
     // Never a zip short of what the list declares, or with more.
@@ -442,7 +496,7 @@ pub fn finish(root: &Path, lane: &ServerLane, hash: &str, plugins: BTreeMap<Stri
         bytes += n as u64;
         h.update(&buf[..n]);
     }
-    let rec = Record { list: hash.to_string(), plugins, zip_sha256: format!("{:x}", h.finalize()), zip_bytes: bytes, files };
+    let rec = Record { list: hash.to_string(), plugins, zip_sha256: format!("{:x}", h.finalize()), zip_bytes: bytes, files, source };
     std::fs::write(root.join(RECORD), serde_json::to_vec_pretty(&rec)?)?;
     let _ = std::fs::remove_file(root.join(FAILURES));
     // The sha256sum line the VPS checks the carried zip against.
@@ -488,6 +542,36 @@ mod tests {
         assert!(check(&path).is_err());
         let bad_id = lane(r#"{"for_discord_id":"1","mods":[{"id":"../a","name":"A","nexus":{"mod":2,"file":3}}]}"#);
         assert!(check(&bad_id).is_err());
+    }
+
+    #[test]
+    fn the_local_override_needs_both_files_and_matching_bytes() {
+        use sha2::{Digest, Sha256};
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path();
+        assert!(local_override(root).unwrap().is_none(), "none: the served list is used");
+        let body = br#"{"for_discord_id":"1","mods":[{"id":"a","name":"A","nexus":{"mod":2,"file":3},"plugins":["A.esp"]}]}"#;
+        let sha = format!("{:x}", Sha256::digest(body));
+        std::fs::write(root.join(OVERRIDE_LIST), body).unwrap();
+        assert!(local_override(root).unwrap_err().to_string().contains("without override.sha256"));
+        // A sha256sum line, any case, is accepted.
+        std::fs::write(root.join(OVERRIDE_SHA), format!("{}  override.json\n", sha.to_uppercase())).unwrap();
+        let (l, got) = local_override(root).unwrap().unwrap();
+        assert_eq!((l.mods.len(), got.as_str()), (1, sha.as_str()));
+        // One byte changed after the sha256 was written: refused, no fall back.
+        let mut other = body.to_vec();
+        *other.last_mut().unwrap() = b' ';
+        other.push(b'}');
+        std::fs::write(root.join(OVERRIDE_LIST), &other).unwrap();
+        assert!(local_override(root).unwrap_err().to_string().contains("won't run"));
+        std::fs::write(root.join(OVERRIDE_SHA), "").unwrap();
+        assert!(local_override(root).is_err());
+        std::fs::remove_file(root.join(OVERRIDE_LIST)).unwrap();
+        assert!(local_override(root).unwrap_err().to_string().contains("without override.json"));
+        // Bytes that match but don't read as a list.
+        std::fs::write(root.join(OVERRIDE_LIST), b"not json").unwrap();
+        std::fs::write(root.join(OVERRIDE_SHA), format!("{:x}", Sha256::digest(b"not json"))).unwrap();
+        assert!(local_override(root).unwrap_err().to_string().contains("doesn't read"));
     }
 
     #[test]
@@ -596,12 +680,13 @@ mod tests {
         assert!(!done(&root, &h));
         // A zip short of the list is refused, and says what's missing.
         let l2 = lane(r#"{"for_discord_id":"1","mods":[{"id":"jks","name":"JK","nexus":{"mod":1,"file":2},"plugins":["JKs Skyrim.esp","JK Patch.esp"]}]}"#);
-        let e = finish(&root, &l2, &h, seen.clone()).unwrap_err().to_string();
+        let e = finish(&root, &l2, &h, seen.clone(), Source::served()).unwrap_err().to_string();
         assert!(e.contains("1 of 2 declared plugins (missing: JK Patch.esp (jks)"), "{e}");
         assert!(!root.join(ZIP_NAME).exists());
         let l = lane(r#"{"for_discord_id":"1","mods":[{"id":"jks","name":"JK","nexus":{"mod":1,"file":2},"plugins":["JKs Skyrim.esp"]}]}"#);
         let h = list_hash(&l);
-        let rec = finish(&root, &l, &h, seen).unwrap();
+        let rec = finish(&root, &l, &h, seen, Source::local("ab")).unwrap();
+        assert_eq!(rec.source, Source::local("ab"));
         assert_eq!(rec.files["JKs Skyrim.esp"].bytes, 12);
         assert_eq!(rec.files["JKs Skyrim.esp"].sha256.len(), 64);
         assert!(done(&root, &h));
@@ -679,7 +764,7 @@ mod tests {
         assert!(!gave_up(&root, "b"), "a changed list gets tries again");
         assert_eq!(failed(&root, "b").unwrap(), 1);
         // A good export clears the count.
-        finish(&root, &lane(r#"{"for_discord_id":"1","mods":[]}"#), "b", BTreeMap::new()).unwrap();
+        finish(&root, &lane(r#"{"for_discord_id":"1","mods":[]}"#), "b", BTreeMap::new(), Source::served()).unwrap();
         assert!(!gave_up(&root, "b") && failed(&root, "b").unwrap() == 1);
     }
 }
