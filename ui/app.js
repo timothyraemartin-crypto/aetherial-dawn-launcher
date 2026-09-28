@@ -134,7 +134,44 @@
       for (const nav of Object.values(PAGES)) $(nav).removeAttribute('aria-current');
       $('nav-settings').setAttribute('aria-current', 'page');
     }
+    openDialog(id ? $(id) : null);
   }
+  // Sheets are modal dialogs for keyboards and screen readers: focus moves
+  // in when one opens, Tab stays inside it, Escape presses its "Not now" or
+  // Close button (sheets without one, like first run, stay open), and focus
+  // goes back where it was when it closes.
+  const SHEETS = ['first', 'settings', 'downgrade', 'signin', 'strays', 'crash', 'health', 'reqs'];
+  const CLOSERS = { settings: 'set-done', downgrade: 'dg-cancel', strays: 'st-cancel', reqs: 'rq-close', crash: 'cr-close', health: 'hl-close' };
+  for (const sid of SHEETS) {
+    const el = $(sid);
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-modal', 'true');
+    const h = el.querySelector('h2');
+    if (h) { h.id = h.id || `${sid}-title`; el.setAttribute('aria-labelledby', h.id); }
+  }
+  let openSheet = null, focusBefore = null;
+  const focusables = el => [...el.querySelectorAll('button, input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])')]
+    .filter(x => !x.disabled && !x.hidden && x.offsetParent !== null);
+  function openDialog(el) {
+    if (el === openSheet) return;
+    if (!openSheet && el) focusBefore = document.activeElement;
+    openSheet = el;
+    if (el) { const f = focusables(el); (f[0] || el).focus(); }
+    else if (focusBefore && focusBefore.isConnected) { focusBefore.focus(); focusBefore = null; }
+  }
+  document.addEventListener('keydown', e => {
+    if (!openSheet || openSheet.hidden) return;
+    if (e.key === 'Escape') {
+      const close = CLOSERS[openSheet.id] && $(CLOSERS[openSheet.id]);
+      if (close && !close.disabled && !close.hidden) { e.preventDefault(); close.click(); }
+    } else if (e.key === 'Tab') {
+      const f = focusables(openSheet);
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && (document.activeElement === last || !openSheet.contains(document.activeElement))) { e.preventDefault(); first.focus(); }
+    }
+  });
   // SKSE, Crash Logger and the right game version are the launcher's job, so
   // a Skyrim folder is all a player needs to get going.
   const ready_ = () => !!state.game;

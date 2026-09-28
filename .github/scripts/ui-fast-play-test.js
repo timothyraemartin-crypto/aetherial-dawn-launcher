@@ -72,6 +72,16 @@ function fakeBackEnd() {
     box();
     setInterval(box, 100);
     // The player presses Play as soon as it shows enabled (and once more later).
+    // Keyboard use of a sheet: open Settings, check focus, press Escape.
+    if (S.dialogTest) {
+      setTimeout(() => document.getElementById('nav-settings').click(), 3000);
+      setTimeout(() => {
+        const sheet = document.getElementById('settings');
+        log.dialog = { role: sheet.getAttribute('role'), modal: sheet.getAttribute('aria-modal'), label: sheet.getAttribute('aria-labelledby'), focusInside: sheet.contains(document.activeElement) };
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      }, 3300);
+      setTimeout(() => { log.dialog.closedByEscape = document.getElementById('settings').hidden; }, 3600);
+    }
     for (const t of S.clicks || []) setTimeout(() => { log.invokes.push([at(), 'click', label.textContent]); btn.click(); }, t);
     setTimeout(() => {
       try { log.lastReady = JSON.parse(localStorage.getItem('ad.lastReady')); } catch (_) {}
@@ -184,6 +194,11 @@ const scenarios = [
   ] },
   { name: 'another Skyrim folder: no early PLAY', s: { ...base, seed: { ...seed, dir: 'D:\\Other' }, clicks: [] }, expect: r => [
     ['PLAY is not enabled before the checks', firstLabel(r, 'PLAY') === null || firstLabel(r, 'PLAY') >= answeredAt(r, 'check')],
+  ] },
+  { name: 'Settings works as a dialog from the keyboard', s: { ...base, clicks: [], dialogTest: true }, expect: r => [
+    ['it is a labelled modal dialog', !!r.dialog && r.dialog.role === 'dialog' && r.dialog.modal === 'true' && !!r.dialog.label, JSON.stringify(r.dialog)],
+    ['focus moves into it', !!r.dialog && r.dialog.focusInside],
+    ['Escape closes it', !!r.dialog && r.dialog.closedByEscape],
   ] },
   { name: 'first start on this PC: the news box keeps its size', s: { ...base, seed: null, clicks: [] }, expect: r => [
     ['PLAY is not enabled before the checks', firstLabel(r, 'PLAY') !== null && firstLabel(r, 'PLAY') >= answeredAt(r, 'check')],
