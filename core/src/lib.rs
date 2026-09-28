@@ -16,6 +16,7 @@ pub mod game;
 pub mod gameini;
 pub mod health;
 pub mod inventory;
+pub mod vortex;
 pub mod loadorder;
 pub mod manifest;
 pub mod modlist;

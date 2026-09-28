@@ -23,6 +23,48 @@ fn saved_list_path(game_dir: &Path) -> std::path::PathBuf {
     game_dir.join(modlist::MODS_DIR).join("server-list.json")
 }
 
+/// A Vortex package the launcher approved: installed through the Aetherial
+/// Dawn extension (or found in the profile) as the exact Nexus file of a
+/// listed mod. Vortex names its folder as it likes, so "Only the server's
+/// mods" keeps these by Vortex's own mod id (the deployment's `source`),
+/// never by guessing from the folder name (PR #7, Package C).
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct Approved {
+    #[serde(rename = "vortexId")]
+    pub vortex_id: String,
+    #[serde(rename = "nexusModId")]
+    pub nexus_mod_id: u64,
+    #[serde(rename = "nexusFileId")]
+    pub nexus_file_id: u64,
+}
+
+fn approved_path(game_dir: &Path) -> std::path::PathBuf {
+    game_dir.join(modlist::MODS_DIR).join("vortex-approved.json")
+}
+
+/// Records the approved Vortex packages (replacing the last record).
+pub fn save_approved(game_dir: &Path, approved: &[Approved]) -> std::io::Result<()> {
+    let p = approved_path(game_dir);
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let tmp = p.with_extension("json.part");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(approved).map_err(std::io::Error::other)?)?;
+    std::fs::rename(&tmp, &p)
+}
+
+/// The approved packages whose Nexus file the list still names exactly: an
+/// approval of a mod since taken off the list, or of another file, keeps
+/// nothing.
+fn approved_sources(game_dir: &Path, list: &[ModEntry]) -> HashSet<String> {
+    let Ok(b) = std::fs::read(approved_path(game_dir)) else { return HashSet::new() };
+    let Ok(v) = serde_json::from_slice::<Vec<Approved>>(&b) else { return HashSet::new() };
+    v.into_iter()
+        .filter(|a| list.iter().any(|m| m.nexus.as_ref().is_some_and(|n| n.mod_id == a.nexus_mod_id && n.file == Some(a.nexus_file_id))))
+        .map(|a| a.vortex_id)
+        .collect()
+}
+
 /// Keeps the server's mods.json next to the game, so tidying (which runs
 /// without the network) knows the whole list.
 pub fn save_server_list(game_dir: &Path, list: &ModList) {
@@ -160,7 +202,8 @@ pub fn keep_set(game_dir: &Path) -> HashSet<String> {
     keep.extend(crate::aliases::links(game_dir).into_iter().map(|l| l.to.to_ascii_lowercase()));
     let ids = ids(&list);
     let files = vortex_files(game_dir);
-    let sources = kept_sources(&files, &ids, &keep);
+    let mut sources = kept_sources(&files, &ids, &keep);
+    sources.extend(approved_sources(game_dir, &list));
     for f in files {
         if sources.contains(&f.source) || required_file(&f.rel) {
             keep.insert(f.rel.to_ascii_lowercase());
@@ -336,6 +379,47 @@ mod tests {
         // its files stay together; the SKSE sweep still moves its DLL alone,
         // which only leaves harmless support files.
         assert_eq!(unlisted_with(g, |_| false), ["Data/Meshes/armor/x.nif"]);
+    }
+
+    /// "Only the server's mods" on (the default) with packages the launcher
+    /// put into Vortex: Vortex named their folders after the archive, with no
+    /// Nexus id in them, and they must stay whole; a personal mod goes.
+    #[test]
+    fn only_server_mods_keeps_approved_vortex_packages() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        let data = g.join("Data");
+        let files = [
+            ("Textures\\landscape\\mountains\\rock.dds", "majestic-mountains-main-1790000000"),
+            ("Meshes\\landscape\\mountains\\rock.nif", "majestic-mountains-main-1790000000"),
+            ("Meshes\\clutter\\cup.nif", "cups-dropped-1790000000"),
+            ("Meshes\\personal\\hat.nif", "My Hat-1790000000"),
+        ];
+        for (p, _) in files {
+            let f = data.join(p.replace('\\', "/"));
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, b"x").unwrap();
+        }
+        let dep = serde_json::json!({"files": files.iter().map(|(p, s)| serde_json::json!({"relPath": p, "source": s})).collect::<Vec<_>>()});
+        std::fs::write(data.join("vortex.deployment.json"), serde_json::to_vec(&dep).unwrap()).unwrap();
+        let list = ModList {
+            mods: vec![ModEntry { id: "mm".into(), name: "Majestic Mountains".into(), nexus: Some(modlist::NexusRef { mod_id: 11052, file: Some(4242), pick: None }), ..Default::default() }],
+            ..Default::default()
+        };
+        save_server_list(g, &list);
+        let everything_else = ["Data/Meshes/clutter/cup.nif", "Data/Meshes/landscape/mountains/rock.nif", "Data/Meshes/personal/hat.nif", "Data/Textures/landscape/mountains/rock.dds"];
+        // Before any approval the folder name says nothing: all would go.
+        assert_eq!(unlisted_with(g, |_| false), everything_else);
+        // Approved: the listed file stays whole. The cups mod was approved
+        // under a file the list no longer names, and the hat never was.
+        save_approved(g, &[
+            Approved { vortex_id: "majestic-mountains-main-1790000000".into(), nexus_mod_id: 11052, nexus_file_id: 4242 },
+            Approved { vortex_id: "cups-dropped-1790000000".into(), nexus_mod_id: 777, nexus_file_id: 1 },
+        ]).unwrap();
+        assert_eq!(unlisted_with(g, |_| false), ["Data/Meshes/clutter/cup.nif", "Data/Meshes/personal/hat.nif"]);
+        // A different file of the listed mod isn't approved by the old record.
+        save_approved(g, &[Approved { vortex_id: "majestic-mountains-main-1790000000".into(), nexus_mod_id: 11052, nexus_file_id: 1 }]).unwrap();
+        assert_eq!(unlisted_with(g, |_| false), everything_else);
     }
 
     /// Timothy's PC, 2026-09-26: Vortex folder names with spaces, a manual

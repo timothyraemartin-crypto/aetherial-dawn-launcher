@@ -151,3 +151,8 @@ test('a mod not on the list is never switched on or off', async () => {
   assert.equal((await t.call('enable', { vortexId: 'personal' })).code, 'not-listed');
   assert.equal((await t.call('disable', { vortexId: 'personal' })).code, 'not-listed');
 });
+
+test('the signature matches the launcher\'s (the same vector as core/src/vortex.rs)', () => {
+  const body = '{"verb":"status","args":{},"revision":"r1","ts":1000000,"nonce":"0123456789abcdef0123456789abcdef"}';
+  assert.equal(sign('a'.repeat(64), body), '3122895dea18179f37ba45ba8220fd633975ccaf40b2fb1a200c5422edc3ab00');
+});
