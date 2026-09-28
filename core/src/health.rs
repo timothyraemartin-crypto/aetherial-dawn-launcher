@@ -604,8 +604,11 @@ fn crash_logger(i: &Inputs) -> Check {
         Some(_) => have.push("Address Library"),
         None => {}
     }
-    if strays::CRASH_LOGGERS.iter().any(|n| dir.join(n).is_file()) {
+    // The same test Play uses: a copy SKSE wouldn't load doesn't count.
+    if requirements::crash_logger_ok(i.game_dir) {
         have.push("Crash Logger");
+    } else if dir.join("CrashLogger.dll").is_file() {
+        missing.push("Crash Logger: the copy there won't load on this Skyrim (the launcher replaces it before Play)".to_string());
     } else {
         missing.push("Crash Logger: not installed (the launcher installs it before Play)".to_string());
     }

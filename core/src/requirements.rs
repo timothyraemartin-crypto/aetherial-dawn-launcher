@@ -327,6 +327,15 @@ pub async fn ensure_helpers(client: &reqwest::Client, game_dir: &Path, src: &Sou
         log(&format!("installed SKSE {SKSE_VERSION}"));
     }
     if !crash_logger_ok(game_dir) {
+        // A good copy set aside by an older launcher beats a download (and
+        // works with GitHub unreachable).
+        match restore_crash_logger(game_dir) {
+            Ok(Some(stamp)) => log(&format!("put the crash logger back from {}", stamp.display())),
+            Ok(None) => {}
+            Err(e) => log(&format!("couldn't put the crash logger back: {e}")),
+        }
+    }
+    if !crash_logger_ok(game_dir) {
         let why = crash_logger_state(game_dir);
         install_crash_logger_from(client, game_dir, &src.crash_logger).await.map_err(|e| fail("Crash Logger", CRASH_LOGGER_VERSION, e))?;
         if !crash_logger_ok(game_dir) {
@@ -425,7 +434,10 @@ pub fn crash_logger_ok(game_dir: &Path) -> bool {
 /// left where they are. Returns the folder it came from.
 pub fn restore_crash_logger(game_dir: &Path) -> Result<Option<PathBuf>> {
     let plugins = plugins_dir(game_dir);
-    if crate::strays::CRASH_LOGGERS.iter().any(|n| plugins.join(n).is_file()) {
+    let current = plugins.join("CrashLogger.dll");
+    // A working crash logger is in place; a CrashLogger.dll SKSE wouldn't
+    // load doesn't count, and is set aside when a good copy replaces it.
+    if loads(&current) || crate::strays::CRASH_LOGGERS[1..].iter().any(|n| plugins.join(n).is_file()) {
         return Ok(None);
     }
     let Ok(rd) = std::fs::read_dir(game_dir.join(crate::strays::DISABLED_DIR)) else { return Ok(None) };
@@ -439,7 +451,14 @@ pub fn restore_crash_logger(game_dir: &Path) -> Result<Option<PathBuf>> {
         let from = stamp.join("Data").join("SKSE").join("Plugins").join("CrashLogger.dll");
         if loads(&from) {
             std::fs::create_dir_all(&plugins)?;
-            std::fs::rename(&from, plugins.join("CrashLogger.dll"))?;
+            if current.is_file() {
+                let why = match crate::skse::build_of(&current) {
+                    crate::skse::Build::Wrong(w) => w,
+                    _ => "it couldn't be read as an SKSE plugin".into(),
+                };
+                crate::modlist::set_aside_wrong_build(game_dir, "Data/SKSE/Plugins/CrashLogger.dll", &why)?;
+            }
+            std::fs::rename(&from, &current)?;
             return Ok(Some(stamp.clone()));
         }
     }
@@ -463,18 +482,29 @@ fn unpack_crash_logger(archive: &[u8], dir: &Path) -> Result<()> {
     let mut reader = sevenz_rust2::ArchiveReader::new(std::io::Cursor::new(archive), sevenz_rust2::Password::empty())
         .map_err(|e| Error::Game(format!("Crash Logger download is damaged: {e}")))?;
     let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
+    // A failure writing to the game folder stays an IO error (disk full,
+    // folder locked); a failure reading the archive is a damaged download.
+    let mut write_err: Option<std::io::Error> = None;
     let unpacked = reader.for_each_entries(|entry, data| {
         let name = entry.name().replace('\\', "/");
         let Some(file) = name.strip_prefix("SKSE/Plugins/") else { return Ok(true) };
         if entry.is_directory() || file.contains('/') || !CRASH_LOGGER_FILES.iter().any(|f| f.eq_ignore_ascii_case(file)) {
             return Ok(true);
         }
+        let mut bytes = Vec::new();
+        data.read_to_end(&mut bytes)?;
         let tmp = dir.join(format!("{file}.part"));
         staged.push((tmp.clone(), dir.join(file)));
-        let mut out = std::fs::File::create(&tmp)?;
-        std::io::copy(data, &mut out)?;
+        if let Err(e) = std::fs::write(&tmp, &bytes) {
+            write_err = Some(e);
+            return Ok(false);
+        }
         Ok(true)
     });
+    if let Some(e) = write_err {
+        discard(&staged);
+        return Err(e.into());
+    }
     if let Err(e) = unpacked {
         discard(&staged);
         return Err(Error::Game(format!("couldn't unpack Crash Logger: {e}")));
@@ -552,8 +582,11 @@ fn unpack_souls(archive: &[u8], data: &Path) -> Result<()> {
         // and pdb share a stem, so the extension can't simply be swapped).
         let tmp = dest.with_file_name(format!("{}.part", dest.file_name().unwrap_or_default().to_string_lossy()));
         staged.push((tmp.clone(), dest));
-        let mut out = std::fs::File::create(&tmp)?;
-        std::io::copy(&mut f, &mut out).map_err(|e| Error::Game(format!("couldn't unpack {name}: {e}")))?;
+        // Reading (a damaged archive) and writing (disk full, folder
+        // locked) fail differently, so the player is told the right thing.
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut f, &mut bytes).map_err(|e| Error::Game(format!("couldn't unpack {name}: {e}")))?;
+        std::fs::write(&tmp, &bytes)?;
     }
     Ok(())
     })();
@@ -798,6 +831,39 @@ mod tests {
             // Nothing is put back over a copy that's there, even a wrong one.
             assert_eq!(restore_crash_logger(g).unwrap(), None);
         }
+    }
+
+    #[tokio::test]
+    async fn a_good_set_aside_crash_logger_is_used_before_downloading() {
+        let t = game_with_skse();
+        let g = t.path();
+        let d = g.join(crate::strays::DISABLED_DIR).join("100-plugins/Data/SKSE/Plugins");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("CrashLogger.dll"), crate::skse::tests::good_dll()).unwrap();
+        // The copy in the game is the wrong build, and GitHub is unreachable.
+        std::fs::write(plugins_dir(g).join("CrashLogger.dll"), crate::skse::tests::old_dll()).unwrap();
+        let (base, hits) = serve(vec![("/cl", 503, Vec::new())]).await;
+        ensure_helpers(&reqwest::Client::new(), g, &sources(&base, b"cl", b""), &mut |_| {}).await.unwrap_err();
+        // Souls RE is missing in this fixture, so Play still stops, but on
+        // Souls RE: Crash Logger came back from the backup with no download.
+        assert!(crash_logger_ok(g));
+        assert!(!hits.lock().unwrap().iter().any(|p| p == "/cl"));
+        // The wrong copy was set aside as a wrong build, not deleted.
+        let aside: Vec<_> = std::fs::read_dir(g.join(crate::strays::DISABLED_DIR)).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        assert!(aside.iter().any(|n| n.ends_with("-wrong-build")), "{aside:?}");
+    }
+
+    #[tokio::test]
+    async fn a_write_failure_is_told_as_one() {
+        let t = game_with_skse();
+        let good = souls_zip(&crate::skse::tests::good_dll());
+        // Something the launcher can't write over where the file goes.
+        std::fs::create_dir_all(t.path().join("Data/Interface/CombatAlertOverlayMenu.swf.part/x")).unwrap();
+        let (base, _) = serve(vec![("/souls", 200, good.clone())]).await;
+        let e = ensure_helpers(&reqwest::Client::new(), t.path(), &sources(&base, b"", &good), &mut |_| {}).await.unwrap_err();
+        assert!(matches!(e.cause, Error::Io(_)), "{e:?}");
+        assert!(e.message().contains("Couldn't write Skyrim Souls RE"), "{}", e.message());
+        assert!(!plugins_dir(t.path()).join("SkyrimSoulsRE.dll").exists());
     }
 
     /// The real pinned archives (AD_CRASH_LOGGER_7Z, AD_SOULS_ZIP), served
