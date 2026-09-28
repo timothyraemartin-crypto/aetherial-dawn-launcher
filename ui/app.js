@@ -622,6 +622,28 @@
     el.parentElement.parentElement.classList.toggle('bad', p.stage === 'failed');
   }
 
+  // The whole download: bytes, mods and time left, from the real pace.
+  const gbs = n => (n / 1e9).toFixed(1) + ' GB';
+  function timeLeft(s) {
+    if (s == null) return 'Working out the time left';
+    if (s < 60) return 'Under a minute left';
+    const m = Math.round(s / 60);
+    return m < 60 ? `About ${m} min left` : `About ${Math.floor(m / 60)} h ${m % 60} min left`;
+  }
+  function overallProgress(p) {
+    $('rq-overall').hidden = false;
+    $('rq-ov-bar').style.width = (p.total ? Math.min(100, p.done * 100 / p.total) : 0).toFixed(1) + '%';
+    $('rq-ov-label').textContent = `${gbs(p.done)} of ${gbs(p.total)} · ${p.finished} of ${p.count} mods`;
+    $('rq-ov-left').textContent = p.finished >= p.count ? '' : timeLeft(p.secsLeft);
+    if (autoMods) setStatus(`Installing mods: ${gbs(p.done)} of ${gbs(p.total)}. ${timeLeft(p.secsLeft)}. Skyrim starts after.`);
+  }
+  // Said in the mods window and on the status line under Play.
+  let noSpace = null;
+  function noSpaceText(e) {
+    const [need, free] = String(e).slice(9).split(':').map(Number);
+    return `The mods need ${gbs(need)} free on the drive Skyrim is on, and it has ${gbs(free)} free. Free up at least ${gbs(need - free)} there, then press Play again.`;
+  }
+  let overallOff = null;
   async function downloadAll() {
     if (modsRunning) return;
     rqError(null);
@@ -629,6 +651,8 @@
     $('rq-all').disabled = true;
     $('rq-stop').hidden = false;
     if (!modsOff) modsOff = await T.event.listen('mods-progress', ({ payload }) => modProgress(payload));
+    if (!overallOff) overallOff = await T.event.listen('mods-overall', ({ payload }) => overallProgress(payload));
+    noSpace = null;
     let ok = false;
     let stoppedNote = false;
     try {
@@ -644,9 +668,11 @@
       else ok = true;
     } catch (e) {
       if (String(e) === 'NEEDS_NEXUS_SIGN_IN') { rqError('Sign in to Nexus first (above).'); $('rq-key').focus(); }
+      else if (String(e).startsWith('NO_SPACE:')) rqError(noSpace = noSpaceText(e));
       else rqError(e);
     } finally {
       modsRunning = false;
+      $('rq-overall').hidden = true;
       await refreshMods();
     }
     if (stoppedNote) {
@@ -695,7 +721,7 @@ let autoMods = false;
           autoMods = false;
           // auto: a mod that "installed" but still counts as missing can't loop.
           if (ok) { showSheet(null); return onPlay(true); }
-          setStatus('A required mod isn\'t in yet. The launcher tries again the next time you press Play.', true);
+          setStatus(noSpace || 'A required mod isn\'t in yet. The launcher tries again the next time you press Play.', true);
           return;
         }
         if (auto) {

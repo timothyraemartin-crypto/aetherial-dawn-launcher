@@ -11,6 +11,7 @@ pub mod clientstatus;
 pub mod community;
 pub mod downgrade;
 pub mod faces;
+pub mod fetch;
 pub mod game;
 pub mod gameini;
 pub mod health;

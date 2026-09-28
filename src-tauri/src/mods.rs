@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use launcher_core::{auth, modlist, modlist::ModEntry, nexus, Error};
+use launcher_core::{auth, fetch, modlist, modlist::ModEntry, nexus, Error};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -372,42 +372,112 @@ pub struct RunResult {
     cancelled: bool,
 }
 
-/// Downloads to `path`, reporting progress. Only https addresses.
-async fn download(app: &AppHandle, http: &reqwest::Client, m: &ModEntry, url: &str, path: &Path, cancel: &AtomicBool) -> Result<(), String> {
-    use futures_util::StreamExt;
-    use tokio::io::AsyncWriteExt;
-    if !url.starts_with("https://") {
-        return Err("the download address isn't secure".into());
+/// Downloads to `path`, reporting progress. Only https addresses. `key`
+/// names the exact file, so a download that broke off (a dropped
+/// connection, Stop, a closed launcher) carries on from where it stopped.
+async fn download(app: &AppHandle, http: &reqwest::Client, m: &ModEntry, url: &str, path: &Path, key: &str, cancel: &AtomicBool) -> Result<(), String> {
+    let got = fetch::fetch(http, url, path, key, cancel, |done, total| {
+        emit(app, m, "download", done, total, "");
+        overall(app, &m.id, done, Some(total), false);
+    })
+    .await?;
+    if got.reused > 0 || got.resumed > 0 {
+        log::line(&format!(
+            "mods: {} download {}: {} MB already here, {} MB fetched, {} dropped connection(s) picked up",
+            m.name,
+            if got.fetched == 0 { "was already complete" } else { "carried on" },
+            got.reused >> 20,
+            got.fetched >> 20,
+            got.resumed
+        ));
     }
-    let resp = http.get(url).send().await.and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
-    let total = resp.content_length().unwrap_or(0);
-    if let Some(p) = path.parent() {
-        tokio::fs::create_dir_all(p).await.map_err(|e| e.to_string())?;
-    }
-    let tmp = path.with_extension("part");
-    let mut f = tokio::fs::File::create(&tmp).await.map_err(|e| e.to_string())?;
-    let mut got = 0u64;
-    let mut last = std::time::Instant::now();
-    let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        if cancel.load(Ordering::SeqCst) {
-            drop(f);
-            let _ = tokio::fs::remove_file(&tmp).await;
-            return Err("cancelled".into());
-        }
-        let chunk = chunk.map_err(|e| e.to_string())?;
-        f.write_all(&chunk).await.map_err(|e| e.to_string())?;
-        got += chunk.len() as u64;
-        if last.elapsed().as_millis() > 250 {
-            emit(app, m, "download", got, total, "");
-            last = std::time::Instant::now();
-        }
-    }
-    f.flush().await.map_err(|e| e.to_string())?;
-    drop(f);
-    tokio::fs::rename(&tmp, path).await.map_err(|e| e.to_string())?;
-    emit(app, m, "download", got, got.max(total), "");
     Ok(())
+}
+
+/// The whole run's progress, for "3.2 of 27.4 GB, about 1 h 40 min left".
+/// Each mod counts with the list's size until its download says its real one.
+struct Overall {
+    start: std::time::Instant,
+    mods: std::collections::HashMap<String, (u64, u64)>,
+    pace: fetch::Pace,
+    shown: Option<std::time::Instant>,
+    count: usize,
+    finished: usize,
+}
+
+static OVERALL: std::sync::Mutex<Option<Overall>> = std::sync::Mutex::new(None);
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct OverallView {
+    done: u64,
+    total: u64,
+    /// None until the pace is known (the first 10 s of downloading).
+    secs_left: Option<u64>,
+    finished: usize,
+    count: usize,
+}
+
+/// Records `done` bytes of `total` for one mod (`total` None keeps the one
+/// it has) and tells the page at most every half second, or at once with `force`.
+fn overall(app: &AppHandle, id: &str, done: u64, total: Option<u64>, force: bool) {
+    let view = {
+        let mut g = OVERALL.lock().unwrap();
+        let Some(o) = g.as_mut() else { return };
+        let e = o.mods.entry(id.to_string()).or_insert((0, 0));
+        if let Some(t) = total.filter(|t| *t > 0) {
+            e.0 = t;
+        }
+        if done != u64::MAX {
+            e.1 = done;
+        }
+        let (sum_total, sum_done) = o.mods.values().fold((0, 0), |a, v| (a.0 + v.0, a.1 + v.1.min(v.0)));
+        o.pace.add(o.start.elapsed().as_secs_f64(), sum_done);
+        if !force && o.shown.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(500)) {
+            return;
+        }
+        o.shown = Some(std::time::Instant::now());
+        OverallView { done: sum_done, total: sum_total, secs_left: o.pace.eta(sum_total.saturating_sub(sum_done)), finished: o.finished, count: o.count }
+    };
+    let _ = app.emit("mods-overall", view);
+}
+
+/// One mod is over: installed (all its bytes count) or not (its bytes leave
+/// the total, so the time left isn't waiting for it).
+fn overall_finish(app: &AppHandle, id: &str, installed: bool) {
+    {
+        let mut g = OVERALL.lock().unwrap();
+        let Some(o) = g.as_mut() else { return };
+        o.finished += 1;
+        if let Some(e) = o.mods.get_mut(id) {
+            if installed {
+                e.1 = e.0;
+            } else {
+                e.0 = e.1;
+            }
+        }
+    }
+    overall(app, id, u64::MAX, None, true);
+}
+
+/// Bytes of a mod's download already in the downloads folder (a finished
+/// archive or a part), whatever file name Nexus gave it.
+fn already_here(game_dir: &Path, m: &ModEntry) -> u64 {
+    let dir = game_dir.join(modlist::MODS_DIR).join("downloads");
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    rd.flatten()
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().to_string();
+            n.strip_prefix(&format!("{}.", m.id)).is_some_and(|rest| !rest.ends_with(".json"))
+        })
+        .filter_map(|e| e.metadata().ok().map(|md| md.len()))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Where to say how much space is on the drive, in GB with one decimal.
+fn gb(n: u64) -> String {
+    format!("{:.1} GB", n as f64 / 1e9)
 }
 
 enum Outcome {
@@ -606,9 +676,13 @@ async fn premium_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, gam
         // A pinned file has no name from the list: the address ends in it.
         let name = if f.file_name.is_empty() { url.split('?').next().unwrap_or("") } else { &f.file_name };
         let path = archive_path(game_dir, m, name);
-        download(app, api.http, m, &url, &path, cancel).await?;
+        download(app, api.http, m, &url, &path, &format!("nexus-{}-{}", n.mod_id, f.file_id), cancel).await?;
         emit(app, m, "install", 0, 0, "");
-        match install(m, &path, game_dir, Some(f.file_id), f.version.clone(), n.file.is_some()).await? {
+        let done = install(m, &path, game_dir, Some(f.file_id), f.version.clone(), n.file.is_some()).await;
+        // Installed or refused, this archive is finished with; a broken one
+        // is fetched again next time rather than tried again as it is.
+        fetch::forget(&path);
+        match done? {
             Outcome::Installed => return Ok(()),
             Outcome::TooNew(p) => {
                 log::line(&format!("mods: {} file {} is for a newer Skyrim ({}); trying an older one", m.name, f.name, p.join(", ")));
@@ -763,7 +837,7 @@ async fn free_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, game_d
                 }
             };
             let p = archive_path(game_dir, m, url.split('?').next().unwrap_or(""));
-            match download(app, api.http, m, &url, &p, cancel).await {
+            match download(app, api.http, m, &url, &p, &format!("nexus-{}-{}", n.mod_id, link.file_id), cancel).await {
                 Ok(()) => {
                     path = Some(p);
                     break;
@@ -786,7 +860,9 @@ async fn free_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, game_d
             continue;
         };
         emit(app, m, "install", 0, 0, format!("Installing {name}…"));
-        match install(m, &path, game_dir, Some(link.file_id), None, n.file.is_some()).await? {
+        let done = install(m, &path, game_dir, Some(link.file_id), None, n.file.is_some()).await;
+        fetch::forget(&path);
+        match done? {
             Outcome::Installed => return Ok(()),
             // Only an unpinned mod gets here (a pinned file is the server's
             // own); its page is opened again for another file.
@@ -807,9 +883,11 @@ async fn free_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, game_d
 async fn direct_one(app: &AppHandle, http: &reqwest::Client, m: &ModEntry, game_dir: &Path, cancel: &AtomicBool) -> Result<(), String> {
     let url = m.url.as_deref().unwrap();
     let path = archive_path(game_dir, m, url.split('?').next().unwrap_or(""));
-    download(app, http, m, url, &path, cancel).await?;
+    download(app, http, m, url, &path, &format!("url-{}-{}", url.split('?').next().unwrap_or(""), m.sha256.as_deref().unwrap_or("")), cancel).await?;
     emit(app, m, "install", 0, 0, "");
-    match install(m, &path, game_dir, None, None, true).await? {
+    let done = install(m, &path, game_dir, None, None, true).await;
+    fetch::forget(&path);
+    match done? {
         Outcome::Installed => Ok(()),
         Outcome::TooNew(_) => unreachable!(),
         Outcome::WrongBuild(p) => Err(format!("the download has a build of {} that SKSE won't load on Skyrim 1.6.1170", p.join(", "))),
@@ -839,6 +917,26 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
     let needs_nexus = todo.iter().any(|m| m.nexus.is_some());
     if needs_nexus && key.is_none() {
         return Err("NEEDS_NEXUS_SIGN_IN".into());
+    }
+    // Room on the Skyrim drive for everything still to install, plus the
+    // biggest mod in flight (files are moved into Data, so its archive).
+    let sizes: Vec<(u64, u64, u64)> = todo.iter().map(|m| {
+        let (a, u) = m.sizes();
+        (a, u, already_here(&dir, m).min(a))
+    }).collect();
+    let need = fetch::space_needed(&sizes, true);
+    let no_sizes = todo.iter().filter(|m| m.archive_bytes.is_none() || m.unpacked_bytes.is_none()).count();
+    if no_sizes > 0 {
+        log::line(&format!("mods: {no_sizes} of {} mod(s) have no sizes in the list; counted as {} each", todo.len(), gb(modlist::UNKNOWN_ARCHIVE * 4)));
+    }
+    let download: u64 = sizes.iter().map(|s| s.0.saturating_sub(s.2)).sum();
+    match fetch::free_space(&dir) {
+        Some(free) if free < need => {
+            log::line(&format!("mods: not enough space on the Skyrim drive: {} mod(s) need {} free, {} is free", todo.len(), gb(need), gb(free)));
+            return Err(format!("NO_SPACE:{need}:{free}"));
+        }
+        Some(free) => log::line(&format!("mods: {} to download, {} free space needed at most, {} free", gb(download), gb(need), gb(free))),
+        None => log::line(&format!("mods: {} to download, {} free space needed at most (free space unknown)", gb(download), gb(need))),
     }
     let cancel = Arc::new(AtomicBool::new(false));
     {
@@ -884,6 +982,15 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
 
     let mut result = RunResult::default();
     let count = todo.len();
+    *OVERALL.lock().unwrap() = Some(Overall {
+        start: std::time::Instant::now(),
+        mods: todo.iter().zip(&sizes).map(|(m, s)| (m.id.clone(), (s.0, s.2))).collect(),
+        pace: fetch::Pace::default(),
+        shown: None,
+        count,
+        finished: 0,
+    });
+    overall(&app, "", 0, None, true);
     for (i, m) in todo.iter().enumerate() {
         if cancel.load(Ordering::SeqCst) {
             result.cancelled = true;
@@ -893,6 +1000,7 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
         if m.installed(&dir) {
             log::line(&format!("mods: {} is already in; nothing to download", m.name));
             emit(&app, m, "done", 0, 0, "Installed");
+            overall_finish(&app, &m.id, true);
             result.installed.push(m.name.clone());
             continue;
         }
@@ -922,12 +1030,14 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
         match r {
             Ok(()) if m.installed(&dir) => {
                 emit(&app, m, "done", 0, 0, "Installed");
+                overall_finish(&app, &m.id, true);
                 result.installed.push(m.name.clone());
             }
             Ok(()) => {
                 let msg = format!("installed, but {} still isn't there", m.check.join(", "));
                 log::line(&format!("mods: {}: {msg}", m.name));
                 emit(&app, m, "failed", 0, 0, msg.clone());
+                overall_finish(&app, &m.id, false);
                 result.failed.push((m.name.clone(), msg));
             }
             Err(e) if e == "cancelled" => {
@@ -939,6 +1049,7 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
                 log::line(&format!("mods: {} failed: {e}", m.name));
                 let e = launcher_core::plain(&e);
                 emit(&app, m, "failed", 0, 0, e.clone());
+                overall_finish(&app, &m.id, false);
                 result.failed.push((m.name.clone(), e));
             }
         }
@@ -949,6 +1060,10 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
         restore_left_handler(&app);
     }
     *state.mods.cancel.lock().unwrap() = None;
+    if let Some(o) = OVERALL.lock().unwrap().take() {
+        let done: u64 = o.mods.values().map(|v| v.1.min(v.0)).sum();
+        log::line(&format!("mods: {} in {} min ({} MB/min over the run)", gb(done), o.start.elapsed().as_secs() / 60, (done >> 20) / (o.start.elapsed().as_secs() / 60).max(1)));
+    }
     log::line(&format!("mods: done, {} installed, {} failed{}", result.installed.len(), result.failed.len(), if result.cancelled { ", stopped by the player" } else { "" }));
     Ok(result)
 }

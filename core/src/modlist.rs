@@ -100,6 +100,12 @@ pub struct ModEntry {
     /// before the game starts (BodySlide's batch build; tools.rs).
     #[serde(default, deserialize_with = "crate::tools::one_or_many")]
     pub run: Vec<crate::tools::ToolRun>,
+    /// The download's size, and its size unpacked (the Mod Curator's
+    /// numbers), for the disk-space check and the time left.
+    #[serde(default, alias = "archiveBytes", skip_serializing_if = "Option::is_none")]
+    pub archive_bytes: Option<u64>,
+    #[serde(default, alias = "unpackedBytes", skip_serializing_if = "Option::is_none")]
+    pub unpacked_bytes: Option<u64>,
 }
 
 /// CPU levels a `cpu` map can name, best first.
@@ -182,6 +188,15 @@ impl ModEntry {
     }
 
     /// A copy that checks for one file only.
+    /// (download, unpacked) bytes: the list's numbers, else a safe guess.
+    /// Unpacked is 3 times the download when unknown (the Curator's median
+    /// is 2.2), and an unknown download counts as 64 MB (the built-in mods
+    /// without numbers are all small SKSE plugins).
+    pub fn sizes(&self) -> (u64, u64) {
+        let archive = self.archive_bytes.unwrap_or(UNKNOWN_ARCHIVE);
+        (archive, self.unpacked_bytes.unwrap_or(archive * 3))
+    }
+
     pub fn clone_with_check(&self, c: &str) -> ModEntry {
         ModEntry { check: vec![c.to_string()], ..self.clone() }
     }
@@ -225,6 +240,9 @@ pub const TRUE_DIRECTIONAL_MOVEMENT_FILE: u64 = 798770;
 /// dependencies and the Address Library). The GitHub-hosted required mods
 /// (SKSE, Crash Logger, Souls RE, Engine Fixes part 1) are installed by
 /// `requirements` before Play and aren't repeated here.
+/// A download of unknown size counts as this much (see `ModEntry::sizes`).
+pub const UNKNOWN_ARCHIVE: u64 = 64 << 20;
+
 pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
     use crate::requirements as r;
     let mut out = Vec::new();
@@ -1101,6 +1119,13 @@ fn is_settings(p: &Path) -> bool {
 /// Vortex's). Settings files the player already has are kept.
 pub fn apply(entry: &ModEntry, copies: &[Copy], game_dir: &Path, file_id: Option<u64>, version: Option<String>) -> Result<InstalledMod> {
     let vortex = vortex_manages(game_dir);
+    // Files are moved from the unpacked folder (same drive, so no second
+    // copy on disk and no time spent copying), except a file the installer
+    // puts in two places, which is copied until its last use.
+    let mut uses: std::collections::HashMap<&Path, usize> = std::collections::HashMap::new();
+    for c in copies {
+        *uses.entry(c.from.as_path()).or_default() += 1;
+    }
     let mut files = Vec::new();
     let mut skipped = Vec::new();
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
@@ -1130,9 +1155,15 @@ pub fn apply(entry: &ModEntry, copies: &[Copy], game_dir: &Path, file_id: Option
         if let Some(p) = dest.parent() {
             std::fs::create_dir_all(p)?;
         }
-        let tmp = dest.with_extension("aetherial-part");
-        std::fs::copy(&c.from, &tmp)?;
-        std::fs::rename(&tmp, &dest)?;
+        let left = uses.get_mut(c.from.as_path()).map(|n| {
+            *n -= 1;
+            *n
+        });
+        if left != Some(0) || std::fs::rename(&c.from, &dest).is_err() {
+            let tmp = dest.with_extension("aetherial-part");
+            std::fs::copy(&c.from, &tmp)?;
+            std::fs::rename(&tmp, &dest)?;
+        }
         files.push(rel);
     }
     let rec = InstalledMod {
@@ -1477,6 +1508,28 @@ mod tests {
         assert_eq!(to, ["Data/Embers XD.esp", "Data/meshes/fire.nif"]);
         let bad = ModEntry { lift: vec!["plugins/none.esp".into()], ..e };
         assert!(plan(&bad, &u).is_err());
+    }
+
+    #[test]
+    fn files_are_moved_into_data_and_a_file_used_twice_lands_in_both_places() {
+        let t = tempfile::tempdir().unwrap();
+        let game = t.path().join("game");
+        std::fs::create_dir_all(game.join("Data")).unwrap();
+        let (a, b) = (t.path().join("a.dds"), t.path().join("b.dds"));
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        let e = ModEntry { id: "tex".into(), name: "Tex".into(), ..Default::default() };
+        let copies = [
+            Copy { from: a.clone(), to: "Data/textures/a.dds".into() },
+            Copy { from: b.clone(), to: "Data/textures/b1.dds".into() },
+            Copy { from: b.clone(), to: "Data/textures/b2.dds".into() },
+        ];
+        apply(&e, &copies, &game, None, None).unwrap();
+        for (f, want) in [("a.dds", "a"), ("b1.dds", "b"), ("b2.dds", "b")] {
+            assert_eq!(std::fs::read_to_string(game.join("Data/textures").join(f)).unwrap(), want);
+        }
+        // Moved, not copied: nothing left behind to take space twice.
+        assert!(!a.exists() && !b.exists());
     }
 
     #[test]
