@@ -116,6 +116,7 @@ async fn run(app: &AppHandle) -> Result<(), String> {
     }
     let mut plugins = std::collections::BTreeMap::new();
     let mut failed = Vec::new();
+    let mut outcomes = Vec::new();
     for m in &lane.mods {
         wait_for_game_to_close().await;
         let mut got = one(&api, &root, m).await;
@@ -130,16 +131,34 @@ async fn run(app: &AppHandle) -> Result<(), String> {
             say("export: stopped for the game; it carries on after the game closes");
             return Ok(());
         }
+        let mut out = serverlane::ModOutcome { id: m.entry.id.clone(), name: m.entry.name.clone(), declared: m.plugins.clone(), ..Default::default() };
         match got {
             Ok(picked) => {
                 let names: Vec<&str> = picked.iter().map(|p| p.1.as_str()).collect();
                 say(&format!("export: {} gave {}", m.entry.name, names.join(", ")));
+                out.gave = names.iter().map(|n| n.to_string()).collect();
                 if let Err(e) = serverlane::collect(&root, &m.entry.id, &picked, &mut plugins) {
                     failed.push(format!("{}: {e}", m.entry.name));
+                    out.error = Some(e.to_string());
                 }
             }
-            Err(e) => failed.push(format!("{}: {e}", m.entry.name)),
+            Err(e) => {
+                failed.push(format!("{}: {e}", m.entry.name));
+                out.error = Some(e);
+            }
         }
+        outcomes.push(out);
+    }
+    // What each mod gave or why it didn't, whether or not the run finished.
+    match serverlane::report(&root, &lane, &hash, &plugins, outcomes) {
+        Ok(r) => say(&format!(
+            "export: {} of {} declared plugins collected{}{}",
+            r.collected,
+            r.declared,
+            r.first_failure.as_ref().map(|f| format!("; first failure: {f}")).unwrap_or_default(),
+            if r.missing.is_empty() { String::new() } else { format!("; missing: {}", r.missing.iter().map(|(m, p)| format!("{p} ({m})")).collect::<Vec<_>>().join(", ")) }
+        )),
+        Err(e) => say(&format!("export: couldn't write the report: {e}")),
     }
     if !failed.is_empty() {
         for f in &failed {
@@ -151,7 +170,8 @@ async fn run(app: &AppHandle) -> Result<(), String> {
     }
     let rec = {
         let root = root.clone();
-        tokio::task::spawn_blocking(move || serverlane::finish(&root, &hash, plugins)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?
+        let lane = lane.clone();
+        tokio::task::spawn_blocking(move || serverlane::finish(&root, &lane, &hash, plugins)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?
     };
     let _ = std::fs::remove_dir_all(root.join("downloads"));
     let _ = std::fs::remove_dir_all(root.join("unpacked"));

@@ -15,6 +15,7 @@ pub mod fetch;
 pub mod game;
 pub mod gameini;
 pub mod health;
+pub mod inventory;
 pub mod loadorder;
 pub mod manifest;
 pub mod modlist;

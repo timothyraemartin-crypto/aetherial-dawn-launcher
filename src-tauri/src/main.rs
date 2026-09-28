@@ -1398,6 +1398,9 @@ async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path:
     send_client_status(app, dir);
     got?;
     let list = mods::full_list(state).await;
+    // Both inventories, named, so the log never lets a small game-files
+    // gap stand for Vortex.
+    log::line(&format!("play: {}", launcher_core::inventory::count(&list, dir).1.describe()));
     let missing: Vec<mods::Row> = launcher_core::modlist::missing(&list, dir).into_iter().map(|m| mods::row(m, dir)).collect();
     if !missing.is_empty() {
         log::line(&format!("play: stopped, {} mod(s) from the mod list are missing", missing.len()));

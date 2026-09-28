@@ -559,6 +559,14 @@
   let modsOff = null;
   const rqError = (e) => { $('rq-error').textContent = e ? String(e) : ''; $('rq-error').hidden = !e; };
 
+  // Each state names its inventory: the game files, and Vortex when it
+  // keeps a deployment record here.
+  function modState(m) {
+    const files = m.installed ? 'In the game files' : (m.hint ? `Needs: ${m.hint}` : 'Not in the game files');
+    if (m.in_vortex == null) return files;
+    return `${files} · ${m.in_vortex ? 'deployed by Vortex' : 'not in Vortex'}`;
+  }
+
   function renderMods(view) {
     lastModsView = view;
     const nx = view.nexus;
@@ -570,6 +578,7 @@
     $('rq-sso').hidden = false;
     $('rq-keybox').hidden = !useKey;
     $('rq-vortex').hidden = !view.vortex;
+    $('rq-counts').textContent = (view.counts_text || '') + (view.feed ? ` (${view.feed})` : " (the server's mod list couldn't be read; the launcher's own list only)");
     const list = $('rq-list');
     list.replaceChildren();
     for (const m of view.mods) {
@@ -581,7 +590,7 @@
       const sub = document.createElement('div');
       sub.className = 'rq-sub';
       sub.id = `rq-st-${m.id}`;
-      sub.textContent = m.installed ? 'Installed' : (m.hint ? `Needs: ${m.hint}` : 'Not installed');
+      sub.textContent = modState(m);
       text.append(name, sub);
       row.append(text);
       if (m.page && !m.installed) {
@@ -598,7 +607,7 @@
     $('rq-all').disabled = modsRunning || missing === 0;
     const free = !!(nx && !nx.is_premium);
     $('rq-nx-free-text').textContent = `${plural(missing, 'mod')} to get. When you press Start, the launcher opens each mod's page on Nexus in turn; press Slow download there, and the launcher does the rest. You can stop and carry on later.`;
-    $('rq-all').textContent = missing === 0 ? 'ALL INSTALLED' : `${free ? 'START' : 'DOWNLOAD ALL'} (${missing})`;
+    $('rq-all').textContent = missing === 0 ? 'ALL IN THE GAME FILES' : `${free ? 'START' : 'DOWNLOAD ALL'} (${missing})`;
     $('rq-stop').hidden = !modsRunning;
   }
 
@@ -612,7 +621,7 @@
     await refreshMods();
   }
 
-  const MOD_STAGE = { queued: 'Waiting its turn', waiting: '', download: 'Downloading', install: 'Installing', done: 'Installed', failed: '' };
+  const MOD_STAGE = { queued: 'Waiting its turn', waiting: '', download: 'Downloading', install: 'Installing', done: 'In the game files', failed: '' };
   function modProgress(p) {
     const el = $(`rq-st-${p.id}`);
     if (!el) return;
