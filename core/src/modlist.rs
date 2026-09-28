@@ -234,6 +234,10 @@ pub struct ModList {
     /// "Sign in with Nexus" (SSO). Without one players paste an API key.
     #[serde(default)]
     pub nexus_app: Option<String>,
+    /// The list's own revision ("3.4.6"), when the server names one; the
+    /// launcher shows and logs it with the bytes' sha256 (inventory.rs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
 }
 
 /// Nexus file ids the launcher installs for its own required mods where the
@@ -1600,6 +1604,7 @@ mod tests {
                 ModEntry { id: "new".into(), name: "New".into(), url: Some("https://github.com/a/b.zip".into()), check: vec!["Data/new.esp".into()], ..Default::default() },
             ],
             nexus_app: None,
+            revision: None,
         };
         let m = merged(Some("1.6.1170.0"), Some(&s));
         assert_eq!(m.iter().find(|e| e.id == "ussep").unwrap().nexus.as_ref().unwrap().file, Some(9));

@@ -87,6 +87,8 @@ function fakeBackEnd() {
       log.freeNote = free.hidden ? null : free.textContent;
       log.modsButton = document.getElementById('rq-all').textContent;
       log.modsShown = !document.getElementById('reqs').hidden;
+      log.counts = document.getElementById('rq-counts').textContent;
+      log.rows = [...document.querySelectorAll('#rq-list .rq-sub')].map(e => e.textContent);
       const pre = document.createElement('pre');
       pre.id = 'ui-test-result';
       pre.textContent = JSON.stringify(log);
@@ -149,6 +151,14 @@ const scenarios = [
   { name: 'Premium Nexus account: Play installs the mods by itself', s: { ...base, playError: 'NEEDS_NEXUS_MODS:[{"id":"a","name":"A"}]', modsState: { mods: [{ id: 'a', name: 'A', installed: false }], nexus: { name: 'Player', is_premium: true }, vortex: false, running: false, sso: true } }, expect: r => [
     ['no free-account note', r.freeNote === null],
     ['the mods download by themselves', askedAt(r, 'download_all_mods') !== null],
+  ] },
+  // Codex, PR #7 (5875611942): every count names its inventory, and a small
+  // game-files gap never reads as Vortex being complete (Timothy's PC: 36 of
+  // 37 in the game files, 0 of 37 in Vortex).
+  { name: 'mods window: game files and Vortex are two named counts', s: { ...base, playError: 'NEEDS_NEXUS_MODS:[{"id":"r","name":"RaceMenu"}]', modsState: { mods: [{ id: 'c', name: 'Community Overlays 1', installed: true, in_vortex: false }, { id: 'r', name: 'RaceMenu', installed: false, in_vortex: false }], nexus: { name: 'Player', is_premium: false }, vortex: true, running: false, sso: true, counts_text: 'Game files: 36 of 37 present · Vortex: 0 of 37 deployed · Aetherial Dawn profile: not checked yet', feed: 'mod list without a revision, 37 entries, sha256 0123456789ab…' } }, expect: r => [
+    ['the counts line names each inventory and the exact list', /^Game files: 36 of 37 present · Vortex: 0 of 37 deployed · Aetherial Dawn profile: not checked yet \(mod list without a revision, 37 entries, sha256 0123456789ab…\)$/.test(r.counts || ''), r.counts],
+    ['a mod in the game files but not in Vortex says both', r.rows && r.rows[0] === 'In the game files · not in Vortex', JSON.stringify(r.rows)],
+    ['no row says just "Installed"', r.rows && !r.rows.some(t => t === 'Installed'), JSON.stringify(r.rows)],
   ] },
   { name: 'Discord cannot be reached: SIGN IN, the game never starts', s: { ...base, authFails: true }, expect: r => [
     ['the game never starts', !played(r)],

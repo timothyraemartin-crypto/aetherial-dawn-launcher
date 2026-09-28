@@ -71,6 +71,8 @@ pub struct ModsState {
     sso_stop: std::sync::Mutex<Option<Arc<AtomicBool>>>,
     /// The server's mods.json, once fetched.
     server_list: tokio::sync::Mutex<Option<modlist::ModList>>,
+    /// Exactly which mods.json that was (sha256 of the bytes, revision).
+    receipt: tokio::sync::Mutex<Option<launcher_core::inventory::FeedReceipt>>,
 }
 
 fn key_path(app: &AppHandle) -> Option<PathBuf> {
@@ -132,14 +134,19 @@ pub async fn server_list(state: &AppState) -> Option<modlist::ModList> {
 async fn fetch_server_list(state: &AppState) -> Option<modlist::ModList> {
     let base = state.config.lock().await.base_url.clone();
     let url = format!("{}/mods.json", base.trim_end_matches('/'));
-    let got = match state.http.get(&url).timeout(std::time::Duration::from_secs(8)).send().await {
-        Ok(r) if r.status().is_success() => r.json::<modlist::ModList>().await.ok(),
+    let bytes = match state.http.get(&url).timeout(std::time::Duration::from_secs(8)).send().await {
+        Ok(r) if r.status().is_success() => r.bytes().await.ok(),
         _ => None,
     };
-    if let Some(l) = &got {
-        *state.mods.server_list.lock().await = Some(l.clone());
+    let got = bytes.as_ref().and_then(|b| serde_json::from_slice::<modlist::ModList>(b).ok().map(|l| (l, b)));
+    let (l, b) = got?;
+    let receipt = launcher_core::inventory::FeedReceipt::of(b, &l);
+    if state.mods.receipt.lock().await.as_ref() != Some(&receipt) {
+        log::line(&format!("mods: fetched {url}: {}", receipt.describe()));
     }
-    got
+    *state.mods.receipt.lock().await = Some(receipt);
+    *state.mods.server_list.lock().await = Some(l.clone());
+    Some(l)
 }
 
 /// Play fetches mods.json again, so a list changed while the launcher was
@@ -175,18 +182,27 @@ pub struct Row {
     page: Option<String>,
     hint: Option<String>,
     looks_for: String,
+    /// Its files are in the game folder (the game-files inventory).
     installed: bool,
+    /// Vortex deployed it (Vortex's deployment record); None without one.
+    in_vortex: Option<bool>,
     from: &'static str,
 }
 
 pub fn row(m: &ModEntry, game_dir: &Path) -> Row {
+    let files = launcher_core::allowlist::vortex_files(game_dir);
+    row_with(m, game_dir, launcher_core::inventory::standing(m, game_dir, &files, launcher_core::inventory::has_vortex_record(game_dir)))
+}
+
+fn row_with(m: &ModEntry, _game_dir: &Path, st: launcher_core::inventory::Standing) -> Row {
     Row {
         id: m.id.clone(),
         name: m.name.clone(),
         page: m.download_page(),
         hint: m.hint.clone(),
         looks_for: m.check.join(", "),
-        installed: m.installed(game_dir),
+        installed: st.game_files,
+        in_vortex: st.vortex_deployed,
         from: if m.nexus.is_some() { "nexus" } else { "direct" },
     }
 }
@@ -199,6 +215,13 @@ pub struct ModsView {
     running: bool,
     /// "Sign in with Nexus" works (Nexus has registered the launcher).
     sso: bool,
+    /// Both inventories, each naming what it measures.
+    counts: launcher_core::inventory::Counts,
+    /// "Game files: 36 of 37 present · Vortex: 0 of 37 deployed · …"
+    counts_text: String,
+    /// Which mods.json the counts are for; None when the server's list
+    /// couldn't be fetched (the launcher's own list only).
+    feed: Option<String>,
 }
 
 #[tauri::command]
@@ -208,12 +231,17 @@ pub async fn mods_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult
     let user = if nexus_key(&app).is_some() { state.config.lock().await.nexus_user.clone() } else { None };
     let sso = nexus_app(&state).await.is_some();
     let running = state.mods.cancel.lock().unwrap().is_some();
+    let (st, counts) = launcher_core::inventory::count(&list, &dir);
+    let feed = state.mods.receipt.lock().await.as_ref().map(|r| r.describe());
     Ok(ModsView {
-        mods: list.iter().map(|m| row(m, &dir)).collect(),
+        mods: list.iter().zip(st).map(|(m, s)| row_with(m, &dir, s)).collect(),
         nexus: user,
         vortex: modlist::vortex_manages(&dir),
         running,
         sso,
+        counts_text: counts.describe(),
+        counts,
+        feed,
     })
 }
 
