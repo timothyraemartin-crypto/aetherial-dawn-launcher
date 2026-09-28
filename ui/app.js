@@ -579,6 +579,9 @@
     $('rq-keybox').hidden = !useKey;
     $('rq-vortex').hidden = !view.vortex;
     $('rq-counts').textContent = (view.counts_text || '') + (view.feed ? ` (${view.feed})` : " (the server's mod list couldn't be read; the launcher's own list only)");
+    // Vortex's own view of the Aetherial Dawn profile, once paired with the extension.
+    $('rq-vortex-step').hidden = !view.vortex_line;
+    $('rq-vortex-step').textContent = view.vortex_line || '';
     const list = $('rq-list');
     list.replaceChildren();
     for (const m of view.mods) {

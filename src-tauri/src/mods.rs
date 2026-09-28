@@ -166,6 +166,36 @@ pub async fn refresh_server_list(state: &AppState) {
     }
 }
 
+/// The served client set (`aetherial-collection.json`, design 6.1), when the
+/// server publishes one. Until it does, Play is not gated on Vortex.
+pub async fn served_client_set(state: &AppState) -> Option<launcher_core::vortex::ClientSet> {
+    let base = state.config.lock().await.base_url.clone();
+    let url = format!("{}/aetherial-collection.json", base.trim_end_matches('/'));
+    match state.http.get(&url).timeout(std::time::Duration::from_secs(8)).send().await {
+        Ok(r) if r.status().is_success() => r.json().await.ok(),
+        _ => None,
+    }
+}
+
+/// The Vortex step line (design section 3) from the Aetherial Dawn
+/// extension, read-only. None when the launcher isn't paired with the
+/// extension yet: then nothing is shown and nothing is gated.
+pub async fn vortex_step(app: &AppHandle, state: &AppState, set: &launcher_core::vortex::ClientSet) -> Option<launcher_core::vortex::Step> {
+    use launcher_core::vortex;
+    let home = vortex::home(&app.path().app_local_data_dir().ok()?);
+    let token = vortex::token(&home).ok()?;
+    let status = match vortex::call(&state.http, &home, &token, "status", &serde_json::json!({}), "").await {
+        Ok(v) => serde_json::from_value::<vortex::Status>(v).ok(),
+        Err(e) => {
+            if !matches!(e, vortex::JobError::NotRunning) {
+                log::line(&format!("mods: the Vortex extension didn't answer: {e}"));
+            }
+            None
+        }
+    };
+    Some(vortex::step(set, status.as_ref()))
+}
+
 pub async fn full_list(state: &AppState) -> Vec<ModEntry> {
     let version = state.manifest.lock().await.as_ref().and_then(|m| m.game.as_ref()).and_then(|g| g.version.clone());
     let server = server_list(state).await;
@@ -222,6 +252,10 @@ pub struct ModsView {
     /// Which mods.json the counts are for; None when the server's list
     /// couldn't be fetched (the launcher's own list only).
     feed: Option<String>,
+    /// The Aetherial Dawn profile line from Vortex's own state, when the
+    /// launcher is paired with the extension.
+    vortex_line: Option<String>,
+    vortex_ready: Option<bool>,
 }
 
 #[tauri::command]
@@ -233,6 +267,13 @@ pub async fn mods_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult
     let running = state.mods.cancel.lock().unwrap().is_some();
     let (st, counts) = launcher_core::inventory::count(&list, &dir);
     let feed = state.mods.receipt.lock().await.as_ref().map(|r| r.describe());
+    // Without a served client set, the server's Nexus-pinned mods are the
+    // set shown (information only).
+    let set = match served_client_set(&state).await {
+        Some(set) => set,
+        None => launcher_core::vortex::ClientSet { collection: None, mods: list.clone() },
+    };
+    let step = vortex_step(&app, &state, &set).await;
     Ok(ModsView {
         mods: list.iter().zip(st).map(|(m, s)| row_with(m, &dir, s)).collect(),
         nexus: user,
@@ -242,6 +283,8 @@ pub async fn mods_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult
         counts_text: counts.describe(),
         counts,
         feed,
+        vortex_line: step.as_ref().map(|s| s.describe()),
+        vortex_ready: step.as_ref().map(|s| s.ok()),
     })
 }
 
