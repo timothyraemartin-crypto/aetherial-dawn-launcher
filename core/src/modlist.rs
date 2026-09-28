@@ -598,8 +598,29 @@ pub fn safe_rel(p: &str) -> Option<PathBuf> {
 
 // ---------- unpacking ----------
 
-/// Unpacks a zip or 7z archive into `dir`, skipping unsafe paths.
+/// Unpacks a zip or 7z archive into `dir`, skipping unsafe paths. All or
+/// nothing: it unpacks into a folder beside `dir` and renames it into place
+/// only when every entry came out, so a damaged or cut-short download never
+/// leaves a half-unpacked folder (PR #7, Codex 5875867553).
 pub fn extract(archive: &Path, dir: &Path) -> Result<()> {
+    let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = dir.with_file_name(format!("{name}.unpacking"));
+    let _ = std::fs::remove_dir_all(&tmp);
+    if let Err(e) = extract_into(archive, &tmp) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(e);
+    }
+    if dir.exists() {
+        std::fs::remove_dir_all(dir)?;
+    }
+    if let Err(e) = std::fs::rename(&tmp, dir) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(e.into());
+    }
+    Ok(())
+}
+
+fn extract_into(archive: &Path, dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir)?;
     let mut head = [0u8; 6];
     {
@@ -670,11 +691,68 @@ pub fn extract(archive: &Path, dir: &Path) -> Result<()> {
             })
             .map_err(|e| Error::Game(format!("couldn't unpack the download: {e}")))?;
         Ok(())
-    } else if head.starts_with(b"Rar!") {
-        Err(Error::Game("This mod is packed in a way the launcher can't install automatically yet (RAR). The launcher tries it again next time".into()))
+    } else if head.starts_with(b"Rar!\x1a\x07") {
+        #[cfg(feature = "rar")]
+        return extract_rar(archive, dir);
+        #[cfg(not(feature = "rar"))]
+        return Err(Error::Game("this build can't unpack RAR downloads".into()));
     } else {
-        Err(Error::Game("the download isn't a zip or 7z archive".into()))
+        Err(Error::Game("the download isn't a zip, 7z or RAR archive".into()))
     }
+}
+
+/// RAR v4 and v5 through rarlab's own unrar library (the `unrar` crate,
+/// PR #7, Codex 5875976813). Every entry goes to a path the launcher builds
+/// with `safe_rel`, never to the name inside the archive; the sizes in each
+/// header are checked against the caps before anything is written, and the
+/// bytes that land are checked again (unrar stops at the header's size and
+/// checks the CRC). Split, locked and password archives are refused, and so
+/// is any entry that lands as a link.
+#[cfg(feature = "rar")]
+fn extract_rar(archive: &Path, dir: &Path) -> Result<()> {
+    let damaged = |e: unrar::error::UnrarError| Error::Game(format!("couldn't unpack the download (RAR): {e}"));
+    let listed = unrar::Archive::new(archive).open_for_listing().map_err(damaged)?;
+    if listed.is_locked() || listed.has_encrypted_headers() {
+        return Err(Error::Game("the download is a locked or password RAR the launcher can't install".into()));
+    }
+    let mut total = 0u64;
+    let mut open = unrar::Archive::new(archive).open_for_processing().map_err(damaged)?;
+    while let Some(entry) = open.read_header().map_err(damaged)? {
+        let h = entry.entry();
+        let name = h.filename.to_string_lossy().into_owned();
+        if h.is_split() {
+            return Err(Error::Game("the download is a RAR split into parts; the launcher takes one-part archives only".into()));
+        }
+        if h.is_encrypted() {
+            return Err(Error::Game(format!("{name} is password protected in the download")));
+        }
+        let rel = safe_rel(&name);
+        if h.is_directory() || rel.is_none() {
+            if let (true, Some(rel)) = (h.is_directory(), &rel) {
+                std::fs::create_dir_all(dir.join(rel))?;
+            }
+            open = entry.skip().map_err(damaged)?;
+            continue;
+        }
+        let dest = dir.join(rel.unwrap());
+        let size = h.unpacked_size;
+        if size > MAX_ENTRY || total + size > MAX_TOTAL {
+            return Err(too_big(&name));
+        }
+        if let Some(p) = dest.parent() {
+            std::fs::create_dir_all(p)?;
+        }
+        open = entry.extract_to(&dest).map_err(damaged)?;
+        let meta = std::fs::symlink_metadata(&dest)?;
+        if !meta.file_type().is_file() {
+            return Err(Error::Game(format!("{name} in the download is a link, not a file")));
+        }
+        if meta.len() != size {
+            return Err(Error::Game(format!("couldn't unpack {name}: the download is damaged")));
+        }
+        total += size;
+    }
+    Ok(())
 }
 
 /// Limits on what one download may unpack to (a crafted archive can claim
@@ -1588,6 +1666,119 @@ mod tests {
             z.write_all(b).unwrap();
         }
         z.finish().unwrap();
+    }
+
+    #[test]
+    fn a_damaged_or_cut_short_download_leaves_no_half_unpacked_folder() {
+        let t = tempfile::tempdir().unwrap();
+        let good = t.path().join("good.zip");
+        zip_with(&good, &[("a.esp", &[1u8; 4096][..]), ("b.esp", &[2u8; 4096][..])]);
+        let bytes = std::fs::read(&good).unwrap();
+        // Cut short in the second file's data, and with its bytes flipped.
+        let cut = t.path().join("cut.zip");
+        std::fs::write(&cut, &bytes[..bytes.len() / 2]).unwrap();
+        let mut bad = bytes.clone();
+        let at = bytes.windows(5).position(|w| w == b"b.esp").unwrap() + 64;
+        bad[at] ^= 0xFF;
+        let damaged = t.path().join("damaged.zip");
+        std::fs::write(&damaged, &bad).unwrap();
+        for a in [&cut, &damaged] {
+            let out = t.path().join("out");
+            assert!(super::extract(a, &out).is_err(), "{a:?}");
+            assert!(!out.exists(), "no half-unpacked folder from {a:?}");
+            assert!(!t.path().join("out.unpacking").exists(), "no temp folder from {a:?}");
+        }
+        // A good one after a bad one still lands whole, replacing an old folder.
+        let out = t.path().join("out");
+        std::fs::create_dir_all(out.join("stale")).unwrap();
+        super::extract(&good, &out).unwrap();
+        assert!(out.join("a.esp").exists() && out.join("b.esp").exists());
+        assert!(!out.join("stale").exists());
+        assert!(!t.path().join("out.unpacking").exists());
+    }
+
+    #[test]
+    #[cfg(feature = "rar")]
+    fn unpacks_rar_v4_and_v5() {
+        let t = tempfile::tempdir().unwrap();
+        for (v, bytes) in [("4", crate::testrar::rar4(&[("Main.esp", b"main"), ("Textures\\x.dds", b"dds bytes")])), ("5", crate::testrar::rar5(&[("Main.esp", b"main"), ("Textures/x.dds", b"dds bytes")]))] {
+            let a = t.path().join(format!("m{v}.rar"));
+            std::fs::write(&a, &bytes).unwrap();
+            let out = t.path().join(format!("out{v}"));
+            super::extract(&a, &out).unwrap_or_else(|e| panic!("RAR{v}: {e}"));
+            assert_eq!(std::fs::read(out.join("Main.esp")).unwrap(), b"main", "RAR{v}");
+            assert_eq!(std::fs::read(out.join("Textures/x.dds")).unwrap(), b"dds bytes", "RAR{v}");
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "rar")]
+    fn a_rar_never_writes_outside_its_folder() {
+        let t = tempfile::tempdir().unwrap();
+        let names = ["../evil.esp", "..\\evil2.esp", "/abs.esp", "\\abs2.esp", "C:/drive.esp", "C:\\drive2.esp", "Data/.../trick.esp", "ok.esp"];
+        for (v, bytes) in [("4", crate::testrar::rar4(&names.map(|n| (n, &b"x"[..])))), ("5", crate::testrar::rar5(&names.map(|n| (n, &b"x"[..]))))] {
+            let root = t.path().join(v);
+            let a = root.join("a.rar");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(&a, &bytes).unwrap();
+            let out = root.join("deep/out");
+            std::fs::create_dir_all(root.join("deep")).unwrap();
+            super::extract(&a, &out).unwrap_or_else(|e| panic!("RAR{v}: {e}"));
+            let mut all = Vec::new();
+            let mut stack = vec![root.clone()];
+            while let Some(d) = stack.pop() {
+                for e in std::fs::read_dir(d).unwrap().flatten() {
+                    if e.file_type().unwrap().is_dir() { stack.push(e.path()) } else { all.push(e.path().strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/")) }
+                }
+            }
+            all.sort();
+            // Nothing lands outside the folder. unrar itself turns some names
+            // into harmless ones inside it, and differently per system ("C:"
+            // becomes "C_" on Windows; a '\\' in a RAR5 name becomes '_' on
+            // Linux), so only the invariant is checked, not those names.
+            assert!(all.iter().all(|f| f == "a.rar" || f.starts_with("deep/out/")), "RAR{v}: {all:?}");
+            assert!(all.iter().any(|f| f == "deep/out/ok.esp"), "RAR{v}: {all:?}");
+            assert!(all.iter().all(|f| !f.split('/').any(|c| c == "..") && !f.contains(':')), "RAR{v}: {all:?}");
+            for abs in ["/abs.esp", "/abs2.esp", "C:/drive.esp", "C:/drive2.esp"] {
+                assert!(!Path::new(abs).exists(), "RAR{v}: {abs}");
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "rar")]
+    fn a_damaged_or_cut_short_rar_leaves_nothing_behind() {
+        let t = tempfile::tempdir().unwrap();
+        let files: [(&str, &[u8]); 2] = [("a.esp", &[1u8; 4096]), ("b.esp", &[2u8; 4096])];
+        for (v, bytes) in [("4", crate::testrar::rar4(&files)), ("5", crate::testrar::rar5(&files))] {
+            let cut = bytes[..bytes.len() - 3000].to_vec();
+            let mut flipped = bytes.clone();
+            let n = flipped.len();
+            flipped[n - 100] ^= 0xFF;
+            for (what, b) in [("cut short", cut), ("damaged", flipped)] {
+                let a = t.path().join("x.rar");
+                std::fs::write(&a, &b).unwrap();
+                let out = t.path().join("out");
+                assert!(super::extract(&a, &out).is_err(), "RAR{v} {what}");
+                assert!(!out.exists(), "RAR{v} {what}: no half-unpacked folder");
+                assert!(!t.path().join("out.unpacking").exists(), "RAR{v} {what}: no temp folder");
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "rar")]
+    fn a_rar_claiming_more_than_the_caps_is_refused_before_writing() {
+        // A stored entry whose header claims 9 GiB: refused from the header,
+        // nothing is written.
+        let t = tempfile::tempdir().unwrap();
+        let b = crate::testrar::rar5_claiming("big.esp", 9 << 30);
+        let a = t.path().join("big.rar");
+        std::fs::write(&a, &b).unwrap();
+        let out = t.path().join("out");
+        let e = super::extract(&a, &out).unwrap_err().to_string();
+        assert!(e.contains("more than the launcher allows"), "{e}");
+        assert!(!out.exists() && !t.path().join("out.unpacking").exists());
     }
 
     #[test]

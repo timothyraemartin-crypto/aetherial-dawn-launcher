@@ -220,13 +220,19 @@ async fn one(api: &nexus::Client<'_>, root: &Path, m: &serverlane::LaneMod) -> R
             let keep = root.join("unpacked").join(format!("{}.keep", m.entry.id));
             let _ = std::fs::remove_dir_all(&keep);
             std::fs::create_dir_all(&keep).map_err(|e| e.to_string())?;
-            p.into_iter()
+            let copied = p
+                .into_iter()
                 .map(|(from, name)| {
                     let to = keep.join(&name);
                     std::fs::copy(&from, &to).map_err(|e| e.to_string())?;
                     Ok((to, name))
                 })
-                .collect::<Result<Vec<_>, String>>()
+                .collect::<Result<Vec<_>, String>>();
+            // A copy that fails leaves no part-filled .keep folder behind.
+            if copied.is_err() {
+                let _ = std::fs::remove_dir_all(&keep);
+            }
+            copied
         });
         let _ = std::fs::remove_dir_all(&work);
         out
