@@ -193,3 +193,5 @@ mod plain_tests {
         assert!(super::plain_ui("SIGNED_OUT:Please sign in again.").starts_with("SIGNED_OUT:Please"));
     }
 }
+#[cfg(all(test, feature = "rar"))]
+mod testrar;
