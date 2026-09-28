@@ -15,8 +15,16 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{log, AppState, CmdResult};
 
-/// How long to wait for a free member to press a mod's download button.
-const WAIT_FOR_CLICK: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+/// How long a free member's page waits for a press before it's opened again
+/// as a reminder. The wait itself only ends with a press or Stop: a
+/// player who steps away finds the queue where they left it (free-account
+/// check, 2026-09-28).
+const REMIND_AFTER: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// How many times a reminder opens the page again.
+const REOPEN_MAX: u32 = 3;
+/// A free member is asked to press again this many times for a download
+/// that keeps breaking off before that mod is shown as not installed.
+const FREE_TRIES: u32 = 3;
 /// How long a Premium member's own file page gets to hand over its nxm:// link.
 const WAIT_FOR_PAGE: std::time::Duration = std::time::Duration::from_secs(90);
 
@@ -29,6 +37,9 @@ struct Catcher {
     /// Mods whose Nexus page was already opened in this run: one browser tab
     /// per mod per Play, retries included (quality check P3).
     paged: std::collections::HashSet<u64>,
+    /// A link came back in this run: the browser's "open this app?" question
+    /// is only explained until then.
+    got_a_link: bool,
 }
 
 impl Catcher {
@@ -151,7 +162,7 @@ pub fn row(m: &ModEntry, game_dir: &Path) -> Row {
     Row {
         id: m.id.clone(),
         name: m.name.clone(),
-        page: m.page(),
+        page: m.download_page(),
         hint: m.hint.clone(),
         looks_for: m.check.join(", "),
         installed: m.installed(game_dir),
@@ -639,8 +650,11 @@ async fn via_page(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, file_i
             return Err("cancelled".into());
         }
         match tokio::time::timeout(std::time::Duration::from_millis(500), catcher.rx.recv()).await {
-            Ok(Some(l)) if l.mod_id == n.mod_id && l.game == modlist::NEXUS_GAME => break l,
-            Ok(Some(l)) => log::line(&format!("mods: ignored a link for mod {} while waiting for {}", l.mod_id, m.name)),
+            Ok(Some(l)) => match modlist::link_fits(n, &l.game, l.mod_id, l.file_id) {
+                modlist::LinkFits::Take => break l,
+                modlist::LinkFits::OtherFile { pinned } => log::line(&format!("mods: refused file {} for {}: the list pins {pinned}", l.file_id, m.name)),
+                modlist::LinkFits::OtherMod => log::line(&format!("mods: ignored a link for mod {} while waiting for {}", l.mod_id, m.name)),
+            },
             Ok(None) => return Err("stopped waiting".into()),
             Err(_) if tokio::time::Instant::now() > deadline => return Err("the Nexus page sent no download link".into()),
             Err(_) => {}
@@ -654,41 +668,137 @@ async fn via_page(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, file_i
     Ok(url)
 }
 
-/// Free: open the mod's page and wait for the player to press "Mod manager
-/// download"; Nexus then hands the launcher an nxm:// link for that file.
-async fn free_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, game_dir: &Path, cancel: &AtomicBool, rx: &mut tokio::sync::mpsc::UnboundedReceiver<nexus::Nxm>) -> Result<(), String> {
+/// Free: open the file's page and wait for the player to press its download
+/// button; Nexus then hands the launcher an nxm:// link for that file. The
+/// text is the Systems Designer's guided-download text (2026-09-28).
+/// - A pinned file is the only one taken: any other is refused before it's
+///   downloaded and the right page opens again; a second wrong file skips
+///   the mod for this run (it's tried again next time).
+/// - The wait never gives up by itself: the page is opened again every
+///   `REMIND_AFTER` (a few times), and the player can Stop and carry on.
+/// - A download that breaks off, or a busy Nexus, is tried again with the
+///   same link before the player is asked to press again.
+///
+/// `n_of` is "Mod 12 of 50".
+async fn free_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, game_dir: &Path, cancel: &AtomicBool, catcher: &mut Catcher, n_of: &str) -> Result<(), String> {
+    let Catcher { rx, got_a_link, .. } = catcher;
     let n = m.nexus.as_ref().unwrap();
+    let page = m.download_page().unwrap();
+    let name = &m.name;
+    let press = if n.file.is_some() {
+        format!("Nexus is open on {name}. Press Slow download there.")
+    } else {
+        format!("Nexus is open on {name}'s files. Press Mod manager download for {}, then Slow download.", m.hint.as_deref().unwrap_or("the main file"))
+    };
+    let browser = " Your browser may ask to open Aetherial Dawn Launcher. Tick Always allow and press Open, so it doesn't ask again.";
+    let say = |note: &str, seen: bool| emit(app, m, "waiting", 0, 0, format!("{n_of}: {note}{}", if seen { "" } else { browser }));
     while rx.try_recv().is_ok() {}
-    open_url(app, &m.page().unwrap())?;
-    let mut note = format!("On the Nexus page, press Mod manager download{}.", m.hint.as_ref().map(|h| format!(" for {h}")).unwrap_or_default());
+    open_url(app, &page)?;
+    let mut note = press.clone();
+    let mut reopened = 0u32;
+    let mut wrong = 0u32;
+    let mut broke = 0u32;
     loop {
-        emit(app, m, "waiting", 0, 0, note.clone());
-        let deadline = tokio::time::Instant::now() + WAIT_FOR_CLICK;
+        say(&note, *got_a_link);
+        let mut remind_at = tokio::time::Instant::now() + REMIND_AFTER;
         let link = loop {
             if cancel.load(Ordering::SeqCst) {
                 return Err("cancelled".into());
             }
             match tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await {
-                Ok(Some(l)) if l.mod_id == n.mod_id && l.game == modlist::NEXUS_GAME => break l,
-                Ok(Some(l)) => log::line(&format!("mods: ignored a link for mod {} while waiting for {}", l.mod_id, m.name)),
+                Ok(Some(l)) => match modlist::link_fits(n, &l.game, l.mod_id, l.file_id) {
+                    modlist::LinkFits::Take => break l,
+                    modlist::LinkFits::OtherFile { pinned } => {
+                        *got_a_link = true;
+                        wrong += 1;
+                        log::line(&format!("mods: refused file {} for {name}: the list pins {pinned} (wrong file {wrong})", l.file_id));
+                        if wrong >= 2 {
+                            return Err("skipped for now: Nexus sent a different file twice. The launcher tries it again next time".into());
+                        }
+                        note = "That was a different file from the one Aetherial Dawn needs, so the launcher didn't use it. It has opened the right page again. Press Slow download there.".into();
+                        open_url(app, &page)?;
+                        say(&note, true);
+                        remind_at = tokio::time::Instant::now() + REMIND_AFTER;
+                    }
+                    modlist::LinkFits::OtherMod => log::line(&format!("mods: ignored a link for mod {} while waiting for {name}", l.mod_id)),
+                },
                 Ok(None) => return Err("stopped waiting".into()),
-                Err(_) if tokio::time::Instant::now() > deadline => return Err("no download was pressed on Nexus".into()),
+                Err(_) if tokio::time::Instant::now() > remind_at => {
+                    remind_at = tokio::time::Instant::now() + REMIND_AFTER;
+                    // A few times, so a player who stepped away doesn't come
+                    // back to a pile of tabs; the row's Open button is there too.
+                    if reopened < REOPEN_MAX {
+                        reopened += 1;
+                        log::line(&format!("mods: no press for {name} yet; opened its page again"));
+                        open_url(app, &page)?;
+                        note = format!("Nexus didn't send the download for {name}. The launcher opened the page again. Press Slow download there.");
+                    } else {
+                        note = format!("Still waiting for {name}. Press Open to show its Nexus page again, or Stop to carry on later.");
+                    }
+                    say(&note, *got_a_link);
+                }
                 Err(_) => {}
             }
         };
-        let url = api.download_link(modlist::NEXUS_GAME, n.mod_id, link.file_id, Some(&link)).await.map_err(|e| e.to_string())?;
-        let path = archive_path(game_dir, m, url.split('?').next().unwrap_or(""));
-        download(app, api.http, m, &url, &path, cancel).await?;
-        emit(app, m, "install", 0, 0, "");
+        *got_a_link = true;
+        emit(app, m, "download", 0, 0, format!("Got it. Downloading {name}…"));
+        // The same link is tried again for a busy Nexus or a download that
+        // broke off, before the player is asked to press again.
+        let mut last = String::new();
+        let mut path = None;
+        for attempt in 0..3u64 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_secs(5 * attempt)).await;
+                if cancel.load(Ordering::SeqCst) {
+                    return Err("cancelled".into());
+                }
+            }
+            let url = match api.download_link(modlist::NEXUS_GAME, n.mod_id, link.file_id, Some(&link)).await {
+                Ok(u) => u,
+                Err(e) => {
+                    last = e.to_string();
+                    log::line(&format!("mods: Nexus gave no link for {name} ({last}), try {}", attempt + 1));
+                    emit(app, m, "waiting", 0, 0, format!("{n_of}: Nexus is busy right now. The launcher waits a moment and tries {name} again."));
+                    continue;
+                }
+            };
+            let p = archive_path(game_dir, m, url.split('?').next().unwrap_or(""));
+            match download(app, api.http, m, &url, &p, cancel).await {
+                Ok(()) => {
+                    path = Some(p);
+                    break;
+                }
+                Err(e) if e == "cancelled" => return Err(e),
+                Err(e) => {
+                    last = e;
+                    log::line(&format!("mods: {name} download broke off ({last}), try {}", attempt + 1));
+                    emit(app, m, "waiting", 0, 0, format!("{n_of}: The download of {name} stopped. The launcher starts it again."));
+                }
+            }
+        }
+        let Some(path) = path else {
+            broke += 1;
+            if broke >= FREE_TRIES {
+                return Err(format!("the download from Nexus kept stopping ({last}). The launcher tries it again next time"));
+            }
+            open_url(app, &page)?;
+            note = format!("Nexus didn't send the download for {name}. The launcher opened the page again. Press Slow download there.");
+            continue;
+        };
+        emit(app, m, "install", 0, 0, format!("Installing {name}…"));
         match install(m, &path, game_dir, Some(link.file_id), None, n.file.is_some()).await? {
             Outcome::Installed => return Ok(()),
+            // Only an unpinned mod gets here (a pinned file is the server's
+            // own); its page is opened again for another file.
             Outcome::TooNew(p) => {
                 let _ = std::fs::remove_file(&path);
-                note = format!("That file is for a newer Skyrim ({}). Open Files, pick an older version for Skyrim 1.6.1170 and press Mod manager download.", p.join(", "));
+                open_url(app, &page)?;
+                note = format!("That file is for a newer Skyrim ({}), so the launcher didn't use it. On the page, press Mod manager download on an older file for Skyrim 1.6.1170, then Slow download.", p.join(", "));
             }
             Outcome::WrongBuild(p) => {
                 let _ = std::fs::remove_file(&path);
-                note = format!("That file has the old-Skyrim build of {}. Open Files, pick the one for Anniversary Edition (1.6.640 or newer) and press Mod manager download.", p.join(", "));
+                open_url(app, &page)?;
+                note = format!("That file has the old-Skyrim build of {}, so the launcher didn't use it. On the page, press Mod manager download on the Anniversary Edition file (1.6.640 or newer), then Slow download.", p.join(", "));
             }
         }
     }
@@ -711,7 +821,9 @@ async fn direct_one(app: &AppHandle, http: &reqwest::Client, m: &ModEntry, game_
 pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> CmdResult<RunResult> {
     let dir = state.config.lock().await.game_dir.clone().ok_or("Pick your Skyrim folder first.")?;
     let list = full_list(&state).await;
-    let mut todo: Vec<ModEntry> = modlist::missing(&list, &dir).into_iter().cloned().collect();
+    // Each pinned file once: the built-in Unofficial Patch and the server
+    // lane's copy of it are one download.
+    let mut todo: Vec<ModEntry> = modlist::to_fetch(&list, &dir).into_iter().cloned().collect();
     // The Black Screen Fix preset that fits the game's resolution.
     let height = app.path().document_dir().ok().and_then(|d| launcher_core::gameini::screen_height(&d));
     for m in todo.iter_mut().filter(|m| m.id == "black-screen-fix") {
@@ -765,17 +877,26 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
     // API won't hand a file over. Held while waiting, then given back.
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     *state.mods.nxm_tx.lock().unwrap() = Some(tx);
-    let mut catcher = Catcher { rx, claimed: false, paged: Default::default() };
+    let mut catcher = Catcher { rx, claimed: false, paged: Default::default(), got_a_link: false };
     if needs_nexus && !premium {
         catcher.claim(&app);
     }
 
     let mut result = RunResult::default();
-    for m in &todo {
+    let count = todo.len();
+    for (i, m) in todo.iter().enumerate() {
         if cancel.load(Ordering::SeqCst) {
             result.cancelled = true;
             break;
         }
+        // Put in by an earlier download of this run (the same files).
+        if m.installed(&dir) {
+            log::line(&format!("mods: {} is already in; nothing to download", m.name));
+            emit(&app, m, "done", 0, 0, "Installed");
+            result.installed.push(m.name.clone());
+            continue;
+        }
+        let n_of = format!("Mod {} of {count}", i + 1);
         let mut r = Err(String::new());
         // One quiet retry before a failure is shown (a dropped download, a
         // busy Nexus).
@@ -784,12 +905,13 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
                 if premium {
                     premium_one(&app, &api, m, &dir, &cancel, &mut catcher).await
                 } else {
-                    free_one(&app, &api, m, &dir, &cancel, &mut catcher.rx).await
+                    free_one(&app, &api, m, &dir, &cancel, &mut catcher, &n_of).await
                 }
             } else {
                 direct_one(&app, &state.http, m, &dir, &cancel).await
             };
             match &r {
+                // Free members' downloads are asked for again inside free_one.
                 Err(e) if attempt == 0 && e != "cancelled" && (m.nexus.is_none() || premium) => {
                     log::line(&format!("mods: {} failed ({e}); trying once more", m.name));
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;

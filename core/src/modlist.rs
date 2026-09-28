@@ -186,6 +186,17 @@ impl ModEntry {
         ModEntry { check: vec![c.to_string()], ..self.clone() }
     }
 
+    /// Where a free member downloads it: a pinned file's own download page
+    /// (`nmm=1`), so the button there is for that exact file, archived ones
+    /// included; otherwise the Files tab.
+    pub fn download_page(&self) -> Option<String> {
+        let n = self.nexus.as_ref()?;
+        match n.file {
+            Some(f) => Some(format!("https://www.nexusmods.com/{NEXUS_GAME}/mods/{}?tab=files&file_id={f}&nmm=1", n.mod_id)),
+            None => self.page(),
+        }
+    }
+
     pub fn page(&self) -> Option<String> {
         let n = self.nexus.as_ref()?;
         Some(match n.file {
@@ -449,6 +460,51 @@ fn is_plugin(p: &Path) -> bool {
 
 pub fn missing<'a>(list: &'a [ModEntry], game_dir: &Path) -> Vec<&'a ModEntry> {
     list.iter().filter(|m| !m.installed(game_dir)).collect()
+}
+
+/// Two entries that fetch the same pinned Nexus file, where the second
+/// checks nothing the first doesn't: one download installs both (the
+/// built-in Unofficial Patch and the server lane's copy of it, 2026-09-28).
+pub fn same_download(first: &ModEntry, later: &ModEntry) -> bool {
+    let pinned = |m: &ModEntry| m.nexus.as_ref().and_then(|n| n.file.map(|f| (n.mod_id, f)));
+    pinned(first).is_some()
+        && pinned(first) == pinned(later)
+        && !later.check.is_empty()
+        && later.check.iter().all(|c| first.check.iter().any(|f| f.eq_ignore_ascii_case(c)))
+}
+
+/// What Download all fetches, in order: the missing entries, each pinned
+/// file once.
+pub fn to_fetch<'a>(list: &'a [ModEntry], game_dir: &Path) -> Vec<&'a ModEntry> {
+    let mut out: Vec<&ModEntry> = Vec::new();
+    for m in missing(list, game_dir) {
+        if !out.iter().any(|f| same_download(f, m)) {
+            out.push(m);
+        }
+    }
+    out
+}
+
+/// What a caught nxm:// link means for the entry waiting on it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LinkFits {
+    Take,
+    /// A link for another mod (another tab, a later mod's page).
+    OtherMod,
+    /// The right mod but not the pinned file (the newest file pressed
+    /// instead): never installed, since its plugin wouldn't match the
+    /// server's.
+    OtherFile { pinned: u64 },
+}
+
+pub fn link_fits(n: &NexusRef, game: &str, mod_id: u64, file_id: u64) -> LinkFits {
+    if mod_id != n.mod_id || !game.eq_ignore_ascii_case(NEXUS_GAME) {
+        return LinkFits::OtherMod;
+    }
+    match n.file {
+        Some(pinned) if pinned != file_id => LinkFits::OtherFile { pinned },
+        _ => LinkFits::Take,
+    }
 }
 
 /// Whether Vortex deploys mods into this game's Data folder.
@@ -1572,5 +1628,66 @@ mod served_list_check {
         for ok in ["Data/x.esp", "Data/./x.esp", "Data\\a b\\.hidden", "Data/v1.2/x.esp"] {
             assert!(super::safe_rel(ok).is_some(), "{ok}");
         }
+    }
+}
+
+#[cfg(test)]
+mod free_account_tests {
+    use super::*;
+
+    /// The server lane's own copy of the Unofficial Patch, as the cutover's
+    /// mods.json carries it.
+    fn lane_ussep() -> ModEntry {
+        serde_json::from_str(r#"{"id":"unofficial-skyrim-special-edition-patch-733846","name":"Unofficial Skyrim Special Edition Patch","nexus":{"mod":266,"file":733846},"check":["Data/Unofficial Skyrim Special Edition Patch.esp"]}"#).unwrap()
+    }
+
+    #[test]
+    fn the_unofficial_patch_is_fetched_once_after_the_cutover() {
+        let t = tempfile::tempdir().unwrap();
+        let list = merged(None, Some(&ModList { mods: vec![lane_ussep()], ..Default::default() }));
+        assert_eq!(list.iter().filter(|m| m.nexus.as_ref().is_some_and(|n| n.mod_id == 266)).count(), 2);
+        let fetch = to_fetch(&list, t.path());
+        let ussep: Vec<&str> = fetch.iter().filter(|m| m.nexus.as_ref().is_some_and(|n| n.mod_id == 266)).map(|m| m.id.as_str()).collect();
+        assert_eq!(ussep, ["ussep"]);
+        // Everything else is still fetched.
+        assert_eq!(fetch.len(), missing(&list, t.path()).len() - 1);
+    }
+
+    #[test]
+    fn only_the_same_pinned_file_with_nothing_more_to_check_is_one_download() {
+        let b = builtin(None);
+        let ussep = b.iter().find(|m| m.id == "ussep").unwrap();
+        assert!(same_download(ussep, &lane_ussep()));
+        // Another file of the same mod, or more to check, is its own download.
+        let mut other = lane_ussep();
+        other.nexus.as_mut().unwrap().file = Some(1);
+        assert!(!same_download(ussep, &other));
+        let mut more = lane_ussep();
+        more.check.push("Data/Unofficial Skyrim Special Edition Patch.bsa".into());
+        assert!(!same_download(ussep, &more));
+        // Unpinned entries are never merged.
+        let mut loose = lane_ussep();
+        loose.nexus.as_mut().unwrap().file = None;
+        assert!(!same_download(&loose, &loose.clone()));
+    }
+
+    #[test]
+    fn a_link_for_any_file_but_the_pinned_one_is_refused() {
+        let pinned = NexusRef { mod_id: 266, file: Some(733846), pick: None };
+        assert_eq!(link_fits(&pinned, NEXUS_GAME, 266, 733846), LinkFits::Take);
+        assert_eq!(link_fits(&pinned, NEXUS_GAME, 266, 900001), LinkFits::OtherFile { pinned: 733846 });
+        assert_eq!(link_fits(&pinned, NEXUS_GAME, 32444, 733846), LinkFits::OtherMod);
+        assert_eq!(link_fits(&pinned, "skyrim", 266, 733846), LinkFits::OtherMod);
+        // Unpinned: any file of the mod (checked for the game's build after).
+        let loose = NexusRef { mod_id: 266, file: None, pick: Some("AE".into()) };
+        assert_eq!(link_fits(&loose, NEXUS_GAME, 266, 900001), LinkFits::Take);
+    }
+
+    #[test]
+    fn a_pinned_file_opens_its_own_download_page() {
+        let e = ModEntry { nexus: Some(NexusRef { mod_id: 266, file: Some(733846), pick: None }), ..Default::default() };
+        assert_eq!(e.download_page().unwrap(), "https://www.nexusmods.com/skyrimspecialedition/mods/266?tab=files&file_id=733846&nmm=1");
+        let loose = ModEntry { nexus: Some(NexusRef { mod_id: 266, file: None, pick: None }), ..Default::default() };
+        assert_eq!(loose.download_page(), loose.page());
     }
 }

@@ -483,12 +483,14 @@
 
   // ---------- mods: the server's list, Nexus sign-in and Download all ----------
   let modsRunning = false;
+  let lastModsView = null;
   let useKey = false;
   let ssoReady = false;
   let modsOff = null;
   const rqError = (e) => { $('rq-error').textContent = e ? String(e) : ''; $('rq-error').hidden = !e; };
 
   function renderMods(view) {
+    lastModsView = view;
     const nx = view.nexus;
     $('rq-nx-out').hidden = !!nx;
     $('rq-nx-in').hidden = !nx;
@@ -545,7 +547,7 @@
     let t = MOD_STAGE[p.stage] ?? p.stage;
     if (p.stage === 'download' && p.total > 0) t += ` ${Math.floor(p.done * 100 / p.total)}%`;
     if (p.stage === 'waiting') t = p.message;
-    if (p.stage === 'failed') t = `Didn't install: ${p.message}`;
+    if (p.stage === 'failed') t = /^skipped for now/i.test(p.message) ? `Skipped for now: ${p.message.replace(/^skipped for now:\s*/i, '')}` : `Didn't install: ${p.message}`;
     el.textContent = t;
     el.parentElement.parentElement.classList.toggle('bad', p.stage === 'failed');
   }
@@ -558,10 +560,11 @@
     $('rq-stop').hidden = false;
     if (!modsOff) modsOff = await T.event.listen('mods-progress', ({ payload }) => modProgress(payload));
     let ok = false;
+    let stoppedNote = false;
     try {
       const r = await invoke('download_all_mods');
       if (r.failed.length) rqError(`Not installed yet: ${r.failed.map(f => f[0]).join(', ')}. The launcher tries again the next time you press Play.`);
-      else if (r.cancelled) rqError('Stopped. Click Download all to carry on.');
+      else if (r.cancelled) stoppedNote = true;
       else ok = true;
     } catch (e) {
       if (String(e) === 'NEEDS_NEXUS_SIGN_IN') { rqError('Sign in to Nexus first (above).'); $('rq-key').focus(); }
@@ -569,6 +572,10 @@
     } finally {
       modsRunning = false;
       await refreshMods();
+    }
+    if (stoppedNote) {
+      const v = lastModsView;
+      rqError(v ? `Stopped. ${v.mods.filter(m => m.installed).length} of ${v.mods.length} mods are in. Press Download all or Play to carry on.` : 'Stopped. Press Download all or Play to carry on.');
     }
     return ok;
   }
