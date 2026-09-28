@@ -51,13 +51,14 @@ function fakeBackEnd() {
       setTimeout(() => {
         log.invokes.push([at(), 'answer', cmd]);
         if (cmd === 'auth_status' && S.authFails) return rej('network down');
+        if (cmd === 'set_game_dir' && S.setDirError) return rej(S.setDirError);
         if (cmd === 'play' && S.playError && !S.played) { S.played = true; return rej(S.playError); }
         res(answers[cmd] ? answers[cmd](args || {}) : null);
       }, delay[cmd] ?? delay.default);
     }) },
     event: { listen: async () => () => {} },
     window: { getCurrentWindow: () => ({ minimize: async () => {}, close: async () => {}, unminimize: async () => {}, setFocus: async () => {}, show: async () => {} }) },
-    dialog: { open: async () => null },
+    dialog: { open: async () => S.pickDir || null },
     // The fake latest.json: this launcher is the newest.
     updater: { check: () => new Promise(r => setTimeout(() => r(null), 100)) },
     process: { relaunch: async () => {} },
@@ -72,11 +73,14 @@ function fakeBackEnd() {
     box();
     setInterval(box, 100);
     // The player presses Play as soon as it shows enabled (and once more later).
+    // The player picks a folder in the first-run sheet.
+    if (S.pickDir) setTimeout(() => document.getElementById('c-game-pick').click(), 3000);
     for (const t of S.clicks || []) setTimeout(() => { log.invokes.push([at(), 'click', label.textContent]); btn.click(); }, t);
     setTimeout(() => {
       try { log.lastReady = JSON.parse(localStorage.getItem('ad.lastReady')); } catch (_) {}
       log.signinShown = !document.getElementById('signin').hidden;
       log.status = document.getElementById('status').textContent;
+      log.gameRow = document.querySelector('#c-game small').textContent;
       const join = document.getElementById('si-join');
       log.join = join.hidden ? null : join.textContent;
       const errLink = document.querySelector('#si-error button');
@@ -184,6 +188,9 @@ const scenarios = [
   ] },
   { name: 'another Skyrim folder: no early PLAY', s: { ...base, seed: { ...seed, dir: 'D:\\Other' }, clicks: [] }, expect: r => [
     ['PLAY is not enabled before the checks', firstLabel(r, 'PLAY') === null || firstLabel(r, 'PLAY') >= answeredAt(r, 'check')],
+  ] },
+  { name: 'first start, a folder that is not Skyrim is picked: the first-run sheet says why', s: { ...base, seed: null, clicks: [], pickDir: 'D:\\Games', setDirError: "D:\\Games doesn't have SkyrimSE.exe in it." }, expect: r => [
+    ['the reason shows in the first-run sheet', /doesn't have SkyrimSE\.exe/.test(r.gameRow), r.gameRow],
   ] },
   { name: 'first start on this PC: the news box keeps its size', s: { ...base, seed: null, clicks: [] }, expect: r => [
     ['PLAY is not enabled before the checks', firstLabel(r, 'PLAY') !== null && firstLabel(r, 'PLAY') >= answeredAt(r, 'check')],
