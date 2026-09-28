@@ -326,6 +326,8 @@
     }
     if (!signedIn()) { setPlay('signin', 'SIGN IN'); setStatus('Sign in with Discord to play.', true); return; }
     if (auth.locked) { setPlay('wait', 'OFFLINE'); setStatus(auth.message, true); return; }
+    // Skyrim started from here is still running: no second Play until it ends.
+    if (gameRunning) { setPlay('wait', 'IN GAME'); return; }
     setPlay('play', 'PLAY');
     remember({ dir: state.config.gameDir, build: pending.build, version: state.launcherVersion, play: true });
     if (c && c.warning) setStatus(c.warning, true);
