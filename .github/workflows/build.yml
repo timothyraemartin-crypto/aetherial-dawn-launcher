@@ -142,7 +142,7 @@ jobs:
       actions: read
     env:
       OLD_TAG: v0.1.87
-      BUILD_RUN: "36361414910"
+      BUILD_RUN: "36363727323"
     steps:
       - uses: actions/checkout@v4
       - name: Get the live release
