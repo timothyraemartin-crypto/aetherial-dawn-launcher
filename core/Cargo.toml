@@ -16,6 +16,7 @@ tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi
 rand = "0.9"
 zip = { version = "2", default-features = false, features = ["deflate", "deflate64", "bzip2", "zstd"] }
 sevenz-rust2 = { version = "0.23", default-features = false }
+unrar = "0.5.8"
 zstd = "0.13"
 # LZMA entries in zips (FSMP 4.0.1): the zip crate's own LZMA reader fails
 # on them; this is the decoder sevenz-rust2 already brings.
