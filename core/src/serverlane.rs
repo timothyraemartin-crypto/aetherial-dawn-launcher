@@ -263,11 +263,14 @@ pub fn done(root: &Path, hash: &str) -> bool {
 /// Picks the plugins to keep from one unpacked download, as (source, plugin
 /// name). `planned` is what the normal install would copy.
 pub fn pick(m: &LaneMod, unpacked: &Path) -> Result<Vec<(PathBuf, String)>> {
-    // With named plugins the archive is searched anyway, so an installer
-    // the launcher can't follow doesn't stop it.
-    let planned = match modlist::plan(&m.entry, unpacked) {
-        Ok(p) => p,
-        Err(_) if !m.plugins.is_empty() => Vec::new(),
+    // Named plugins come only from what the installer's plan (with the
+    // entry's fomod picks) puts in Data, as a player's launcher installs it,
+    // or from a pinned path. The archive is never searched past the plan,
+    // so a patch the players' options leave out never reaches the server
+    // (PR #7, Codex 5875889405). A plan that fails leaves only pinned paths.
+    let (planned, plan_err) = match modlist::plan(&m.entry, unpacked) {
+        Ok(p) => (p, None),
+        Err(e) if !m.plugins.is_empty() => (Vec::new(), Some(e.to_string())),
         Err(e) => return Err(e),
     };
     let top: Vec<(PathBuf, String)> = planned
@@ -300,20 +303,10 @@ pub fn pick(m: &LaneMod, unpacked: &Path) -> Result<Vec<(PathBuf, String)>> {
             out.push((t.0.clone(), want.clone()));
             continue;
         }
-        let found: Vec<PathBuf> = files_named(unpacked, want);
-        match found.len() {
-            1 => out.push((found[0].clone(), want.clone())),
-            0 => problems.push(format!("no {want} in its download")),
-            _ => {
-                // Several copies with the same bytes are one file.
-                let first = std::fs::read(&found[0])?;
-                if found[1..].iter().all(|f| std::fs::read(f).map(|b| b == first).unwrap_or(false)) {
-                    out.push((found[0].clone(), want.clone()));
-                } else {
-                    let rel: Vec<String> = found.iter().map(|f| f.strip_prefix(unpacked).unwrap_or(f).to_string_lossy().replace('\\', "/")).collect();
-                    problems.push(format!("different files named {want} ({}); name one in `paths`", rel.join(", ")));
-                }
-            }
+        match &plan_err {
+            Some(e) => problems.push(format!("its installer couldn't be followed ({e}), so {want} needs a pinned path")),
+            None if !files_named(unpacked, want).is_empty() => problems.push(format!("{want} is in its download but the installer's options don't pick it")),
+            None => problems.push(format!("no {want} in its download")),
         }
     }
     if !problems.is_empty() {
@@ -498,28 +491,56 @@ mod tests {
     }
 
     #[test]
-    fn named_plugins_come_from_anywhere_in_the_archive() {
+    fn named_plugins_come_only_from_what_the_installer_puts_in_data() {
         let t = tempfile::tempdir().unwrap();
         let u = t.path().join("u");
         std::fs::create_dir_all(u.join("Patches/COTN")).unwrap();
-        std::fs::create_dir_all(u.join("Patches/Other")).unwrap();
         std::fs::write(u.join("Main.esp"), b"main").unwrap();
         std::fs::write(u.join("Patches/COTN/Patch A.esp"), b"a").unwrap();
-        std::fs::write(u.join("Patches/Other/Patch B.esp"), b"b1").unwrap();
-        std::fs::create_dir_all(u.join("Patches/More")).unwrap();
-        std::fs::write(u.join("Patches/More/Patch B.esp"), b"b2").unwrap();
         let mut m = lane(r#"{"for_discord_id":"1","mods":[{"id":"ocw","name":"OCW","nexus":{"mod":1,"file":2}}]}"#).mods.remove(0);
         let all = pick(&m, &u).unwrap();
         assert_eq!(all.iter().map(|p| p.1.as_str()).collect::<Vec<_>>(), vec!["Main.esp"]);
-        m.plugins = vec!["patch a.esp".into()];
+        m.plugins = vec!["main.ESP".into()];
         let a = pick(&m, &u).unwrap();
-        assert!(a[0].0.ends_with("Patches/COTN/Patch A.esp"));
+        assert!(a[0].0.ends_with("Main.esp"));
         // The list's spelling names the file on the server.
-        assert_eq!(a[0].1, "patch a.esp");
-        m.plugins = vec!["Patch B.esp".into()];
-        assert!(pick(&m, &u).unwrap_err().to_string().contains("different files"));
+        assert_eq!(a[0].1, "main.ESP");
+        // In the archive but not installed: refused, never searched for.
+        m.plugins = vec!["Patch A.esp".into()];
+        let e = pick(&m, &u).unwrap_err().to_string();
+        assert!(e.contains("don't pick it"), "{e}");
         m.plugins = vec!["Missing.esp".into()];
-        assert!(pick(&m, &u).is_err());
+        assert!(pick(&m, &u).unwrap_err().to_string().contains("no Missing.esp"));
+        // A pinned path still takes exactly that file.
+        m.paths.insert("Patch A.esp".into(), "Patches/COTN/Patch A.esp".into());
+        m.plugins = vec!["Patch A.esp".into()];
+        assert_eq!(std::fs::read(&pick(&m, &u).unwrap()[0].0).unwrap(), b"a");
+    }
+
+    #[test]
+    fn a_plugin_the_fomod_picks_leave_out_is_refused_though_the_archive_has_it() {
+        // MoreCraftableEquipment_USSEP.esp was collected while the log showed
+        // "[x] None": the players' picks leave the patch out, so the server
+        // must too (PR #7, Codex 5875889405).
+        let t = tempfile::tempdir().unwrap();
+        let u = t.path().join("u");
+        let xml = r#"<config><requiredInstallFiles><file source="core/MoreCraftableEquipment.esp" destination="MoreCraftableEquipment.esp"/></requiredInstallFiles><installSteps><installStep name="s"><optionalFileGroups>
+<group name="Patches" type="SelectExactlyOne"><plugins>
+<plugin name="None"><files></files><typeDescriptor><type name="Optional"/></typeDescriptor></plugin>
+<plugin name="USSEP"><files><file source="patches/MoreCraftableEquipment_USSEP.esp" destination="MoreCraftableEquipment_USSEP.esp"/></files><typeDescriptor><type name="Optional"/></typeDescriptor></plugin>
+</plugins></group></optionalFileGroups></installStep></installSteps></config>"#;
+        for (f, b) in [("fomod/ModuleConfig.xml", xml.as_bytes()), ("core/MoreCraftableEquipment.esp", b"main"), ("patches/MoreCraftableEquipment_USSEP.esp", b"patch")] {
+            std::fs::create_dir_all(u.join(f).parent().unwrap()).unwrap();
+            std::fs::write(u.join(f), b).unwrap();
+        }
+        let json = |fomod: &str| format!(r#"{{"for_discord_id":"1","mods":[{{"id":"mce","name":"MCE","nexus":{{"mod":1,"file":2}},"fomod":[{fomod}],"plugins":["MoreCraftableEquipment.esp","MoreCraftableEquipment_USSEP.esp"]}}]}}"#);
+        let none = lane(&json(r#""None""#)).mods.remove(0);
+        let e = pick(&none, &u).unwrap_err().to_string();
+        assert!(e.contains("MoreCraftableEquipment_USSEP.esp is in its download but the installer's options don't pick it"), "{e}");
+        assert!(!e.contains("MoreCraftableEquipment.esp is"), "the main plugin is fine: {e}");
+        // With the patch picked, both come from the plan.
+        let both = pick(&lane(&json(r#""USSEP""#)).mods[0], &u).unwrap();
+        assert_eq!(both.iter().map(|p| std::fs::read(&p.0).unwrap()).collect::<Vec<_>>(), vec![b"main".to_vec(), b"patch".to_vec()]);
     }
 
     #[test]
