@@ -58,8 +58,13 @@ function fakeBackEnd() {
     event: { listen: async () => () => {} },
     window: { getCurrentWindow: () => ({ minimize: async () => {}, close: async () => {}, unminimize: async () => {}, setFocus: async () => {}, show: async () => {} }) },
     dialog: { open: async () => null },
-    // The fake latest.json: this launcher is the newest.
-    updater: { check: () => new Promise(r => setTimeout(() => r(null), 100)) },
+    // The fake latest.json: this launcher is the newest, unless S.update names a newer one.
+    updater: { check: () => new Promise(r => setTimeout(() => r(S.update ? {
+      version: S.update,
+      download: () => { log.invokes.push([at(), 'ask', 'updater_download']); return new Promise(res => setTimeout(res, 200)); },
+      install: async () => { log.invokes.push([at(), 'ask', 'updater_install']); },
+      downloadAndInstall: async () => { log.invokes.push([at(), 'ask', 'updater_install']); },
+    } : null), 100)) },
     process: { relaunch: async () => {} },
   };
   document.addEventListener('DOMContentLoaded', () => {
@@ -185,6 +190,13 @@ const scenarios = [
   { name: 'another Skyrim folder: no early PLAY', s: { ...base, seed: { ...seed, dir: 'D:\\Other' }, clicks: [] }, expect: r => [
     ['PLAY is not enabled before the checks', firstLabel(r, 'PLAY') === null || firstLabel(r, 'PLAY') >= answeredAt(r, 'check')],
   ] },
+  { name: 'launcher update found while Play is starting the game: it waits', s: { ...base, update: '9.9.10', delay: { play: 3000 } }, expect: r => [
+    ['the game starts', played(r)],
+    ['the launcher never installs its update while Play runs or the game is up', askedAt(r, 'updater_install') === null, JSON.stringify(r.invokes.filter(i => /updater|play/.test(i[2])))],
+  ] },
+  { name: 'launcher update found with nothing running: it installs', s: { ...base, update: '9.9.10', clicks: [] }, expect: r => [
+    ['the update installs', askedAt(r, 'updater_install') !== null],
+  ] },
   { name: 'first start on this PC: the news box keeps its size', s: { ...base, seed: null, clicks: [] }, expect: r => [
     ['PLAY is not enabled before the checks', firstLabel(r, 'PLAY') !== null && firstLabel(r, 'PLAY') >= answeredAt(r, 'check')],
     // From when the window is shown (fonts settle before that, unseen).
@@ -208,7 +220,7 @@ for (const sc of scenarios) {
     const root = process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : [];
     out = execFileSync(chrome, [...root, '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
       `--user-data-dir=${path.join(dir, 'profile')}`, '--allow-file-access-from-files', '--window-size=1360,880',
-      '--virtual-time-budget=8000', '--dump-dom', url], { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] });
+      `--virtual-time-budget=${Math.max(8000, (sc.s.end || 6000) + 2000)}`, '--dump-dom', url], { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] });
   } catch (e) { out = String(e.stdout || ''); }
   const m = out.match(/<pre id="ui-test-result">([\s\S]*?)<\/pre>/);
   console.log(`== ${sc.name}`);
