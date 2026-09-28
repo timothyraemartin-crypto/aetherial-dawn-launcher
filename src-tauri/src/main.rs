@@ -1056,6 +1056,18 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
     use launcher_core::{community, patcher};
     let dir = game_dir(&state).await?;
     let spec = game_spec(&state).await?;
+    // A version fix cut short (launcher closed, power lost) is put back first,
+    // or the half-changed game reads as neither build.
+    if community::needs_recovery(&dir) {
+        if watch::find_process(watch::GAME_PROCESS).is_some() {
+            return Err("Close Skyrim first.".into());
+        }
+        log::line("patch: an earlier version fix was cut short, putting the game's files back");
+        community::recover(&dir).map_err(|e| {
+            log::line(&format!("patch: putting back failed: {e}"));
+            format!("Couldn't patch the game: {e}")
+        })?;
+    }
     // Steam's current build: MulderLoad's public patches, no Steam sign-in.
     if spec.version.as_deref() == Some(community::TARGET) && community::supported(&dir) {
         if watch::find_process(watch::GAME_PROCESS).is_some() {
