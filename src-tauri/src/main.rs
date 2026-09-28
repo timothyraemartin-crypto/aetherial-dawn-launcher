@@ -1085,7 +1085,7 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
         log::line(&format!("patch: {} file(s) changed: {}", changed.len(), changed.join(", ")));
         let _ = app.emit("patch-progress", PatchProgress { stage: "verify", file: String::new(), done: 1, total: 1 });
         let gc = finish_downgrade(&dir, &spec, false)?;
-        install_missing_mods(&state.http, &dir).await?;
+        helpers_after_patch(&state.http, &dir).await;
         return Ok(gc);
     }
     let base = state.config.lock().await.base_url.clone();
@@ -1173,8 +1173,19 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
     }
     let _ = app.emit("patch-progress", PatchProgress { stage: "verify", file: String::new(), done: total, total });
     let gc = finish_downgrade(&dir, &spec, false)?;
-    install_missing_mods(&state.http, &dir).await?;
+    helpers_after_patch(&state.http, &dir).await;
     Ok(gc)
+}
+
+/// Installs SKSE and the helper mods once the game is on the server's
+/// version. The version fix itself has worked by then, so a failure here
+/// doesn't report it as failed (running it again would only say the game is
+/// already on that version); Play installs them again and stops with the
+/// reason if they still can't be installed.
+async fn helpers_after_patch(http: &reqwest::Client, dir: &std::path::Path) {
+    if let Err(e) = install_missing_mods(http, dir).await {
+        log::line(&format!("patch: the game is on the server's version, but the helper mods didn't install yet ({e}); Play tries again"));
+    }
 }
 
 fn patch_build_dir(game_dir: &std::path::Path) -> PathBuf {
