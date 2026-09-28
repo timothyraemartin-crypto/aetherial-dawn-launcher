@@ -40,7 +40,9 @@ function fakeBackEnd() {
     update: () => null,
     server_status: () => ({ online: true, players: 1, maxPlayers: 50, discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
     files: () => [], game_check: () => game, play: () => null,
-    mods_state: () => ({ mods: [], nexus: null, vortex: false, running: false, sso: false }),
+    mods_state: () => S.modsState || ({ mods: [], nexus: null, vortex: false, running: false, sso: false }),
+    download_all_mods: () => ({ installed: [], failed: [], cancelled: false }),
+    plain_error: a => a.text,
   };
   const delay = Object.assign({ get_state: 20, auth_status: 300, check: 900, update: 600, server_status: 300, play: 50, default: 10 }, S.delay || {});
   window.__TAURI__ = {
@@ -49,6 +51,7 @@ function fakeBackEnd() {
       setTimeout(() => {
         log.invokes.push([at(), 'answer', cmd]);
         if (cmd === 'auth_status' && S.authFails) return rej('network down');
+        if (cmd === 'play' && S.playError && !S.played) { S.played = true; return rej(S.playError); }
         res(answers[cmd] ? answers[cmd](args || {}) : null);
       }, delay[cmd] ?? delay.default);
     }) },
@@ -80,6 +83,10 @@ function fakeBackEnd() {
       log.errorLink = errLink ? errLink.textContent : null;
       log.skse = ['g-skse', 'c-skse'].map(id => { const el = document.getElementById(id); return el.querySelector('b').textContent + el.querySelector('small').textContent; });
       log.skseRecheck = !document.getElementById('c-skse-recheck').hidden;
+      const free = document.getElementById('rq-nx-free');
+      log.freeNote = free.hidden ? null : free.textContent;
+      log.modsButton = document.getElementById('rq-all').textContent;
+      log.modsShown = !document.getElementById('reqs').hidden;
       const pre = document.createElement('pre');
       pre.id = 'ui-test-result';
       pre.textContent = JSON.stringify(log);
@@ -131,6 +138,17 @@ const scenarios = [
   ] },
   { name: 'SKSE installed: no file name under it', s: base, expect: r => [
     ['the row reads "SKSE installed" alone', r.skse.every(t => t === 'SKSE installed'), JSON.stringify(r.skse)],
+  ] },
+  { name: 'free Nexus account: told first, and the list waits for Start', s: { ...base, playError: 'NEEDS_NEXUS_MODS:[{"id":"a","name":"A"},{"id":"b","name":"B"}]', modsState: { mods: [{ id: 'a', name: 'A', installed: false }, { id: 'b', name: 'B', installed: false }], nexus: { name: 'Player', is_premium: false }, vortex: false, running: false, sso: true } }, expect: r => [
+    ['the mods window is open', r.modsShown],
+    ['it says a free account needs one press per file, and Premium is one button', /one press per file/.test(r.freeNote || '') && /Premium it's one button/.test(r.freeNote || ''), r.freeNote],
+    ['it says how many', /2 mods to get/.test(r.freeNote || '')],
+    ['the button reads START (2)', r.modsButton === 'START (2)', r.modsButton],
+    ['nothing starts before Start is pressed', askedAt(r, 'download_all_mods') === null],
+  ] },
+  { name: 'Premium Nexus account: Play installs the mods by itself', s: { ...base, playError: 'NEEDS_NEXUS_MODS:[{"id":"a","name":"A"}]', modsState: { mods: [{ id: 'a', name: 'A', installed: false }], nexus: { name: 'Player', is_premium: true }, vortex: false, running: false, sso: true } }, expect: r => [
+    ['no free-account note', r.freeNote === null],
+    ['the mods download by themselves', askedAt(r, 'download_all_mods') !== null],
   ] },
   { name: 'Discord cannot be reached: SIGN IN, the game never starts', s: { ...base, authFails: true }, expect: r => [
     ['the game never starts', !played(r)],

@@ -596,7 +596,9 @@
     }
     const missing = view.mods.filter(m => !m.installed).length;
     $('rq-all').disabled = modsRunning || missing === 0;
-    $('rq-all').textContent = missing === 0 ? 'ALL INSTALLED' : `DOWNLOAD ALL (${missing})`;
+    const free = !!(nx && !nx.is_premium);
+    $('rq-nx-free-text').textContent = `${plural(missing, 'mod')} to get. When you press Start, the launcher opens each file's page on Nexus in turn; press Slow download there and it does the rest. You can stop and carry on later.`;
+    $('rq-all').textContent = missing === 0 ? 'ALL INSTALLED' : `${free ? 'START' : 'DOWNLOAD ALL'} (${missing})`;
     $('rq-stop').hidden = !modsRunning;
   }
 
@@ -685,6 +687,8 @@
 let autoMods = false;
   // Play is waiting for Nexus sign-in; it carries on by itself after it.
   let playAfterNexus = false;
+  // Play asked for mods on a free account: Start in the mods window carries on.
+  let playAfterMods = false;
   async function onPlay(auto = false) {
     if (quietCheck) {
       setPlay('wait', 'STARTING');
@@ -714,6 +718,14 @@ let autoMods = false;
         await showRequiredMods();
         // Play installs what's missing by itself, then carries on (once, so a
         // mod that won't install can't loop).
+        // A free account is told first that Nexus needs a press per file
+        // (Timothy, 02:08: guided clicks), and starts the list itself.
+        const freeNexus = !!(lastModsView && lastModsView.nexus && !lastModsView.nexus.is_premium);
+        if (!auto && !autoMods && !$('rq-nx-in').hidden && freeNexus) {
+          playAfterMods = true;
+          setStatus(`A free Nexus account needs one press per file. Press Start in the mods window when you're ready; Skyrim starts after.`);
+          return;
+        }
         if (!auto && !autoMods && !$('rq-nx-in').hidden) {
           autoMods = true;
           setStatus(`Installing ${mods.length === 1 ? mods[0].name : `${mods.length} required mods`}, then starting Skyrim…`);
@@ -994,8 +1006,12 @@ let autoMods = false;
     catch { $('cr-note').textContent = "Couldn't copy. Open the log folder and send the newest game-….txt file."; }
     $('cr-note').hidden = false;
   };
-  $('rq-close').onclick = () => { playAfterNexus = false; showPage(page); };
-  $('rq-all').onclick = () => downloadAll();
+  $('rq-close').onclick = () => { playAfterNexus = playAfterMods = false; showPage(page); };
+  $('rq-all').onclick = async () => {
+    const ok = await downloadAll();
+    // Start pressed after Play: Skyrim starts once every mod is in.
+    if (ok && playAfterMods) { playAfterMods = false; showSheet(null); onPlay(true); }
+  };
   // After Nexus sign-in, the Play that asked for it carries on by itself.
   async function resumePlay() {
     if (!playAfterNexus || $('rq-nx-in').hidden) return;
