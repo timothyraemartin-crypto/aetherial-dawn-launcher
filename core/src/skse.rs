@@ -306,4 +306,28 @@ pub mod tests {
         assert!(matches!(se, Build::Wrong(_)), "{se:?}");
         assert_eq!(build_of(&dir.join("SKSE/Plugins/SkyrimSoulsRE.dll")), Build::Fits);
     }
+
+    /// The skee64.dll (RaceMenu) the launcher refused on Timothy's PC, when
+    /// AD_SKEE64_DLL points at it: flags 0, ex flags 0, games [1.6.1170]
+    /// (read by Codex, PR #1). The old check called it the pre-1.6.629 build;
+    /// SKSE 2.2.6 loads it.
+    #[test]
+    fn describes_an_exact_version_plugin_as_the_skee64_check_expects() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("skee64.dll");
+        std::fs::write(&p, dll(&["SKSEPlugin_Version"], &version_data(0, 0, &[RUNTIME_1_6_1170]))).unwrap();
+        assert!(describe(&p).contains("flags 0x0, ex flags 0x0, games [1.6.1170]"), "{}", describe(&p));
+    }
+
+    #[test]
+    fn real_racemenu_skee64_loads() {
+        let Ok(p) = std::env::var("AD_SKEE64_DLL") else { return };
+        let b = std::fs::read(&p).unwrap();
+        use sha2::{Digest, Sha256};
+        assert_eq!(hex::encode(Sha256::digest(&b)), "5225e4e3b185e6fc57c8d31b0cedbe5a030a951d9a744d33071b64c45a38c208", "not the file from the report");
+        let d = describe(std::path::Path::new(&p));
+        eprintln!("skee64.dll: {d}");
+        assert!(d.contains("flags 0x0, ex flags 0x0, games [1.6.1170]"), "{d}");
+        assert_eq!(build_of_bytes(&b), Build::Fits);
+    }
 }
