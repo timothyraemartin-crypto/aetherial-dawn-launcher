@@ -1358,38 +1358,11 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_m
 /// player, so one that can't be installed stops Play with the reason instead
 /// of the game starting without it.
 async fn install_missing_mods(http: &reqwest::Client, dir: &std::path::Path) -> CmdResult<()> {
-    let cleaned = requirements::clean_partials(dir);
-    if !cleaned.is_empty() {
-        log::line(&format!("removed half-written mod files: {}", cleaned.join(", ")));
-    }
-    if !requirements::skse_ok(dir) {
-        match requirements::install_skse(http, dir).await {
-            Ok(()) => log::line(&format!("installed SKSE {}", requirements::SKSE_VERSION)),
-            Err(e) => {
-                log::line(&format!("couldn't install SKSE: {e}"));
-                return Err(format!("Couldn't install SKSE {} ({e}). Check your internet connection and try again.", requirements::SKSE_VERSION));
-            }
-        }
-    }
-    if !requirements::crash_logger_ok(dir) {
-        match requirements::install_crash_logger(http, dir).await {
-            Ok(()) => log::line(&format!("installed Crash Logger {}", requirements::CRASH_LOGGER_VERSION)),
-            Err(e) => {
-                log::line(&format!("couldn't install Crash Logger: {e}"));
-                return Err(format!("Couldn't install Crash Logger {} ({e}). Check your internet connection and try again.", requirements::CRASH_LOGGER_VERSION));
-            }
-        }
-    }
-    if !requirements::souls_ok(dir) {
-        match requirements::install_souls(http, dir).await {
-            Ok(()) => log::line(&format!("installed Skyrim Souls RE {}", requirements::SOULS_VERSION)),
-            Err(e) => {
-                log::line(&format!("couldn't install Skyrim Souls RE: {e}"));
-                return Err(format!("Couldn't install Skyrim Souls RE {} ({e}). Check your internet connection and try again.", requirements::SOULS_VERSION));
-            }
-        }
-    }
-    Ok(())
+    let mut line = |l: &str| log::line(l);
+    requirements::ensure_helpers(http, dir, &requirements::Sources::official(), &mut line).await.map_err(|f| {
+        log::line(&format!("couldn't install {}: {}", f.name, f.cause));
+        f.message()
+    })
 }
 
 /// What Play is doing now, for the status line under the Play button, so a
@@ -1460,25 +1433,13 @@ fn clear_browser_cache() {
     }
 }
 
-/// Launchers before 0.1.20 moved crash loggers aside with other SKSE plugins.
-/// Puts the newest one back, so the next crash names the module that failed.
+/// Launchers before 0.1.20 moved crash loggers aside with other SKSE plugins;
+/// the newest one SKSE would load is put back (see requirements.rs).
 fn restore_crash_logger(dir: &std::path::Path) {
-    let plugins = dir.join("Data").join("SKSE").join("Plugins");
-    if strays::CRASH_LOGGERS.iter().any(|n| plugins.join(n).is_file()) {
-        return;
-    }
-    let Ok(rd) = std::fs::read_dir(dir.join(strays::DISABLED_DIR)) else { return };
-    let mut stamps: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
-    stamps.sort();
-    for stamp in stamps.iter().rev() {
-        let from = stamp.join("Data").join("SKSE").join("Plugins").join("CrashLogger.dll");
-        if from.is_file() {
-            match std::fs::rename(&from, plugins.join("CrashLogger.dll")) {
-                Ok(()) => log::line(&format!("play: put the crash logger back from {}", stamp.display())),
-                Err(e) => log::line(&format!("play: couldn't put the crash logger back: {e}")),
-            }
-            return;
-        }
+    match requirements::restore_crash_logger(dir) {
+        Ok(Some(stamp)) => log::line(&format!("play: put the crash logger back from {}", stamp.display())),
+        Ok(None) => {}
+        Err(e) => log::line(&format!("play: couldn't put the crash logger back: {e}")),
     }
 }
 
