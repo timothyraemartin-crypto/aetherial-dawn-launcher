@@ -28,6 +28,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test
         run: cargo test -p launcher-core
+      # The launcher's page in headless Chrome with a fake back end: PLAY from
+      # the last session never starts the game for a banned account, an update
+      # or a wrong game version, and the news box never jumps.
+      - name: Fast Play checks
+        run: node .github/scripts/ui-fast-play-test.js
       - name: Install Tauri CLI
         uses: taiki-e/install-action@v2
         with:

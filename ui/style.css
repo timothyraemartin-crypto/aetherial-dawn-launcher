@@ -118,7 +118,10 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .label { margin: 0; font: 500 11.5px var(--display); letter-spacing: .18em; color: var(--muted); display: flex; justify-content: space-between; align-items: center; }
 .label button { background: none; border: 0; color: var(--faint); font: 400 12px var(--body); letter-spacing: 0; cursor: pointer; }
 .label button:hover { color: var(--text); }
-.news-list { display: grid; gap: 10px; }
+/* The space for three items is kept from the first frame, so the box above
+   Play never grows when the news arrives; titles stay on one line to fit. */
+.news-list { display: grid; gap: 10px; align-content: start; height: 237px; overflow: hidden; }
+.news-list .news-item h3 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .news-item { display: grid; grid-template-columns: 110px 1fr; gap: 12px; align-items: start; }
 .news-item img { width: 110px; height: 62px; object-fit: cover; border-radius: 3px; border: 1px solid var(--line); }
 .news-item h3 { margin: 0; font: 600 13.5px/1.3 var(--body); }
