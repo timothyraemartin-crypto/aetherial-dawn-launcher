@@ -876,7 +876,7 @@ async fn auth_status(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Au
                 offline: true,
                 locked: !fresh,
                 message: Some(if fresh {
-                    "Couldn't reach the login service. You can still play for now.".into()
+                    "Couldn't reach the login service. You're still signed in, but Play needs it to start the game, so try again when it's back.".into()
                 } else {
                     "Couldn't confirm your Discord sign-in for over a day. Connect to the internet and try again.".into()
                 }),
