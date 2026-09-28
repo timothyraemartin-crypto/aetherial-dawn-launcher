@@ -1353,8 +1353,10 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_m
 /// Required mods (Timothy, 2026-09-26): the ones on GitHub are installed here
 /// when missing; the ones only on Nexus Mods stop Play with
 /// "NEEDS_NEXUS_MODS:<json list>" and the UI walks the player through them.
-/// Installs SKSE 2.2.6 and Crash Logger from their official GitHub releases
-/// when they're missing.
+/// Installs SKSE 2.2.6, Crash Logger and Skyrim Souls RE from their official
+/// GitHub releases when they're missing. All three are required for every
+/// player, so one that can't be installed stops Play with the reason instead
+/// of the game starting without it.
 async fn install_missing_mods(http: &reqwest::Client, dir: &std::path::Path) -> CmdResult<()> {
     let cleaned = requirements::clean_partials(dir);
     if !cleaned.is_empty() {
@@ -1372,13 +1374,19 @@ async fn install_missing_mods(http: &reqwest::Client, dir: &std::path::Path) -> 
     if !requirements::crash_logger_ok(dir) {
         match requirements::install_crash_logger(http, dir).await {
             Ok(()) => log::line(&format!("installed Crash Logger {}", requirements::CRASH_LOGGER_VERSION)),
-            Err(e) => log::line(&format!("couldn't install Crash Logger: {e}")),
+            Err(e) => {
+                log::line(&format!("couldn't install Crash Logger: {e}"));
+                return Err(format!("Couldn't install Crash Logger {} ({e}). Check your internet connection and try again.", requirements::CRASH_LOGGER_VERSION));
+            }
         }
     }
     if !requirements::souls_ok(dir) {
         match requirements::install_souls(http, dir).await {
             Ok(()) => log::line(&format!("installed Skyrim Souls RE {}", requirements::SOULS_VERSION)),
-            Err(e) => log::line(&format!("couldn't install Skyrim Souls RE: {e}")),
+            Err(e) => {
+                log::line(&format!("couldn't install Skyrim Souls RE: {e}"));
+                return Err(format!("Couldn't install Skyrim Souls RE {} ({e}). Check your internet connection and try again.", requirements::SOULS_VERSION));
+            }
         }
     }
     Ok(())
