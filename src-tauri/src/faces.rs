@@ -13,8 +13,9 @@ use launcher_core::faces;
 use crate::log;
 
 const TICK: Duration = Duration::from_secs(1);
-const LIST_EVERY: Duration = Duration::from_secs(5);
-const LIST_MAX: Duration = Duration::from_secs(60);
+/// The list's pace: the server's `listEvery`, 5 s when it says nothing
+/// (core/src/faces.rs), never slower than this after failures.
+const LIST_MAX: Duration = faces::LIST_EVERY_MAX;
 /// Faces fetched per list, so one list can't hold the loop for long.
 const PER_LIST: usize = 20;
 
@@ -34,7 +35,9 @@ pub async fn run(http: reqwest::Client, base: String, token: String, game_dir: P
     // (the file's modified time, when) for the one retry a 409, 429 or 503
     // gets.
     let mut retry: Option<(Option<SystemTime>, Instant)> = None;
-    let mut every = LIST_EVERY;
+    // The server's pace, from its last list answer.
+    let mut pace = faces::LIST_EVERY;
+    let mut every = pace;
     let mut next_list = Instant::now();
     let mut last: Option<BTreeSet<String>> = None;
     log::line("faces: sharing faces while the game runs");
@@ -71,8 +74,13 @@ pub async fn run(http: reqwest::Client, base: String, token: String, game_dir: P
         // Everyone else's faces.
         if Instant::now() >= next_list {
             match list(&http, &api, &token).await {
-                Ok(names) => {
-                    every = LIST_EVERY;
+                Ok(answer) => {
+                    if answer.every != pace {
+                        log::line(&format!("faces: the server asks for the list every {:.1} s", answer.every.as_secs_f64()));
+                        pace = answer.every;
+                    }
+                    every = pace;
+                    let names = answer.names;
                     let have = faces::saved(&dir);
                     for name in names.iter().filter(|n| !have.contains(*n)).take(PER_LIST) {
                         if stop.load(Ordering::SeqCst) {
@@ -91,7 +99,9 @@ pub async fn run(http: reqwest::Client, base: String, token: String, game_dir: P
                     }
                     last = Some(set);
                 }
-                Err(List::Slower) => every = (every * 2).min(LIST_MAX),
+                // The server's Retry-After when it sends one, else twice as slow.
+                Err(List::Slower(Some(wait))) => every = wait.max(pace),
+                Err(List::Slower(None)) => every = (every * 2).min(LIST_MAX),
                 Err(List::SignedOut) => {
                     log::line("faces: the login service says signed out; stopping for this session");
                     break;
@@ -180,19 +190,20 @@ async fn upload(http: &reqwest::Client, api: &str, token: &str, own: &Path) -> U
 }
 
 enum List {
-    Slower,
+    /// Busy or too soon, with the server's Retry-After if it sent one.
+    Slower(Option<Duration>),
     SignedOut,
     Failed(String),
 }
 
-async fn list(http: &reqwest::Client, api: &str, token: &str) -> Result<Vec<String>, List> {
+async fn list(http: &reqwest::Client, api: &str, token: &str) -> Result<faces::FaceList, List> {
     let r = http.get(format!("{api}/list")).header("authorization", token).timeout(Duration::from_secs(10)).send().await.map_err(|e| List::Failed(launcher_core::scrub(&e.to_string())))?;
     match r.status().as_u16() {
         200 => {
             let body = capped(r, faces::MAX_LIST).await.ok_or_else(|| List::Failed("the list was too long".into()))?;
-            faces::list_names(&body).map_err(|e| List::Failed(e.to_string()))
+            faces::list_answer(&body).map_err(|e| List::Failed(e.to_string()))
         }
-        429 | 503 => Err(List::Slower),
+        429 | 503 => Err(List::Slower(retry_after(&r))),
         401 => Err(List::SignedOut),
         s => Err(List::Failed(format!("answer {s}"))),
     }

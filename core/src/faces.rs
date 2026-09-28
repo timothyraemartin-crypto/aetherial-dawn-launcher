@@ -101,8 +101,23 @@ pub fn tidy(dir: &Path, keep: &BTreeSet<String>) -> usize {
     n
 }
 
-/// The list answer's names (invalid ones dropped).
-pub fn list_names(body: &[u8]) -> Result<Vec<String>> {
+/// How often the list is asked for when the server doesn't say: safe with
+/// faces 1.1.6, which refuses a second list within 2 s.
+pub const LIST_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+/// The fastest and slowest a server may ask for.
+pub const LIST_EVERY_MIN: std::time::Duration = std::time::Duration::from_secs(1);
+pub const LIST_EVERY_MAX: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The list answer: the names (invalid ones dropped) and how soon to ask
+/// again, from `"listEvery"` in seconds when the server sends it (kept
+/// between 1 and 60 s), otherwise `LIST_EVERY`.
+#[derive(Debug, PartialEq)]
+pub struct FaceList {
+    pub names: Vec<String>,
+    pub every: std::time::Duration,
+}
+
+pub fn list_answer(body: &[u8]) -> Result<FaceList> {
     #[derive(serde::Deserialize)]
     struct Face {
         name: String,
@@ -110,12 +125,25 @@ pub fn list_names(body: &[u8]) -> Result<Vec<String>> {
     #[derive(serde::Deserialize)]
     struct List {
         faces: Vec<Face>,
+        #[serde(default, rename = "listEvery")]
+        list_every: Option<serde_json::Value>,
     }
     if body.len() > MAX_LIST {
         return Err(Error::Game("the face list is too long".into()));
     }
     let l: List = serde_json::from_slice(body)?;
-    Ok(l.faces.into_iter().map(|f| f.name).filter(|n| valid_name(n)).take(300).collect())
+    let every = l
+        .list_every
+        .and_then(|v| v.as_f64())
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .map(|s| std::time::Duration::from_secs_f64(s.min(3600.0)).clamp(LIST_EVERY_MIN, LIST_EVERY_MAX))
+        .unwrap_or(LIST_EVERY);
+    Ok(FaceList { names: l.faces.into_iter().map(|f| f.name).filter(|n| valid_name(n)).take(300).collect(), every })
+}
+
+/// The list answer's names (invalid ones dropped).
+pub fn list_names(body: &[u8]) -> Result<Vec<String>> {
+    list_answer(body).map(|l| l.names)
 }
 
 /// Remembers the latest list, for tidying at the next launcher start.
@@ -189,6 +217,23 @@ mod tests {
         let body = br#"{"v":1,"folder":"ad","faces":[{"name":"aff000003-0123456789abcdef","bytes":12},{"name":"../x","bytes":1}]}"#;
         assert_eq!(list_names(body).unwrap(), vec!["aff000003-0123456789abcdef"]);
         assert!(list_names(b"nope").is_err());
+    }
+
+    #[test]
+    fn the_list_interval_comes_from_the_server_with_a_safe_fallback() {
+        use std::time::Duration;
+        let with = |v: &str| list_answer(format!(r#"{{"faces":[],"listEvery":{v}}}"#).as_bytes()).unwrap().every;
+        // faces 1.1.6 says nothing: 5 s, clear of its 2 s gap.
+        assert_eq!(list_answer(br#"{"faces":[]}"#).unwrap().every, Duration::from_secs(5));
+        assert_eq!(with("1"), Duration::from_secs(1));
+        assert_eq!(with("2.5"), Duration::from_millis(2500));
+        // Kept between 1 and 60 s; nonsense falls back.
+        assert_eq!(with("0.2"), Duration::from_secs(1));
+        assert_eq!(with("9999"), Duration::from_secs(60));
+        assert_eq!(with("0"), Duration::from_secs(5));
+        assert_eq!(with("-3"), Duration::from_secs(5));
+        assert_eq!(with("\"soon\""), Duration::from_secs(5));
+        assert_eq!(with("null"), Duration::from_secs(5));
     }
 
     #[cfg(unix)]

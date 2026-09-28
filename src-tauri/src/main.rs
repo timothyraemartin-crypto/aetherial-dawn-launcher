@@ -76,6 +76,9 @@ struct AppState {
     config: Mutex<Config>,
     manifest: Mutex<Option<Manifest>>,
     http: reqwest::Client,
+    /// The same, taking gzip-compressed answers: face sharing only, so every
+    /// other download stays byte for byte what the server sent.
+    faces_http: reqwest::Client,
     mods: mods::ModsState,
     music: music::Music,
 }
@@ -567,7 +570,7 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
             // Face sharing for as long as the game runs.
             let stop = std::sync::Arc::new(AtomicBool::new(false));
             let sharing = token(&app).map(|t| {
-                let http = app.state::<AppState>().http.clone();
+                let http = app.state::<AppState>().faces_http.clone();
                 tokio::spawn(faces::run(http, AUTH_URL.to_string(), t, game_dir.clone(), stop.clone()))
             });
             let code = tokio::task::spawn_blocking(move || watch::wait_exit(pid)).await.ok().flatten();
@@ -2051,12 +2054,16 @@ fn main() {
             // The bot counts launcher versions from this header.
             let mut headers = reqwest::header::HeaderMap::new();
             headers.insert("x-launcher-version", reqwest::header::HeaderValue::from_static(env!("CARGO_PKG_VERSION")));
-            let http = reqwest::Client::builder()
-                .user_agent(concat!("AetherialDawnLauncher/", env!("CARGO_PKG_VERSION")))
-                .default_headers(headers)
-                .connect_timeout(std::time::Duration::from_secs(10))
-                .build()?;
-            app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http, mods: Default::default(), music: music::Music::new() });
+            let client = |gzip: bool| {
+                reqwest::Client::builder()
+                    .user_agent(concat!("AetherialDawnLauncher/", env!("CARGO_PKG_VERSION")))
+                    .default_headers(headers.clone())
+                    .connect_timeout(std::time::Duration::from_secs(10))
+                    .gzip(gzip)
+                    .build()
+            };
+            let (http, faces_http) = (client(false)?, client(true)?);
+            app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http, faces_http, mods: Default::default(), music: music::Music::new() });
             mods::restore_left_handler(app.handle());
             // A session that ended while the launcher was closed.
             if let Some(dir) = app.state::<AppState>().config.try_lock().ok().and_then(|c| c.game_dir.clone()) {
