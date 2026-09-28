@@ -1157,6 +1157,53 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
     let tmp = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("patches");
     std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
     let total = steps.len();
+    // Every patched file is made first; the game only changes in the one
+    // journalled swap after the loop, so a failure here leaves it as it was.
+    let stage = patcher::stage_dir(&dir);
+    let _ = std::fs::remove_dir_all(&stage);
+    let made = server_patch_files(&app, &state, &dir, &base, &local_dir, &tmp, &stage, &steps).await;
+    let swaps = match made {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&stage);
+            return Err(e);
+        }
+    };
+    let _ = app.emit("patch-progress", PatchProgress { stage: "swap", file: String::new(), done: 0, total });
+    let (dir2, app2) = (dir.clone(), app.clone());
+    let swapped = tokio::task::spawn_blocking(move || {
+        let mut report = move |_: &str, file: &str, done: u64, total: u64| {
+            let _ = app2.emit("patch-progress", PatchProgress { stage: "swap", file: file.to_string(), done: done as usize, total: total as usize });
+        };
+        community::swap_in(&dir2, &swaps, &mut report)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_dir_all(&stage);
+    swapped.map_err(|e| format!("Couldn't patch the game: {e}"))?;
+    log::line(&format!("patch: swapped in {total} patched file(s)"));
+    let _ = app.emit("patch-progress", PatchProgress { stage: "verify", file: String::new(), done: total, total });
+    let gc = finish_downgrade(&dir, &spec, false)?;
+    install_missing_mods(&state.http, &dir).await?;
+    Ok(gc)
+}
+
+/// Downloads each needed server patch and makes its patched file in `stage`.
+/// Nothing in the game changes here.
+#[allow(clippy::too_many_arguments)]
+async fn server_patch_files(
+    app: &AppHandle,
+    state: &AppState,
+    dir: &std::path::Path,
+    base: &str,
+    local_dir: &std::path::Path,
+    tmp: &std::path::Path,
+    stage: &std::path::Path,
+    steps: &[launcher_core::patcher::Step],
+) -> CmdResult<Vec<launcher_core::community::Swap>> {
+    use launcher_core::patcher;
+    let total = steps.len();
+    let mut swaps = Vec::new();
     for (i, step) in steps.iter().enumerate() {
         let patch = step.patch.as_ref().expect("checked");
         let _ = app.emit("patch-progress", PatchProgress { stage: "download", file: step.file.path.clone(), done: i, total });
@@ -1173,20 +1220,18 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
             std::fs::write(&local, &bytes).map_err(|e| e.to_string())?;
         }
         let _ = app.emit("patch-progress", PatchProgress { stage: "apply", file: step.file.path.clone(), done: i, total });
-        let (dir2, step2, local2) = (dir.clone(), step.clone(), local.clone());
-        tokio::task::spawn_blocking(move || patcher::apply_step(&dir2, &step2, &local2))
+        let (dir2, stage2, step2, local2) = (dir.to_path_buf(), stage.to_path_buf(), step.clone(), local.clone());
+        let swap = tokio::task::spawn_blocking(move || patcher::make_patched(&dir2, &stage2, &step2, &local2))
             .await
             .map_err(|e| e.to_string())?
-            .map_err(|e| format!("Couldn't patch {} ({e}). Close Skyrim, Steam and Vortex, then try again.", step.file.path))?;
-        if local.starts_with(&tmp) {
+            .map_err(|e| format!("Couldn't patch {} ({e}). Nothing in the game was changed. Close Skyrim, Steam and Vortex, then try again.", step.file.path))?;
+        if local.starts_with(tmp) {
             let _ = std::fs::remove_file(&local);
         }
-        log::line(&format!("patch: patched {}", step.file.path));
+        log::line(&format!("patch: made {}", step.file.path));
+        swaps.push(swap);
     }
-    let _ = app.emit("patch-progress", PatchProgress { stage: "verify", file: String::new(), done: total, total });
-    let gc = finish_downgrade(&dir, &spec, false)?;
-    install_missing_mods(&state.http, &dir).await?;
-    Ok(gc)
+    Ok(swaps)
 }
 
 fn patch_build_dir(game_dir: &std::path::Path) -> PathBuf {
