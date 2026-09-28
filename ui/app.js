@@ -4,7 +4,7 @@
   // Every command's failure (and the outcome of the important ones) goes to the
   // launcher log, so Copy diagnostics shows what happened. Nothing secret
   // reaches the UI, so nothing secret can be logged from here.
-  const QUIET = new Set(['log_ui', 'diagnostics', 'files', 'server_status', 'auth_poll']);
+  const QUIET = new Set(['log_ui', 'diagnostics', 'files', 'server_status', 'auth_poll', 'game_running']);
   const logUi = msg => { try { T.core.invoke('log_ui', { msg: String(msg) }).catch(() => {}); } catch {} };
   const invoke = async (cmd, args) => {
     const t = performance.now();
@@ -823,8 +823,14 @@ let autoMods = false;
   // An update downloaded while Play was starting, installed once it's safe.
   let downloaded = null;
   const updateWaits = () => gameRunning || playing || busy || modsRunning;
+  // gameRunning only knows a game Play started; Skyrim started from Steam,
+  // Vortex or MO2 is found by asking Windows. If the question fails, the
+  // update isn't held back forever.
+  const skyrimUp = async () => {
+    try { return !!(await T.core.invoke('game_running')); } catch (e) { logUi('game_running failed: ' + e); return false; }
+  };
   async function checkSelfUpdate(byHand) {
-    if (updating || updateWaits()) return byHand ? 'busy' : undefined;
+    if (updating || updateWaits() || await skyrimUp()) return byHand ? 'busy' : undefined;
     try {
       const upd = downloaded || await T.updater.check();
       if (!upd) {
@@ -844,7 +850,7 @@ let autoMods = false;
           downloaded = upd;
         }
         // And again after the download: installing closes the launcher.
-        if (updateWaits()) {
+        if (updateWaits() || await skyrimUp()) {
           updating = false;
           $('self-update-text').textContent = `Launcher ${upd.version} is ready. It installs once you're done playing.`;
           logUi(`launcher ${upd.version} downloaded; install waits for Play and the game`);
