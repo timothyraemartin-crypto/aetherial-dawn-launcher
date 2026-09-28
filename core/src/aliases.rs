@@ -455,7 +455,7 @@ fn rename_in(txt: &Path, from: &str, to: &str) -> std::io::Result<bool> {
         }
     }
     out.push(String::new());
-    std::fs::write(txt.with_extension("txt.aetherial-dawn-backup"), &text)?;
+    crate::loadorder::keep_backup(txt, &text)?;
     std::fs::write(txt, out.join(if text.contains("\r\n") { "\r\n" } else { "\n" }))?;
     Ok(true)
 }
