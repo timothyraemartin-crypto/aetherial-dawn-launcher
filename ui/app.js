@@ -367,15 +367,27 @@
     else if (playMode === 'play' || playMode === 'wait') ready();
   }
   // The invite the login service publishes; the last one seen stands in.
-  function renderInvite() {
+  // A refusal that carries its own invite link (not a member) shows it as a
+  // link in its text instead, so it isn't said twice.
+  const INVITE = /https:\/\/discord\.gg\/[A-Za-z0-9-]{2,32}/;
+  function renderInvite(inMessage) {
     const invite = (status && status.discordInvite) || lastSeen.invite;
-    $('si-join').hidden = !invite;
+    $('si-join').hidden = !invite || inMessage;
     if (invite) $('si-join-go').textContent = invite.replace('https://', '');
   }
   function showSignIn(message) {
-    renderInvite();
-    $('si-error').textContent = message || '';
-    $('si-error').hidden = !message;
+    const el = $('si-error');
+    const found = message ? INVITE.exec(message) : null;
+    renderInvite(!!found);
+    el.textContent = '';
+    if (found) {
+      const link = document.createElement('button');
+      link.className = 'linkish';
+      link.textContent = found[0].replace('https://', '');
+      link.onclick = () => invoke('open_invite', { url: found[0] }).catch(() => {});
+      el.append(message.slice(0, found.index), link, message.slice(found.index + found[0].length));
+    } else el.textContent = message || '';
+    el.hidden = !message;
     $('si-wait').hidden = true;
     $('si-go').disabled = false;
     showSheet('signin');

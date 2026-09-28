@@ -76,6 +76,8 @@ function fakeBackEnd() {
       log.status = document.getElementById('status').textContent;
       const join = document.getElementById('si-join');
       log.join = join.hidden ? null : join.textContent;
+      const errLink = document.querySelector('#si-error button');
+      log.errorLink = errLink ? errLink.textContent : null;
       log.skse = ['g-skse', 'c-skse'].map(id => { const el = document.getElementById(id); return el.querySelector('b').textContent + el.querySelector('small').textContent; });
       log.skseRecheck = !document.getElementById('c-skse-recheck').hidden;
       const pre = document.createElement('pre');
@@ -115,6 +117,13 @@ const scenarios = [
   ] },
   { name: 'not a member: the sign-in window links the Discord invite', s: { ...base, auth: { signedIn: false }, invite: 'https://discord.gg/aetherial' }, expect: r => [
     ['the invite shows', r.join === 'Not a member yet? Join here: discord.gg/aetherial', r.join],
+  ] },
+  { name: 'not a member, and the refusal carries the invite: one clickable link', s: { ...base, auth: { signedIn: false, message: 'Join the Aetherial Dawn Discord first: https://discord.gg/aetherial. Then press Sign in with Discord again.' }, invite: 'https://discord.gg/aetherial' }, expect: r => [
+    ['the refusal shows the link as a button', r.errorLink === 'discord.gg/aetherial', r.errorLink],
+    ['the separate join line is not shown twice', r.join === null, r.join],
+  ] },
+  { name: 'not a member, the refusal without a link: the join line shows', s: { ...base, auth: { signedIn: false, message: 'Join the Aetherial Dawn Discord first, then sign in again.' }, invite: 'https://discord.gg/aetherial' }, expect: r => [
+    ['the join line shows', r.join === 'Not a member yet? Join here: discord.gg/aetherial', r.join],
   ] },
   { name: 'SKSE not installed yet: nothing asks the player to get it', s: { ...base, hasSkse: false, seed: null, clicks: [] }, expect: r => [
     ['the row reads "SKSE / Installed for you when you press Play."', r.skse.every(t => t === 'SKSEInstalled for you when you press Play.'), JSON.stringify(r.skse)],
