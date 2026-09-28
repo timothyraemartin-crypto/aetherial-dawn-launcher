@@ -824,13 +824,18 @@ let autoMods = false;
   let downloaded = null;
   const updateWaits = () => gameRunning || playing || busy || modsRunning;
   // gameRunning only knows a game Play started; Skyrim started from Steam,
-  // Vortex or MO2 is found by asking Windows. If the question fails, the
-  // update isn't held back forever.
+  // Vortex or MO2 is found by asking Windows. When that question fails, the
+  // game might be running, so the update waits (installing closes the
+  // launcher) and the next minute's check asks again.
+  let gameCheckFailed = false;
   const skyrimUp = async () => {
-    try { return !!(await T.core.invoke('game_running')); } catch (e) { logUi('game_running failed: ' + e); return false; }
+    try { const up = !!(await T.core.invoke('game_running')); gameCheckFailed = false; return up; }
+    catch (e) { gameCheckFailed = true; logUi('game_running failed, the launcher update waits: ' + e); return true; }
   };
+  const waitReason = () => gameCheckFailed ? 'unknown' : 'busy';
   async function checkSelfUpdate(byHand) {
-    if (updating || updateWaits() || await skyrimUp()) return byHand ? 'busy' : undefined;
+    if (updating || updateWaits()) return byHand ? 'busy' : undefined;
+    if (await skyrimUp()) return byHand ? waitReason() : undefined;
     try {
       const upd = downloaded || await T.updater.check();
       if (!upd) {
@@ -850,11 +855,14 @@ let autoMods = false;
           downloaded = upd;
         }
         // And again after the download: installing closes the launcher.
-        if (updateWaits() || await skyrimUp()) {
+        const held = updateWaits() || await skyrimUp();
+        if (held) {
           updating = false;
-          $('self-update-text').textContent = `Launcher ${upd.version} is ready. It installs once you're done playing.`;
+          $('self-update-text').textContent = gameCheckFailed
+            ? `Launcher ${upd.version} is ready. It installs once the launcher can check that Skyrim isn't running.`
+            : `Launcher ${upd.version} is ready. It installs once you're done playing.`;
           logUi(`launcher ${upd.version} downloaded; install waits for Play and the game`);
-          return byHand ? 'busy' : undefined;
+          return byHand ? waitReason() : undefined;
         }
         await upd.install();
         await T.process.relaunch();
@@ -879,7 +887,7 @@ let autoMods = false;
     b.textContent = 'Checking…';
     const r = await checkSelfUpdate(true);
     b.disabled = false;
-    b.textContent = r === 'latest' ? 'Up to date' : r === 'busy' ? 'Try again after the game or download' : r === 'failed' ? "Couldn't check, try again" : 'Check for updates';
+    b.textContent = r === 'latest' ? 'Up to date' : r === 'busy' ? 'Try again after the game or download' : r === 'unknown' ? "Couldn't check the game, try again" : r === 'failed' ? "Couldn't check, try again" : 'Check for updates';
     setTimeout(() => { b.textContent = 'Check for updates'; }, 4000);
   };
 
