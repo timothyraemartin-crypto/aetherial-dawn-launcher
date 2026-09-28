@@ -200,6 +200,11 @@ pub async fn fetch(
                 }
                 if dropped.is_some() || (total > 0 && got < total) {
                     first = false;
+                    // A connection that got somewhere starts the count again:
+                    // only drops in a row with nothing gained give up.
+                    if got > start {
+                        failures = 0;
+                    }
                     if failures >= RETRIES {
                         return Err(dropped.unwrap_or_else(|| "the download stopped early".into()));
                     }
@@ -586,5 +591,42 @@ mod tests {
         let mods = [(7_000, 10_400, 7_000), (2_700, 4_600, 0)];
         assert_eq!(space_needed(&mods, true), 17_700);
         assert_eq!(space_needed(&[], true), 0);
+    }
+
+    /// Every connection sends `per` bytes from where it was asked, then drops.
+    fn serve_short_connections(body: Arc<Vec<u8>>, per: usize) -> String {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/file", l.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                let Ok(mut s) = s else { continue };
+                let mut buf = [0u8; 4096];
+                let len = s.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..len]).to_ascii_lowercase();
+                let start = head.lines().find_map(|l| l.strip_prefix("range: bytes=")).and_then(|r| r.trim().trim_end_matches('-').parse::<usize>().ok()).unwrap_or(0);
+                let total = body.len();
+                let hdr = if start > 0 {
+                    format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{}/{total}\r\nConnection: close\r\n\r\n", total - start, total - 1)
+                } else {
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n")
+                };
+                let _ = s.write_all(hdr.as_bytes());
+                let _ = s.write_all(&body[start..(start + per).min(total)]);
+            }
+        });
+        url
+    }
+
+    #[test]
+    fn many_drops_that_each_get_somewhere_still_finish() {
+        // Eight connections, each dropping: more drops than RETRIES, but
+        // every one brings part of the file.
+        let data = body(80_000);
+        let url = serve_short_connections(data.clone(), 10_000);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.7z");
+        let got = rt().block_on(fetch(&reqwest::Client::new(), &url, &path, "k", &AtomicBool::new(false), |_, _| {})).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), *data);
+        assert_eq!(got.resumed, 7);
     }
 }
