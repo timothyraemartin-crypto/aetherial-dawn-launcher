@@ -94,7 +94,9 @@ const lastLabel = r => r.labels[r.labels.length - 1][1];
 
 const scenarios = [
   { name: 'returning player: PLAY shows at once, and Play waits for both checks', s: base, expect: r => [
-    ['PLAY is enabled within 150 ms', firstLabel(r, 'PLAY') !== null && firstLabel(r, 'PLAY') < 150],
+    // Timed from the page's own start, which a cold CI machine delays.
+    ['PLAY is enabled before either check answers', firstLabel(r, 'PLAY') !== null && firstLabel(r, 'PLAY') < Math.min(answeredAt(r, 'auth_status'), answeredAt(r, 'check')),
+      `${firstLabel(r, 'PLAY') - askedAt(r, 'get_state')} ms after the page asked for its settings`],
     ['Play pressed early shows STARTING', firstLabel(r, 'STARTING [off]') !== null],
     ['the game starts once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
     ['the game starts only after the Discord answer', askedAt(r, 'play') >= answeredAt(r, 'auth_status')],
