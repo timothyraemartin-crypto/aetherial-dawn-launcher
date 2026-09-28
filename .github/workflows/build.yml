@@ -127,7 +127,7 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          cargo build --locked --release -p launcher-core --bin canonical-plugins --target x86_64-unknown-linux-musl
+          cargo build --locked --release -p launcher-core --no-default-features --bin canonical-plugins --target x86_64-unknown-linux-musl
           mkdir dist
           cp target/x86_64-unknown-linux-musl/release/canonical-plugins dist/canonical-plugins-linux-x86_64
           (cd dist && sha256sum canonical-plugins-linux-x86_64 | tee canonical-plugins-linux-x86_64.sha256)

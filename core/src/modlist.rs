@@ -692,7 +692,10 @@ fn extract_into(archive: &Path, dir: &Path) -> Result<()> {
             .map_err(|e| Error::Game(format!("couldn't unpack the download: {e}")))?;
         Ok(())
     } else if head.starts_with(b"Rar!\x1a\x07") {
-        extract_rar(archive, dir)
+        #[cfg(feature = "rar")]
+        return extract_rar(archive, dir);
+        #[cfg(not(feature = "rar"))]
+        return Err(Error::Game("this build can't unpack RAR downloads".into()));
     } else {
         Err(Error::Game("the download isn't a zip, 7z or RAR archive".into()))
     }
@@ -705,6 +708,7 @@ fn extract_into(archive: &Path, dir: &Path) -> Result<()> {
 /// bytes that land are checked again (unrar stops at the header's size and
 /// checks the CRC). Split, locked and password archives are refused, and so
 /// is any entry that lands as a link.
+#[cfg(feature = "rar")]
 fn extract_rar(archive: &Path, dir: &Path) -> Result<()> {
     let damaged = |e: unrar::error::UnrarError| Error::Game(format!("couldn't unpack the download (RAR): {e}"));
     let listed = unrar::Archive::new(archive).open_for_listing().map_err(damaged)?;
@@ -1694,6 +1698,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "rar")]
     fn unpacks_rar_v4_and_v5() {
         let t = tempfile::tempdir().unwrap();
         for (v, bytes) in [("4", crate::testrar::rar4(&[("Main.esp", b"main"), ("Textures\\x.dds", b"dds bytes")])), ("5", crate::testrar::rar5(&[("Main.esp", b"main"), ("Textures/x.dds", b"dds bytes")]))] {
@@ -1707,6 +1712,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "rar")]
     fn a_rar_never_writes_outside_its_folder() {
         let t = tempfile::tempdir().unwrap();
         let names = ["../evil.esp", "..\\evil2.esp", "/abs.esp", "\\abs2.esp", "C:/drive.esp", "C:\\drive2.esp", "Data/.../trick.esp", "ok.esp"];
@@ -1740,6 +1746,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "rar")]
     fn a_damaged_or_cut_short_rar_leaves_nothing_behind() {
         let t = tempfile::tempdir().unwrap();
         let files: [(&str, &[u8]); 2] = [("a.esp", &[1u8; 4096]), ("b.esp", &[2u8; 4096])];
@@ -1760,6 +1767,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "rar")]
     fn a_rar_claiming_more_than_the_caps_is_refused_before_writing() {
         // A stored entry whose header claims 9 GiB: refused from the header,
         // nothing is written.
