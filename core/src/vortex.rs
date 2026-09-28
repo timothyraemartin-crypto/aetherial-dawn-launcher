@@ -196,14 +196,25 @@ pub struct Collection {
     pub revision: Option<u64>,
 }
 
-/// The collection the launcher expects (from `aetherial-collection.json`,
-/// docs/vortex-collection-design.md 6.1): its slug, revision and required
-/// Nexus files.
+/// The client set the launcher expects in the "Aetherial Dawn" profile
+/// (docs/vortex-collection-design.md 6.1): the required Nexus files and,
+/// once there is one, the Aetherial Dawn collection by slug and revision.
+/// Milestone 1 (Timothy's existing profile, PR #7 5876324959) has no
+/// collection yet: only the files are checked.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
-pub struct CollectionPin {
+pub struct ClientSet {
+    #[serde(default)]
+    pub collection: Option<CollectionRef>,
+    pub mods: Vec<ModEntry>,
+}
+
+/// A collection by slug and revision. How Vortex 2.7.1 records these on an
+/// installed collection is unverified until observed on the disposable
+/// profile.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct CollectionRef {
     pub slug: String,
     pub revision: u64,
-    pub mods: Vec<ModEntry>,
 }
 
 /// One step line of the Requirements window (design section 3), for Vortex,
@@ -217,9 +228,11 @@ pub enum Step {
     OtherProfileActive(Option<String>),
     CollectionNotAdded,
     WrongRevision { has: Option<u64>, needs: u64 },
-    /// Counts of the required files: installed (state "installed") and
-    /// switched on in the profile, with the ones still to come named.
-    Collection { required: usize, installed: usize, enabled: usize, waiting: Vec<String> },
+    /// Counts of the required files, from Vortex's own state only (never the
+    /// launcher's direct-to-Data ledger): installed (state "installed") and
+    /// switched on in the profile, with the ones still to come named, and
+    /// any other file of a listed mod still switched on.
+    Counts { required: usize, installed: usize, enabled: usize, waiting: Vec<String>, other_versions_on: Vec<String> },
     Ready,
 }
 
@@ -240,18 +253,19 @@ impl Step {
                 Some(h) => format!("Collection: revision {h} is installed; update to revision {needs}"),
                 None => format!("Collection: update to revision {needs}"),
             },
-            Step::Collection { required, installed, enabled, waiting } => format!(
-                "Collection: {installed} of {required} installed · {enabled} of {required} switched on{}",
-                if waiting.is_empty() { String::new() } else { format!(" · waiting: {}", waiting.join(", ")) }
+            Step::Counts { required, installed, enabled, waiting, other_versions_on } => format!(
+                "Aetherial Dawn profile: {installed} of {required} installed · {enabled} of {required} switched on{}{}",
+                if waiting.is_empty() { String::new() } else { format!(" · waiting: {}", waiting.join(", ")) },
+                if other_versions_on.is_empty() { String::new() } else { format!(" · another version still on: {}", other_versions_on.join(", ")) }
             ),
-            Step::Ready => "Collection: all installed and switched on".into(),
+            Step::Ready => "Aetherial Dawn profile: every required mod installed and switched on".into(),
         }
     }
 }
 
 /// The Vortex step from the extension's status (None: it didn't answer).
-/// Pure, so each state has a fixture test.
-pub fn step(pin: &CollectionPin, status: Option<&Status>) -> Step {
+/// Pure, so each state has a fixture test. Ready only from Vortex's state.
+pub fn step(set: &ClientSet, status: Option<&Status>) -> Step {
     let Some(st) = status else { return Step::VortexNotRunning };
     match st.aetherial_profiles {
         0 => return Step::NoProfile,
@@ -261,18 +275,20 @@ pub fn step(pin: &CollectionPin, status: Option<&Status>) -> Step {
     if !st.profile.as_ref().is_some_and(|p| p.active) {
         return Step::OtherProfileActive(st.active_profile.as_ref().and_then(|a| a.name.clone()));
     }
-    let mine: Vec<&Collection> = st.collections.iter().filter(|c| c.slug.as_deref() == Some(pin.slug.as_str())).collect();
-    if mine.is_empty() {
-        return Step::CollectionNotAdded;
-    }
-    if !mine.iter().any(|c| c.revision == Some(pin.revision)) {
-        return Step::WrongRevision { has: mine.iter().filter_map(|c| c.revision).max(), needs: pin.revision };
+    if let Some(c) = &set.collection {
+        let mine: Vec<&Collection> = st.collections.iter().filter(|x| x.slug.as_deref() == Some(c.slug.as_str())).collect();
+        if mine.is_empty() {
+            return Step::CollectionNotAdded;
+        }
+        if !mine.iter().any(|x| x.revision == Some(c.revision)) {
+            return Step::WrongRevision { has: mine.iter().filter_map(|x| x.revision).max(), needs: c.revision };
+        }
     }
     let installed_state = |m: &VortexMod| m.state.as_deref().is_none_or(|s| s == "installed");
     let mut required = 0;
     let (mut installed, mut enabled) = (0, 0);
     let mut waiting = Vec::new();
-    for e in &pin.mods {
+    for e in &set.mods {
         let Some(n) = &e.nexus else { continue };
         let Some(file) = n.file else { continue };
         required += 1;
@@ -286,11 +302,11 @@ pub fn step(pin: &CollectionPin, status: Option<&Status>) -> Step {
             waiting.push(e.name.clone());
         }
     }
-    let m = membership(&pin.mods, st);
-    if installed == required && enabled == required && m.other_versions_on.is_empty() {
+    let other_versions_on = membership(&set.mods, st).other_versions_on;
+    if required > 0 && installed == required && enabled == required && other_versions_on.is_empty() {
         Step::Ready
     } else {
-        Step::Collection { required, installed, enabled, waiting }
+        Step::Counts { required, installed, enabled, waiting, other_versions_on }
     }
 }
 
@@ -407,25 +423,36 @@ mod tests {
         assert_eq!((v1["verb"].as_str(), v1["revision"].as_str(), v1["ts"].as_u64()), (Some("status"), Some("r1"), Some(5)));
     }
 
-    #[test]
-    fn each_vortex_state_has_its_own_line() {
-        let e = |id: &str, m: u64, f: u64| ModEntry { id: id.into(), name: id.to_uppercase(), nexus: Some(NexusRef { mod_id: m, file: Some(f), pick: None }), ..Default::default() };
-        let pin = CollectionPin { slug: "adcol".into(), revision: 2, mods: vec![e("ussep", 266, 733846), e("skyui", 12604, 35407)] };
-        let vm = |id: &str, m: u64, f: u64, on: bool| VortexMod { id: id.into(), state: Some("installed".into()), nexus_mod_id: Some(m), nexus_file_id: Some(f), enabled: on };
-        let good = Status {
+    fn e(id: &str, m: u64, f: u64) -> ModEntry {
+        ModEntry { id: id.into(), name: id.to_uppercase(), nexus: Some(NexusRef { mod_id: m, file: Some(f), pick: None }), ..Default::default() }
+    }
+
+    fn vm(id: &str, m: u64, f: u64, on: bool) -> VortexMod {
+        VortexMod { id: id.into(), state: Some("installed".into()), nexus_mod_id: Some(m), nexus_file_id: Some(f), enabled: on }
+    }
+
+    fn active(mods: Vec<VortexMod>) -> Status {
+        Status {
             profile: Some(Profile { id: "p1".into(), name: "Aetherial Dawn".into(), active: true }),
             aetherial_profiles: 1,
             active_profile: Some(ActiveProfile { id: "p1".into(), name: Some("Aetherial Dawn".into()) }),
-            mods: vec![vm("u", 266, 733846, true), vm("s", 12604, 35407, true)],
-            collections: vec![Collection { id: "c".into(), state: Some("installed".into()), enabled: true, slug: Some("adcol".into()), revision: Some(2) }],
-        };
-        assert_eq!(step(&pin, None), Step::VortexNotRunning);
-        assert_eq!(step(&pin, Some(&good)), Step::Ready);
-        assert!(step(&pin, Some(&good)).ok());
+            mods,
+            collections: vec![],
+        }
+    }
+
+    #[test]
+    fn each_vortex_state_has_its_own_line() {
+        let set = ClientSet { collection: Some(CollectionRef { slug: "adcol".into(), revision: 2 }), mods: vec![e("ussep", 266, 733846), e("skyui", 12604, 35407)] };
+        let mut good = active(vec![vm("u", 266, 733846, true), vm("s", 12604, 35407, true)]);
+        good.collections = vec![Collection { id: "c".into(), state: Some("installed".into()), enabled: true, slug: Some("adcol".into()), revision: Some(2) }];
+        assert_eq!(step(&set, None), Step::VortexNotRunning);
+        assert_eq!(step(&set, Some(&good)), Step::Ready);
+        assert!(step(&set, Some(&good)).ok());
         let with = |f: &dyn Fn(&mut Status)| {
             let mut s = good.clone();
             f(&mut s);
-            step(&pin, Some(&s))
+            step(&set, Some(&s))
         };
         assert_eq!(with(&|s| { s.aetherial_profiles = 0; s.profile = None }), Step::NoProfile);
         assert_eq!(with(&|s| { s.aetherial_profiles = 2; s.profile = None }), Step::TwoProfiles(2));
@@ -436,14 +463,38 @@ mod tests {
         assert_eq!(with(&|s| s.collections[0].revision = Some(1)), Step::WrongRevision { has: Some(1), needs: 2 });
         // Downloading: SkyUI not there yet.
         let dl = with(&|s| { s.mods.pop(); });
-        assert_eq!(dl, Step::Collection { required: 2, installed: 1, enabled: 1, waiting: vec!["SKYUI".into()] });
-        assert_eq!(dl.describe(), "Collection: 1 of 2 installed · 1 of 2 switched on · waiting: SKYUI");
+        assert_eq!(dl, Step::Counts { required: 2, installed: 1, enabled: 1, waiting: vec!["SKYUI".into()], other_versions_on: vec![] });
+        assert_eq!(dl.describe(), "Aetherial Dawn profile: 1 of 2 installed · 1 of 2 switched on · waiting: SKYUI");
         // Installed but off.
-        assert_eq!(with(&|s| s.mods[1].enabled = false), Step::Collection { required: 2, installed: 2, enabled: 1, waiting: vec!["SKYUI".into()] });
+        assert_eq!(with(&|s| s.mods[1].enabled = false), Step::Counts { required: 2, installed: 2, enabled: 1, waiting: vec!["SKYUI".into()], other_versions_on: vec![] });
         // Mid-install doesn't count as installed.
-        assert_eq!(with(&|s| s.mods[1].state = Some("installing".into())), Step::Collection { required: 2, installed: 1, enabled: 1, waiting: vec!["SKYUI".into()] });
-        // Another file of a listed mod still on (the 4.3.9c case): not ready.
-        assert!(!with(&|s| s.mods.push(vm("u439c", 266, 999999, true))).ok());
+        assert_eq!(with(&|s| s.mods[1].state = Some("installing".into())), Step::Counts { required: 2, installed: 1, enabled: 1, waiting: vec!["SKYUI".into()], other_versions_on: vec![] });
+        // Another file of a listed mod still on (the 4.3.9c case): not ready, and said.
+        let two = with(&|s| s.mods.push(vm("u439c", 266, 999999, true)));
+        assert!(!two.ok());
+        assert!(two.describe().ends_with("another version still on: u439c"), "{}", two.describe());
+    }
+
+    /// Milestone 1: Timothy's existing profile, with no collection yet. His
+    /// 11 Vortex rows (2026-09-28 screenshot) against a larger client set
+    /// read as incomplete, and the launcher's own Data installs never count.
+    #[test]
+    fn the_existing_11_row_profile_reads_as_incomplete_not_ready() {
+        // Stand-in ids: the real file ids come from the Mods chat's
+        // read-only inventory of his profile.
+        let his: Vec<VortexMod> = (0..10).map(|i| vm(&format!("m{i}"), 1000 + i, 5000 + i, true)).chain([vm("ussep439c", 266, 999999, true)]).collect();
+        let mut set = ClientSet { collection: None, mods: (0..10).map(|i| e(&format!("m{i}"), 1000 + i, 5000 + i)).collect() };
+        set.mods.push(e("ussep", 266, 733846));
+        set.mods.push(e("address-library", 32444, 720756));
+        set.mods.push(e("mcm-helper", 53000, 746161));
+        let st = active(his);
+        let got = step(&set, Some(&st));
+        assert_eq!(got, Step::Counts { required: 13, installed: 10, enabled: 10, waiting: vec!["USSEP".into(), "ADDRESS-LIBRARY".into(), "MCM-HELPER".into()], other_versions_on: vec!["ussep439c".into()] });
+        assert!(!got.ok());
+        // No collection is asked for while none is pinned.
+        assert!(!matches!(got, Step::CollectionNotAdded | Step::WrongRevision { .. }));
+        // An empty client set is never "ready".
+        assert!(!step(&ClientSet::default(), Some(&st)).ok());
     }
 
     #[test]
@@ -467,9 +518,7 @@ mod tests {
 
     #[test]
     fn membership_is_by_exact_nexus_file_in_the_active_profile() {
-        let e = |id: &str, m: u64, f: u64| ModEntry { id: id.into(), name: id.into(), nexus: Some(NexusRef { mod_id: m, file: Some(f), pick: None }), ..Default::default() };
         let list = vec![e("ussep", 266, 733846), e("skyui", 12604, 35407), ModEntry { id: "github-one".into(), ..Default::default() }];
-        let vm = |id: &str, m: u64, f: u64, on: bool| VortexMod { id: id.into(), state: Some("installed".into()), nexus_mod_id: Some(m), nexus_file_id: Some(f), enabled: on };
         // Timothy's profile today: 4.3.9c on, SkyUI on.
         let mut st = Status { profile: Some(Profile { id: "p1".into(), name: "Aetherial Dawn".into(), active: true }), mods: vec![vm("u439c", 266, 999999, true), vm("skyui", 12604, 35407, true)], ..Default::default() };
         let m = membership(&list, &st);

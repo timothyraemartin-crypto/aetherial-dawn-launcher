@@ -9,6 +9,21 @@ Nothing here is released, published or live. Timothy decides:
 
 Anything marked **(verify)** is read from Vortex's source or documentation, and has not yet been proven on installed Vortex 2.7.1. The disposable-profile evidence gate proves it before anything relies on it.
 
+## 0. Milestones, in order (Timothy, PR #7 5876324959)
+
+1. **Timothy's existing "Aetherial Dawn" profile, installed and validated.**
+   The Mods chat owns this milestone:
+   - inventory, backup and a proven restore;
+   - curating the exact client set;
+   - installing it in reviewed batches through Vortex into the existing profile;
+   - retiring duplicate launcher-direct files.
+
+   The launcher's part is the read-only status and Play gate. It must say how far the profile is from the client set, from Vortex's own state. It never counts the launcher's direct-to-Data ledger as readiness. Today's 11-row profile reads as incomplete.
+2. **Our own collection, built From Profile** after a frozen source-profile receipt. It stays local and editable, and is tested in a clean disposable profile. Publication, including Unlisted, is Timothy's decision.
+3. **The clean-client install** (section 8). This is the later acceptance and release gate.
+
+Collection slug and revision, and saved FOMOD choices, stay **unverified** until they are observed in Vortex 2.7.1. The launcher reads them but never relies on them before that.
+
 ## 1. What changes
 
 | Before (PR #6, first cut) | After (this design) |
@@ -162,6 +177,7 @@ This is Package B, owned by the Mods chat and the exporter.
    - FOMOD pending;
    - all deployed.
 4. **Play gate:** in the backend, not the UI. It refuses Play unless steps 1 to 7 are `ok`, and re-checks after the game exits.
+   - For milestone 1, the manifest has no `collection`. The gate then checks only the required `(modId, fileId)` rows in the active profile. A test (`the_existing_11_row_profile_reads_as_incomplete_not_ready`) proves that an 11-row profile reads as incomplete, and names what is missing and any other version still switched on.
 5. **Out of slice 1:**
    - the handoff of built-ins;
    - migration of Timothy's profile;
