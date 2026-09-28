@@ -68,7 +68,7 @@ $old = Launchers
 Check "exactly one $OldVersion launcher running" ($old.Count -eq 1) "$($old.Count) running"
 Check "the running launcher is $OldVersion" ($old.Count -ge 1 -and $old[0].MainModule.FileVersionInfo.ProductVersion -like "$OldVersion*") (($old | ForEach-Object { $_.MainModule.FileVersionInfo.ProductVersion }) -join ', ')
 
-Write-Host "== 4. The updater installs $NewVersion: $(Split-Path $NewSetup -Leaf) /P /UPDATE /R /ARGS, then the old launcher exits =="
+Write-Host "== 4. The updater installs ${NewVersion}: $(Split-Path $NewSetup -Leaf) /P /UPDATE /R /ARGS, then the old launcher exits =="
 $setupName = Split-Path $NewSetup -Leaf
 $inst = Start-Process -FilePath $NewSetup -ArgumentList '/P', '/UPDATE', '/R', '/ARGS' -PassThru
 $null = $inst.Handle
