@@ -63,7 +63,7 @@
     // Only a session that ends ready to play opens on PLAY next time.
     if (lastSeen.play && (STOPS.includes(mode) || STOPS.includes(label))) remember({ play: false });
   }
-  const STOPS = ['update', 'retry', 'downgrade', 'signin', 'strays', 'WRONG VERSION', 'OFFLINE'];
+  const STOPS = ['update', 'retry', 'authretry', 'downgrade', 'signin', 'strays', 'WRONG VERSION', 'OFFLINE'];
   let statusMsg = null;
   function setStatus(msg, isError) { statusMsg = msg ? { msg, isError } : null; renderStatus(); }
   let toolRunning = false;
@@ -325,7 +325,16 @@
       return;
     }
     if (!signedIn()) { setPlay('signin', 'SIGN IN'); setStatus('Sign in with Discord to play.', true); return; }
-    if (auth.locked) { setPlay('wait', 'OFFLINE'); setStatus(auth.message, true); return; }
+    // The login service couldn't confirm the sign-in for over a day. The
+    // button asks it again (and the launcher does every minute), so the
+    // player isn't stuck for the 10 minutes until the next routine check.
+    if (auth.locked) {
+      setPlay('authretry', 'RETRY');
+      setStatus(`${auth.message} Press Retry to check again.`, true);
+      clearTimeout(authRetryTimer);
+      authRetryTimer = setTimeout(() => { if (playMode === 'authretry' && !busy) retryAuth(); }, 60000);
+      return;
+    }
     setPlay('play', 'PLAY');
     remember({ dir: state.config.gameDir, build: pending.build, version: state.launcherVersion, play: true });
     if (c && c.warning) setStatus(c.warning, true);
@@ -358,6 +367,12 @@
     catch (e) { auth = { signedIn: false, message: String(e) }; }
     renderAccount();
     return auth;
+  }
+  let authRetryTimer = null;
+  async function retryAuth() {
+    setPlay('wait', 'CHECKING');
+    await refreshAuth();
+    if (!signedIn()) { ready(); showSignIn(auth.message); } else ready();
   }
   // Every 10 minutes: a ban or leaving the Discord signs the player out here.
   async function recheckAuth() {
@@ -698,6 +713,7 @@ let autoMods = false;
     if (busy) return;
     if (playMode === 'strays') return openStrays();
     if (playMode === 'retry') return check();
+    if (playMode === 'authretry') return retryAuth();
     if (playMode === 'update') return update();
     // Play fixes the game version by itself, then starts the game.
     if (playMode === 'downgrade') { openDowngrade(); playAfterPatch = true; return patchGame(); }
