@@ -30,7 +30,7 @@ function fakeBackEnd() {
   const S = window.__S;
   const t0 = performance.now();
   const log = window.__T = { invokes: [], labels: [], lastReady: null, newsHeights: [] };
-  if (S.pageHeight) document.documentElement.style.height = S.pageHeight + 'px';
+  if (S.pageSize) Object.assign(document.documentElement.style, { width: S.pageSize[0] + 'px', height: S.pageSize[1] + 'px' });
   const at = () => Math.round(performance.now() - t0);
   try { localStorage.clear(); if (S.seed) localStorage.setItem('ad.lastReady', JSON.stringify(S.seed)); } catch (_) {}
   const game = Object.assign({ needed: false, installed: '1.6.1170.0', target: '1.6.1170.0', skseOk: true, canDowngrade: true }, S.game || {});
@@ -89,7 +89,7 @@ function fakeBackEnd() {
       log.modsButton = document.getElementById('rq-all').textContent;
       log.modsShown = !document.getElementById('reqs').hidden;
       const rect = sel => { const b = document.querySelector(sel).getBoundingClientRect(); return [Math.round(b.top), Math.round(b.bottom)]; };
-      log.layout = { height: document.querySelector('.app').offsetHeight, width: innerWidth, titlebar: rect('.titlebar'), dock: rect('.dock'), play: rect('#play') };
+      log.layout = { height: document.querySelector('.app').offsetHeight, width: document.querySelector('.app').offsetWidth, titlebar: rect('.titlebar'), dock: rect('.dock'), play: rect('#play') };
       const pre = document.createElement('pre');
       pre.id = 'ui-test-result';
       pre.textContent = JSON.stringify(log);
@@ -198,9 +198,9 @@ const scenarios = [
 
 // The smallest window the launcher allows (core/src/window.rs MIN), which is
 // what a 1080p screen at 150% or a 768p laptop at 125% opens at.
-// Chrome's window size includes its own frame, so the page's height is set
-// in the page and only the width comes from the window.
-scenarios.push({ name: 'the smallest window: PLAY and the news fit under the title bar', s: { ...base, pageHeight: 560 }, size: '1024,880', expect: r => [
+// Chrome's window size includes its frame and, on Windows, a scroll bar, so
+// the page's size is set in the page itself.
+scenarios.push({ name: 'the smallest window: PLAY and the news fit under the title bar', s: { ...base, pageSize: [1024, 560] }, expect: r => [
   ['the page is laid out at the minimum size', r.layout.width === 1024 && r.layout.height === 560, JSON.stringify(r.layout)],
   ['PLAY is fully on screen', r.layout.play[0] >= 0 && r.layout.play[1] <= r.layout.height],
   ['the dock starts below the title bar buttons', r.layout.dock[0] >= r.layout.titlebar[1]],
@@ -220,7 +220,7 @@ for (const sc of scenarios) {
     // Chrome refuses to run as root on Linux without this.
     const root = process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : [];
     out = execFileSync(chrome, [...root, '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-      `--user-data-dir=${path.join(dir, 'profile')}`, '--allow-file-access-from-files', `--window-size=${sc.size || '1360,880'}`,
+      `--user-data-dir=${path.join(dir, 'profile')}`, '--allow-file-access-from-files', '--window-size=1360,880',
       '--virtual-time-budget=8000', '--dump-dom', url], { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] });
   } catch (e) { out = String(e.stdout || ''); }
   const m = out.match(/<pre id="ui-test-result">([\s\S]*?)<\/pre>/);
