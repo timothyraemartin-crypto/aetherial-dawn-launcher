@@ -59,7 +59,10 @@
     $('play-label').textContent = label;
     $('play').disabled = mode === 'wait';
     $('play-wrap').classList.toggle('off', mode === 'wait');
+    // Only a session that ends ready to play opens on PLAY next time.
+    if (lastSeen.play && (STOPS.includes(mode) || STOPS.includes(label))) remember({ play: false });
   }
+  const STOPS = ['update', 'retry', 'downgrade', 'signin', 'strays', 'WRONG VERSION', 'OFFLINE'];
   let statusMsg = null;
   function setStatus(msg, isError) { statusMsg = msg ? { msg, isError } : null; renderStatus(); }
   let toolRunning = false;
@@ -68,16 +71,31 @@
     if (statusMsg) parts.push(`<span${statusMsg.isError ? ' class="error"' : ''}>${esc(statusMsg.msg)}</span>`);
     else {
       // Live from the login service's /health (refreshed every 30 s); grey when it can't be reached.
-      const known = status && typeof status.online === 'boolean';
-      const on = known && status.online;
-      const who = on && typeof status.players === 'number' ? ` · ${status.maxPlayers ? `${status.players} of ${plural(status.maxPlayers, 'player')}` : plural(status.players, 'player')}` : '';
-      parts.push(`<span><i class="dot${on ? '' : ' off'}"></i>${!known ? 'Server status unavailable' : on ? 'Server online' : 'Server offline'}${who}</span>`);
-      if (pending) parts.push(`<span>Build ${esc(pending.build)}</span>`);
+      // Until the first answer, the last one this PC saw stands in, so the line doesn't change twice.
+      const st = statusAsked ? status : (status || lastSeen.status);
+      const known = st && typeof st.online === 'boolean';
+      const on = known && st.online;
+      const who = on && typeof st.players === 'number' ? ` · ${st.maxPlayers ? `${st.players} of ${plural(st.maxPlayers, 'player')}` : plural(st.players, 'player')}` : '';
+      parts.push(`<span><i class="dot${on ? '' : ' off'}"></i>${!known ? (statusAsked ? 'Server status unavailable' : 'Connecting to the server') : on ? 'Server online' : 'Server offline'}${who}</span>`);
+      const build = pending ? pending.build : lastSeen.build;
+      if (build) parts.push(`<span>Build ${esc(build)}</span>`);
     }
     if (toolRunning) parts.push(`<button class="linkish" id="tool-skip">Skip for now</button>`);
     if (state) parts.push(`<span>v${esc(state.launcherVersion)}</span>`);
-    $('status').innerHTML = parts.join('');
+    const html = parts.join('');
+    if (html !== shownStatus) $('status').innerHTML = shownStatus = html;
   }
+  let shownStatus = '';
+  // What the last session ended on (this PC only): the game folder, build and
+  // server status, so a returning player sees PLAY at once while the checks
+  // run behind it. Nothing here is trusted: every check still runs.
+  const LAST = 'ad.lastReady';
+  const lastSeen = (() => { try { return JSON.parse(localStorage.getItem(LAST)) || {}; } catch (_) { return {}; } })();
+  function remember(patch) {
+    Object.assign(lastSeen, patch);
+    try { localStorage.setItem(LAST, JSON.stringify(lastSeen)); } catch (_) {}
+  }
+  let statusAsked = false;
   function setChip(kind, text) {
     const c = $('mods-chip');
     c.className = 'chip ' + (kind === 'ok' ? '' : kind);
@@ -199,14 +217,35 @@
     clearTimeout(retryTimer);
     retryTimer = setTimeout(() => { if (playMode === 'retry' && !busy) check(); }, 60000);
   }
-  async function check(verifyAll = false) {
-    if (busy) return;
+  // quiet: PLAY from the last session is already showing, so the check runs
+  // without a CHECKING label; Play pressed meanwhile waits for it (onPlay).
+  // signIn: the Discord check running alongside, needed before PLAY is final.
+  let quietCheck = null;
+  function check(verifyAll = false, opt = {}) {
+    if (busy) return Promise.resolve();
+    const run = checkNow(verifyAll, opt);
+    if (opt.quiet) { quietCheck = run; run.finally(() => { quietCheck = null; }); }
+    return run;
+  }
+  async function checkNow(verifyAll, { quiet, signIn } = {}) {
     busy = true;
-    setPlay('wait', 'CHECKING');
-    setChip('busy', 'Checking');
-    setStatus('Checking for updates…');
+    if (!quiet) {
+      setPlay('wait', 'CHECKING');
+      setChip('busy', 'Checking');
+      setStatus('Checking for updates…');
+    }
     try {
       pending = await invoke('check', { verifyAll });
+      if (signIn) await signIn;
+      if (signIn && !signedIn()) {
+        // Signed out since last time: nothing is downloaded before sign-in.
+        busy = false;
+        pending = null;
+        setPlay('signin', 'SIGN IN');
+        setChip('ok', 'Up to date');
+        setStatus('Sign in with Discord to play');
+        return;
+      }
       gameCheck = pending.game;
       renderGame();
       $('srv-name').textContent = pending.server.name;
@@ -285,6 +324,7 @@
     if (!signedIn()) { setPlay('signin', 'SIGN IN'); setStatus('Sign in with Discord to play.', true); return; }
     if (auth.locked) { setPlay('wait', 'OFFLINE'); setStatus(auth.message, true); return; }
     setPlay('play', 'PLAY');
+    remember({ dir: state.config.gameDir, build: pending.build, version: state.launcherVersion, play: true });
     if (c && c.warning) setStatus(c.warning, true);
     if (c && c.target && !c.skseOk) setStatus(`The launcher installs SKSE ${c.skseVersion || ''} for you when you press Play.`);
     else if (!(c && c.warning)) setStatus(null);
@@ -598,6 +638,11 @@ let autoMods = false;
   // Play is waiting for Nexus sign-in; it carries on by itself after it.
   let playAfterNexus = false;
   async function onPlay(auto = false) {
+    if (quietCheck) {
+      setPlay('wait', 'STARTING');
+      await quietCheck;
+      return playMode === 'play' ? onPlay(auto) : undefined;
+    }
     if (busy) return;
     if (playMode === 'strays') return openStrays();
     if (playMode === 'retry') return check();
@@ -671,8 +716,11 @@ let autoMods = false;
       `<article class="news-item"><img src="${THUMBS[i % THUMBS.length]}" alt="">
          <div><h3>${esc(n.title)}</h3><time>${esc(n.date)}</time><p>${esc(n.body)}</p></div></article>`).join('');
   }
+  let shownNews = '';
   async function loadStatus() {
     status = await invoke('server_status').catch(() => null);
+    statusAsked = true;
+    if (status) remember({ status: { online: status.online, players: status.players, maxPlayers: status.maxPlayers }, news: Array.isArray(status.news) ? status.news.slice(0, 20) : lastSeen.news });
     renderStatus();
     const online = $('srv-online');
     if (!status) {
@@ -686,9 +734,17 @@ let autoMods = false;
       ? (status.maxPlayers ? `${status.players} / ${status.maxPlayers}` : status.players) : '–';
     if (status.sinceReset) $('srv-reset').textContent = status.sinceReset;
     if (Array.isArray(status.news) && status.news.length) {
-      $('news').innerHTML = newsHtml(status.news.slice(0, 3));
-      $('news-full').innerHTML = newsHtml(status.news.slice(0, 20), true);
+      showNews(status.news);
     }
+  }
+  // News changes the height of the box above Play, so it is only redrawn when
+  // it changed, and the last session's news is drawn at start-up.
+  function showNews(items) {
+    const key = JSON.stringify(items.slice(0, 20));
+    if (key === shownNews) return;
+    shownNews = key;
+    $('news').innerHTML = newsHtml(items.slice(0, 3));
+    $('news-full').innerHTML = newsHtml(items.slice(0, 20), true);
   }
 
   // ---------- launcher self-update ----------
@@ -968,23 +1024,43 @@ let autoMods = false;
     showSignIn();
   };
 
+  // The window opens hidden (tauri.conf.json) and is shown here, once the
+  // first screen is drawn with its fonts, so no blank or half-drawn frame shows.
+  let windowShown = false;
+  function showWindow() {
+    if (windowShown) return;
+    windowShown = true;
+    invoke('window_ready').catch(() => {});
+  }
+  setTimeout(showWindow, 1500);
+
   (async () => {
     await refreshState();
     // Music plays unless it was switched off in Settings; nothing to answer.
     invoke('music_start').catch(() => {});
     loadStatus();
     setInterval(loadStatus, 30 * 1000);
-    await refreshAuth();
+    const signIn = refreshAuth();
     setInterval(recheckAuth, 10 * 60 * 1000);
+    // Same folder, same launcher and ready to play last time: PLAY shows now.
+    const again = ready_() && lastSeen.play && lastSeen.dir === state.config.gameDir && lastSeen.version === state.launcherVersion;
+    if (again) {
+      setPlay('play', 'PLAY');
+      setChip('ok', 'Up to date');
+      setStatus(null);
+    }
+    if (Array.isArray(lastSeen.news) && lastSeen.news.length) showNews(lastSeen.news);
+    // Shown after a drawn frame; a hidden window may not draw, so not later than 150 ms.
+    const drawn = () => new Promise(r => { requestAnimationFrame(() => requestAnimationFrame(r)); setTimeout(r, 150); });
+    Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, 400))]).then(drawn).then(showWindow);
     if (!ready_()) {
+      await signIn;
       showSheet('first');
       setStatus('Finish setup to play');
-    } else if (!signedIn()) {
-      showSignIn(auth && auth.message);
-      setStatus('Sign in with Discord to play');
     } else {
-      await check();
-      loadStatus();
+      // The game check and the Discord check run side by side.
+      signIn.then(() => { if (!signedIn()) showSignIn(auth && auth.message); });
+      await check(false, { quiet: again, signIn });
     }
     checkSelfUpdate();
   })();

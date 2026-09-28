@@ -78,6 +78,12 @@ Check '(e) Start menu shortcut' ($start.Count -ge 1) ($start.FullName -join ', '
 Start-Sleep -Seconds 5
 $n = (Launchers).Count
 Check '(f) exactly one launcher running' ($n -eq 1) "$n running"
+# The window starts hidden and the page shows it once its first screen is
+# drawn; the launcher shows it by itself after 3 s only if the page didn't.
+$shownBy = Get-Content (Join-Path $env:LOCALAPPDATA 'gg.aetherialdawn.launcher\logs\launcher.log') -ErrorAction SilentlyContinue | Select-String 'window: shown by the fallback'
+$handle = @(Launchers | ForEach-Object { $_.MainWindowHandle } | Where-Object { $_ -ne 0 }).Count
+Check '(h) the window is on screen' ($handle -ge 1) "$handle visible windows"
+Check '(h) the page drew and showed the window itself' (-not $shownBy) "$shownBy"
 StopLaunchers
 
 Write-Host '== 2. The launcher''s own update: /P /UPDATE /R =='

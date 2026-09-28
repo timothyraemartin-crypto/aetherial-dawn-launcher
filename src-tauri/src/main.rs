@@ -2023,6 +2023,29 @@ fn make_patches_cli(args: &[String]) -> Option<i32> {
     }
 }
 
+/// The window starts hidden (tauri.conf.json) so the player never sees a
+/// blank or half-drawn frame; the page shows it once its first screen is
+/// drawn. If the page never says so, it is shown anyway after 3 s.
+static WINDOW_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn show_window_once(app: &tauri::AppHandle, by: &str) {
+    if WINDOW_SHOWN.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+    if by != "page" {
+        log::line(&format!("window: shown by the {by}, the page didn't draw in time"));
+    }
+}
+
+#[tauri::command]
+fn window_ready(app: tauri::AppHandle) {
+    show_window_once(&app, "page");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if let Some(code) = make_patches_cli(&args) {
@@ -2074,9 +2097,14 @@ fn main() {
             }
             // The server-mods export, only on the PC the server names.
             export::start(app.handle());
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                show_window_once(&handle, "fallback");
+            });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, report_problem, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside, skip_tool])
+        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, report_problem, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside, skip_tool, window_ready])
         .build(tauri::generate_context!())
         .expect("error while running the launcher")
         .run(|_, event| {
