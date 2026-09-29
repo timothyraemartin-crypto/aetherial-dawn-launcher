@@ -1,6 +1,6 @@
-// Proves the fast-Play path (0.1.96): a returning player sees PLAY at once
-// while the game and Discord checks run behind it, and those checks still
-// decide. The launcher's page runs in headless Chrome with a fake launcher
+// Proves the launcher Play path: a returning player waits for fresh game,
+// Discord, and Vortex checks before PLAY is enabled. The launcher's page runs
+// in headless Chrome with a fake launcher
 // back end: a fake Discord answer, a fake game-files answer and a fake
 // latest.json. No packages needed: Chrome's --dump-dom prints the result.
 //
@@ -29,14 +29,14 @@ function findChrome() {
 function fakeBackEnd() {
   const S = window.__S;
   const t0 = performance.now();
-  const log = window.__T = { invokes: [], labels: [], lastReady: null, newsHeights: [], actions: [] };
+  const log = window.__T = { invokes: [], labels: [], statuses: [], lastReady: null, newsHeights: [], actions: [] };
   const listeners = {};
   const at = () => Math.round(performance.now() - t0);
   try { localStorage.clear(); if (S.seed) localStorage.setItem('ad.lastReady', JSON.stringify(S.seed)); } catch (_) {}
   const game = Object.assign({ needed: false, installed: '1.6.1170.0', target: '1.6.1170.0', skseOk: true, canDowngrade: true }, S.game || {});
   const answers = {
     get_state: () => ({ launcherVersion: S.version, config: { gameDir: S.dir, closeOnLaunch: false, backgroundUpdates: !!S.backgroundUpdates, shareHealth: true, music: false, onlyServerMods: true }, game: { dir: S.dir, hasSkse: S.hasSkse !== false } }),
-    auth_status: () => S.auth,
+    auth_status: () => (S.authSequence && S.authSequence.shift()) || S.auth,
     check: () => Object.assign({ build: 'B2', server: { name: 'Aetherial Dawn', ip: '127.0.0.1', port: 7777 }, files: 0, remove: 0, bytes: 0, strays: [], game }, (S.checkSequence && S.checkSequence.shift()) || S.check || {}),
     update: () => null,
     server_status: () => ({ online: true, players: 1, maxPlayers: 50, discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
@@ -73,7 +73,7 @@ function fakeBackEnd() {
       download: () => { log.invokes.push([at(), 'ask', 'updater_download']); return new Promise(res => setTimeout(res, 200)); },
       install: async () => { log.invokes.push([at(), 'ask', 'updater_install']); },
       downloadAndInstall: async () => { log.invokes.push([at(), 'ask', 'updater_install']); },
-    } : null), 100)) },
+    } : null), S.updaterDelay ?? 100)) },
     process: { relaunch: async () => {} },
   };
   document.addEventListener('DOMContentLoaded', () => {
@@ -82,10 +82,14 @@ function fakeBackEnd() {
     note();
     new MutationObserver(note).observe(label, { childList: true, characterData: true, subtree: true });
     new MutationObserver(note).observe(btn, { attributes: true, attributeFilter: ['disabled'] });
+    const status = document.getElementById('status');
+    const noteStatus = () => log.statuses.push([at(), status.textContent]);
+    noteStatus();
+    new MutationObserver(noteStatus).observe(status, { childList: true, characterData: true, subtree: true });
     const box = () => log.newsHeights.push([at(), document.getElementById('news-box').offsetHeight]);
     box();
     setInterval(box, 100);
-    // The player presses Play as soon as it shows enabled (and once more later).
+    // Scenarios can press before or after current checks complete.
     for (const t of S.clicks || []) setTimeout(() => { log.invokes.push([at(), 'click', label.textContent]); btn.click(); }, t);
     for (const action of S.actions || []) setTimeout(() => {
       if (action.kind === 'click') document.getElementById(action.id).click();
@@ -132,7 +136,7 @@ function fakeBackEnd() {
 
 const seed = { dir: DIR, build: 'B1', version: VERSION, play: true, status: { online: true, players: 1, maxPlayers: 50 } };
 const ok = { signedIn: true, account: { discordUsername: 'Player' }, offline: false, locked: false };
-const base = { version: VERSION, dir: DIR, auth: ok, seed, clicks: [60] };
+const base = { version: VERSION, dir: DIR, auth: ok, seed, clicks: [1250] };
 
 const played = r => r.invokes.some(i => i[1] === 'ask' && i[2] === 'play');
 const askedAt = (r, cmd) => (r.invokes.find(i => i[1] === 'ask' && i[2] === cmd) || [null])[0];
@@ -141,14 +145,12 @@ const firstLabel = (r, text) => (r.labels.find(l => l[1] === text) || [null])[0]
 const lastLabel = r => r.labels[r.labels.length - 1][1];
 
 const scenarios = [
-  { name: 'returning player: PLAY shows at once, and Play waits for both checks', s: base, expect: r => [
-    // Timed from the page's own start, which a cold CI machine delays.
-    ['PLAY is enabled before either check answers', firstLabel(r, 'PLAY') !== null && firstLabel(r, 'PLAY') < Math.min(answeredAt(r, 'auth_status'), answeredAt(r, 'check')),
-      `${firstLabel(r, 'PLAY') - askedAt(r, 'get_state')} ms after the page asked for its settings`],
-    ['Play pressed early shows STARTING', firstLabel(r, 'STARTING [off]') !== null],
+  { name: 'returning player: Play waits for fresh game, Discord and Vortex checks', s: base, expect: r => [
+    ['PLAY is not enabled before fresh checks answer', firstLabel(r, 'PLAY') !== null && firstLabel(r, 'PLAY') >= Math.max(answeredAt(r, 'auth_status'), answeredAt(r, 'check'), answeredAt(r, 'mods_state'))],
     ['the game starts once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
     ['the game starts only after the Discord answer', askedAt(r, 'play') >= answeredAt(r, 'auth_status')],
     ['the game starts only after the game-files answer', askedAt(r, 'play') >= answeredAt(r, 'check')],
+    ['cached server health is not shown before the current answer', r.statuses.filter(s => s[0] < answeredAt(r, 'server_status')).every(s => !/Server online/.test(s[1]))],
   ] },
   { name: 'banned since last time: SIGN IN, the game never starts', s: { ...base, auth: { signedIn: false, message: 'You are banned from the Discord.' } }, expect: r => [
     ['the game never starts', !played(r)],
@@ -160,7 +162,7 @@ const scenarios = [
   { name: 'not a member: the sign-in window links the Discord invite', s: { ...base, auth: { signedIn: false }, invite: 'https://discord.gg/aetherial' }, expect: r => [
     ['the invite shows', r.join === 'Not a member yet? Join here: discord.gg/aetherial', r.join],
   ] },
-  { name: 'not a member, and the refusal carries the invite: one clickable link', s: { ...base, auth: { signedIn: false, message: 'Join the Aetherial Dawn Discord first: https://discord.gg/aetherial. Then press Sign in with Discord again.' }, invite: 'https://discord.gg/aetherial' }, expect: r => [
+  { name: 'not a member, and the refusal carries the invite: one clickable link', s: { ...base, clicks: [], auth: { signedIn: false, message: 'Join the Aetherial Dawn Discord first: https://discord.gg/aetherial. Then press Sign in with Discord again.' }, invite: 'https://discord.gg/aetherial' }, expect: r => [
     ['the refusal shows the link as a button', r.errorLink === 'discord.gg/aetherial', r.errorLink],
     ['the separate join line is not shown twice', r.join === null, r.join],
   ] },
@@ -195,17 +197,25 @@ const scenarios = [
     ['the game never starts', !played(r)],
     ['the button ends on SIGN IN', lastLabel(r) === 'SIGN IN'],
   ] },
-  { name: 'account locked: OFFLINE, the game never starts', s: { ...base, auth: { ...ok, locked: true, message: 'Your account is locked.' } }, expect: r => [
+  { name: 'login service unavailable: retry is available and the game never starts', s: { ...base, auth: { ...ok, offline: true, locked: true, message: 'Login service unavailable.' } }, expect: r => [
     ['the game never starts', !played(r)],
-    ['the button ends on OFFLINE', lastLabel(r) === 'OFFLINE [off]'],
+    ['the button offers a sign-in retry', lastLabel(r) === 'RETRY SIGN-IN'],
+    ['the status explains the outage', /Login service unavailable/.test(r.status)],
     ['next start does not open on PLAY', r.lastReady && r.lastReady.play === false],
   ] },
-  { name: 'an update found behind PLAY takes over the button', s: { ...base, check: { build: 'B2', files: 3, bytes: 3000000 } }, expect: r => [
+  { name: 'login service recovers when Retry sign-in is pressed', s: { ...base, clicks: [1250], authSequence: [
+    { ...ok, offline: true, locked: true, message: 'Login service unavailable.' }, ok,
+  ] }, expect: r => [
+    ['Discord is checked twice', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'auth_status').length === 2],
+    ['Play returns only after the second check', lastLabel(r) === 'PLAY' && firstLabel(r, 'PLAY') >= r.invokes.filter(i => i[1] === 'answer' && i[2] === 'auth_status')[1][0]],
+    ['retry does not launch the game', !played(r)],
+  ] },
+  { name: 'an update found before Play offers the update', s: { ...base, clicks: [], check: { build: 'B2', files: 3, bytes: 3000000 } }, expect: r => [
     ['the game never starts', !played(r)],
     ['the button ends on UPDATE', lastLabel(r) === 'UPDATE'],
     ['next start does not open on PLAY', r.lastReady && r.lastReady.play === false],
   ] },
-  { name: 'an update found behind PLAY with background updates: updates, then plays', s: { ...base, backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 } }, expect: r => [
+  { name: 'background update completes before Play becomes available', s: { ...base, clicks: [1900], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 } }, expect: r => [
     ['the button shows UPDATING', firstLabel(r, 'UPDATING [off]') !== null],
     ['the game starts only after the update', askedAt(r, 'play') !== null && askedAt(r, 'play') >= answeredAt(r, 'update')],
   ] },
@@ -215,7 +225,7 @@ const scenarios = [
     ['the button ends on WRONG VERSION', lastLabel(r) === 'WRONG VERSION [off]'],
     ['next start does not open on PLAY', r.lastReady && r.lastReady.play === false],
   ] },
-  { name: 'wrong game version (fixable): the early press is not taken as a yes to the fix', s: { ...base, game: { needed: true, canDowngrade: true, reason: 'Skyrim needs changing.' } }, expect: r => [
+  { name: 'wrong game version (fixable): an early press is not taken as a yes to the fix', s: { ...base, clicks: [60], game: { needed: true, canDowngrade: true, reason: 'Skyrim needs changing.' } }, expect: r => [
     ['the game never starts', !played(r)],
     ['the fix waits for a press made after the reason shows', askedAt(r, 'patch_game') === null],
     ['the status line gives the reason', /Skyrim needs changing/.test(r.status)],
@@ -226,7 +236,7 @@ const scenarios = [
   { name: 'another Skyrim folder: no early PLAY', s: { ...base, seed: { ...seed, dir: 'D:\\Other' }, clicks: [] }, expect: r => [
     ['PLAY is not enabled before the checks', firstLabel(r, 'PLAY') === null || firstLabel(r, 'PLAY') >= answeredAt(r, 'check')],
   ] },
-  { name: 'launcher update found while Play is starting the game: it waits', s: { ...base, update: '9.9.10', delay: { play: 3000 } }, expect: r => [
+  { name: 'launcher update found while Play is starting the game: it waits', s: { ...base, update: '9.9.10', updaterDelay: 900, delay: { play: 3000 } }, expect: r => [
     ['the game starts', played(r)],
     ['the launcher never installs its update while Play runs or the game is up', askedAt(r, 'updater_install') === null, JSON.stringify(r.invokes.filter(i => /updater|play/.test(i[2])))],
   ] },
@@ -256,24 +266,24 @@ const scenarios = [
     ['the window is shown by the page', askedAt(r, 'window_ready') !== null],
     ['the news box never changes height once shown', new Set(r.newsHeights.filter(h => h[0] >= askedAt(r, 'window_ready')).map(h => h[1])).size === 1, JSON.stringify(r.newsHeights.slice(0, 8))],
   ] },
-  { name: 'a game in progress keeps Play disabled and blocks file checks', s: { ...base, clicks: [60, 2100], actions: [
-    { at: 1500, kind: 'click', id: 'nav-server' },
-    { at: 1600, kind: 'click', id: 't-check' },
-    { at: 1700, kind: 'click', id: 't-verify' },
+  { name: 'a game in progress keeps Play disabled and blocks file checks', s: { ...base, clicks: [1250, 3000], actions: [
+    { at: 2600, kind: 'click', id: 'nav-server' },
+    { at: 2700, kind: 'click', id: 't-check' },
+    { at: 2800, kind: 'click', id: 't-verify' },
   ] }, expect: r => [
     ['Play starts once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
-    ['no check starts during the game', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'check').length === 1],
+    ['no extra check starts during the game', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'check').length === 2],
     ['the Play button stays disabled in game', r.playDisabled && lastLabel(r) === 'IN GAME [off]', lastLabel(r)],
   ] },
-  { name: 'a file check cannot overlap the Play command', s: { ...base, clicks: [60], delay: { play: 1500 }, actions: [
-    { at: 1200, kind: 'click', id: 't-check' },
+  { name: 'a file check cannot overlap the Play command', s: { ...base, delay: { play: 1500 }, actions: [
+    { at: 2400, kind: 'click', id: 't-check' },
   ] }, expect: r => [
     ['Play starts once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
-    ['no check starts during Play', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'check').length === 1],
+    ['no extra check starts during Play', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'check').length === 2],
   ] },
-  { name: 'required mods remain viewable during the game without installer controls', s: { ...base, clicks: [60], modsState: {
+  { name: 'required mods remain viewable during the game without installer controls', s: { ...base, modsState: {
     mods: [{ id: 'a', name: 'A', installed: false }], nexus: { name: 'Player', is_premium: true }, vortex: false, running: false, sso: true,
-  }, actions: [{ at: 1500, kind: 'click', id: 'files-mods' }] }, expect: r => [
+  }, actions: [{ at: 2800, kind: 'click', id: 'files-mods' }] }, expect: r => [
     ['the game starts', played(r)],
     ['the required mods dialog opens', r.modsShown],
     ['no mod installer is exposed or started', !r.installerControl && askedAt(r, 'download_all_mods') === null],
@@ -302,7 +312,7 @@ const scenarios = [
     vortex_ready: false, vortex_paired: true,
     vortex_line: 'Vortex: 1 required mod needs deployment or game files in Skyrim: Test Mod.',
   }, actions: [{ at: 1800, kind: 'click', id: 'play' }] }, expect: r => [
-    ['PLAY appears while the initial checks run', firstLabel(r, 'PLAY') !== null],
+    ['PLAY never appears before the Vortex failure', firstLabel(r, 'PLAY') === null],
     ['the button becomes MODS NEEDED', lastLabel(r) === 'MODS NEEDED', lastLabel(r)],
     ['the hero action opens Requirements', r.modsShown && r.modal === 'reqs'],
     ['the status names the missing mod', /Test Mod/.test(r.status), r.status],
@@ -333,11 +343,11 @@ const scenarios = [
     ['the old build does not launch', !played(r)],
     ['the button offers the new update', lastLabel(r) === 'UPDATE', lastLabel(r)],
   ] },
-  { name: 'game exit checks for a newly published build', s: { ...base, clicks: [60], checkSequence: [
-    { build: 'B1' }, { build: 'B2', files: 1, bytes: 1000 },
-  ], actions: [{ at: 1600, kind: 'event', name: 'game-ended', payload: { crashed: false, summary: 'Skyrim closed normally.', report: '' } }] }, expect: r => [
+  { name: 'game exit checks for a newly published build', s: { ...base, checkSequence: [
+    { build: 'B1' }, { build: 'B1' }, { build: 'B2', files: 1, bytes: 1000 },
+  ], actions: [{ at: 3000, kind: 'event', name: 'game-ended', payload: { crashed: false, summary: 'Skyrim closed normally.', report: '' } }] }, expect: r => [
     ['Play happened once before the new build', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
-    ['the game exit triggers a new manifest check', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'check').length === 2],
+    ['the game exit triggers a new manifest check', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'check').length === 3],
     ['the button offers the new update', lastLabel(r) === 'UPDATE', lastLabel(r)],
   ] },
   { name: 'settings failure opens a recoverable first-run error', s: { ...base, stateFails: true, clicks: [] }, expect: r => [
@@ -371,6 +381,7 @@ const scenarios = [
 const chrome = findChrome();
 let failed = 0;
 for (const sc of scenarios) {
+  if (process.env.AD_UI_SCENARIO && !sc.name.includes(process.env.AD_UI_SCENARIO)) continue;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-ui-'));
   fs.cpSync(UI, dir, { recursive: true });
   const html = fs.readFileSync(path.join(dir, 'index.html'), 'utf8')

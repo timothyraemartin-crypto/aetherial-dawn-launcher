@@ -48,7 +48,7 @@
   let auth = null;        // auth_status: Discord sign-in   // check().game: is Skyrim the build the server needs?
   let busy = false;
   let playInFlight = false;
-  let playMode = 'wait';  // wait | play | mods | update | retry | downgrade | signin
+  let playMode = 'wait';  // wait | play | mods | update | retry | auth-retry | downgrade | signin
   let modsCheckSeq = 0;
   let page = 'home';
 
@@ -62,10 +62,10 @@
     $('play-label').textContent = label;
     $('play').disabled = mode === 'wait';
     $('play-wrap').classList.toggle('off', mode === 'wait');
-    // Only a session that ends ready to play opens on PLAY next time.
+    // Invalidate the legacy saved readiness marker when current checks fail.
     if (lastSeen.play && (STOPS.includes(mode) || STOPS.includes(label))) remember({ play: false });
   }
-  const STOPS = ['mods', 'update', 'retry', 'downgrade', 'signin', 'strays', 'WRONG VERSION', 'OFFLINE'];
+  const STOPS = ['mods', 'update', 'retry', 'auth-retry', 'downgrade', 'signin', 'strays', 'WRONG VERSION', 'OFFLINE'];
   let statusMsg = null;
   function setStatus(msg, isError) { statusMsg = msg ? { msg, isError } : null; renderStatus(); }
   let toolRunning = false;
@@ -73,14 +73,13 @@
     const parts = [];
     if (statusMsg) parts.push(`<span${statusMsg.isError ? ' class="error"' : ''}>${esc(statusMsg.msg)}</span>`);
     else {
-      // Live from the login service's /health (refreshed every 30 s); grey when it can't be reached.
-      // Until the first answer, the last one this PC saw stands in, so the line doesn't change twice.
-      const st = statusAsked ? status : (status || lastSeen.status);
+      // Only a current /health answer can claim the server is online.
+      const st = status;
       const known = st && typeof st.online === 'boolean';
       const on = known && st.online;
       const who = on && typeof st.players === 'number' ? ` · ${st.maxPlayers ? `${st.players} of ${plural(st.maxPlayers, 'player')}` : plural(st.players, 'player')}` : '';
       parts.push(`<span><i class="dot${on ? '' : ' off'}"></i>${!known ? (statusAsked ? 'Server status unavailable' : 'Connecting to the server') : on ? 'Server online' : 'Server offline'}${who}</span>`);
-      const build = pending ? pending.build : lastSeen.build;
+      const build = pending && pending.build;
       if (build) parts.push(`<span>Build ${esc(build)}</span>`);
     }
     if (toolRunning) parts.push(`<button class="linkish" id="tool-skip">Skip for now</button>`);
@@ -89,9 +88,8 @@
     if (html !== shownStatus) $('status').innerHTML = shownStatus = html;
   }
   let shownStatus = '';
-  // What the last session ended on (this PC only): the game folder, build and
-  // server status, so a returning player sees PLAY at once while the checks
-  // run behind it. Nothing here is trusted: every check still runs.
+  // Saved news and Discord invite can fill their panels while current checks
+  // run. Saved readiness and server health are never shown as current.
   const LAST = 'ad.lastReady';
   const lastSeen = (() => { try { return JSON.parse(localStorage.getItem(LAST)) || {}; } catch (_) { return {}; } })();
   function remember(patch) {
@@ -244,27 +242,22 @@
     clearTimeout(retryTimer);
     retryTimer = setTimeout(() => { if (playMode === 'retry' && !busy) check(); }, 60000);
   }
-  // quiet: PLAY from the last session is already showing, so the check runs
-  // without a CHECKING label; Play pressed meanwhile waits for it (onPlay).
   // signIn: the Discord check running alongside, needed before PLAY is final.
-  let quietCheck = null;
   function check(verifyAll = false, opt = {}) {
     if (gameRunning || playInFlight || updating) {
-      if (!opt.quiet) setStatus('Finish the current game or download before checking game files.');
+      setStatus('Finish the current game or download before checking game files.');
       return Promise.resolve(false);
     }
     if (busy) return Promise.resolve();
-    const run = checkNow(verifyAll, opt);
-    if (opt.quiet) { quietCheck = run; run.finally(() => { quietCheck = null; }); }
-    return run;
+    return checkNow(verifyAll, opt);
   }
-  async function checkNow(verifyAll, { quiet, signIn } = {}) {
+  async function checkNow(verifyAll, { signIn } = {}) {
+    // A Vortex answer from an older manifest must not enable Play here.
+    modsCheckSeq++;
     busy = true;
-    if (!quiet) {
-      setPlay('wait', 'CHECKING');
-      setChip('busy', 'Checking');
-      setStatus('Checking for updates…');
-    }
+    setPlay('wait', 'CHECKING');
+    setChip('busy', 'Checking');
+    setStatus('Checking for updates…');
     try {
       pending = await invoke('check', { verifyAll });
       if (signIn) await signIn;
@@ -289,7 +282,7 @@
         setChip('warn', 'Update available');
         setStatus(`Build ${pending.build} available · ${plural(pending.files, 'file')} · ${mb(pending.bytes)}`);
       } else {
-        ready();
+        await ready();
       }
     } catch (e) {
       setPlay('retry', 'RETRY');
@@ -334,7 +327,7 @@
     });
     try {
       await invoke('update', { verifyAll });
-      ready();
+      await ready();
     } catch (e) {
       setPlay('retry', 'RETRY');
       setChip('warn', 'Update failed');
@@ -363,18 +356,20 @@
       return;
     }
     if (!signedIn()) { setPlay('signin', 'SIGN IN'); setStatus('Sign in with Discord to play.', true); return; }
-    if (auth.locked) { setPlay('wait', 'OFFLINE'); setStatus(auth.message, true); return; }
-    setPlay('play', 'PLAY');
-    remember({ dir: state.config.gameDir, build: pending.build, version: state.launcherVersion, play: true });
-    if (c && c.warning) setStatus(c.warning, true);
-    if (c && c.target && !c.skseOk) setStatus(`The launcher installs SKSE ${c.skseVersion || ''} for you when you press Play.`);
-    else if (!(c && c.warning)) setStatus(null);
+    if (auth.locked) {
+      setPlay('auth-retry', 'RETRY SIGN-IN');
+      setChip('warn', 'Sign-in unavailable');
+      setStatus(auth.message, true);
+      return;
+    }
+    setPlay('wait', 'CHECKING MODS');
+    setStatus('Checking required mods in Vortex…');
     setChip('busy', 'Client files ready · checking Vortex');
-    checkModReadiness();
+    return checkModReadiness();
   }
 
   function applyModReadiness(view) {
-    if (gameRunning || playInFlight || updating || busy || !['play', 'mods'].includes(playMode)) return;
+    if (gameRunning || playInFlight || updating || !['wait', 'play', 'mods'].includes(playMode)) return;
     const missingDirect = Array.isArray(view.mods)
       ? view.mods.filter(m => m.from === 'direct' && !m.installed).map(m => m.name)
       : [];
@@ -387,11 +382,11 @@
       return `${plural(names.length, 'required mod')} ${label}: ${shown}${rest}. Open Requirements for the full list.`;
     };
     if (view.vortex_ready === true && missingDirect.length === 0) {
-      if (playMode === 'mods') {
-        setPlay('play', 'PLAY');
-        remember({ dir: state.config.gameDir, build: pending.build, version: state.launcherVersion, play: true });
-        setStatus(null);
-      }
+      setPlay('play', 'PLAY');
+      remember({ dir: state.config.gameDir, build: pending.build, version: state.launcherVersion, play: true });
+      if (gameCheck && gameCheck.warning) setStatus(gameCheck.warning, true);
+      else if (gameCheck && gameCheck.target && !gameCheck.skseOk) setStatus(`The launcher installs SKSE ${gameCheck.skseVersion || ''} for you when you press Play.`);
+      else setStatus(null);
       setChip('ok', 'Client and Vortex ready');
     } else {
       setPlay('mods', 'MODS NEEDED');
@@ -431,7 +426,7 @@
     $('set-account').hidden = !a;
     if (!a) return;
     $('me-name').textContent = $('acc-name').textContent = a.discordUsername || 'Discord user';
-    $('acc-note').textContent = auth.offline ? 'Signed in with Discord (not re-checked yet)' : 'Signed in with Discord';
+    $('acc-note').textContent = auth.offline ? 'Login service unavailable; saved sign-in kept' : 'Signed in with Discord';
     paintAvatar($('me-avatar'), a); paintAvatar($('acc-avatar'), a);
   }
   async function refreshAuth() {
@@ -440,26 +435,36 @@
     renderAccount();
     return auth;
   }
-  // Every 10 minutes: a ban or leaving the Discord signs the player out here.
+  // Every 10 minutes, and sooner during an outage: a ban or leaving the
+  // Discord signs the player out; a recovered service restores Play.
+  let authRechecking = false;
   async function recheckAuth() {
-    if (!signedIn() || busy) return;
-    await refreshAuth();
-    if (!signedIn()) { ready(); showSignIn(auth.message); }
-    else if (playMode === 'play' || playMode === 'wait') ready();
+    if (!signedIn() || busy || authRechecking) return;
+    authRechecking = true;
+    try {
+      await refreshAuth();
+      if (!signedIn()) {
+        if (pending) ready(); else setPlay('signin', 'SIGN IN');
+        showSignIn(auth.message);
+      }
+      else if (pending && ['play', 'wait', 'auth-retry'].includes(playMode)) ready();
+    } finally { authRechecking = false; }
   }
   // The invite the login service publishes; the last one seen stands in.
   // A refusal that carries its own invite link (not a member) shows it as a
   // link in its text instead, so it isn't said twice.
   const INVITE = /https:\/\/discord\.gg\/[A-Za-z0-9-]{2,32}/;
-  function renderInvite(inMessage) {
+  let signInHasInvite = false;
+  function renderInvite() {
     const invite = (status && status.discordInvite) || lastSeen.invite;
-    $('si-join').hidden = !invite || inMessage;
+    $('si-join').hidden = !invite || signInHasInvite;
     if (invite) $('si-join-go').textContent = invite.replace('https://', '');
   }
   function showSignIn(message) {
     const el = $('si-error');
     const found = message ? INVITE.exec(message) : null;
-    renderInvite(!!found);
+    signInHasInvite = !!found;
+    renderInvite();
     el.textContent = '';
     if (found) {
       const link = document.createElement('button');
@@ -706,21 +711,20 @@
   }
   async function onPlay(checked = false) {
     if (gameRunning || playInFlight || updating) return;
-    if (quietCheck) {
-      setPlay('wait', 'STARTING');
-      await quietCheck;
-      return playMode === 'play' ? onPlay(true) : undefined;
-    }
     if (busy) return;
     // Installing the launcher update closes the launcher; Play waits for it.
     if (updating) { setStatus('The launcher is updating itself. Play is ready again once it restarts.'); return; }
     if (playMode === 'strays') return openStrays();
     if (playMode === 'mods') return showRequiredMods();
     if (playMode === 'retry') return check();
+    if (playMode === 'auth-retry') {
+      setPlay('wait', 'CHECKING SIGN-IN');
+      return recheckAuth();
+    }
     if (playMode === 'update') return update();
     // Play fixes the game version by itself, then starts the game.
     if (playMode === 'downgrade') { openDowngrade(); playAfterPatch = true; return patchGame(); }
-    if (playMode === 'signin') return showSignIn();
+    if (playMode === 'signin') return showSignIn(auth && auth.message);
     if (playMode !== 'play') return;
     if (!checked) {
       // The manifest may have changed while the launcher sat open or Skyrim ran.
@@ -1151,13 +1155,7 @@
     setInterval(loadStatus, 30 * 1000);
     const signIn = refreshAuth();
     setInterval(recheckAuth, 10 * 60 * 1000);
-    // Same folder, same launcher and ready to play last time: PLAY shows now.
-    const again = ready_() && lastSeen.play && lastSeen.dir === state.config.gameDir && lastSeen.version === state.launcherVersion;
-    if (again) {
-      setPlay('play', 'PLAY');
-      setChip('busy', 'Checking client files');
-      setStatus(null);
-    }
+    setInterval(() => { if (auth && auth.offline) recheckAuth(); }, 60 * 1000);
     if (Array.isArray(lastSeen.news) && lastSeen.news.length) showNews(lastSeen.news);
     // Shown after a drawn frame; a hidden window may not draw, so not later than 150 ms.
     const drawn = () => new Promise(r => { requestAnimationFrame(() => requestAnimationFrame(r)); setTimeout(r, 150); });
@@ -1169,7 +1167,7 @@
     } else {
       // The game check and the Discord check run side by side.
       signIn.then(() => { if (!signedIn()) showSignIn(auth && auth.message); });
-      await check(false, { quiet: again, signIn });
+      await check(false, { signIn });
     }
     checkSelfUpdate();
   })();
