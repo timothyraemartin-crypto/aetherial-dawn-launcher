@@ -464,6 +464,38 @@ pub fn merged(game_version: Option<&str>, server: Option<&ModList>) -> Vec<ModEn
     out
 }
 
+/// The two Community Overlays face archives install to the same 25 paths.
+/// For this manual Vortex playtest the male archive is the selected variant;
+/// the female archive may remain installed, but is not a second deployment
+/// requirement. Apply this only to the two exact, checkless feed pins.
+const MALE_FACE_FILES: [&str; 25] = [
+    "01 Head.dds", "02 Head.dds", "03 Head.dds", "04 Head.dds", "05 Head.dds",
+    "06 Head.dds", "07 Head.dds", "07 Head Secondary.dds", "08 Head.dds",
+    "08 Head Secondary.dds", "09 Head.dds", "09 Head Secondary.dds", "20 Head.dds",
+    "21 Head.dds", "22 Head.dds", "26 Head.dds", "27 Head.dds", "28 Head.dds",
+    "29 Head.dds", "30 Head Base.dds", "30 Head Base W.dds", "30 Head Secondary.dds",
+    "30 Head Secondary W.dds", "Extra Head Gemstone.dds", "Extra Head Renegade.dds",
+];
+
+pub(crate) fn selected_male_face_checks() -> Vec<String> {
+    MALE_FACE_FILES.iter().map(|name| format!("Data/textures/actors/character/Overlays/Community Overlays/{name}")).collect()
+}
+
+pub fn play_required(mut list: Vec<ModEntry>) -> Vec<ModEntry> {
+    let face = |id: &str, file: u64| list.iter().any(|m| m.id == id
+        && m.nexus.as_ref().is_some_and(|n| n.mod_id == 22487 && n.file == Some(file))
+        && m.check.is_empty() && m.owns.is_empty());
+    if face("community-overlays-1-female-face", 104828)
+        && face("community-overlays-1-male-face", 104868)
+    {
+        list.retain(|m| m.id != "community-overlays-1-female-face");
+        if let Some(male) = list.iter_mut().find(|m| m.id == "community-overlays-1-male-face") {
+            male.check = selected_male_face_checks();
+        }
+    }
+    list
+}
+
 /// A file or folder that's really there; a plugin must also be a sound one,
 /// not an empty stub like the SkyUI_SE.esp from the first live test, and an
 /// SKSE DLL must be the build SKSE loads on 1.6.1170 (not the old-Skyrim
@@ -1482,6 +1514,22 @@ pub fn verify(entry: &ModEntry, archive: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn play_requires_only_the_explicit_male_face_variant_for_exact_feed_pins() {
+        use super::{play_required, ModEntry, NexusRef};
+        let face = |id: &str, file| ModEntry { id: id.into(), name: id.into(),
+            nexus: Some(NexusRef { mod_id: 22487, file: Some(file), pick: None }), ..Default::default() };
+        let female = face("community-overlays-1-female-face", 104828);
+        let male = face("community-overlays-1-male-face", 104868);
+        let selected = play_required(vec![female.clone(), male.clone()]);
+        assert_eq!(selected.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["community-overlays-1-male-face"]);
+        assert_eq!(selected[0].check.len(), 25, "all selected male texture paths must be deployed");
+        let wrong_file = face("community-overlays-1-female-face", 104829);
+        assert_eq!(play_required(vec![wrong_file, male.clone()]).len(), 2, "a changed feed pin gets no exception");
+        let changed_check = ModEntry { check: vec!["Data/Face.dds".into()], ..female };
+        assert_eq!(play_required(vec![changed_check, male]).len(), 2, "a changed requirement gets no exception");
+    }
+
     #[test]
     fn fomod_options_naming_another_skyrim_go_last() {
         assert!(!super::option_fits_game("SSE/AE v1.7.99+"));

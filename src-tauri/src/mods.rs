@@ -222,7 +222,7 @@ pub async fn full_list(state: &AppState) -> Vec<ModEntry> {
     if let (Some(l), Some(dir)) = (&server, state.config.lock().await.game_dir.clone()) {
         launcher_core::allowlist::save_server_list(&dir, l);
     }
-    modlist::merged(version.as_deref(), server.as_ref())
+    modlist::play_required(modlist::merged(version.as_deref(), server.as_ref()))
 }
 
 #[derive(Serialize)]
@@ -313,7 +313,7 @@ fn vortex_readout(
     let exact: Vec<Option<bool>> = set.mods.iter().map(|m| {
         m.nexus.as_ref()?;
         let status = status?;
-        Some(vortex::missing_deployment(std::slice::from_ref(m), status, files, dir).is_empty()
+        Some(vortex::deployment_ready_for(&set.mods, m, status, files, dir)
             && (m.check.is_empty() || m.game_files_present(dir)))
     }).collect();
     let confirmed = exact.iter().filter(|v| **v == Some(true)).count();
@@ -331,6 +331,9 @@ fn vortex_readout(
                 missing.len(), if missing.len() == 1 { "" } else { "s" }, missing.join(", ")), false)
         }
     };
+    let line = if status.is_some_and(|s| vortex::female_face_alternative_installed(&set.mods, s)) {
+        format!("{line} · Male Face Overlays selected; Female Face Overlays installed as an alternative")
+    } else { line };
     VortexReadout { line, ready, exact, confirmed, required }
 }
 
@@ -349,7 +352,7 @@ pub async fn mods_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult
             .and_then(|m| m.game.as_ref()).and_then(|g| g.version.clone()),
     };
     let server = fetched_server_list(&state).await;
-    let list = modlist::merged(version.as_deref(), server.as_ref());
+    let list = modlist::play_required(modlist::merged(version.as_deref(), server.as_ref()));
     let user = if nexus_key(&app).is_some() { state.config.lock().await.nexus_user.clone() } else { None };
     let sso = nexus_app(&state).await.is_some();
     let running = state.mods.cancel.lock().unwrap().is_some();
@@ -1241,6 +1244,37 @@ mod tests {
         let ready = super::vortex_readout(&set, Some(&status), &files, &dir, None);
         assert!(ready.ready, "{} {:?}", ready.line, ready.exact);
         assert_eq!(ready.exact, vec![Some(true)]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn requirements_names_installed_female_alternative_without_counting_it_as_deployed() {
+        use launcher_core::allowlist::VortexFile;
+        use launcher_core::modlist::{self, ModEntry, NexusRef};
+        use launcher_core::vortex::{ClientSet, Profile, Status, VortexMod};
+        let dir = std::env::temp_dir().join(format!("ad-face-readout-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let face = |id: &str, file| ModEntry { id: id.into(), name: id.into(),
+            nexus: Some(NexusRef { mod_id: 22487, file: Some(file), pick: None }), ..Default::default() };
+        let required = modlist::play_required(vec![face("community-overlays-1-female-face", 104828),
+            face("community-overlays-1-male-face", 104868)]);
+        let set = ClientSet { collection: None, mods: required };
+        let checks = &set.mods[0].check;
+        assert_eq!(checks.len(), 25);
+        for rel in checks {
+            let target = dir.join(rel);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(target, b"selected male texture").unwrap();
+        }
+        let package = |id: &str, file| VortexMod { id: id.into(), installation_path: Some(format!("{id}-folder")),
+            state: Some("installed".into()), nexus_mod_id: Some(22487), nexus_file_id: Some(file), enabled: true };
+        let status = Status { profile: Some(Profile { id: "p1".into(), name: "Aetherial Dawn".into(), active: true }),
+            aetherial_profiles: 1, mods: vec![package("female", 104828), package("male", 104868)], ..Default::default() };
+        let files: Vec<VortexFile> = checks.iter().map(|rel| VortexFile { rel: rel.clone(), source: "male-folder".into() }).collect();
+        let readout = super::vortex_readout(&set, Some(&status), &files, &dir, None);
+        assert!(readout.ready, "{}", readout.line);
+        assert_eq!((readout.confirmed, readout.required), (1, 1));
+        assert!(readout.line.contains("Female Face Overlays installed as an alternative"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

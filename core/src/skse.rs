@@ -6,6 +6,22 @@
 
 use std::path::Path;
 
+// Nexus RaceMenu 19080/file 743640, Anniversary Edition v0.4.20.0, for
+// Skyrim 1.6.1170 and SKSE 2.2.6. This DLL uses the legacy Query/Load exports
+// that our general SKSE version-data test treats as an old build. Limit the
+// exception to the exact DLL bytes observed in that pinned package.
+const RACEMENU_1170_SKEE64_SHA256: &str = "5225e4e3b185e6fc57c8d31b0cedbe5a030a951d9a744d33071b64c45a38c208";
+
+fn known_racemenu_hash(path: &Path, sha256: &str) -> bool {
+    path.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("skee64.dll"))
+        && sha256 == RACEMENU_1170_SKEE64_SHA256
+}
+
+fn known_racemenu_build(path: &Path, bytes: &[u8]) -> bool {
+    use sha2::Digest;
+    known_racemenu_hash(path, &hex::encode(sha2::Sha256::digest(bytes)))
+}
+
 /// Skyrim 1.6.1170 as SKSE packs it: (major << 24) | (minor << 16) | (build << 4).
 pub const RUNTIME_1_6_1170: u32 = (1 << 24) | (6 << 16) | (1170 << 4);
 /// SKSE 2.2.6, packed the same way.
@@ -149,6 +165,7 @@ pub fn describe(p: &Path) -> String {
 /// What SKSE would make of the DLL at `p` (Unknown when it can't be read).
 pub fn build_of(p: &Path) -> Build {
     match std::fs::read(p) {
+        Ok(b) if known_racemenu_build(p, &b) => Build::Fits,
         Ok(b) => build_of_bytes(&b),
         Err(_) => Build::Unknown,
     }
@@ -187,6 +204,19 @@ pub fn wrong_builds(game_dir: &Path) -> Vec<(String, String)> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_pinned_racemenu_dll_hash_uses_the_legacy_export_exception() {
+        let known = RACEMENU_1170_SKEE64_SHA256;
+        assert!(known_racemenu_hash(Path::new("skee64.dll"), known));
+        assert!(known_racemenu_hash(Path::new("SKEE64.DLL"), known));
+        assert!(!known_racemenu_hash(Path::new("Other.dll"), known));
+        assert!(!known_racemenu_hash(Path::new("skee64.dll"), &"0".repeat(64)));
+        let t = tempfile::tempdir().unwrap();
+        let other = t.path().join("skee64.dll");
+        std::fs::write(&other, dll(&["SKSEPlugin_Query", "SKSEPlugin_Load"], &[0u8; 4])).unwrap();
+        assert!(matches!(build_of(&other), Build::Wrong(_)), "another old-export DLL remains blocked");
+    }
 
     #[test]
     fn describes_what_it_read() {

@@ -365,7 +365,10 @@ pub fn membership(list: &[ModEntry], status: &Status) -> Membership {
         }
         match n.file {
             Some(file) => for m in &on {
-                if m.nexus_file_id != Some(file) && !list.iter().any(|o| o.nexus.as_ref().is_some_and(|on| on.mod_id == n.mod_id && on.file == m.nexus_file_id)) && !other_versions_on.contains(&m.id) {
+                if m.nexus_file_id != Some(file)
+                    && !(male_face_selected(list) && n.mod_id == 22487 && m.nexus_file_id == Some(104828))
+                    && !list.iter().any(|o| o.nexus.as_ref().is_some_and(|on| on.mod_id == n.mod_id && on.file == m.nexus_file_id))
+                    && !other_versions_on.contains(&m.id) {
                     other_versions_on.push(m.id.clone());
                 }
             },
@@ -376,6 +379,52 @@ pub fn membership(list: &[ModEntry], status: &Status) -> Membership {
             }
     }
     Membership { profile_active, missing, other_versions_on }
+}
+
+fn male_face_selected(list: &[ModEntry]) -> bool {
+    list.iter().any(|e| e.id == "community-overlays-1-male-face"
+        && e.nexus.as_ref().is_some_and(|n| n.mod_id == 22487 && n.file == Some(104868))
+        && e.check == crate::modlist::selected_male_face_checks() && e.owns.is_empty())
+        && !list.iter().any(|e| e.id == "community-overlays-1-female-face")
+}
+
+/// The selected male face archive is required to deploy. The female archive
+/// can remain installed as an optional alternative, never as proof of a
+/// deployed file or as a substitute for the selected archive.
+pub fn female_face_alternative_installed(list: &[ModEntry], status: &Status) -> bool {
+    male_face_selected(list) && status.mods.iter().any(|m| m.nexus_mod_id == Some(22487)
+        && m.nexus_file_id == Some(104828) && m.state.as_deref() == Some("installed"))
+}
+
+const COMMUNITY_OVERLAYS_BSA: &str = "Data/CommunityOverlays1_0T30.bsa";
+
+fn menu_framework_support_check(entry: &ModEntry, check: &str) -> bool {
+    entry.id == "menu-framework"
+        && entry.nexus.as_ref().is_some_and(|n| n.mod_id == 120352 && n.file == Some(806684))
+        && ["Data/SKSE/Plugins/SKSEMenuFrameworkStrings*.json",
+            "Data/SKSE/Plugins/fonts/*.ttf",
+            "Data/SKSE/Plugins/SKSEMenuFrameworkThemes/*.json"]
+            .iter().any(|p| check.eq_ignore_ascii_case(p))
+}
+
+fn bugfix_replaces_main_archive(list: &[ModEntry], entry: &ModEntry, check: &str,
+    status: &Status, files: &[VortexFile], game_dir: &Path) -> bool {
+    if entry.id != "community-overlays-1"
+        || !entry.nexus.as_ref().is_some_and(|n| n.mod_id == 22487 && n.file == Some(77988))
+        || !check.eq_ignore_ascii_case(COMMUNITY_OVERLAYS_BSA)
+        || !list.iter().any(|m| m.id == "community-overlays-1-fix"
+            && m.nexus.as_ref().is_some_and(|n| n.mod_id == 22487 && n.file == Some(79615))
+            && m.check.iter().any(|c| c.eq_ignore_ascii_case(COMMUNITY_OVERLAYS_BSA))
+            && m.owns.iter().any(|c| c.eq_ignore_ascii_case(COMMUNITY_OVERLAYS_BSA)))
+        || !game_dir.join(COMMUNITY_OVERLAYS_BSA).is_file()
+    {
+        return false;
+    }
+    status.mods.iter().filter(|m| m.nexus_mod_id == Some(22487)
+        && m.nexus_file_id == Some(79615) && m.enabled
+        && m.state.as_deref() == Some("installed"))
+        .filter_map(|m| m.installation_path.as_deref().filter(|s| !s.is_empty()))
+        .any(|source| files.iter().any(|f| f.source == source && f.rel.eq_ignore_ascii_case(COMMUNITY_OVERLAYS_BSA)))
 }
 
 /// Names of Nexus mods whose enabled Vortex package is not proven to supply
@@ -407,17 +456,37 @@ pub fn missing_deployment(list: &[ModEntry], status: &Status, files: &[VortexFil
                     && m.state.as_deref() == Some("installed")
                     && files.iter().any(|f| f.source == source && safe_rel(&f.rel).is_some_and(|rel| game_dir.join(rel).is_file()))
                     && checks.iter().all(|check| {
+                        // This exact Vortex archive supplies only its DLL.
+                        // Existing support files still have to be physically
+                        // present, but cannot be attributed to this source.
+                        if menu_framework_support_check(e, check) {
+                            return e.clone_with_check(check).game_files_present(game_dir);
+                        }
                         let check_path = game_dir.join(safe_rel(check).expect("checked above"));
                         files.iter().filter(|f| f.source == source).any(|f| {
                             safe_rel(&f.rel).is_some_and(|rel| {
                                 let path = game_dir.join(rel);
                                 path.is_file() && matches_check(check, &f.rel, check_path.is_dir())
                             })
-                        })
+                        }) || bugfix_replaces_main_archive(list, e, check, status, files, game_dir)
                     })
             });
         (!valid).then(|| e.name.clone())
     }).collect()
+}
+
+/// The one entry's deployment answer with its narrowly defined replacement
+/// context. Requirements and Play must use the same source check.
+pub fn deployment_ready_for(list: &[ModEntry], entry: &ModEntry, status: &Status,
+    files: &[VortexFile], game_dir: &Path) -> bool {
+    if entry.nexus.is_none() { return true; }
+    let mut context = vec![entry.clone()];
+    if entry.id == "community-overlays-1" {
+        if let Some(fix) = list.iter().find(|e| e.id == "community-overlays-1-fix") {
+            context.push(fix.clone());
+        }
+    }
+    missing_deployment(&context, status, files, game_dir).is_empty()
 }
 
 /// Exact deployment sources of the required, currently enabled packages.
@@ -434,7 +503,11 @@ pub fn approved(list: &[ModEntry], status: &Status, files: &[VortexFile], game_d
         let deploys = |m: &VortexMod| {
             let mut one = status.clone();
             one.mods = vec![m.clone()];
-            missing_deployment(std::slice::from_ref(entry), &one, files, game_dir).is_empty()
+            if entry.id == "community-overlays-1" {
+                one.mods.extend(status.mods.iter().filter(|v| v.nexus_mod_id == Some(22487)
+                    && v.nexus_file_id == Some(79615)).cloned());
+            }
+            deployment_ready_for(list, entry, &one, files, game_dir)
         };
         let package = match nexus.file {
             Some(file) => enabled.into_iter().find(|m| m.nexus_file_id == Some(file) && deploys(m))?,
@@ -804,6 +877,85 @@ mod tests {
         status.mods[0].installation_path = Some("USSEP 4.3.8a folder".into());
         std::fs::remove_file(target).unwrap();
         assert_eq!(missing(&status, &deployed), ["USSEP"], "a stale deployment record is not enough without the actual file");
+    }
+
+    #[test]
+    fn community_overlays_bugfix_may_replace_only_the_main_bsa_and_male_face_is_selected() {
+        let t = tempfile::tempdir().unwrap();
+        let put = |rel: &str| {
+            let path = t.path().join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"present").unwrap();
+        };
+        let esp = "Data/CommunityOverlays1_0T30.esp";
+        let bsa = "Data/CommunityOverlays1_0T30.bsa";
+        for rel in [esp, bsa] { put(rel); }
+        let mut main = e("community-overlays-1", 22487, 77988);
+        main.check = vec![esp.into(), bsa.into()];
+        let mut fix = e("community-overlays-1-fix", 22487, 79615);
+        fix.check = vec![bsa.into()];
+        fix.owns = vec![bsa.into()];
+        let female = e("community-overlays-1-female-face", 22487, 104828);
+        let male = e("community-overlays-1-male-face", 22487, 104868);
+        let list = crate::modlist::play_required(vec![main, fix, female, male]);
+        assert_eq!(list.len(), 3);
+        let face_checks = list.iter().find(|e| e.id == "community-overlays-1-male-face").unwrap().check.clone();
+        assert_eq!(face_checks.len(), 25);
+        for rel in &face_checks { put(rel); }
+        let set = ClientSet { collection: None, mods: list.clone() };
+        let mut status = active(vec![vm("main", 22487, 77988, true), vm("fix", 22487, 79615, true),
+            vm("female", 22487, 104828, true), vm("male", 22487, 104868, true)]);
+        let mut files = vec![VortexFile { rel: esp.into(), source: "main-folder".into() },
+            VortexFile { rel: bsa.into(), source: "fix-folder".into() }];
+        files.extend(face_checks.iter().map(|rel| VortexFile { rel: rel.clone(), source: "male-folder".into() }));
+        assert!(step(&set, Some(&status)).ok(), "the enabled female archive is a reported alternative");
+        assert!(female_face_alternative_installed(&list, &status));
+        assert!(missing_deployment(&list, &status, &files, t.path()).is_empty());
+        assert_eq!(approved(&list, &status, &files, t.path()).len(), 3);
+
+        files[1].source = "unrelated-folder".into();
+        assert_eq!(missing_deployment(&list, &status, &files, t.path()), ["COMMUNITY-OVERLAYS-1", "COMMUNITY-OVERLAYS-1-FIX"]);
+        files[1].source = "fix-folder".into();
+        status.mods[1].enabled = false;
+        assert!(!missing_deployment(&list, &status, &files, t.path()).is_empty(), "the exact bugfix must be active");
+        status.mods[1].enabled = true;
+        status.mods[1].nexus_file_id = Some(79616);
+        assert!(!missing_deployment(&list, &status, &files, t.path()).is_empty(), "another bugfix file is not approved");
+        status.mods[1].nexus_file_id = Some(79615);
+        std::fs::remove_file(t.path().join(esp)).unwrap();
+        assert!(!missing_deployment(&list, &status, &files, t.path()).is_empty(), "the main ESP still has to deploy");
+        put(esp);
+        files[2].source = "female-folder".into();
+        assert_eq!(missing_deployment(&list, &status, &files, t.path()), ["COMMUNITY-OVERLAYS-1-MALE-FACE"]);
+        files[2].source = "male-folder".into();
+        std::fs::remove_file(t.path().join(&face_checks[0])).unwrap();
+        assert_eq!(missing_deployment(&list, &status, &files, t.path()), ["COMMUNITY-OVERLAYS-1-MALE-FACE"]);
+        put(&face_checks[0]);
+        status.mods[3].nexus_file_id = Some(104869);
+        assert!(!step(&set, Some(&status)).ok(), "the selected male file ID must remain exact");
+    }
+
+    #[test]
+    fn menu_framework_support_files_are_physical_checks_not_attributed_to_its_dll_package() {
+        let t = tempfile::tempdir().unwrap();
+        let entry = crate::modlist::builtin(Some("1.6.1170.0"))
+            .into_iter().find(|e| e.id == "menu-framework").unwrap();
+        let dll = "Data/SKSE/Plugins/SKSEMenuFramework.dll";
+        for rel in [dll, "Data/SKSE/Plugins/SKSEMenuFrameworkStrings_EN.json",
+            "Data/SKSE/Plugins/fonts/face.ttf", "Data/SKSE/Plugins/SKSEMenuFrameworkThemes/dark.json"] {
+            let path = t.path().join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"present").unwrap();
+        }
+        let list = vec![entry.clone()];
+        let mut status = active(vec![vm("menu", 120352, 806684, true)]);
+        let files = [VortexFile { rel: dll.into(), source: "menu-folder".into() }];
+        assert!(entry.game_files_present(t.path()));
+        assert!(missing_deployment(&list, &status, &files, t.path()).is_empty());
+        std::fs::remove_file(t.path().join("Data/SKSE/Plugins/fonts/face.ttf")).unwrap();
+        assert_eq!(missing_deployment(&list, &status, &files, t.path()), ["SKSE Menu Framework"]);
+        status.mods[0].nexus_file_id = Some(806685);
+        assert!(!missing_deployment(&list, &status, &files, t.path()).is_empty());
     }
 
     #[test]
