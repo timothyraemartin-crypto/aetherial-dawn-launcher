@@ -273,7 +273,7 @@ pub struct SignedIn {
 /// Checks the token and re-reads the player's profile.
 pub async fn me(client: &reqwest::Client, base: &str, token: &str) -> Answer<Profile> {
     let url = format!("{}/api/users/me", base.trim_end_matches('/'));
-    classify(client.get(url).header("authorization", token).send().await, false).await
+    classify(client.get(url).header("authorization", token).timeout(std::time::Duration::from_secs(15)).send().await, false).await
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -284,7 +284,7 @@ pub struct PlaySession {
 /// A fresh game session for this Play.
 pub async fn play(client: &reqwest::Client, base: &str, token: &str) -> Answer<PlaySession> {
     let url = format!("{}/api/users/me/play/{SERVER_KEY}", base.trim_end_matches('/'));
-    classify(client.post(url).header("authorization", token).json(&serde_json::json!({})).send().await, false).await
+    classify(client.post(url).header("authorization", token).json(&serde_json::json!({})).timeout(std::time::Duration::from_secs(20)).send().await, false).await
 }
 
 // ---------- token storage ----------

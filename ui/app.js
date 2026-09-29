@@ -47,6 +47,7 @@
   let skipArmed = false;
   let auth = null;        // auth_status: Discord sign-in   // check().game: is Skyrim the build the server needs?
   let busy = false;
+  let playInFlight = false;
   let playMode = 'wait';  // wait | play | update | retry | downgrade | signin
   let page = 'home';
 
@@ -106,6 +107,8 @@
 
   // ---------- pages + sheets ----------
   const PAGES = { home: 'nav-home', server: 'nav-server', mods: 'nav-mods', news: 'nav-news' };
+  const SHEETS = ['first', 'settings', 'downgrade', 'signin', 'strays', 'crash', 'health', 'reqs'];
+  let activeSheet = null, sheetReturnFocus = null;
   function showPage(p) {
     page = p;
     showSheet(null);
@@ -119,22 +122,42 @@
     if (p === 'mods') loadFiles();
   }
   function showSheet(id) {
-    // Leaving the mods sheet stops a Nexus sign-in that is still waiting,
-    // so the clipboard is never read once the player has moved on.
-    if (id !== 'reqs' && !$('reqs').hidden) invoke('nexus_sso_cancel').catch(() => {});
-    $('first').hidden = id !== 'first';
-    $('settings').hidden = id !== 'settings';
-    $('downgrade').hidden = id !== 'downgrade';
-    $('signin').hidden = id !== 'signin';
-    $('strays').hidden = id !== 'strays';
-    $('crash').hidden = id !== 'crash';
-    $('health').hidden = id !== 'health';
-    $('reqs').hidden = id !== 'reqs';
+    const previous = activeSheet;
+    if (id && !previous) sheetReturnFocus = document.activeElement;
+    for (const name of SHEETS) $(name).hidden = name !== id;
+    activeSheet = id;
+    // Keep background controls out of the keyboard and screen-reader path
+    // until the dialog closes.
+    for (const child of document.querySelector('.app').children) {
+      if (!child.classList.contains('sheet')) child.inert = !!id;
+    }
     if (id === 'settings') {
       for (const nav of Object.values(PAGES)) $(nav).removeAttribute('aria-current');
       $('nav-settings').setAttribute('aria-current', 'page');
     }
+    if (id) {
+      $(id).focus();
+    } else if (previous) {
+      const target = sheetReturnFocus && sheetReturnFocus.isConnected && sheetReturnFocus.tabIndex >= 0
+        && !sheetReturnFocus.disabled && !sheetReturnFocus.closest('[hidden]')
+        ? sheetReturnFocus : $(PAGES[page]);
+      sheetReturnFocus = null;
+      target?.focus();
+    }
   }
+  document.addEventListener('keydown', e => {
+    if (!activeSheet || e.key !== 'Tab') return;
+    const sheet = $(activeSheet);
+    const focusables = [...sheet.querySelectorAll('button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+      .filter(el => !el.closest('[hidden]') && el.getClientRects().length);
+    if (!focusables.length) { e.preventDefault(); sheet.focus(); return; }
+    const first = focusables[0], last = focusables[focusables.length - 1];
+    if (e.shiftKey && (document.activeElement === first || document.activeElement === sheet || !sheet.contains(document.activeElement))) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && (document.activeElement === last || document.activeElement === sheet || !sheet.contains(document.activeElement))) {
+      e.preventDefault(); first.focus();
+    }
+  });
   // SKSE, Crash Logger and the right game version are the launcher's job, so
   // a Skyrim folder is all a player needs to get going.
   const ready_ = () => !!state.game;
@@ -225,6 +248,10 @@
   // signIn: the Discord check running alongside, needed before PLAY is final.
   let quietCheck = null;
   function check(verifyAll = false, opt = {}) {
+    if (gameRunning || playInFlight || updating) {
+      if (!opt.quiet) setStatus('Finish the current game or download before checking game files.');
+      return Promise.resolve(false);
+    }
     if (busy) return Promise.resolve();
     const run = checkNow(verifyAll, opt);
     if (opt.quiet) { quietCheck = run; run.finally(() => { quietCheck = null; }); }
@@ -245,7 +272,7 @@
         busy = false;
         pending = null;
         setPlay('signin', 'SIGN IN');
-        setChip('ok', 'Up to date');
+        setChip('ok', 'Client files ready');
         setStatus('Sign in with Discord to play');
         return;
       }
@@ -280,16 +307,22 @@
   }
 
   async function update(verifyAll = false) {
+    if (gameRunning || playInFlight || updating) {
+      setStatus('Finish the current game or download before updating game files.');
+      return;
+    }
     if (busy) return;
     busy = true;
     setPlay('wait', 'UPDATING');
     setChip('busy', 'Updating');
     setStatus(`Updating to build ${pending.build} · ${mb(pending.bytes)}`);
     $('progress').hidden = false;
+    $('p-progress').setAttribute('aria-valuenow', '0');
     let last = { t: performance.now(), b: 0 };
     const off = await T.event.listen('sync-progress', ({ payload: p }) => {
       const pct = p.bytesTotal ? (p.bytesDone / p.bytesTotal) * 100 : 100;
       $('p-bar').style.width = pct.toFixed(1) + '%';
+      $('p-progress').setAttribute('aria-valuenow', String(Math.round(Math.min(100, pct))));
       $('p-num').textContent = `${Math.min(p.filesDone + (p.file ? 1 : 0), p.filesTotal)} / ${plural(p.filesTotal, 'file')} · ${Math.round(pct)}%`;
       $('p-file').textContent = p.file || 'All files match the server';
       const now = performance.now();
@@ -315,9 +348,13 @@
 
   function ready() {
     pending = { ...pending, files: 0, remove: 0 };
-    setChip('ok', 'Up to date');
+    setChip('ok', 'Client files ready');
     loadFiles();
     renderGame();
+    if (gameRunning || playInFlight) {
+      setPlay('wait', gameRunning ? 'IN GAME' : 'LAUNCHING');
+      return;
+    }
     const c = gameCheck;
     if (c && c.needed) {
       if (c.canDowngrade) { setPlay('downgrade', 'PLAY'); setStatus(`${c.reason} Press Play: the launcher changes Skyrim to ${shortVer(c.target)} first, then starts the game.`); }
@@ -451,7 +488,7 @@
     dgBusy(false);
     showPage(page);
     ready();
-    if (!gameCheck.needed && !statusMsg) setStatus(`Skyrim ${shortVer(gameCheck.installed)} is ready for Aetherial Dawn.`);
+    if (!gameCheck.needed && !statusMsg) setStatus(`Skyrim ${shortVer(gameCheck.installed)} matches the server version. Check required mods in Vortex before Play.`);
     const resume = playAfterPatch;
     playAfterPatch = false;
     if (resume && playMode === 'play') onPlay();
@@ -551,25 +588,13 @@
     finally { $('st-move').disabled = false; }
   }
 
-  // ---------- mods: the server's list, Nexus sign-in and Download all ----------
-  let modsRunning = false;
-  let lastModsView = null;
-  let useKey = false;
-  let ssoReady = false;
-  let modsOff = null;
+  // ---------- required mods: manual installation through Vortex ----------
   const rqError = (e) => { $('rq-error').textContent = e ? String(e) : ''; $('rq-error').hidden = !e; };
 
-  function renderMods(view) {
-    lastModsView = view;
-    const nx = view.nexus;
-    $('rq-nx-out').hidden = !!nx;
-    $('rq-nx-in').hidden = !nx;
-    $('rq-nx-who').textContent = nx ? `Signed in to Nexus as ${nx.name} (${nx.is_premium ? 'Premium' : 'free account'}).` : '';
-    $('rq-nx-free').hidden = !nx || nx.is_premium;
-    ssoReady = !!view.sso;
-    $('rq-sso').hidden = false;
-    $('rq-keybox').hidden = !useKey;
-    $('rq-vortex').hidden = !view.vortex;
+  function renderMods(view, fromPlay = false) {
+    $('rq-summary').textContent = fromPlay
+      ? `Play stopped because these ${plural(view.mods.length, 'required mod')} need attention in Vortex.`
+      : `Showing ${plural(view.mods.length, 'required mod')}. Check each one in Vortex before Play.`;
     const list = $('rq-list');
     list.replaceChildren();
     for (const m of view.mods) {
@@ -580,120 +605,54 @@
       name.textContent = m.name;
       const sub = document.createElement('div');
       sub.className = 'rq-sub';
-      sub.id = `rq-st-${m.id}`;
-      sub.textContent = m.installed ? 'Installed' : (m.hint ? `Needs: ${m.hint}` : 'Not installed');
+      sub.textContent = m.installed ? 'Files found — check Vortex deployment'
+        : m.looks_for ? `Missing files: ${m.looks_for}` : 'Files not found';
       text.append(name, sub);
+      if (m.hint && !m.installed) {
+        const hint = document.createElement('div');
+        hint.className = 'rq-sub';
+        hint.textContent = m.hint;
+        text.append(hint);
+      }
       row.append(text);
-      if (m.page && !m.installed) {
+      if (m.page) {
         const open = document.createElement('button');
         open.className = 'btn';
-        open.textContent = 'Open';
+        open.textContent = 'Open mod page';
         open.onclick = () => invoke('open_mod_page', { url: m.page }).catch(rqError);
         row.append(open);
       }
-      if (m.installed) row.classList.add('ok');
+      if (m.installed && !fromPlay) row.classList.add('ok');
       list.append(row);
     }
-    const missing = view.mods.filter(m => !m.installed).length;
-    $('rq-all').disabled = modsRunning || missing === 0;
-    const free = !!(nx && !nx.is_premium);
-    $('rq-nx-free-text').textContent = `${plural(missing, 'mod')} to get. When you press Start, the launcher opens each mod's page on Nexus in turn; press Slow download there, and the launcher does the rest. You can stop and carry on later.`;
-    $('rq-all').textContent = missing === 0 ? 'ALL INSTALLED' : `${free ? 'START' : 'DOWNLOAD ALL'} (${missing})`;
-    $('rq-stop').hidden = !modsRunning;
   }
 
   async function refreshMods() {
     try { renderMods(await invoke('mods_state')); } catch (e) { rqError(e); }
   }
 
-  async function showRequiredMods() {
+  async function showRequiredMods(missing = null) {
     rqError(null);
     showSheet('reqs');
-    await refreshMods();
-  }
-
-  const MOD_STAGE = { queued: 'Waiting its turn', waiting: '', download: 'Downloading', install: 'Installing', done: 'Installed', failed: '' };
-  function modProgress(p) {
-    const el = $(`rq-st-${p.id}`);
-    if (!el) return;
-    let t = MOD_STAGE[p.stage] ?? p.stage;
-    if (p.stage === 'download' && p.total > 0) t += ` ${Math.floor(p.done * 100 / p.total)}%`;
-    if (p.stage === 'waiting') t = p.message;
-    if (p.stage === 'failed') t = /^skipped for now/i.test(p.message) ? `Skipped for now: ${p.message.replace(/^skipped for now:\s*/i, '')}` : `Didn't install: ${p.message}`;
-    el.textContent = t;
-    el.parentElement.parentElement.classList.toggle('bad', p.stage === 'failed');
-  }
-
-  // The whole download: bytes, mods and time left, from the real pace.
-  const gbs = n => (n / 1e9).toFixed(1) + ' GB';
-  function timeLeft(s) {
-    if (s == null) return 'Working out the time left';
-    if (s < 60) return 'Under a minute left';
-    const m = Math.round(s / 60);
-    return m < 60 ? `About ${m} min left` : `About ${Math.floor(m / 60)} h ${m % 60} min left`;
-  }
-  function overallProgress(p) {
-    $('rq-overall').hidden = false;
-    $('rq-ov-bar').style.width = (p.total ? Math.min(100, p.done * 100 / p.total) : 0).toFixed(1) + '%';
-    $('rq-ov-label').textContent = `${gbs(p.done)} of ${gbs(p.total)} · ${p.finished} of ${p.count} mods`;
-    $('rq-ov-left').textContent = p.finished >= p.count ? '' : timeLeft(p.secsLeft);
-    if (autoMods) setStatus(`Installing mods: ${gbs(p.done)} of ${gbs(p.total)}. ${timeLeft(p.secsLeft)}. Skyrim starts after.`);
-  }
-  // Said in the mods window and on the status line under Play.
-  let noSpace = null;
-  function noSpaceText(e) {
-    const [need, free] = String(e).slice(9).split(':').map(Number);
-    return `The mods need ${gbs(need)} free on the drive Skyrim is on, and it has ${gbs(free)} free. Free up at least ${gbs(need - free)} there, then press Play again.`;
-  }
-  let overallOff = null;
-  async function downloadAll() {
-    if (modsRunning) return;
-    rqError(null);
-    modsRunning = true;
-    $('rq-all').disabled = true;
-    $('rq-stop').hidden = false;
-    if (!modsOff) modsOff = await T.event.listen('mods-progress', ({ payload }) => modProgress(payload));
-    if (!overallOff) overallOff = await T.event.listen('mods-overall', ({ payload }) => overallProgress(payload));
-    noSpace = null;
-    let ok = false;
-    let stoppedNote = false;
-    try {
-      const r = await invoke('download_all_mods');
-      if (r.failed.length) {
-        const msg = `Not installed yet: ${r.failed.map(f => f[0]).join(', ')}. The launcher tries again the next time you press Play.`;
-        rqError(msg);
-        // Staff get a report when sharing is on (text audit A3, A4).
-        invoke('report_problem', { what: `mods not installed: ${r.failed.map(f => `${f[0]} (${f[1]})`).join('; ')}` })
-          .then(id => { if (id && $('rq-error').textContent === msg) rqError(`${msg} Staff have been sent a report (${id}).`); }).catch(() => {});
-      }
-      else if (r.cancelled) stoppedNote = true;
-      else ok = true;
-    } catch (e) {
-      if (String(e) === 'NEEDS_NEXUS_SIGN_IN') { rqError('Sign in to Nexus first (above).'); $('rq-key').focus(); }
-      else if (String(e).startsWith('NO_SPACE:')) rqError(noSpace = noSpaceText(e));
-      else rqError(e);
-    } finally {
-      modsRunning = false;
-      $('rq-overall').hidden = true;
+    if (Array.isArray(missing)) renderMods({ mods: missing }, true);
+    else {
+      $('rq-summary').textContent = 'Loading required mods…';
+      $('rq-list').replaceChildren();
       await refreshMods();
     }
-    if (stoppedNote) {
-      const v = lastModsView;
-      rqError(v ? `Stopped. ${v.mods.filter(m => m.installed).length} of ${v.mods.length} mods are in. Press Download all or Play to carry on.` : 'Stopped. Press Download all or Play to carry on.');
-    }
-    return ok;
   }
 
-let autoMods = false;
-  // Play is waiting for Nexus sign-in; it carries on by itself after it.
-  let playAfterNexus = false;
-  // Play asked for mods on a free account: Start in the mods window carries on.
-  let playAfterMods = false;
-  async function onPlay(auto = false) {
+  async function invokePlay() {
+    playInFlight = true;
+    try { return await invoke('play'); }
+    finally { playInFlight = false; }
+  }
+  async function onPlay(checked = false) {
+    if (gameRunning || playInFlight || updating) return;
     if (quietCheck) {
       setPlay('wait', 'STARTING');
       await quietCheck;
-      return playMode === 'play' ? onPlay(auto) : undefined;
+      return playMode === 'play' ? onPlay(true) : undefined;
     }
     if (busy) return;
     if (playMode === 'strays') return openStrays();
@@ -703,47 +662,28 @@ let autoMods = false;
     if (playMode === 'downgrade') { openDowngrade(); playAfterPatch = true; return patchGame(); }
     if (playMode === 'signin') return showSignIn();
     if (playMode !== 'play') return;
+    if (!checked) {
+      // The manifest may have changed while the launcher sat open or Skyrim ran.
+      const didCheck = await check();
+      return didCheck !== false && playMode === 'play' ? onPlay(true) : undefined;
+    }
     setPlay('wait', 'LAUNCHING');
     setStatus('Starting Skyrim through SKSE…');
     try {
-      await invoke('play');
+      await invokePlay();
       gameRunning = true;
-      setTimeout(() => { if (playMode === 'wait' && !busy) ready(); }, 8000);
+      setPlay('wait', 'IN GAME');
+      setStatus('Skyrim is running.');
     } catch (e) {
       const msg = String(e);
       if (msg.startsWith('NEEDS_NEXUS_MODS:')) {
         setPlay('play', 'PLAY');
-        let mods = [];
-        try { mods = JSON.parse(msg.slice(17)); } catch (_) {}
-        await showRequiredMods();
-        // Play installs what's missing by itself, then carries on (once, so a
-        // mod that won't install can't loop).
-        // A free account is told first that Nexus needs a press per file
-        // (Timothy, 02:08: guided clicks), and starts the list itself.
-        const freeNexus = !!(lastModsView && lastModsView.nexus && !lastModsView.nexus.is_premium);
-        if (!auto && !autoMods && !$('rq-nx-in').hidden && freeNexus) {
-          playAfterMods = true;
-          setStatus(`A free Nexus account needs one press per mod. Press Start in the mods window when you're ready. Skyrim starts once they're all in.`);
-          return;
-        }
-        if (!auto && !autoMods && !$('rq-nx-in').hidden) {
-          autoMods = true;
-          setStatus(`Installing ${mods.length === 1 ? mods[0].name : `${mods.length} required mods`}, then starting Skyrim…`);
-          const ok = await downloadAll();
-          autoMods = false;
-          // auto: a mod that "installed" but still counts as missing can't loop.
-          if (ok) { showSheet(null); return onPlay(true); }
-          setStatus(noSpace || 'A required mod isn\'t in yet. The launcher tries again the next time you press Play.', true);
-          return;
-        }
-        if (auto) {
-          setStatus(`${mods.length === 1 ? mods[0].name : 'A required mod'} installed but isn't detected yet. Press Play to try again; if it repeats, send Copy diagnostics to staff.`, true);
-          return;
-        }
-        playAfterNexus = true;
-        setStatus(`Sign in to Nexus in your browser; the launcher then installs ${mods.length === 1 ? mods[0].name : `${mods.length} required mods`} and starts Skyrim by itself.`);
-        // Play is the click: Nexus opens now, with nothing more to press here.
-        if (!auto && !$('rq-sso-go').disabled) $('rq-sso-go').click();
+        let missing;
+        try { missing = JSON.parse(msg.slice('NEEDS_NEXUS_MODS:'.length)); }
+        catch (_) { missing = null; }
+        await showRequiredMods(missing);
+        if (!Array.isArray(missing)) rqError('Could not read the missing-mod list. Press Play again or send launcher.log to staff.');
+        setStatus('Install, enable and deploy the required mods in Vortex, then press Play again.', true);
         return;
       }
       if (msg.startsWith('SIGNED_OUT:')) {
@@ -814,7 +754,7 @@ let autoMods = false;
   let gameRunning = false, updating = false;
   let lastUpToDateLog = 0;
   async function checkSelfUpdate(byHand) {
-    if (updating || gameRunning || busy || modsRunning) return byHand ? 'busy' : undefined;
+    if (updating || gameRunning || busy) return byHand ? 'busy' : undefined;
     try {
       const upd = await T.updater.check();
       if (!upd) {
@@ -975,7 +915,10 @@ let autoMods = false;
   T.event.listen('game-ended', ({ payload: g }) => {
     gameRunning = false;
     lastReport = g.report;
-    if (!g.crashed) { setStatus(g.summary); ready(); return; }
+    if (!g.crashed) {
+      check().then(() => { if (playMode === 'play') setStatus(g.summary); });
+      return;
+    }
     $('cr-summary').textContent = g.summary;
     $('cr-report').textContent = g.report;
     $('cr-note').hidden = true;
@@ -989,9 +932,7 @@ let autoMods = false;
     // Staff already have it: no need to ask the player to paste it.
     $('cr-ask').hidden = !staff.hidden;
     showSheet('crash');
-    invoke('game_check').then(c => { gameCheck = c; renderVersion(); ready(); }).catch(() => {});
-    ready();
-    setStatus('Skyrim closed unexpectedly. Copy diagnostics in Settings includes the crash report.', true);
+    check();
   });
   let crashFiledAt = 0;
   T.event.listen('crash-filed', ({ payload: f }) => {
@@ -1006,50 +947,8 @@ let autoMods = false;
     catch { $('cr-note').textContent = "Couldn't copy. Open the log folder and send the newest game-….txt file."; }
     $('cr-note').hidden = false;
   };
-  $('rq-close').onclick = () => { playAfterNexus = playAfterMods = false; showPage(page); };
-  $('rq-all').onclick = async () => {
-    const ok = await downloadAll();
-    // Start pressed after Play: Skyrim starts once every mod is in.
-    if (ok && playAfterMods) { playAfterMods = false; showSheet(null); onPlay(true); }
-  };
-  // After Nexus sign-in, the Play that asked for it carries on by itself.
-  async function resumePlay() {
-    if (!playAfterNexus || $('rq-nx-in').hidden) return;
-    // Wait out a check that is running, so the resumed Play isn't dropped.
-    for (let i = 0; busy && i < 120; i++) await new Promise(r => setTimeout(r, 500));
-    if (!playAfterNexus) return;
-    playAfterNexus = false;
-    onPlay();
-  }
-  $('rq-stop').onclick = () => invoke('cancel_mods');
-  $('rq-getkey').onclick = () => invoke('open_nexus_key_page').catch(rqError);
-  $('rq-signin').onclick = async () => {
-    rqError(null);
-    $('rq-signin').disabled = true;
-    try { await invoke('nexus_sign_in', { key: $('rq-key').value }); $('rq-key').value = ''; await refreshMods(); resumePlay(); }
-    catch (e) { rqError(e); }
-    finally { $('rq-signin').disabled = false; }
-  };
-  $('rq-usekey').onclick = () => { useKey = true; $('rq-keybox').hidden = false; };
-  $('rq-sso-stop').onclick = () => invoke('nexus_sso_cancel');
-  $('rq-sso-go').onclick = async () => {
-    rqError(null);
-    $('rq-sso-go').disabled = true;
-    $('rq-sso-go').textContent = 'Waiting for Nexus…';
-    $('rq-sso-stop').hidden = false;
-    $('rq-sso-note').innerHTML = ssoReady
-      ? 'Nexus opened in your browser. Click <b>Authorise</b> there and come back.'
-      : 'Nexus opened your API keys page in your browser. Copy your <i>Personal API Key</i> at the bottom (its Copy button, or select it and press Ctrl+C) and the launcher signs you in by itself.';
-    try { await invoke(ssoReady ? 'nexus_sso' : 'nexus_copy_sign_in'); bringToFront(); await refreshMods(); resumePlay(); }
-    catch (e) {
-      if (!String(e).includes('cancelled')) rqError(e);
-      if (playAfterNexus) { playAfterNexus = false; setStatus("Nexus sign-in didn't finish. Press Play to try again.", true); }
-    }
-    finally { $('rq-sso-go').disabled = false; $('rq-sso-go').textContent = 'Sign in with Nexus'; $('rq-sso-stop').hidden = true; }
-  };
-  $('rq-signout').onclick = async () => { await invoke('nexus_sign_out').catch(rqError); await refreshMods(); };
+  $('rq-close').onclick = () => showPage(page);
   $('files-mods').onclick = () => showRequiredMods();
-  $('rq-again').onclick = () => { showPage(page); onPlay(); };
   $('cr-logs').onclick = () => invoke('open_log_folder').catch(() => {});
   $('cr-close').onclick = () => showPage(page);
   $('st-cancel').onclick = () => showPage(page);
@@ -1071,6 +970,7 @@ let autoMods = false;
   $('c-skse-recheck').onclick = refreshState;
   $('si-join-go').onclick = () => invoke('open_invite', { url: (status && status.discordInvite) || lastSeen.invite }).catch(() => {});
   $('f-go').onclick = () => { if (!signedIn()) { showSignIn(); return; } showPage('home'); check(); };
+  $('f-retry').onclick = () => window.location.reload();
   $('si-go').onclick = beginSignIn;
   $('si-cancel').onclick = () => { signInRun++; $('si-wait').hidden = true; $('si-go').disabled = false; };
   $('set-diag').onclick = async () => {
@@ -1101,7 +1001,24 @@ let autoMods = false;
   setTimeout(showWindow, 1500);
 
   (async () => {
-    await refreshState();
+    try {
+      await refreshState();
+    } catch (e) {
+      $('c-game').querySelector('b').textContent = 'Launcher settings unavailable';
+      $('c-game').querySelector('small').textContent = String(e);
+      $('c-game-pick').hidden = true;
+      $('c-skse').hidden = true;
+      $('f-go').disabled = true;
+      $('f-retry').hidden = false;
+      $('first-error').textContent = 'The launcher could not load or save its settings. Check the app settings folder, then try again. If it keeps happening, send launcher.log to staff.';
+      $('first-error').hidden = false;
+      setPlay('wait', 'SETUP ERROR');
+      setChip('warn', 'Not checked');
+      setStatus('Launcher settings could not load. Use Try again after fixing the settings folder.', true);
+      showSheet('first');
+      showWindow();
+      return;
+    }
     // Music plays unless it was switched off in Settings; nothing to answer.
     invoke('music_start').catch(() => {});
     loadStatus();
@@ -1112,7 +1029,7 @@ let autoMods = false;
     const again = ready_() && lastSeen.play && lastSeen.dir === state.config.gameDir && lastSeen.version === state.launcherVersion;
     if (again) {
       setPlay('play', 'PLAY');
-      setChip('ok', 'Up to date');
+      setChip('ok', 'Checking client files');
       setStatus(null);
     }
     if (Array.isArray(lastSeen.news) && lastSeen.news.length) showNews(lastSeen.news);

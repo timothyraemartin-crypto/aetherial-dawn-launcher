@@ -29,14 +29,15 @@ function findChrome() {
 function fakeBackEnd() {
   const S = window.__S;
   const t0 = performance.now();
-  const log = window.__T = { invokes: [], labels: [], lastReady: null, newsHeights: [] };
+  const log = window.__T = { invokes: [], labels: [], lastReady: null, newsHeights: [], actions: [] };
+  const listeners = {};
   const at = () => Math.round(performance.now() - t0);
   try { localStorage.clear(); if (S.seed) localStorage.setItem('ad.lastReady', JSON.stringify(S.seed)); } catch (_) {}
   const game = Object.assign({ needed: false, installed: '1.6.1170.0', target: '1.6.1170.0', skseOk: true, canDowngrade: true }, S.game || {});
   const answers = {
     get_state: () => ({ launcherVersion: S.version, config: { gameDir: S.dir, closeOnLaunch: false, backgroundUpdates: !!S.backgroundUpdates, shareHealth: true, music: false, onlyServerMods: true }, game: { dir: S.dir, hasSkse: S.hasSkse !== false } }),
     auth_status: () => S.auth,
-    check: () => Object.assign({ build: 'B2', server: { name: 'Aetherial Dawn', ip: '127.0.0.1', port: 7777 }, files: 0, remove: 0, bytes: 0, strays: [], game }, S.check || {}),
+    check: () => Object.assign({ build: 'B2', server: { name: 'Aetherial Dawn', ip: '127.0.0.1', port: 7777 }, files: 0, remove: 0, bytes: 0, strays: [], game }, (S.checkSequence && S.checkSequence.shift()) || S.check || {}),
     update: () => null,
     server_status: () => ({ online: true, players: 1, maxPlayers: 50, discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
     files: () => [], game_check: () => game, play: () => null,
@@ -50,12 +51,16 @@ function fakeBackEnd() {
       log.invokes.push([at(), 'ask', cmd]);
       setTimeout(() => {
         log.invokes.push([at(), 'answer', cmd]);
+        if (cmd === 'get_state' && S.stateFails) return rej('settings are not writable');
         if (cmd === 'auth_status' && S.authFails) return rej('network down');
         if (cmd === 'play' && S.playError && !S.played) { S.played = true; return rej(S.playError); }
         res(answers[cmd] ? answers[cmd](args || {}) : null);
       }, delay[cmd] ?? delay.default);
     }) },
-    event: { listen: async () => () => {} },
+    event: { listen: async (name, callback) => {
+      (listeners[name] ||= []).push(callback);
+      return () => { listeners[name] = listeners[name].filter(fn => fn !== callback); };
+    } },
     window: { getCurrentWindow: () => ({ minimize: async () => {}, close: async () => {}, unminimize: async () => {}, setFocus: async () => {}, show: async () => {} }) },
     dialog: { open: async () => null },
     // The fake latest.json: this launcher is the newest.
@@ -73,6 +78,13 @@ function fakeBackEnd() {
     setInterval(box, 100);
     // The player presses Play as soon as it shows enabled (and once more later).
     for (const t of S.clicks || []) setTimeout(() => { log.invokes.push([at(), 'click', label.textContent]); btn.click(); }, t);
+    for (const action of S.actions || []) setTimeout(() => {
+      if (action.kind === 'click') document.getElementById(action.id).click();
+      if (action.kind === 'event') for (const callback of listeners[action.name] || []) callback({ payload: action.payload });
+      if (action.kind === 'focus') document.getElementById(action.id).focus();
+      if (action.kind === 'key') document.dispatchEvent(new KeyboardEvent('keydown', { key: action.key, shiftKey: !!action.shiftKey, bubbles: true, cancelable: true }));
+      log.actions.push([at(), action.kind, action.id || action.name || action.key, document.activeElement && document.activeElement.id]);
+    }, action.at);
     setTimeout(() => {
       try { log.lastReady = JSON.parse(localStorage.getItem('ad.lastReady')); } catch (_) {}
       log.signinShown = !document.getElementById('signin').hidden;
@@ -83,10 +95,21 @@ function fakeBackEnd() {
       log.errorLink = errLink ? errLink.textContent : null;
       log.skse = ['g-skse', 'c-skse'].map(id => { const el = document.getElementById(id); return el.querySelector('b').textContent + el.querySelector('small').textContent; });
       log.skseRecheck = !document.getElementById('c-skse-recheck').hidden;
-      const free = document.getElementById('rq-nx-free');
-      log.freeNote = free.hidden ? null : free.textContent;
-      log.modsButton = document.getElementById('rq-all').textContent;
       log.modsShown = !document.getElementById('reqs').hidden;
+      log.modNames = [...document.querySelectorAll('#rq-list b')].map(el => el.textContent);
+      log.modSummary = document.getElementById('rq-summary').textContent;
+      log.installerControl = !!document.querySelector('#rq-all, #rq-stop, #rq-sso-go, #rq-signin');
+      log.playDisabled = btn.disabled;
+      log.focus = document.activeElement && document.activeElement.id;
+      log.modal = [...document.querySelectorAll('.sheet')].find(el => !el.hidden)?.id || null;
+      log.navInert = document.getElementById('nav-home').closest('.nav').inert;
+      log.titlebarInert = document.querySelector('.titlebar').inert;
+      log.modRow = document.getElementById('rq-list').textContent;
+      log.modLead = document.querySelector('#reqs .lead').textContent;
+      log.firstError = document.getElementById('first-error').hidden ? null : document.getElementById('first-error').textContent;
+      log.retryShown = !document.getElementById('f-retry').hidden;
+      log.statusRole = document.getElementById('status').getAttribute('role');
+      log.progressRole = document.getElementById('p-progress').getAttribute('role');
       const pre = document.createElement('pre');
       pre.id = 'ui-test-result';
       pre.textContent = JSON.stringify(log);
@@ -139,16 +162,21 @@ const scenarios = [
   { name: 'SKSE installed: no file name under it', s: base, expect: r => [
     ['the row reads "SKSE installed" alone', r.skse.every(t => t === 'SKSE installed'), JSON.stringify(r.skse)],
   ] },
-  { name: 'free Nexus account: told first, and the list waits for Start', s: { ...base, playError: 'NEEDS_NEXUS_MODS:[{"id":"a","name":"A"},{"id":"b","name":"B"}]', modsState: { mods: [{ id: 'a', name: 'A', installed: false }, { id: 'b', name: 'B', installed: false }], nexus: { name: 'Player', is_premium: false }, vortex: false, running: false, sso: true } }, expect: r => [
-    ['the mods window is open', r.modsShown],
-    ['it says a free account needs one press per mod, and Premium is one button', /one press per mod/.test(r.freeNote || '') && /Premium it's one button/.test(r.freeNote || ''), r.freeNote],
-    ['it says how many', /2 mods to get/.test(r.freeNote || '')],
-    ['the button reads START (2)', r.modsButton === 'START (2)', r.modsButton],
-    ['nothing starts before Start is pressed', askedAt(r, 'download_all_mods') === null],
+  { name: 'missing mods show the exact backend list for manual Vortex setup', s: { ...base,
+    playError: 'NEEDS_NEXUS_MODS:[{"id":"racemenu","name":"RaceMenu","looks_for":"Data/RaceMenu.esp, Data/SKSE/Plugins/skee64.dll","page":"https://www.nexusmods.com/skyrimspecialedition/mods/19080"},{"id":"ussep","name":"USSEP","looks_for":"Data/Unofficial Skyrim Special Edition Patch.esp"}]',
+    modsState: { mods: [{ id: 'other', name: 'Other mod', installed: true }], nexus: { name: 'Player', is_premium: false }, vortex: false, running: false, sso: true },
+  }, expect: r => [
+    ['the required mods dialog opens', r.modsShown],
+    ['only the two missing mods appear in backend order', JSON.stringify(r.modNames) === JSON.stringify(['RaceMenu', 'USSEP']), JSON.stringify(r.modNames)],
+    ['required file paths appear', /Data\/RaceMenu\.esp/.test(r.modRow) && /Data\/Unofficial Skyrim Special Edition Patch\.esp/.test(r.modRow), r.modRow],
+    ['the dialog explains Vortex setup', /manual|Vortex/i.test(r.modLead) && /Vortex/.test(r.status), r.modLead],
+    ['the launcher does not replace the missing list from another source', askedAt(r, 'mods_state') === null],
+    ['the launcher does not start an installer or Nexus sign-in', askedAt(r, 'download_all_mods') === null && askedAt(r, 'nexus_sso') === null && !r.installerControl],
   ] },
-  { name: 'Premium Nexus account: Play installs the mods by itself', s: { ...base, playError: 'NEEDS_NEXUS_MODS:[{"id":"a","name":"A"}]', modsState: { mods: [{ id: 'a', name: 'A', installed: false }], nexus: { name: 'Player', is_premium: true }, vortex: false, running: false, sso: true } }, expect: r => [
-    ['no free-account note', r.freeNote === null],
-    ['the mods download by themselves', askedAt(r, 'download_all_mods') !== null],
+  { name: 'Premium Nexus account does not auto-install missing mods', s: { ...base, playError: 'NEEDS_NEXUS_MODS:[{"id":"a","name":"A"}]', modsState: { mods: [{ id: 'a', name: 'A', installed: false }], nexus: { name: 'Player', is_premium: true }, vortex: false, running: false, sso: true } }, expect: r => [
+    ['the missing mod is listed', r.modsShown && JSON.stringify(r.modNames) === JSON.stringify(['A']), JSON.stringify(r.modNames)],
+    ['there is no automatic mod install', askedAt(r, 'download_all_mods') === null],
+    ['there are no installer controls', !r.installerControl],
   ] },
   { name: 'Discord cannot be reached: SIGN IN, the game never starts', s: { ...base, authFails: true }, expect: r => [
     ['the game never starts', !played(r)],
@@ -190,6 +218,76 @@ const scenarios = [
     // From when the window is shown (fonts settle before that, unseen).
     ['the window is shown by the page', askedAt(r, 'window_ready') !== null],
     ['the news box never changes height once shown', new Set(r.newsHeights.filter(h => h[0] >= askedAt(r, 'window_ready')).map(h => h[1])).size === 1, JSON.stringify(r.newsHeights.slice(0, 8))],
+  ] },
+  { name: 'a game in progress keeps Play disabled and blocks file checks', s: { ...base, clicks: [60, 2100], actions: [
+    { at: 1500, kind: 'click', id: 'nav-server' },
+    { at: 1600, kind: 'click', id: 't-check' },
+    { at: 1700, kind: 'click', id: 't-verify' },
+  ] }, expect: r => [
+    ['Play starts once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
+    ['no check starts during the game', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'check').length === 1],
+    ['the Play button stays disabled in game', r.playDisabled && lastLabel(r) === 'IN GAME [off]', lastLabel(r)],
+  ] },
+  { name: 'a file check cannot overlap the Play command', s: { ...base, clicks: [60], delay: { play: 1500 }, actions: [
+    { at: 1200, kind: 'click', id: 't-check' },
+  ] }, expect: r => [
+    ['Play starts once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
+    ['no check starts during Play', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'check').length === 1],
+  ] },
+  { name: 'required mods remain viewable during the game without installer controls', s: { ...base, clicks: [60], modsState: {
+    mods: [{ id: 'a', name: 'A', installed: false }], nexus: { name: 'Player', is_premium: true }, vortex: false, running: false, sso: true,
+  }, actions: [{ at: 1500, kind: 'click', id: 'files-mods' }] }, expect: r => [
+    ['the game starts', played(r)],
+    ['the required mods dialog opens', r.modsShown],
+    ['no mod installer is exposed or started', !r.installerControl && askedAt(r, 'download_all_mods') === null],
+  ] },
+  { name: 'a found mod file is not called deployed in Vortex', s: { ...base, clicks: [], modsState: {
+    mods: [{ id: 'a', name: 'A', installed: true }], nexus: null, vortex: true, running: false, sso: true,
+  }, actions: [{ at: 1500, kind: 'click', id: 'files-mods' }] }, expect: r => [
+    ['the required mods dialog opens', r.modsShown],
+    ['the row asks for Vortex deployment check', /Files found.*check Vortex deployment/.test(r.modRow), r.modRow],
+    ['the dialog distinguishes files from deployment', /does not confirm deployment/.test(r.modLead), r.modLead],
+    ['there is no direct installer control', !r.installerControl],
+  ] },
+  { name: 'Play checks a changed manifest before starting', s: { ...base, clicks: [2000], checkSequence: [
+    { build: 'B1' }, { build: 'B2', files: 1, bytes: 1000 },
+  ] }, expect: r => [
+    ['a second manifest check runs', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'check').length === 2],
+    ['the old build does not launch', !played(r)],
+    ['the button offers the new update', lastLabel(r) === 'UPDATE', lastLabel(r)],
+  ] },
+  { name: 'game exit checks for a newly published build', s: { ...base, clicks: [60], checkSequence: [
+    { build: 'B1' }, { build: 'B2', files: 1, bytes: 1000 },
+  ], actions: [{ at: 1600, kind: 'event', name: 'game-ended', payload: { crashed: false, summary: 'Skyrim closed normally.', report: '' } }] }, expect: r => [
+    ['Play happened once before the new build', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
+    ['the game exit triggers a new manifest check', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'check').length === 2],
+    ['the button offers the new update', lastLabel(r) === 'UPDATE', lastLabel(r)],
+  ] },
+  { name: 'settings failure opens a recoverable first-run error', s: { ...base, stateFails: true, clicks: [] }, expect: r => [
+    ['the first-run error is visible', /could not load or save its settings/i.test(r.firstError || '')],
+    ['Try again is available', r.retryShown],
+    ['the error dialog has focus', r.modal === 'first' && r.focus === 'first', `${r.modal}/${r.focus}`],
+    ['Play stays disabled', r.playDisabled],
+  ] },
+  { name: 'Settings traps Tab and disables background navigation', s: { ...base, clicks: [], actions: [
+    { at: 1800, kind: 'click', id: 'nav-settings' },
+    { at: 1900, kind: 'focus', id: 'set-update' },
+    { at: 1950, kind: 'key', key: 'Tab' },
+  ] }, expect: r => [
+    ['Settings dialog stays open', r.modal === 'settings'],
+    ['Tab wraps from the last action to the first', r.actions.some(a => a[1] === 'key' && a[3] === 'acc-signout'), JSON.stringify(r.actions)],
+    ['background navigation is inert', r.navInert],
+    ['titlebar controls are inert behind the dialog', r.titlebarInert],
+    ['status and update progress have semantic roles', r.statusRole === 'status' && r.progressRole === 'progressbar'],
+  ] },
+  { name: 'closing Settings restores the previous keyboard focus', s: { ...base, clicks: [], actions: [
+    { at: 1700, kind: 'focus', id: 'nav-settings' },
+    { at: 1800, kind: 'click', id: 'nav-settings' },
+    { at: 1900, kind: 'click', id: 'set-done' },
+  ] }, expect: r => [
+    ['Settings closes', r.modal === null],
+    ['focus returns to Settings button', r.focus === 'nav-settings', r.focus],
+    ['background navigation is active again', !r.navInert],
   ] },
 ];
 

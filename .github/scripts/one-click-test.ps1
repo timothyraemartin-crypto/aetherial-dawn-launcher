@@ -1,14 +1,14 @@
 # Installs the built launcher the way a new player does (a plain run of the
-# installer, no flags) and checks every part of the one-click install, then
-# the two other ways the installer is run: the launcher's own update
-# (/P /UPDATE /R) and a silent install (/S). Any failed check fails the job,
-# which also stops the release step after it.
+# installer, no flags), a passive same-version reinstall (/P /UPDATE /R), a
+# silent install (/S), and a silent uninstall. This is not an old-to-new
+# signed self-update test. Any failed check stops release publication.
 param([Parameter(Mandatory)] [string] $Setup, [Parameter(Mandatory)] [string] $Version)
 $ErrorActionPreference = 'Stop'
 $Setup = (Resolve-Path $Setup).Path
 $setupName = Split-Path $Setup -Leaf
 $dir = Join-Path $env:LOCALAPPDATA 'Aetherial Dawn'
 $exe = Join-Path $dir 'aetherial-dawn-launcher.exe'
+$uninstaller = Join-Path $dir 'uninstall.exe'
 $desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Aetherial Dawn.lnk'
 $programs = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
 $failed = 0
@@ -69,6 +69,7 @@ Check '(b) no third installer process' ($setups.Count -le 2) "$($setups.Count) i
 $left = @(Get-CimInstance Win32_Process -Filter "Name = '$setupName'")
 Check '(c) no installer left open on a page' ($left.Count -eq 0) "$($left.Count) still open"
 Check '(d) the launcher is installed' (Test-Path $exe) $exe
+Check '(d) the uninstaller is installed' (Test-Path $uninstaller) $uninstaller
 $key = Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' | Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -eq 'Aetherial Dawn' } | Select-Object -First 1
 $shown = if ($key) { (Get-ItemProperty $key.PSPath).DisplayVersion } else { 'no uninstall entry' }
 Check "(d) Windows lists it as version $Version" ($shown -eq $Version) "HKCU uninstall DisplayVersion $shown"
@@ -86,7 +87,7 @@ Check '(h) the window is on screen' ($handle -ge 1) "$handle visible windows"
 Check '(h) the page drew and showed the window itself' (-not $shownBy) "$shownBy"
 StopLaunchers
 
-Write-Host '== 2. The launcher''s own update: /P /UPDATE /R =='
+Write-Host '== 2. Passive same-version reinstall: /P /UPDATE /R =='
 $p = Start-Process -FilePath $Setup -ArgumentList '/P', '/UPDATE', '/R' -PassThru
 $null = $p.Handle
 $setups = Watch-Setups { $p.HasExited } 180
@@ -112,5 +113,23 @@ $n = (Launchers).Count
 Check '(g) the silent run starts no launcher' ($n -eq 0) "$n running"
 StopLaunchers
 
+Write-Host '== 4. Silent uninstall: /S =='
+if (Test-Path $uninstaller) {
+  $p = Start-Process -FilePath $uninstaller -ArgumentList '/S' -PassThru
+  $null = $p.Handle
+  $code = Wait-Exit $p 120
+  Check 'the uninstaller exits with 0' ($code -eq 0) "exit $(Show $code)"
+  $deadline = (Get-Date).AddSeconds(30)
+  while ((Test-Path $exe) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+  Check 'the launcher executable is removed' (-not (Test-Path $exe)) $exe
+  $remaining = Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' |
+    Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -eq 'Aetherial Dawn' }
+  Check 'the uninstall registry entry is removed' (@($remaining).Count -eq 0)
+  Check 'the desktop shortcut is removed' (-not (Test-Path $desktop)) $desktop
+  $start = @(Get-ChildItem $programs -Recurse -Filter 'Aetherial Dawn.lnk' -ErrorAction SilentlyContinue)
+  Check 'the Start menu shortcut is removed' ($start.Count -eq 0) ($start.FullName -join ', ')
+  Check 'no launcher is running after uninstall' ((Launchers).Count -eq 0)
+}
+
 if ($failed) { throw "$failed check(s) failed" }
-Write-Host 'one-click install passed: every check'
+Write-Host 'installer and uninstaller checks passed: every check'

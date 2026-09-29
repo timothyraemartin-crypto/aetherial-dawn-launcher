@@ -27,9 +27,6 @@ const AUTH_URL: &str = match option_env!("AD_AUTH_URL") {
     None => "https://vps-d38c928e.vps.ovh.us/ad",
 };
 
-/// How long the launcher trusts a sign-in it couldn't re-check (service down).
-const OFFLINE_GRACE_SECS: u64 = 24 * 3600;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct Config {
@@ -75,6 +72,13 @@ impl Default for Config {
 struct AppState {
     config: Mutex<Config>,
     manifest: Mutex<Option<Manifest>>,
+    /// Serializes checks, game file changes and Play preparation. A second
+    /// command gets a useful error instead of racing the first one.
+    game_operation: Mutex<()>,
+    /// Remains set from a successful SKSE launch until its watcher finishes.
+    /// SKSE can exit before SkyrimSE.exe appears, so a process lookup alone
+    /// cannot prevent a second Play during that gap.
+    active_session: AtomicBool,
     http: reqwest::Client,
     /// The same, taking gzip-compressed answers: face sharing only, so every
     /// other download stays byte for byte what the server sent.
@@ -84,6 +88,17 @@ struct AppState {
 }
 
 type CmdResult<T> = Result<T, String>;
+
+fn begin_game_operation(state: &AppState) -> CmdResult<tokio::sync::MutexGuard<'_, ()>> {
+    let guard = state.game_operation.try_lock().map_err(|_| "The launcher is already checking files, updating, or starting Skyrim. Wait for that step to finish.".to_string())?;
+    if state.active_session.load(Ordering::SeqCst) {
+        return Err("Skyrim is already starting or running. Wait for it to close.".into());
+    }
+    if watch::find_process(watch::GAME_PROCESS).is_some() {
+        return Err("Close Skyrim before checking, updating, or starting another game session.".into());
+    }
+    Ok(guard)
+}
 
 fn err(e: Error) -> String {
     let raw = e.to_string();
@@ -216,6 +231,7 @@ fn restore_ccc(dir: &std::path::Path, why: &str) {
 /// Puts back every file the launcher set aside (other mods, old plugins).
 #[tauri::command]
 async fn restore_set_aside(state: State<'_, AppState>) -> CmdResult<usize> {
+    let _operation = begin_game_operation(&state)?;
     let dir = game_dir(&state).await?;
     let n = launcher_core::allowlist::restore_all(&dir).map_err(|e| format!("Couldn't put the files back ({e}). Close Skyrim and Vortex, then try again."))?;
     log::line(&format!("restored {n} set-aside file(s)"));
@@ -257,6 +273,7 @@ async fn manifest_now(state: &AppState) -> CmdResult<Manifest> {
 /// Downloads the server's file list and works out what needs updating.
 #[tauri::command]
 async fn check(app: AppHandle, state: State<'_, AppState>, verify_all: bool) -> CmdResult<CheckResult> {
+    let _operation = begin_game_operation(&state)?;
     let dir = game_dir(&state).await?;
     let base = state.config.lock().await.base_url.clone();
     let m = Manifest::fetch(&state.http, &base).await.map_err(err)?;
@@ -281,18 +298,18 @@ async fn check(app: AppHandle, state: State<'_, AppState>, verify_all: bool) -> 
 /// events to the UI as it goes.
 #[tauri::command]
 async fn update(app: AppHandle, state: State<'_, AppState>, verify_all: bool) -> CmdResult<String> {
+    let _operation = begin_game_operation(&state)?;
     let dir = game_dir(&state).await?;
     let base = state.config.lock().await.base_url.clone();
-    let m = match state.manifest.lock().await.clone() {
-        Some(m) => m,
-        None => Manifest::fetch(&state.http, &base).await.map_err(err)?,
-    };
+    // A cached list can be obsolete by the time Update is pressed.
+    let m = Manifest::fetch(&state.http, &base).await.map_err(err)?;
     let plan = sync::plan(&dir, &m, verify_all).await.map_err(err)?;
     sync::apply(&state.http, &base, &dir, &plan, |p| {
         let _ = app.emit("sync-progress", p);
     })
     .await
     .map_err(err)?;
+    *state.manifest.lock().await = Some(m.clone());
     Ok(m.build)
 }
 
@@ -301,9 +318,12 @@ async fn update(app: AppHandle, state: State<'_, AppState>, verify_all: bool) ->
 /// Errors that start with "SIGNED_OUT:" mean the player must sign in again.
 #[tauri::command]
 async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+    let _operation = begin_game_operation(&state)?;
     let config = state.config.lock().await.clone();
     let dir = config.game_dir.clone().ok_or("Pick your Skyrim folder first.")?;
-    let m = state.manifest.lock().await.clone().ok_or("The server's file list hasn't loaded yet. The launcher is fetching it; try again in a moment.")?;
+    // Play must use the current server list, even after the launcher idled.
+    let m = Manifest::fetch(&state.http, &config.base_url).await.map_err(err)?;
+    *state.manifest.lock().await = Some(m.clone());
     let gc = auto_version(&dir, m.game.as_ref());
     log::line(&format!("play: game folder {}, build {}, version needed={} skseOk={}", dir.display(), m.build, gc.needed, gc.skse_ok));
     if gc.needed {
@@ -464,6 +484,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     state.music.stop();
     play_step(&app, "Starting Skyrim through SKSE…");
     game::launch(&dir).map_err(err)?;
+    state.active_session.store(true, Ordering::SeqCst);
     let google = game::google_env_present();
     if !google.is_empty() {
         log::line(&format!("play: left Google sign-in settings out of the game's environment: {}", google.join(", ")));
@@ -538,6 +559,7 @@ async fn end_when_window_closed(pid: u32) {
 /// log folder; a crash brings the launcher back with that report on screen.
 async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::time::SystemTime, close_on_launch: bool) {
     let close = watch_game_inner(app.clone(), &game_dir, started, close_on_launch).await;
+    app.state::<AppState>().active_session.store(false, Ordering::SeqCst);
     restore_ccc(&game_dir, "the game closed");
     // The server lane downloads while nobody's playing.
     export::start(&app);
@@ -869,17 +891,14 @@ async fn auth_status(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Au
         }
         auth::Answer::Offline(_) | auth::Answer::Pending => {
             let config = state.config.lock().await;
-            let fresh = config.last_auth_ok.is_some_and(|t| now().saturating_sub(t) < OFFLINE_GRACE_SECS);
             Ok(AuthStatus {
                 signed_in: true,
                 account: config.account.clone(),
                 offline: true,
-                locked: !fresh,
-                message: Some(if fresh {
-                    "Couldn't reach the login service. You can still play for now.".into()
-                } else {
-                    "Couldn't confirm your Discord sign-in for over a day. Connect to the internet and try again.".into()
-                }),
+                // Every Play requests a fresh server session. A remembered
+                // login cannot make that request while the service is down.
+                locked: true,
+                message: Some("Couldn't reach the login service, so a new game session cannot start. Your saved sign-in is kept; try again when it responds.".into()),
             })
         }
     }
@@ -1054,6 +1073,7 @@ fn not_patchable(dir: &std::path::Path, spec: &launcher_core::manifest::GameSpec
 #[tauri::command]
 async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<version::GameCheck> {
     use launcher_core::{community, patcher};
+    let _operation = begin_game_operation(&state)?;
     let dir = game_dir(&state).await?;
     let spec = game_spec(&state).await?;
     // Steam's current build: MulderLoad's public patches, no Steam sign-in.
@@ -1751,6 +1771,7 @@ fn all_strays(app: &AppHandle, dir: &std::path::Path, m: &Manifest) -> Vec<Strin
 /// plugins off in plugins.txt (the files stay in Data).
 #[tauri::command]
 async fn move_strays(app: AppHandle, state: State<'_, AppState>) -> CmdResult<String> {
+    let _operation = begin_game_operation(&state)?;
     let dir = game_dir(&state).await?;
     let m = manifest_now(&state).await?;
     let list = strays::find(&dir, &m);
@@ -1777,6 +1798,7 @@ async fn move_strays(app: AppHandle, state: State<'_, AppState>) -> CmdResult<St
 /// For players who already put the right build in place themselves.
 #[tauri::command]
 async fn mark_game_ok(state: State<'_, AppState>) -> CmdResult<version::GameCheck> {
+    let _operation = begin_game_operation(&state)?;
     let dir = game_dir(&state).await?;
     let m = manifest_now(&state).await?;
     let spec = m.game.clone().ok_or("The server doesn't ask for a particular Skyrim version.")?;
@@ -2124,7 +2146,7 @@ fn main() {
                     .build()
             };
             let (http, faces_http) = (client(false)?, client(true)?);
-            app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), http, faces_http, mods: Default::default(), music: music::Music::new() });
+            app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), game_operation: Mutex::new(()), active_session: AtomicBool::new(false), http, faces_http, mods: Default::default(), music: music::Music::new() });
             mods::restore_left_handler(app.handle());
             // A session that ended while the launcher was closed.
             if let Some(dir) = app.state::<AppState>().config.try_lock().ok().and_then(|c| c.game_dir.clone()) {

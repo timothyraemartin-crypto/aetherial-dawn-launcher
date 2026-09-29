@@ -245,7 +245,7 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .switch[aria-checked="true"]::after { transform: translateX(16px); }
 
 @media (max-width: 1240px) { .about { display: none; } }
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 /* With the background moving, live blur behind panels would be re-rendered every frame; use solid glass instead. */
 html.animated .plate, html.animated .nav, html.animated .dock-panel, html.animated .page { backdrop-filter: none; }
 html.animated .dock-panel, html.animated .page { background: rgba(8, 13, 19, 0.9); }
@@ -283,9 +283,6 @@ html.animated .nav { background: linear-gradient(180deg, rgba(6,10,15,.9), rgba(
 .rq-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
 .rq-row.ok { opacity: .7; }
 .rq-row.bad { border-color: rgba(230, 110, 100, .5); }
-.rq-nexus { display: grid; gap: 6px; margin: 10px 0; }
-.rq-nexus .line { display: flex; gap: 8px; }
-.rq-nexus input { flex: 1; min-width: 0; font: 400 12px var(--mono); color: var(--text); background: #070B10; border: 1px solid var(--line-strong); border-radius: 4px; padding: 9px 11px; }
 .page-foot .line { display: flex; gap: 8px; }
 #aside-line { display: flex; gap: 10px; align-items: center; justify-content: space-between; margin-top: 10px; }
 #aside-line small { opacity: .75; }
@@ -293,4 +290,3 @@ html.animated .nav { background: linear-gradient(180deg, rgba(6,10,15,.9), rgba(
 
 .si-join { margin: -4px 0 12px; font-size: 13px; color: var(--muted); }
 .si-join .linkish { font-size: 13px; }
-.rq-overall { margin: 4px 0 10px; }

@@ -97,7 +97,7 @@
     <div class="ftable-wrap">
       <table class="ftable"><thead><tr><th>FILE</th><th>SIZE</th></tr></thead><tbody id="files-body"></tbody></table>
     </div>
-    <div class="page-foot"><span class="note">Installed into your Skyrim folder. Your saves and other mods are left alone.</span><span class="line"><button class="btn primary" id="files-mods">Download all mods</button><button class="btn" id="files-verify">Verify all files</button></span></div>
+    <div class="page-foot"><span class="note">Check Vortex to confirm required mods are enabled and deployed before Play.</span><span class="line"><button class="btn primary" id="files-mods">Required mods</button><button class="btn" id="files-verify">Verify all files</button></span></div>
   </section>
 
   <!-- ===== news ===== -->
@@ -115,7 +115,7 @@
     <div class="dock-panel play-box">
       <div class="progress" id="progress" hidden>
         <div class="prow"><span id="p-label">Updating client files</span><span id="p-num"></span></div>
-        <div class="bar"><i id="p-bar"></i></div>
+        <div class="bar" id="p-progress" role="progressbar" aria-label="Game file update progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="p-bar"></i></div>
         <div class="prow"><span class="file" id="p-file"></span><span id="p-speed"></span></div>
       </div>
       <div class="play-wrap off" id="play-wrap">
@@ -127,12 +127,12 @@
           </svg>
         </button>
       </div>
-      <div class="status" id="status"><span>Checking for updates…</span></div>
+      <div class="status" id="status" role="status" aria-live="polite" aria-atomic="true"><span>Checking for updates…</span></div>
     </div>
   </div>
 
   <!-- ===== first run ===== -->
-  <div class="sheet" id="first" hidden>
+  <div class="sheet" id="first" role="dialog" aria-modal="true" aria-label="Let's get Skyrim ready" tabindex="-1" hidden>
     <div class="panel">
       <div class="eyebrow">WELCOME</div>
       <h2>Let's get Skyrim ready</h2>
@@ -141,14 +141,16 @@
         <div class="check" id="c-game"><svg viewBox="0 0 24 24"></svg><div><b></b><small></small></div><button class="btn" id="c-game-pick">Choose folder</button></div>
         <div class="check" id="c-skse"><svg viewBox="0 0 24 24"></svg><div><b></b><small></small></div><button class="btn" id="c-skse-recheck" hidden>Check again</button></div>
       </div>
+      <span class="error" id="first-error" role="alert" hidden></span>
       <div class="actions">
         <button class="btn primary" id="f-go" disabled>CONTINUE</button>
+        <button class="btn" id="f-retry" hidden>TRY AGAIN</button>
       </div>
     </div>
   </div>
 
   <!-- ===== discord sign-in ===== -->
-  <div class="sheet" id="signin" hidden>
+  <div class="sheet" id="signin" role="dialog" aria-modal="true" aria-label="Sign in with Discord" tabindex="-1" hidden>
     <div class="panel signin">
       <img class="signin-emblem" src="art/emblem.png" alt="">
       <div class="eyebrow">MEMBERS OF THE REALM</div>
@@ -162,7 +164,7 @@
   </div>
 
   <!-- ===== game version ===== -->
-  <div class="sheet" id="downgrade" hidden>
+  <div class="sheet" id="downgrade" role="dialog" aria-modal="true" aria-label="Match the server's Skyrim" tabindex="-1" hidden>
     <div class="panel">
       <div class="eyebrow">GAME VERSION</div>
       <h2>Match the server's Skyrim</h2>
@@ -187,7 +189,7 @@
   </div>
 
   <!-- ===== stray plugins ===== -->
-  <div class="sheet" id="strays" hidden>
+  <div class="sheet" id="strays" role="dialog" aria-modal="true" aria-label="Other mods found" tabindex="-1" hidden>
     <div class="panel">
       <div class="eyebrow">OTHER MODS FOUND</div>
       <h2>These plugins can crash the game</h2>
@@ -203,43 +205,22 @@
   </div>
 
   <!-- ===== required mods ===== -->
-  <div class="sheet" id="reqs" hidden>
+  <div class="sheet" id="reqs" role="dialog" aria-modal="true" aria-label="Required mods" tabindex="-1" hidden>
     <div class="panel">
       <div class="eyebrow">MODS</div>
       <h2>The server's mods</h2>
-      <p class="lead">Aetherial Dawn needs these mods. <b>Download all</b> fetches and installs every missing one for you.</p>
-      <div class="rq-nexus" id="rq-nexus">
-        <div id="rq-nx-out">
-          <div id="rq-sso" hidden>
-            <p class="note" id="rq-sso-note">Most mods come from Nexus Mods, so sign in with your free Nexus account first. Click <b>Sign in with Nexus</b>: your browser opens Nexus, where you log in if you aren't already.</p>
-            <div class="line"><button class="btn primary" id="rq-sso-go">Sign in with Nexus</button><button class="btn" id="rq-sso-stop" hidden>Cancel</button><button class="linkish" id="rq-usekey">Use an API key instead</button></div>
-          </div>
-          <div id="rq-keybox">
-          <p class="note">Most mods come from Nexus Mods, so sign in with your free Nexus account first. Click <b>Get my key</b>, copy your <i>Personal API Key</i> from the bottom of that page, paste it here and click <b>Sign in</b>. It stays on this PC.</p>
-          <div class="line"><input id="rq-key" type="password" placeholder="Nexus API key" autocomplete="off" spellcheck="false"><button class="btn" id="rq-getkey">Get my key</button><button class="btn" id="rq-signin">Sign in</button></div>
-          </div>
-        </div>
-        <div id="rq-nx-in" hidden><span id="rq-nx-who"></span> <button class="linkish" id="rq-signout">Sign out</button></div>
-        <p class="note" id="rq-nx-free" hidden><b>A free Nexus account needs one press per mod.</b> <span id="rq-nx-free-text"></span> <i>With Nexus Premium it's one button: the launcher gets them all by itself.</i></p>
-        <p class="note" id="rq-vortex" hidden>Vortex manages your mods too. The launcher adds what's missing next to Vortex's files and never changes or removes Vortex's own.</p>
-      </div>
-      <div class="progress rq-overall" id="rq-overall" hidden>
-        <div class="prow"><span id="rq-ov-label"></span><span id="rq-ov-left"></span></div>
-        <div class="bar"><i id="rq-ov-bar"></i></div>
-      </div>
+      <p class="lead">Install, enable and deploy these mods in Vortex. For linked Nexus mods, use Mod Manager Download for the required file. The file list does not confirm deployment.</p>
+      <p class="note" id="rq-summary" role="status"></p>
       <div class="rq-list" id="rq-list"></div>
       <span class="error" id="rq-error" hidden></span>
       <div class="actions">
-        <button class="btn primary" id="rq-all">DOWNLOAD ALL</button>
-        <button class="btn" id="rq-stop" hidden>Stop</button>
-        <button class="btn" id="rq-again">Check again</button>
-        <button class="btn" id="rq-close">Not now</button>
+        <button class="btn primary" id="rq-close">Close</button>
       </div>
     </div>
   </div>
 
   <!-- ===== game crashed ===== -->
-  <div class="sheet" id="crash" hidden>
+  <div class="sheet" id="crash" role="dialog" aria-modal="true" aria-label="Skyrim closed unexpectedly" tabindex="-1" hidden>
     <div class="panel">
       <div class="eyebrow">GAME CLOSED</div>
       <h2>Skyrim closed unexpectedly</h2>
@@ -256,7 +237,7 @@
     </div>
   </div>
 
-  <div class="sheet" id="health" hidden>
+  <div class="sheet" id="health" role="dialog" aria-modal="true" aria-labelledby="hl-title" tabindex="-1" hidden>
     <div class="panel">
       <div class="eyebrow">GAME HEALTH</div>
       <h2 id="hl-title">Checking your game…</h2>
@@ -273,7 +254,7 @@
   </div>
 
   <!-- ===== settings ===== -->
-  <div class="sheet" id="settings" hidden>
+  <div class="sheet" id="settings" role="dialog" aria-modal="true" aria-label="Settings" tabindex="-1" hidden>
     <div class="panel">
       <h2>Settings</h2>
       <div class="account" id="set-account" hidden><span class="avatar" id="acc-avatar"></span><div><b id="acc-name"></b><small id="acc-note">Signed in with Discord</small></div><button class="btn" id="acc-signout">Sign out</button></div>
