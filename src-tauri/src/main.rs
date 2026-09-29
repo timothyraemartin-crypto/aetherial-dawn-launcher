@@ -92,6 +92,20 @@ struct AppState {
 
 type CmdResult<T> = Result<T, String>;
 
+/// Windows' process enumeration is fallible. A failed lookup cannot be
+/// treated as "Skyrim is closed" when a file operation or launcher update
+/// would interrupt an external Steam or SKSE launch.
+fn external_game_running() -> CmdResult<bool> {
+    for name in [watch::GAME_PROCESS, game::SKSE_LOADER] {
+        if watch::find_process_checked(name)
+            .map_err(|e| format!("Windows couldn't check whether Skyrim is running ({e}). Try again in a moment."))?
+            .is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn begin_game_operation(state: &AppState) -> CmdResult<tokio::sync::MutexGuard<'_, ()>> {
     let guard = state.game_operation.try_lock().map_err(|_| "The launcher is already checking files, updating, or starting Skyrim. Wait for that step to finish.".to_string())?;
     if state.update_installing.load(Ordering::SeqCst) {
@@ -100,9 +114,7 @@ fn begin_game_operation(state: &AppState) -> CmdResult<tokio::sync::MutexGuard<'
     if state.active_session.load(Ordering::SeqCst) {
         return Err("Skyrim is already starting or running. Wait for it to close.".into());
     }
-    if watch::find_process_checked(watch::GAME_PROCESS)
-        .map_err(|e| format!("Windows couldn't check whether Skyrim is running ({e}). Try again in a moment."))?
-        .is_some() {
+    if external_game_running()? {
         return Err("Close Skyrim before checking, updating, or starting another game session.".into());
     }
     Ok(guard)
@@ -1089,9 +1101,7 @@ fn game_running(state: State<'_, AppState>) -> CmdResult<bool> {
         || state.active_session.load(Ordering::SeqCst)
         || state.update_installing.load(Ordering::SeqCst);
     if held { return Ok(true) }
-    watch::find_process_checked(watch::GAME_PROCESS)
-        .map(|pid| pid.is_some())
-        .map_err(|e| format!("Windows couldn't check whether Skyrim is running ({e})."))
+    external_game_running()
 }
 
 /// Reserve the final install/relaunch so Play cannot start in the interval
@@ -1102,9 +1112,7 @@ fn self_update_begin(state: State<'_, AppState>) -> CmdResult<bool> {
     if state.active_session.load(Ordering::SeqCst) {
         return Ok(false);
     }
-    if watch::find_process_checked(watch::GAME_PROCESS)
-        .map_err(|e| format!("Windows couldn't check whether Skyrim is running ({e})."))?
-        .is_some() { return Ok(false) }
+    if external_game_running()? { return Ok(false) }
     Ok(state.update_installing.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok())
 }
 
@@ -1504,6 +1512,16 @@ async fn require_vortex_profile(app: &AppHandle, state: &AppState, dir: &std::pa
     if !not_deployed.is_empty() {
         return Err(format!("VORTEX_NOT_READY:Vortex has these packages switched on, but their files are not confirmed deployed in Skyrim: {}. Deploy in Vortex, then Check again.", not_deployed.join(", ")));
     }
+    // The "server mods only" sweep runs next. Record the exact live Vortex
+    // deployment sources, including checkless and unpinned Nexus packages,
+    // before it decides which other deployed files to set aside.
+    let approved = launcher_core::vortex::approved(&set.mods, &status, &deployed, dir);
+    let required = set.mods.iter().filter(|m| m.nexus.is_some()).count();
+    if approved.len() != required {
+        return Err("VORTEX_NOT_READY:Could not confirm the deployment source of every required Vortex package. Deploy in Vortex, then Check again.".into());
+    }
+    launcher_core::allowlist::save_approved(dir, &approved)
+        .map_err(|e| format!("VORTEX_NOT_READY:Could not save the verified Vortex package list ({e}). Check the Skyrim folder permissions, then try again."))?;
     Ok(())
 }
 

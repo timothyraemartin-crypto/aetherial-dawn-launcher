@@ -94,9 +94,13 @@ pub fn standing(m: &ModEntry, game_dir: &Path, files: &[VortexFile], have_record
     Standing { game_files: m.installed(game_dir), vortex_deployed: vortex_deployed(m, files, have_record) }
 }
 
-/// Whether Vortex keeps a deployment record in this game's Data.
+/// Whether Vortex keeps a Data or game-root deployment record here.
 pub fn has_vortex_record(game_dir: &Path) -> bool {
     game_dir.join("Data").join("vortex.deployment.json").is_file()
+        || std::fs::read_dir(game_dir).map(|entries| entries.flatten().any(|entry| {
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            name.starts_with("vortex.deployment.") && name.ends_with(".json") && entry.path().is_file()
+        })).unwrap_or(false)
 }
 
 /// Both inventories for a list.

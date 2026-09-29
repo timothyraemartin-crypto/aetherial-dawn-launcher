@@ -1817,6 +1817,26 @@ mod tests {
     }
 
     #[test]
+    fn a_vortex_file_check_is_independent_of_an_old_direct_install_pin() {
+        let t = tempfile::tempdir().unwrap();
+        let game = t.path().join("game");
+        std::fs::create_dir_all(game.join("Data")).unwrap();
+        let src = t.path().join("a.dds");
+        std::fs::write(&src, b"texture").unwrap();
+        let old = ModEntry {
+            id: "texture".into(),
+            name: "Texture".into(),
+            nexus: Some(NexusRef { mod_id: 5, file: Some(1), pick: None }),
+            check: vec!["Data/textures/a.dds".into()],
+            ..Default::default()
+        };
+        apply(&old, &[Copy { from: src, to: old.check[0].clone().into() }], &game, Some(1), None).unwrap();
+        let current = ModEntry { nexus: Some(NexusRef { mod_id: 5, file: Some(2), pick: None }), ..old };
+        assert!(!current.installed(&game), "the direct-install receipt has the wrong file ID");
+        assert!(current.game_files_present(&game), "the Vortex gate may validate the current package separately");
+    }
+
+    #[test]
     fn keeps_vortex_files_and_player_settings() {
         let t = tempfile::tempdir().unwrap();
         let game = t.path();

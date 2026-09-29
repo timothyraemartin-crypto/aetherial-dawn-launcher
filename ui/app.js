@@ -48,7 +48,8 @@
   let auth = null;        // auth_status: Discord sign-in   // check().game: is Skyrim the build the server needs?
   let busy = false;
   let playInFlight = false;
-  let playMode = 'wait';  // wait | play | update | retry | downgrade | signin
+  let playMode = 'wait';  // wait | play | mods | update | retry | downgrade | signin
+  let modsCheckSeq = 0;
   let page = 'home';
 
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
@@ -64,7 +65,7 @@
     // Only a session that ends ready to play opens on PLAY next time.
     if (lastSeen.play && (STOPS.includes(mode) || STOPS.includes(label))) remember({ play: false });
   }
-  const STOPS = ['update', 'retry', 'downgrade', 'signin', 'strays', 'WRONG VERSION', 'OFFLINE'];
+  const STOPS = ['mods', 'update', 'retry', 'downgrade', 'signin', 'strays', 'WRONG VERSION', 'OFFLINE'];
   let statusMsg = null;
   function setStatus(msg, isError) { statusMsg = msg ? { msg, isError } : null; renderStatus(); }
   let toolRunning = false;
@@ -272,7 +273,7 @@
         busy = false;
         pending = null;
         setPlay('signin', 'SIGN IN');
-        setChip('ok', 'Client files ready');
+        setChip('busy', 'Client files ready · Vortex unchecked');
         setStatus('Sign in with Discord to play');
         return;
       }
@@ -348,7 +349,7 @@
 
   function ready() {
     pending = { ...pending, files: 0, remove: 0 };
-    setChip('ok', 'Client files ready');
+    setChip('busy', 'Client files ready · Vortex unchecked');
     loadFiles();
     renderGame();
     if (gameRunning || playInFlight) {
@@ -368,6 +369,49 @@
     if (c && c.warning) setStatus(c.warning, true);
     if (c && c.target && !c.skseOk) setStatus(`The launcher installs SKSE ${c.skseVersion || ''} for you when you press Play.`);
     else if (!(c && c.warning)) setStatus(null);
+    setChip('busy', 'Client files ready · checking Vortex');
+    checkModReadiness();
+  }
+
+  function applyModReadiness(view) {
+    if (gameRunning || playInFlight || updating || busy || !['play', 'mods'].includes(playMode)) return;
+    const missingDirect = Array.isArray(view.mods)
+      ? view.mods.filter(m => m.from === 'direct' && !m.installed).map(m => m.name)
+      : [];
+    const missingVortex = Array.isArray(view.mods)
+      ? view.mods.filter(m => m.from === 'nexus' && m.in_vortex === false).map(m => m.name)
+      : [];
+    const shortList = (names, label) => {
+      const shown = names.slice(0, 3).join(', ');
+      const rest = names.length > 3 ? `, +${names.length - 3} more` : '';
+      return `${plural(names.length, 'required mod')} ${label}: ${shown}${rest}. Open Requirements for the full list.`;
+    };
+    if (view.vortex_ready === true && missingDirect.length === 0) {
+      if (playMode === 'mods') {
+        setPlay('play', 'PLAY');
+        remember({ dir: state.config.gameDir, build: pending.build, version: state.launcherVersion, play: true });
+        setStatus(null);
+      }
+      setChip('ok', 'Client and Vortex ready');
+    } else {
+      setPlay('mods', 'MODS NEEDED');
+      setChip('warn', 'Mods need attention');
+      setStatus(missingDirect.length
+        ? shortList(missingDirect, missingDirect.length === 1 ? 'still needs game files' : 'still need game files')
+        : missingVortex.length && /^(Aetherial Dawn profile:|Vortex: \d+ required mods?)/.test(view.vortex_line || '')
+          ? shortList(missingVortex, missingVortex.length === 1 ? 'needs attention in Vortex' : 'need attention in Vortex')
+          : view.vortex_line || 'Connect Vortex and check the required mods before Play.', true);
+    }
+  }
+
+  async function checkModReadiness() {
+    const seq = ++modsCheckSeq;
+    try {
+      const view = await invoke('mods_state');
+      if (seq === modsCheckSeq) applyModReadiness(view);
+    } catch (e) {
+      if (seq === modsCheckSeq) applyModReadiness({ vortex_ready: false, vortex_line: `Could not check required mods: ${e}` });
+    }
   }
 
   // ---------- discord sign-in ----------
@@ -608,9 +652,14 @@
       name.textContent = m.name;
       const sub = document.createElement('div');
       sub.className = 'rq-sub';
-      sub.textContent = m.in_vortex === true ? 'Vortex reports this mod in its deployed files'
-        : m.installed ? 'Files found — check Vortex deployment'
-        : m.looks_for ? `Missing files: ${m.looks_for}` : 'Files not found';
+      sub.textContent = fromPlay
+        ? (m.looks_for ? `Missing files: ${m.looks_for}` : 'Required mod files are missing')
+        : m.from === 'direct'
+        ? (m.installed ? 'Game files found' : m.looks_for ? `Missing files: ${m.looks_for}` : 'Game files not found')
+        : m.in_vortex === true ? 'Vortex profile, deployment, and game files confirmed'
+        : m.in_vortex === false ? (m.looks_for ? `Vortex deployment or game files need attention: ${m.looks_for}` : 'Vortex deployment needs attention')
+        : m.installed ? 'Game files found — waiting for Vortex profile check'
+        : m.looks_for ? `Missing files: ${m.looks_for}` : 'Waiting for Vortex profile check';
       text.append(name, sub);
       if (m.hint && !m.installed) {
         const hint = document.createElement('div');
@@ -626,13 +675,17 @@
         open.onclick = () => invoke('open_mod_page', { url: m.page }).catch(rqError);
         row.append(open);
       }
-      if (m.in_vortex === true && !fromPlay) row.classList.add('ok');
+      if (!fromPlay && (m.in_vortex === true || (m.from === 'direct' && m.installed))) row.classList.add('ok');
       list.append(row);
     }
   }
 
   async function refreshMods() {
-    try { renderMods(await invoke('mods_state')); } catch (e) { rqError(e); }
+    try {
+      const view = await invoke('mods_state');
+      renderMods(view);
+      applyModReadiness(view);
+    } catch (e) { rqError(e); }
   }
 
   async function showRequiredMods(missing = null) {
@@ -662,6 +715,7 @@
     // Installing the launcher update closes the launcher; Play waits for it.
     if (updating) { setStatus('The launcher is updating itself. Play is ready again once it restarts.'); return; }
     if (playMode === 'strays') return openStrays();
+    if (playMode === 'mods') return showRequiredMods();
     if (playMode === 'retry') return check();
     if (playMode === 'update') return update();
     // Play fixes the game version by itself, then starts the game.
@@ -684,7 +738,9 @@
     } catch (e) {
       const msg = String(e);
       if (msg.startsWith('NEEDS_NEXUS_MODS:')) {
-        setPlay('play', 'PLAY');
+        modsCheckSeq++;
+        setPlay('mods', 'MODS NEEDED');
+        setChip('warn', 'Mods need attention');
         let missing;
         try { missing = JSON.parse(msg.slice('NEEDS_NEXUS_MODS:'.length)); }
         catch (_) { missing = null; }
@@ -694,7 +750,9 @@
         return;
       }
       if (msg.startsWith('VORTEX_NOT_READY:')) {
-        setPlay('play', 'PLAY');
+        modsCheckSeq++;
+        setPlay('mods', 'MODS NEEDED');
+        setChip('warn', 'Mods need attention');
         await showRequiredMods();
         const reason = msg.slice('VORTEX_NOT_READY:'.length);
         rqError(reason);
@@ -1097,7 +1155,7 @@
     const again = ready_() && lastSeen.play && lastSeen.dir === state.config.gameDir && lastSeen.version === state.launcherVersion;
     if (again) {
       setPlay('play', 'PLAY');
-      setChip('ok', 'Checking client files');
+      setChip('busy', 'Checking client files');
       setStatus(null);
     }
     if (Array.isArray(lastSeen.news) && lastSeen.news.length) showNews(lastSeen.news);

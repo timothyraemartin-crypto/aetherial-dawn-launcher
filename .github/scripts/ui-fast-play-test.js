@@ -44,7 +44,7 @@ function fakeBackEnd() {
     game_running: () => !!S.outsideGame,
     self_update_begin: () => !S.updateReservationFails,
     self_update_end: () => null,
-    mods_state: () => S.modsState || ({ mods: [], nexus: null, vortex: false, running: false, sso: false }),
+    mods_state: () => Object.assign({ mods: [], nexus: null, vortex: true, vortex_ready: true, vortex_paired: true, running: false, sso: false }, S.modsState || {}),
     download_all_mods: () => ({ installed: [], failed: [], cancelled: false }),
     plain_error: a => a.text,
   };
@@ -175,14 +175,15 @@ const scenarios = [
     ['the row reads "SKSE installed" alone', r.skse.every(t => t === 'SKSE installed'), JSON.stringify(r.skse)],
   ] },
   { name: 'missing mods show the exact backend list for manual Vortex setup', s: { ...base,
-    playError: 'NEEDS_NEXUS_MODS:[{"id":"racemenu","name":"RaceMenu","looks_for":"Data/RaceMenu.esp, Data/SKSE/Plugins/skee64.dll","page":"https://www.nexusmods.com/skyrimspecialedition/mods/19080"},{"id":"ussep","name":"USSEP","looks_for":"Data/Unofficial Skyrim Special Edition Patch.esp"}]',
+    playError: 'NEEDS_NEXUS_MODS:[{"id":"racemenu","name":"RaceMenu","in_vortex":true,"looks_for":"Data/RaceMenu.esp, Data/SKSE/Plugins/skee64.dll","page":"https://www.nexusmods.com/skyrimspecialedition/mods/19080"},{"id":"ussep","name":"USSEP","looks_for":"Data/Unofficial Skyrim Special Edition Patch.esp"}]',
     modsState: { mods: [{ id: 'other', name: 'Other mod', installed: true }], nexus: { name: 'Player', is_premium: false }, vortex: false, running: false, sso: true },
   }, expect: r => [
     ['the required mods dialog opens', r.modsShown],
     ['only the two missing mods appear in backend order', JSON.stringify(r.modNames) === JSON.stringify(['RaceMenu', 'USSEP']), JSON.stringify(r.modNames)],
     ['required file paths appear', /Data\/RaceMenu\.esp/.test(r.modRow) && /Data\/Unofficial Skyrim Special Edition Patch\.esp/.test(r.modRow), r.modRow],
+    ['Play missing rows never claim exact Vortex confirmation from the legacy inventory field', !/profile, deployment, and game files confirmed/i.test(r.modRow)],
     ['the dialog explains Vortex setup', /manual|Vortex/i.test(r.modLead) && /Vortex/.test(r.status), r.modLead],
-    ['the launcher does not replace the missing list from another source', askedAt(r, 'mods_state') === null],
+    ['the launcher keeps the exact missing list when Play stops', JSON.stringify(r.modNames) === JSON.stringify(['RaceMenu', 'USSEP'])],
     ['the launcher does not start an installer or Nexus sign-in', askedAt(r, 'download_all_mods') === null && askedAt(r, 'nexus_sso') === null && !r.installerControl],
   ] },
   { name: 'Premium Nexus account does not auto-install missing mods', s: { ...base, playError: 'NEEDS_NEXUS_MODS:[{"id":"a","name":"A"}]', modsState: { mods: [{ id: 'a', name: 'A', installed: false }], nexus: { name: 'Player', is_premium: true }, vortex: false, running: false, sso: true } }, expect: r => [
@@ -278,12 +279,52 @@ const scenarios = [
     ['no mod installer is exposed or started', !r.installerControl && askedAt(r, 'download_all_mods') === null],
   ] },
   { name: 'a found mod file is not called deployed in Vortex', s: { ...base, clicks: [], modsState: {
-    mods: [{ id: 'a', name: 'A', installed: true }], nexus: null, vortex: true, running: false, sso: true,
+    mods: [{ id: 'a', name: 'A', installed: true, from: 'nexus' }], nexus: null, vortex: true, running: false, sso: true,
   }, actions: [{ at: 1500, kind: 'click', id: 'files-mods' }] }, expect: r => [
     ['the required mods dialog opens', r.modsShown],
-    ['the row asks for Vortex deployment check', /Files found.*check Vortex deployment/.test(r.modRow), r.modRow],
+    ['the row waits for Vortex profile evidence', /Game files found.*waiting for Vortex profile check/.test(r.modRow), r.modRow],
     ['the dialog distinguishes files from deployment', /does not confirm deployment/.test(r.modLead), r.modLead],
     ['there is no direct installer control', !r.installerControl],
+  ] },
+  { name: 'Requirements shows exact Vortex deployment failure', s: { ...base, clicks: [], modsState: {
+    mods: [{ id: 'a', name: 'Test Mod', installed: true, in_vortex: false, from: 'nexus', looks_for: 'Data/Test.esp' }],
+    counts_text: 'Vortex: 0 of 1 required Nexus mods confirmed · Game files: 1 of 1 present',
+    vortex_line: 'Vortex: 1 required mod needs deployment or game files in Skyrim: Test Mod. Deploy in Vortex, then Check again.',
+    vortex_ready: false, vortex_paired: true,
+  }, actions: [{ at: 1500, kind: 'click', id: 'files-mods' }] }, expect: r => [
+    ['the missing count and name are visible', /1 required mod.*Test Mod/.test(r.vortexLine || ''), r.vortexLine],
+    ['the summary does not report Vortex ready', /0 of 1 required Nexus mods confirmed/.test(r.modSummary), r.modSummary],
+    ['the mod row identifies deployment as missing', /Vortex deployment or game files need attention/.test(r.modRow), r.modRow],
+    ['the player is not offered a direct installer', !r.installerControl],
+  ] },
+  { name: 'incomplete Vortex setup changes the hero action to Requirements', s: { ...base, clicks: [], modsState: {
+    mods: [{ id: 'a', name: 'Test Mod', installed: false, in_vortex: false, from: 'nexus' }],
+    vortex_ready: false, vortex_paired: true,
+    vortex_line: 'Vortex: 1 required mod needs deployment or game files in Skyrim: Test Mod.',
+  }, actions: [{ at: 1800, kind: 'click', id: 'play' }] }, expect: r => [
+    ['PLAY appears while the initial checks run', firstLabel(r, 'PLAY') !== null],
+    ['the button becomes MODS NEEDED', lastLabel(r) === 'MODS NEEDED', lastLabel(r)],
+    ['the hero action opens Requirements', r.modsShown && r.modal === 'reqs'],
+    ['the status names the missing mod', /Test Mod/.test(r.status), r.status],
+    ['the game never starts', !played(r)],
+  ] },
+  { name: 'hero summarizes a long missing Vortex list', s: { ...base, clicks: [], modsState: {
+    mods: ['One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven'].map(name => ({ name, from: 'nexus', in_vortex: false, installed: false })),
+    vortex_ready: false, vortex_paired: true,
+    vortex_line: 'Aetherial Dawn profile: 0 of 7 installed · 0 of 7 switched on · waiting: One, Two, Three, Four, Five, Six, Seven',
+  } }, expect: r => [
+    ['the hero shows count, three names and the remainder', /7 required mods.*One, Two, Three, \+4 more/.test(r.status), r.status],
+    ['the hero does not repeat the full seven-name list', !/Four, Five, Six, Seven/.test(r.status)],
+    ['the button points to full Requirements', lastLabel(r) === 'MODS NEEDED'],
+  ] },
+  { name: 'a missing direct-source mod keeps the hero from claiming overall readiness', s: { ...base, clicks: [], modsState: {
+    mods: [{ id: 'a', name: 'Direct Helper', installed: false, from: 'direct' }],
+    vortex_ready: true, vortex_paired: true,
+    vortex_line: 'Aetherial Dawn profile: every required mod installed and switched on',
+  } }, expect: r => [
+    ['the button points to Requirements', lastLabel(r) === 'MODS NEEDED', lastLabel(r)],
+    ['the missing direct mod is named', /Direct Helper/.test(r.status), r.status],
+    ['the game never starts', !played(r)],
   ] },
   { name: 'Play checks a changed manifest before starting', s: { ...base, clicks: [2000], checkSequence: [
     { build: 'B1' }, { build: 'B2', files: 1, bytes: 1000 },

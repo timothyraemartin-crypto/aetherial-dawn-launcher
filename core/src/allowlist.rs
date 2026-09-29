@@ -23,11 +23,10 @@ fn saved_list_path(game_dir: &Path) -> std::path::PathBuf {
     game_dir.join(modlist::MODS_DIR).join("server-list.json")
 }
 
-/// A Vortex package the launcher approved: installed through the Aetherial
-/// Dawn extension (or found in the profile) as the exact Nexus file of a
-/// listed mod. Vortex names its folder as it likes, so "Only the server's
-/// mods" keeps these by Vortex's own mod id (the deployment's `source`),
-/// never by guessing from the folder name (PR #7, Package C).
+/// A currently enabled package in the Aetherial Dawn profile whose deployed
+/// files were checked against its exact Vortex `installationPath`. The
+/// `vortexId` JSON field is retained for existing records, but stores the
+/// deployment source string, which need not equal Vortex's internal mod id.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Approved {
     #[serde(rename = "vortexId")]
@@ -35,7 +34,7 @@ pub struct Approved {
     #[serde(rename = "nexusModId")]
     pub nexus_mod_id: u64,
     #[serde(rename = "nexusFileId")]
-    pub nexus_file_id: u64,
+    pub nexus_file_id: Option<u64>,
 }
 
 fn approved_path(game_dir: &Path) -> std::path::PathBuf {
@@ -60,7 +59,8 @@ fn approved_sources(game_dir: &Path, list: &[ModEntry]) -> HashSet<String> {
     let Ok(b) = std::fs::read(approved_path(game_dir)) else { return HashSet::new() };
     let Ok(v) = serde_json::from_slice::<Vec<Approved>>(&b) else { return HashSet::new() };
     v.into_iter()
-        .filter(|a| list.iter().any(|m| m.nexus.as_ref().is_some_and(|n| n.mod_id == a.nexus_mod_id && n.file == Some(a.nexus_file_id))))
+        .filter(|a| list.iter().any(|m| m.nexus.as_ref().is_some_and(|n| n.mod_id == a.nexus_mod_id
+            && n.file.is_none_or(|file| a.nexus_file_id == Some(file)))))
         .map(|a| a.vortex_id)
         .collect()
 }
@@ -91,29 +91,41 @@ pub fn listed(game_dir: &Path) -> Vec<ModEntry> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VortexFile {
-    /// Game-relative, "Data/..." with forward slashes.
+    /// Game-relative, with forward slashes ("Data/..." or a game-root file).
     pub rel: String,
     /// Vortex's mod folder name, e.g. "SKSE Menu Framework-120352-3-18-1725000000".
     pub source: String,
 }
 
-/// The files Vortex deployed into Data, from its vortex.deployment.json.
+/// Files from Vortex's Data and game-root deployment records. Data's record
+/// uses Data-relative paths; the root `vortex.deployment.dinput.json` uses
+/// game-relative paths, including both root files and `Data/...` files.
 pub fn vortex_files(game_dir: &Path) -> Vec<VortexFile> {
-    let Ok(b) = std::fs::read(game_dir.join("Data").join("vortex.deployment.json")) else { return Vec::new() };
-    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&b) else { return Vec::new() };
-    v.get("files")
-        .and_then(|f| f.as_array())
-        .map(|files| {
-            files
-                .iter()
-                .filter_map(|f| {
-                    let rel = f.get("relPath")?.as_str()?.replace('\\', "/");
-                    let source = f.get("source")?.as_str()?.to_string();
-                    (!rel.is_empty() && !rel.contains("..")).then(|| VortexFile { rel: format!("Data/{}", rel.trim_start_matches('/')), source })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    let mut records = vec![(game_dir.join("Data/vortex.deployment.json"), true)];
+    if let Ok(entries) = std::fs::read_dir(game_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            if name.starts_with("vortex.deployment.") && name.ends_with(".json") && entry.path().is_file() {
+                records.push((entry.path(), false));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (path, data_relative) in records {
+        let Ok(bytes) = std::fs::read(path) else { continue };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { continue };
+        let Some(files) = value.get("files").and_then(|f| f.as_array()) else { continue };
+        for file in files {
+            let Some(raw) = file.get("relPath").and_then(|p| p.as_str()) else { continue };
+            let Some(source) = file.get("source").and_then(|s| s.as_str()) else { continue };
+            let normalized = raw.replace('\\', "/");
+            let rel = if data_relative { format!("Data/{normalized}") } else { normalized };
+            if modlist::safe_rel(&rel).is_some() {
+                out.push(VortexFile { rel, source: source.to_string() });
+            }
+        }
+    }
+    out
 }
 
 /// Names of required mods as they appear in Vortex's mod folder names, for
@@ -353,6 +365,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn root_deployment_record_keeps_game_relative_data_and_root_paths() {
+        let t = tempfile::tempdir().unwrap();
+        let game = t.path();
+        let data = game.join("Data/skse/plugins");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("EngineFixes.toml"), b"settings").unwrap();
+        std::fs::write(game.join("d3dx9_42.dll"), b"preloader").unwrap();
+        let source = "Engine Fixes opaque folder";
+        let root = serde_json::json!({"files": [
+            {"relPath": "d3dx9_42.dll", "source": source},
+            {"relPath": "Data\\skse\\plugins\\EngineFixes.toml", "source": source},
+            {"relPath": "..\\outside.dll", "source": source}
+        ]});
+        std::fs::write(game.join("vortex.deployment.dinput.json"), serde_json::to_vec(&root).unwrap()).unwrap();
+        assert!(crate::inventory::has_vortex_record(game), "a root-only manifest is a Vortex deployment record");
+        let files = vortex_files(game);
+        assert_eq!(files.len(), 2, "the escaping path is rejected");
+        assert!(files.iter().any(|f| f.rel == "d3dx9_42.dll" && f.source == source));
+        assert!(files.iter().any(|f| f.rel == "Data/skse/plugins/EngineFixes.toml" && f.source == source));
+
+        let entry = ModEntry {
+            id: "engine-fixes".into(), name: "Engine Fixes".into(),
+            nexus: Some(modlist::NexusRef { mod_id: 17230, file: None, pick: None }),
+            check: vec!["Data/skse/plugins/EngineFixes.toml".into(), "d3dx9_42.dll".into()],
+            ..Default::default()
+        };
+        let status: crate::vortex::Status = serde_json::from_value(serde_json::json!({
+            "aetherialProfiles": 1,
+            "profile": {"id": "p1", "name": "Aetherial Dawn", "active": true},
+            "mods": [{"id": "engine", "installationPath": source, "state": "installed", "nexusModId": 17230, "nexusFileId": 73, "enabled": true}]
+        })).unwrap();
+        assert!(crate::vortex::missing_deployment(&[entry.clone()], &status, &files, game).is_empty());
+        assert!(entry.game_files_present(game), "both game-root and Data checks are present");
+        std::fs::remove_file(game.join("d3dx9_42.dll")).unwrap();
+        assert!(!entry.game_files_present(game), "a missing root file still blocks the physical gate");
+    }
+
+    #[test]
     fn keeps_listed_vortex_mods_and_finds_others() {
         let t = tempfile::tempdir().unwrap();
         let g = t.path();
@@ -413,13 +463,42 @@ mod tests {
         // Approved: the listed file stays whole. The cups mod was approved
         // under a file the list no longer names, and the hat never was.
         save_approved(g, &[
-            Approved { vortex_id: "majestic-mountains-main-1790000000".into(), nexus_mod_id: 11052, nexus_file_id: 4242 },
-            Approved { vortex_id: "cups-dropped-1790000000".into(), nexus_mod_id: 777, nexus_file_id: 1 },
+            Approved { vortex_id: "majestic-mountains-main-1790000000".into(), nexus_mod_id: 11052, nexus_file_id: Some(4242) },
+            Approved { vortex_id: "cups-dropped-1790000000".into(), nexus_mod_id: 777, nexus_file_id: Some(1) },
         ]).unwrap();
         assert_eq!(unlisted_with(g, |_| false), ["Data/Meshes/clutter/cup.nif", "Data/Meshes/personal/hat.nif"]);
         // A different file of the listed mod isn't approved by the old record.
-        save_approved(g, &[Approved { vortex_id: "majestic-mountains-main-1790000000".into(), nexus_mod_id: 11052, nexus_file_id: 1 }]).unwrap();
+        save_approved(g, &[Approved { vortex_id: "majestic-mountains-main-1790000000".into(), nexus_mod_id: 11052, nexus_file_id: Some(1) }]).unwrap();
         assert_eq!(unlisted_with(g, |_| false), everything_else);
+    }
+
+    #[test]
+    fn checkless_unpinned_nexus_source_stays_but_unapproved_extra_goes() {
+        let t = tempfile::tempdir().unwrap();
+        let game = t.path();
+        let data = game.join("Data/textures");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("required.dds"), b"required").unwrap();
+        std::fs::write(data.join("personal.dds"), b"personal").unwrap();
+        let deployment = serde_json::json!({"files": [
+            {"relPath": "textures/required.dds", "source": "opaque-required-folder"},
+            {"relPath": "textures/personal.dds", "source": "opaque-personal-folder"}
+        ]});
+        std::fs::write(game.join("Data/vortex.deployment.json"), serde_json::to_vec(&deployment).unwrap()).unwrap();
+        save_server_list(game, &ModList { mods: vec![ModEntry {
+            id: "required".into(), name: "Required".into(),
+            nexus: Some(modlist::NexusRef { mod_id: 42, file: None, pick: None }),
+            ..Default::default()
+        }], ..Default::default() });
+        assert_eq!(unlisted_with(game, |_| false).len(), 2);
+        save_approved(game, &[Approved {
+            vortex_id: "opaque-required-folder".into(), nexus_mod_id: 42, nexus_file_id: Some(73),
+        }]).unwrap();
+        assert_eq!(unlisted_with(game, |_| false), ["Data/textures/personal.dds"]);
+        save_approved(game, &[Approved {
+            vortex_id: "opaque-required-folder".into(), nexus_mod_id: 99, nexus_file_id: Some(73),
+        }]).unwrap();
+        assert_eq!(unlisted_with(game, |_| false).len(), 2, "a package outside the current list remains unapproved");
     }
 
     /// Timothy's PC, 2026-09-26: Vortex folder names with spaces, a manual

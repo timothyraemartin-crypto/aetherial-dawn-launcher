@@ -420,19 +420,33 @@ pub fn missing_deployment(list: &[ModEntry], status: &Status, files: &[VortexFil
     }).collect()
 }
 
-/// The Vortex packages in the profile that are the exact Nexus file of a
-/// listed mod, for "Only the server's mods" to keep (allowlist::Approved).
-pub fn approved(list: &[ModEntry], status: &Status) -> Vec<crate::allowlist::Approved> {
-    status
-        .mods
-        .iter()
-        .filter_map(|m| {
-            let (mod_id, file_id) = (m.nexus_mod_id?, m.nexus_file_id?);
-            list.iter()
-                .any(|e| e.nexus.as_ref().is_some_and(|n| n.mod_id == mod_id && n.file == Some(file_id)))
-                .then(|| crate::allowlist::Approved { vortex_id: m.id.clone(), nexus_mod_id: mod_id, nexus_file_id: file_id })
+/// Exact deployment sources of the required, currently enabled packages.
+/// The caller saves this only after the whole profile and deployment gate
+/// passes, so tidying can keep checkless packages with opaque folder names.
+pub fn approved(list: &[ModEntry], status: &Status, files: &[VortexFile], game_dir: &Path) -> Vec<crate::allowlist::Approved> {
+    if status.aetherial_profiles != 1 || !status.profile.as_ref().is_some_and(|p| p.active) {
+        return Vec::new();
+    }
+    list.iter().filter_map(|entry| {
+        let nexus = entry.nexus.as_ref()?;
+        let enabled: Vec<&VortexMod> = status.mods.iter().filter(|m| m.nexus_mod_id == Some(nexus.mod_id)
+            && m.enabled && m.state.as_deref() == Some("installed")).collect();
+        let deploys = |m: &VortexMod| {
+            let mut one = status.clone();
+            one.mods = vec![m.clone()];
+            missing_deployment(std::slice::from_ref(entry), &one, files, game_dir).is_empty()
+        };
+        let package = match nexus.file {
+            Some(file) => enabled.into_iter().find(|m| m.nexus_file_id == Some(file) && deploys(m))?,
+            None if enabled.len() == 1 && deploys(enabled[0]) => enabled[0],
+            None => return None,
+        };
+        Some(crate::allowlist::Approved {
+            vortex_id: package.installation_path.clone()?,
+            nexus_mod_id: nexus.mod_id,
+            nexus_file_id: package.nexus_file_id,
         })
-        .collect()
+    }).collect()
 }
 
 /// The token check for callers that must not go on without a pairing.
@@ -704,9 +718,41 @@ mod tests {
         assert_eq!(membership(&list, &st).missing, ["ussep"]);
         st.mods[2].state = None;
         assert_eq!(membership(&list, &st).missing, ["ussep"], "unknown install state is not installed");
-        // Approved for "Only the server's mods": the listed files only.
-        let a = approved(&list, &st);
-        assert_eq!(a.iter().map(|a| a.vortex_id.as_str()).collect::<Vec<_>>(), ["skyui", "u438a"]);
+    }
+
+    #[test]
+    fn approved_sources_bind_an_unpinned_checkless_package_to_current_deployment() {
+        let t = tempfile::tempdir().unwrap();
+        let path = t.path().join("Data/textures/required.dds");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"texture").unwrap();
+        let list = vec![unpinned("texture", 42)];
+        let mut status = active(vec![vm("internal-id", 42, 73, true)]);
+        status.mods[0].installation_path = Some("opaque-staging-folder".into());
+        let files = [VortexFile { rel: "Data/textures/required.dds".into(), source: "opaque-staging-folder".into() }];
+        let sources = approved(&list, &status, &files, t.path());
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].vortex_id, "opaque-staging-folder");
+        assert_eq!(sources[0].nexus_file_id, Some(73));
+
+        status.mods[0].enabled = false;
+        assert!(approved(&list, &status, &files, t.path()).is_empty());
+        status.mods[0].enabled = true;
+        let stale = [VortexFile { rel: "Data/textures/required.dds".into(), source: "old-folder".into() }];
+        assert!(approved(&list, &status, &stale, t.path()).is_empty());
+        status.mods.push(vm("other-file", 42, 74, true));
+        assert!(approved(&list, &status, &files, t.path()).is_empty(), "an unpinned mod needs one enabled package");
+
+        // A pinned file can appear twice under different staging folders.
+        // The approval must name the one actually deployed, not the first
+        // enabled match in Vortex's state array.
+        let pinned = vec![e("texture", 42, 73)];
+        status.mods[1].nexus_file_id = Some(73);
+        status.mods[1].installation_path = Some("old-undeloyed-folder".into());
+        status.mods.swap(0, 1);
+        let exact = approved(&pinned, &status, &files, t.path());
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].vortex_id, "opaque-staging-folder");
     }
 
     #[test]

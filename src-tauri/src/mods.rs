@@ -196,16 +196,6 @@ pub async fn vortex_status(app: &AppHandle, state: &AppState) -> Option<launcher
     }
 }
 
-/// The Vortex step line for the Requirements window. A missing pairing token
-/// means the player sees Connect Vortex; a failed status read stays not ready.
-pub async fn vortex_step(app: &AppHandle, state: &AppState, set: &launcher_core::vortex::ClientSet) -> Option<launcher_core::vortex::Step> {
-    use launcher_core::vortex;
-    let home = vortex::home(&app.path().app_local_data_dir().ok()?);
-    vortex::token(&home).ok()?;
-    let status = vortex_status(app, state).await;
-    Some(vortex::step(set, status.as_ref()))
-}
-
 /// "Connect Vortex": keeps (or, with `fresh`, replaces) the pairing token
 /// and puts the read-only Aetherial Dawn extension into Vortex's plugins
 /// folder. Changes nothing else in Vortex. Says what the player does next.
@@ -290,34 +280,128 @@ pub struct ModsView {
     vortex_paired: bool,
 }
 
+/// Use the same profile, exact Vortex deployment source, and physical file
+/// checks that Play requires. The per-mod answers also drive the Requirements
+/// rows, so an old deployment record cannot make a wrong package look ready.
+struct VortexReadout {
+    line: String,
+    ready: bool,
+    exact: Vec<Option<bool>>,
+    confirmed: usize,
+    required: usize,
+}
+
+fn vortex_readout(
+    set: &launcher_core::vortex::ClientSet,
+    status: Option<&launcher_core::vortex::Status>,
+    files: &[launcher_core::allowlist::VortexFile],
+    dir: &Path,
+    current_issue: Option<&str>,
+) -> VortexReadout {
+    use launcher_core::vortex;
+
+    let required = set.mods.iter().filter(|m| m.nexus.is_some()).count();
+    if let Some(issue) = current_issue {
+        return VortexReadout {
+            line: issue.into(),
+            ready: false,
+            exact: vec![None; set.mods.len()],
+            confirmed: 0,
+            required,
+        };
+    }
+    let exact: Vec<Option<bool>> = set.mods.iter().map(|m| {
+        m.nexus.as_ref()?;
+        let status = status?;
+        Some(vortex::missing_deployment(std::slice::from_ref(m), status, files, dir).is_empty()
+            && (m.check.is_empty() || m.game_files_present(dir)))
+    }).collect();
+    let confirmed = exact.iter().filter(|v| **v == Some(true)).count();
+    let step = vortex::step(set, status);
+    let (line, ready) = if !step.ok() {
+        (step.describe(), false)
+    } else {
+        let missing: Vec<&str> = set.mods.iter().zip(&exact)
+            .filter_map(|(m, ok)| (ok == &Some(false)).then_some(m.name.as_str()))
+            .collect();
+        if missing.is_empty() {
+            (format!("{} · deployment and game files confirmed", step.describe()), true)
+        } else {
+            (format!("Vortex: {} required mod{} need deployment or game files in Skyrim: {}. Deploy in Vortex, then Check again.",
+                missing.len(), if missing.len() == 1 { "" } else { "s" }, missing.join(", ")), false)
+        }
+    };
+    VortexReadout { line, ready, exact, confirmed, required }
+}
+
 #[tauri::command]
 pub async fn mods_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ModsView> {
     let dir = state.config.lock().await.game_dir.clone().ok_or("Pick your Skyrim folder first.")?;
-    let list = full_list(&state).await;
+    let base = state.config.lock().await.base_url.clone();
+    let (feed_current, current_manifest) = tokio::join!(
+        refresh_server_list(&state),
+        launcher_core::manifest::Manifest::fetch(&state.http, &base),
+    );
+    let manifest_current = current_manifest.is_ok();
+    let version = match current_manifest {
+        Ok(m) => m.game.and_then(|g| g.version),
+        Err(_) => state.manifest.lock().await.as_ref()
+            .and_then(|m| m.game.as_ref()).and_then(|g| g.version.clone()),
+    };
+    let server = fetched_server_list(&state).await;
+    let list = modlist::merged(version.as_deref(), server.as_ref());
     let user = if nexus_key(&app).is_some() { state.config.lock().await.nexus_user.clone() } else { None };
     let sso = nexus_app(&state).await.is_some();
     let running = state.mods.cancel.lock().unwrap().is_some();
-    let (st, counts) = launcher_core::inventory::count(&list, &dir);
+    let (mut st, mut counts) = launcher_core::inventory::count(&list, &dir);
     let feed = state.mods.receipt.lock().await.as_ref().map(|r| r.describe());
-    // Without a served client set, the server's Nexus-pinned mods are the
-    // set shown (information only).
-    let set = match served_client_set(&state).await {
-        Some(set) => set,
-        None => launcher_core::vortex::ClientSet { collection: None, mods: list.clone() },
+    // The served collection can add a collection pin, but its own mod array
+    // never replaces the current merged mods.json list used by Play.
+    let collection = served_client_set(&state).await.and_then(|s| s.collection);
+    let set = launcher_core::vortex::ClientSet { collection, mods: list.clone() };
+    let home = app.path().app_local_data_dir().ok().map(|d| launcher_core::vortex::home(&d));
+    let paired = home.as_ref().is_some_and(|h| launcher_core::vortex::token(h).is_ok());
+    let status = if paired { vortex_status(&app, &state).await } else { None };
+    let deployed = launcher_core::allowlist::vortex_files(&dir);
+    let current_issue = if !manifest_current {
+        Some("Vortex: the server's current game requirements are unavailable. Try Check again when the server responds.")
+    } else if !feed_current {
+        Some("Vortex: the server's current mod list is unavailable. Try Check again when the server responds.")
+    } else { None };
+    let readout = vortex_readout(&set, status.as_ref(), &deployed, &dir, current_issue);
+    for ((m, standing), exact) in list.iter().zip(&mut st).zip(&readout.exact) {
+        if m.nexus.is_some() {
+            standing.game_files = if m.check.is_empty() { *exact == Some(true) } else { m.game_files_present(&dir) };
+        }
+    }
+    counts.game_files_present = st.iter().filter(|s| s.game_files).count();
+    let rows = list.iter().zip(st).zip(&readout.exact).map(|((m, s), exact)| {
+        let mut row = row_with(m, &dir, s);
+        row.in_vortex = *exact;
+        row
+    }).collect();
+    let counts_text = if current_issue.is_some() {
+        format!("Vortex requirements: current server data unavailable · Game files: {} of {} present",
+            counts.game_files_present, counts.listed)
+    } else if status.is_none() {
+        format!("Vortex profile: not checked yet · Game files: {} of {} present",
+            counts.game_files_present, counts.listed)
+    } else {
+        format!("Vortex: {} of {} required Nexus mods confirmed · Game files: {} of {} present",
+            readout.confirmed, readout.required, counts.game_files_present, counts.listed)
     };
-    let step = vortex_step(&app, &state, &set).await;
     Ok(ModsView {
-        mods: list.iter().zip(st).map(|(m, s)| row_with(m, &dir, s)).collect(),
+        mods: rows,
         nexus: user,
         vortex: modlist::vortex_manages(&dir),
         running,
         sso,
-        counts_text: counts.describe(),
+        counts_text,
         counts,
         feed,
-        vortex_line: step.as_ref().map(|s| s.describe()),
-        vortex_ready: step.as_ref().map(|s| s.ok()),
-        vortex_paired: step.is_some(),
+        vortex_line: paired.then_some(readout.line),
+        vortex_ready: paired.then_some(readout.ready),
+        vortex_paired: paired,
     })
 }
 
@@ -1109,5 +1193,54 @@ mod tests {
         assert!(super::looks_like_key("abcDEF123+/=abcDEF123+/=abcDEF123--xyz--QQ=="));
         assert!(!super::looks_like_key("hello world, this is not a key at all"));
         assert!(!super::looks_like_key("short"));
+    }
+
+    #[test]
+    fn requirements_readout_needs_current_feed_exact_deployment_and_game_files() {
+        use launcher_core::allowlist::VortexFile;
+        use launcher_core::modlist::{ModEntry, NexusRef};
+        use launcher_core::vortex::{ClientSet, Profile, Status, VortexMod};
+
+        let dir = std::env::temp_dir().join(format!("ad-mods-readout-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(dir.join("Data")).unwrap();
+        let set = ClientSet { collection: None, mods: vec![ModEntry {
+            id: "test-mod".into(), name: "Test Mod".into(),
+            nexus: Some(NexusRef { mod_id: 42, file: Some(73), pick: None }),
+            check: vec!["Data/Test.txt".into(), "test-loader.exe".into()],
+            ..Default::default()
+        }] };
+        let status = Status {
+            profile: Some(Profile { id: "p1".into(), name: "Aetherial Dawn".into(), active: true }),
+            aetherial_profiles: 1,
+            mods: vec![VortexMod {
+                id: "test-package".into(), installation_path: Some("test-package-folder".into()),
+                state: Some("installed".into()), nexus_mod_id: Some(42),
+                nexus_file_id: Some(73), enabled: true,
+            }],
+            ..Default::default()
+        };
+        let files = vec![VortexFile { rel: "Data/Test.txt".into(), source: "test-package-folder".into() }];
+        std::fs::write(dir.join("Data/Test.txt"), b"deployed").unwrap();
+
+        let unavailable = super::vortex_readout(&set, Some(&status), &files, &dir,
+            Some("Vortex: current game requirements unavailable"));
+        assert!(!unavailable.ready);
+        assert_eq!(unavailable.exact, vec![None]);
+
+        let missing_game_file = super::vortex_readout(&set, Some(&status), &files, &dir, None);
+        assert!(!missing_game_file.ready);
+        assert_eq!(missing_game_file.exact, vec![Some(false)]);
+        assert!(missing_game_file.line.contains("1 required mod"));
+        assert!(missing_game_file.line.contains("Test Mod"));
+
+        std::fs::write(dir.join("test-loader.exe"), b"loader").unwrap();
+        let wrong_source = [VortexFile { rel: "Data/Test.txt".into(), source: "old-package-folder".into() }];
+        assert!(!super::vortex_readout(&set, Some(&status), &wrong_source, &dir, None).ready);
+
+        let ready = super::vortex_readout(&set, Some(&status), &files, &dir, None);
+        assert!(ready.ready, "{} {:?}", ready.line, ready.exact);
+        assert_eq!(ready.exact, vec![Some(true)]);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
