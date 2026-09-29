@@ -482,7 +482,7 @@ enum Gate {
 }
 
 fn list_of(s: &[Stand]) -> ModList {
-    ModList { mods: s.iter().map(|s| s.entry.clone()).collect(), nexus_app: None }
+    ModList { mods: s.iter().map(|s| s.entry.clone()).collect(), nexus_app: None, revision: None }
 }
 
 /// Play's steps in 0.1.98's order (main.rs play and tidy_game): the list is

@@ -594,7 +594,10 @@
   function renderMods(view, fromPlay = false) {
     $('rq-summary').textContent = fromPlay
       ? `Play stopped because these ${plural(view.mods.length, 'required mod')} need attention in Vortex.`
-      : `Showing ${plural(view.mods.length, 'required mod')}. Check each one in Vortex before Play.`;
+      : (view.counts_text || `Showing ${plural(view.mods.length, 'required mod')}. Check each one in Vortex before Play.`);
+    $('rq-vortex-step').hidden = !view.vortex_line;
+    $('rq-vortex-step').textContent = view.vortex_line || '';
+    $('rq-vortex-connect').hidden = fromPlay || !!view.vortex_paired;
     const list = $('rq-list');
     list.replaceChildren();
     for (const m of view.mods) {
@@ -605,7 +608,8 @@
       name.textContent = m.name;
       const sub = document.createElement('div');
       sub.className = 'rq-sub';
-      sub.textContent = m.installed ? 'Files found — check Vortex deployment'
+      sub.textContent = m.in_vortex === true ? 'Vortex reports this mod in its deployed files'
+        : m.installed ? 'Files found — check Vortex deployment'
         : m.looks_for ? `Missing files: ${m.looks_for}` : 'Files not found';
       text.append(name, sub);
       if (m.hint && !m.installed) {
@@ -622,7 +626,7 @@
         open.onclick = () => invoke('open_mod_page', { url: m.page }).catch(rqError);
         row.append(open);
       }
-      if (m.installed && !fromPlay) row.classList.add('ok');
+      if (m.in_vortex === true && !fromPlay) row.classList.add('ok');
       list.append(row);
     }
   }
@@ -684,6 +688,14 @@
         await showRequiredMods(missing);
         if (!Array.isArray(missing)) rqError('Could not read the missing-mod list. Press Play again or send launcher.log to staff.');
         setStatus('Install, enable and deploy the required mods in Vortex, then press Play again.', true);
+        return;
+      }
+      if (msg.startsWith('VORTEX_NOT_READY:')) {
+        setPlay('play', 'PLAY');
+        await showRequiredMods();
+        const reason = msg.slice('VORTEX_NOT_READY:'.length);
+        rqError(reason);
+        setStatus(reason, true);
         return;
       }
       if (msg.startsWith('SIGNED_OUT:')) {
@@ -949,6 +961,14 @@
   };
   $('rq-close').onclick = () => showPage(page);
   $('files-mods').onclick = () => showRequiredMods();
+  $('rq-vortex-go').onclick = async () => {
+    rqError(null);
+    try {
+      $('rq-vortex-said').textContent = await invoke('vortex_connect');
+      $('rq-vortex-said').hidden = false;
+      await refreshMods();
+    } catch (e) { rqError(e); }
+  };
   $('cr-logs').onclick = () => invoke('open_log_folder').catch(() => {});
   $('cr-close').onclick = () => showPage(page);
   $('st-cancel').onclick = () => showPage(page);

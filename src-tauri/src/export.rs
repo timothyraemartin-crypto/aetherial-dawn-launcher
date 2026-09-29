@@ -84,17 +84,33 @@ async fn run(app: &AppHandle) -> Result<(), String> {
         let c = state.config.lock().await;
         (c.base_url.clone(), c.account.as_ref().and_then(|a| a.discord_id.clone()))
     };
-    let url = format!("{}/server-lane.json", base.trim_end_matches('/'));
-    let lane: serverlane::ServerLane = match in_time("the server", state.http.get(&url).send()).await {
-        Ok(r) if r.status().is_success() => in_time("the server", r.json()).await.map_err(|e| format!("server-lane.json: {e}"))?,
-        // Not published: nothing to export (every other player's case).
-        _ => return Ok(()),
+    let lane_root = serverlane::lane_dir(&app.path().app_local_data_dir().map_err(|e| e.to_string())?);
+    // A local override (test runs only) replaces the served list and keeps
+    // its own state; a broken one stops the export, never falling back.
+    let local = {
+        let r = lane_root.clone();
+        tokio::task::spawn_blocking(move || serverlane::local_override(&r)).await.map_err(|e| e.to_string())?
+    }
+    .map_err(|e| format!("local override: {e}"))?;
+    let (lane, source, root) = match local {
+        Some((lane, sha)) => (lane, serverlane::Source::local(&sha), lane_root.join(serverlane::OVERRIDE_RUN)),
+        None => {
+            let url = format!("{}/server-lane.json", base.trim_end_matches('/'));
+            let lane: serverlane::ServerLane = match in_time("the server", state.http.get(&url).send()).await {
+                Ok(r) if r.status().is_success() => in_time("the server", r.json()).await.map_err(|e| format!("server-lane.json: {e}"))?,
+                // Not published: nothing to export (every other player's case).
+                _ => return Ok(()),
+            };
+            (lane, serverlane::Source::served(), lane_root)
+        }
     };
     if me.as_deref() != Some(lane.for_discord_id.as_str()) {
+        if source.override_sha256.is_some() {
+            say("export: the local override names another Discord account; nothing exported");
+        }
         return Ok(());
     }
     serverlane::check(&lane).map_err(|e| e.to_string())?;
-    let root = serverlane::lane_dir(&app.path().app_local_data_dir().map_err(|e| e.to_string())?);
     let hash = serverlane::list_hash(&lane);
     if serverlane::done(&root, &hash) || serverlane::gave_up(&root, &hash) {
         return Ok(());
@@ -109,13 +125,23 @@ async fn run(app: &AppHandle) -> Result<(), String> {
         say("export: the server lane needs a Premium Nexus account; nothing downloaded");
         return Ok(());
     }
-    say(&format!("export: server lane of {} mods into {}", lane.mods.len(), root.display()));
+    say(&format!(
+        "export: server lane of {} mods into {} (list {}; source: {})",
+        lane.mods.len(),
+        root.display(),
+        hash,
+        match &source.override_sha256 {
+            Some(sha) => format!("local override, {} sha256 {sha}", serverlane::OVERRIDE_LIST),
+            None => "served server-lane.json".into(),
+        }
+    ));
     {
         let root = root.clone();
         tokio::task::spawn_blocking(move || serverlane::start_over(&root)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
     }
     let mut plugins = std::collections::BTreeMap::new();
     let mut failed = Vec::new();
+    let mut outcomes = Vec::new();
     for m in &lane.mods {
         wait_for_game_to_close().await;
         let mut got = one(&api, &root, m).await;
@@ -130,16 +156,34 @@ async fn run(app: &AppHandle) -> Result<(), String> {
             say("export: stopped for the game; it carries on after the game closes");
             return Ok(());
         }
+        let mut out = serverlane::ModOutcome { id: m.entry.id.clone(), name: m.entry.name.clone(), declared: m.plugins.clone(), ..Default::default() };
         match got {
             Ok(picked) => {
                 let names: Vec<&str> = picked.iter().map(|p| p.1.as_str()).collect();
                 say(&format!("export: {} gave {}", m.entry.name, names.join(", ")));
+                out.gave = names.iter().map(|n| n.to_string()).collect();
                 if let Err(e) = serverlane::collect(&root, &m.entry.id, &picked, &mut plugins) {
                     failed.push(format!("{}: {e}", m.entry.name));
+                    out.error = Some(e.to_string());
                 }
             }
-            Err(e) => failed.push(format!("{}: {e}", m.entry.name)),
+            Err(e) => {
+                failed.push(format!("{}: {e}", m.entry.name));
+                out.error = Some(e);
+            }
         }
+        outcomes.push(out);
+    }
+    // What each mod gave or why it didn't, whether or not the run finished.
+    match serverlane::report(&root, &lane, &hash, &plugins, outcomes) {
+        Ok(r) => say(&format!(
+            "export: {} of {} declared plugins collected{}{}",
+            r.collected,
+            r.declared,
+            r.first_failure.as_ref().map(|f| format!("; first failure: {f}")).unwrap_or_default(),
+            if r.missing.is_empty() { String::new() } else { format!("; missing: {}", r.missing.iter().map(|(m, p)| format!("{p} ({m})")).collect::<Vec<_>>().join(", ")) }
+        )),
+        Err(e) => say(&format!("export: couldn't write the report: {e}")),
     }
     if !failed.is_empty() {
         for f in &failed {
@@ -151,7 +195,8 @@ async fn run(app: &AppHandle) -> Result<(), String> {
     }
     let rec = {
         let root = root.clone();
-        tokio::task::spawn_blocking(move || serverlane::finish(&root, &hash, plugins)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?
+        let lane = lane.clone();
+        tokio::task::spawn_blocking(move || serverlane::finish(&root, &lane, &hash, plugins, source)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?
     };
     let _ = std::fs::remove_dir_all(root.join("downloads"));
     let _ = std::fs::remove_dir_all(root.join("unpacked"));

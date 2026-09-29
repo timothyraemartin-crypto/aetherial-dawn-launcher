@@ -53,6 +53,11 @@ jobs:
       # or a wrong game version, and the news box never jumps.
       - name: Fast Play checks
         run: node .github/scripts/ui-fast-play-test.js
+      # The Vortex extension's job rules with a stand-in for Vortex (signed
+      # requests, listed mods only, the Aetherial Dawn profile only, USSEP
+      # version swap, rollback). Real Vortex proof is on Timothy's PC.
+      - name: Vortex extension checks
+        run: node --test "vortex-extension/test/*.test.js"
       - name: Install Tauri CLI
         uses: taiki-e/install-action@v2
         with:

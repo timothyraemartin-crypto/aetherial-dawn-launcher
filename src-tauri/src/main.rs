@@ -346,6 +346,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     // launcher was open, as on cutover day); the last one when it doesn't
     // answer.
     mods::refresh_server_list(&state).await;
+    require_vortex_profile(&app, &state, &dir).await?;
     tidy_game(&app, &dir, &m, config.only_server_mods)?;
     let half = launcher_core::modlist::half_installed(&dir);
     if !half.is_empty() {
@@ -1426,6 +1427,31 @@ async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path:
     Ok(())
 }
 
+/// Vortex owns every Nexus-pinned mod in the current client list. Check the
+/// active profile and deployment before Play changes load order or files.
+async fn require_vortex_profile(app: &AppHandle, state: &AppState, dir: &std::path::Path) -> CmdResult<()> {
+    if mods::fetched_server_list(state).await.is_none() {
+        return Err("VORTEX_NOT_READY:The server's current mod list is unavailable. Try Check again when the server responds.".into());
+    }
+    let list = mods::full_list(state).await;
+    let collection = mods::served_client_set(state).await.and_then(|s| s.collection);
+    let set = launcher_core::vortex::ClientSet { collection, mods: list };
+    let step = mods::vortex_step(app, state, &set).await.unwrap_or(launcher_core::vortex::Step::VortexNotRunning);
+    log::line(&format!("play: {}", step.describe()));
+    if !step.ok() {
+        return Err(format!("VORTEX_NOT_READY:{}. Install and deploy the listed mods in Vortex, then press Play again.", step.describe()));
+    }
+    let (standing, counts) = launcher_core::inventory::count(&set.mods, dir);
+    log::line(&format!("play: {}", counts.describe()));
+    let not_deployed: Vec<&str> = set.mods.iter().zip(standing.iter())
+        .filter(|(m, s)| m.nexus.as_ref().is_some_and(|n| n.file.is_some()) && (!s.game_files || s.vortex_deployed != Some(true)))
+        .map(|(m, _)| m.name.as_str()).collect();
+    if !not_deployed.is_empty() {
+        return Err(format!("VORTEX_NOT_READY:Vortex has these packages switched on, but their files are not confirmed deployed in Skyrim: {}. Deploy in Vortex, then Check again.", not_deployed.join(", ")));
+    }
+    Ok(())
+}
+
 /// Tells the login service, in the background, which of the server's mods
 /// and the required mods this PC has (names and counts only; see
 /// clientstatus.rs). Nothing is awaited here, so Play never waits: it uses
@@ -2164,7 +2190,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, report_problem, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside, skip_tool, window_ready, open_invite])
+        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, report_problem, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::vortex_connect, restore_set_aside, skip_tool, window_ready, open_invite])
         .build(tauri::generate_context!())
         .expect("error while running the launcher")
         .run(|_, event| {

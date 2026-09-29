@@ -98,6 +98,9 @@ function fakeBackEnd() {
       log.modsShown = !document.getElementById('reqs').hidden;
       log.modNames = [...document.querySelectorAll('#rq-list b')].map(el => el.textContent);
       log.modSummary = document.getElementById('rq-summary').textContent;
+      const vx = document.getElementById('rq-vortex-step');
+      log.vortexLine = vx.hidden ? null : vx.textContent;
+      log.vortexConnect = !document.getElementById('rq-vortex-connect').hidden;
       log.installerControl = !!document.querySelector('#rq-all, #rq-stop, #rq-sso-go, #rq-signin');
       log.playDisabled = btn.disabled;
       log.focus = document.activeElement && document.activeElement.id;

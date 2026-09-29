@@ -89,6 +89,130 @@ pub struct Record {
     /// SHA-256 of server-lane.zip.
     pub zip_sha256: String,
     pub zip_bytes: u64,
+    /// Per-file receipt: plugin name -> its sha256 and size in the zip.
+    #[serde(default)]
+    pub files: BTreeMap<String, FileReceipt>,
+    /// Where the list came from: the served server-lane.json, or the local
+    /// override (then with the sha256 of override.json's exact bytes).
+    #[serde(default)]
+    pub source: Source,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct Source {
+    /// "served" or "local-override".
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_sha256: Option<String>,
+}
+
+impl Source {
+    pub fn served() -> Source {
+        Source { kind: "served".into(), override_sha256: None }
+    }
+    pub fn local(sha256: &str) -> Source {
+        Source { kind: "local-override".into(), override_sha256: Some(sha256.to_string()) }
+    }
+}
+
+/// The test-only local list (PR #7, Codex 5875976813): `override.json` in
+/// the export folder with `override.sha256` beside it holding the sha256 of
+/// its exact bytes. Both files present turns it on; it is never fetched and
+/// never served. Its runs keep their own state in `OVERRIDE_RUN`, apart from
+/// the served list's.
+pub const OVERRIDE_LIST: &str = "override.json";
+pub const OVERRIDE_SHA: &str = "override.sha256";
+pub const OVERRIDE_RUN: &str = "override-run";
+
+/// The local override list and the sha256 of its bytes, or None when there
+/// is none. Fails closed: one file without the other, a sha256 line that
+/// doesn't match the bytes, or a list that doesn't read is an error, never a
+/// fall back to the served list. The bytes are read once, hashed and parsed
+/// from that same read.
+pub fn local_override(root: &Path) -> Result<Option<(ServerLane, String)>> {
+    use sha2::{Digest, Sha256};
+    let (list, sha) = (root.join(OVERRIDE_LIST), root.join(OVERRIDE_SHA));
+    match (list.exists(), sha.exists()) {
+        (false, false) => return Ok(None),
+        (true, false) => return Err(Error::Game(format!("{OVERRIDE_LIST} is there without {OVERRIDE_SHA}; the export won't run until both are there or both are gone"))),
+        (false, true) => return Err(Error::Game(format!("{OVERRIDE_SHA} is there without {OVERRIDE_LIST}; the export won't run until both are there or both are gone"))),
+        (true, true) => {}
+    }
+    let bytes = std::fs::read(&list)?;
+    let got = format!("{:x}", Sha256::digest(&bytes));
+    let want = std::fs::read_to_string(&sha)?.split_whitespace().next().unwrap_or_default().to_ascii_lowercase();
+    if want != got {
+        return Err(Error::Game(format!("{OVERRIDE_LIST} has sha256 {got}, not the {} in {OVERRIDE_SHA}; the export won't run", if want.is_empty() { "(empty)" } else { &want })));
+    }
+    let lane: ServerLane = serde_json::from_slice(&bytes).map_err(|e| Error::Game(format!("{OVERRIDE_LIST} doesn't read: {e}")))?;
+    Ok(Some((lane, got)))
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct FileReceipt {
+    pub sha256: String,
+    pub bytes: u64,
+}
+
+/// One mod's outcome in an export run, kept in `report.json` whether the
+/// run finished or not, so a failed export says which mod failed first and
+/// why without the launcher log (PR #7: 53 of 70 plugins, no zip).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct ModOutcome {
+    pub id: String,
+    pub name: String,
+    /// The plugins the list declares for it.
+    pub declared: Vec<String>,
+    /// The plugins it gave.
+    pub gave: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct Report {
+    pub list: String,
+    pub declared: usize,
+    pub collected: usize,
+    /// (mod id, plugin) declared but not collected, in list order.
+    pub missing: Vec<(String, String)>,
+    /// Plugins collected that the list doesn't declare.
+    pub extra: Vec<String>,
+    /// The first mod that failed, with its reason.
+    pub first_failure: Option<String>,
+    pub mods: Vec<ModOutcome>,
+}
+
+const REPORT: &str = "report.json";
+
+/// Declared plugins against what `<root>/Data` holds and what was recorded.
+pub fn reconcile(lane: &ServerLane, plugins: &BTreeMap<String, String>) -> (Vec<(String, String)>, Vec<String>) {
+    let mut missing = Vec::new();
+    for m in &lane.mods {
+        for p in &m.plugins {
+            if !plugins.keys().any(|k| k.eq_ignore_ascii_case(p)) {
+                missing.push((m.entry.id.clone(), p.clone()));
+            }
+        }
+    }
+    let extra = plugins.keys().filter(|k| !lane.mods.iter().any(|m| m.plugins.iter().any(|p| p.eq_ignore_ascii_case(k)))).cloned().collect();
+    (missing, extra)
+}
+
+/// Writes `report.json` for this run and returns it.
+pub fn report(root: &Path, lane: &ServerLane, hash: &str, plugins: &BTreeMap<String, String>, mods: Vec<ModOutcome>) -> Result<Report> {
+    let (missing, extra) = reconcile(lane, plugins);
+    let rep = Report {
+        list: hash.to_string(),
+        declared: lane.mods.iter().map(|m| m.plugins.len()).sum(),
+        collected: plugins.len(),
+        missing,
+        extra,
+        first_failure: mods.iter().find_map(|m| m.error.as_ref().map(|e| format!("{}: {e}", m.name))),
+        mods,
+    };
+    std::fs::create_dir_all(root)?;
+    std::fs::write(root.join(REPORT), serde_json::to_vec_pretty(&rep)?)?;
+    Ok(rep)
 }
 
 pub const LANE_DIR: &str = "server-lane";
@@ -193,11 +317,14 @@ pub fn done(root: &Path, hash: &str) -> bool {
 /// Picks the plugins to keep from one unpacked download, as (source, plugin
 /// name). `planned` is what the normal install would copy.
 pub fn pick(m: &LaneMod, unpacked: &Path) -> Result<Vec<(PathBuf, String)>> {
-    // With named plugins the archive is searched anyway, so an installer
-    // the launcher can't follow doesn't stop it.
-    let planned = match modlist::plan(&m.entry, unpacked) {
-        Ok(p) => p,
-        Err(_) if !m.plugins.is_empty() => Vec::new(),
+    // Named plugins come only from what the installer's plan (with the
+    // entry's fomod picks) puts in Data, as a player's launcher installs it,
+    // or from a pinned path. The archive is never searched past the plan,
+    // so a patch the players' options leave out never reaches the server
+    // (PR #7, Codex 5875889405). A plan that fails leaves only pinned paths.
+    let (planned, plan_err) = match modlist::plan(&m.entry, unpacked) {
+        Ok(p) => (p, None),
+        Err(e) if !m.plugins.is_empty() => (Vec::new(), Some(e.to_string())),
         Err(e) => return Err(e),
     };
     let top: Vec<(PathBuf, String)> = planned
@@ -215,12 +342,14 @@ pub fn pick(m: &LaneMod, unpacked: &Path) -> Result<Vec<(PathBuf, String)>> {
         return Ok(top);
     }
     let mut out = Vec::new();
+    // Every problem in the mod is named, not just the first.
+    let mut problems: Vec<String> = Vec::new();
     for want in &m.plugins {
         // A listed path: exactly that file, or the mod is refused.
         if let Some(path) = m.paths.get(want) {
             match at_path(unpacked, path) {
                 Some(f) => out.push((f, want.clone())),
-                None => return Err(Error::Game(format!("{} has no {path} in its download", m.entry.name))),
+                None => problems.push(format!("no {path} in its download")),
             }
             continue;
         }
@@ -228,21 +357,14 @@ pub fn pick(m: &LaneMod, unpacked: &Path) -> Result<Vec<(PathBuf, String)>> {
             out.push((t.0.clone(), want.clone()));
             continue;
         }
-        let found: Vec<PathBuf> = files_named(unpacked, want);
-        match found.len() {
-            1 => out.push((found[0].clone(), want.clone())),
-            0 => return Err(Error::Game(format!("{} has no {want} in its download", m.entry.name))),
-            _ => {
-                // Several copies with the same bytes are one file.
-                let first = std::fs::read(&found[0])?;
-                if found[1..].iter().all(|f| std::fs::read(f).map(|b| b == first).unwrap_or(false)) {
-                    out.push((found[0].clone(), want.clone()));
-                } else {
-                    let rel: Vec<String> = found.iter().map(|f| f.strip_prefix(unpacked).unwrap_or(f).to_string_lossy().replace('\\', "/")).collect();
-                    return Err(Error::Game(format!("{} has different files named {want} ({}); name one with the installer options", m.entry.name, rel.join(", "))));
-                }
-            }
+        match &plan_err {
+            Some(e) => problems.push(format!("its installer couldn't be followed ({e}), so {want} needs a pinned path")),
+            None if !files_named(unpacked, want).is_empty() => problems.push(format!("{want} is in its download but the installer's options don't pick it")),
+            None => problems.push(format!("no {want} in its download")),
         }
+    }
+    if !problems.is_empty() {
+        return Err(Error::Game(format!("{}: {}", m.entry.name, problems.join("; "))));
     }
     Ok(out)
 }
@@ -328,10 +450,26 @@ pub fn collect(root: &Path, mod_id: &str, picked: &[(PathBuf, String)], seen: &m
 /// Zips `<root>/Data` to `<root>/server-lane.zip` (entries "Data/<name>",
 /// stored: plugins barely compress and the VPS unzips quicker) and writes the
 /// record. Returns it.
-pub fn finish(root: &Path, hash: &str, plugins: BTreeMap<String, String>) -> Result<Record> {
+pub fn finish(root: &Path, lane: &ServerLane, hash: &str, plugins: BTreeMap<String, String>, source: Source) -> Result<Record> {
     use sha2::{Digest, Sha256};
     use std::io::{Read, Write};
+    // Never a zip short of what the list declares, or with more.
+    let (missing, extra) = reconcile(lane, &plugins);
+    if !missing.is_empty() || !extra.is_empty() {
+        return Err(Error::Game(format!(
+            "the export has {} of {} declared plugins (missing: {}; not declared: {}); no zip made",
+            plugins.len() - extra.len(),
+            lane.mods.iter().map(|m| m.plugins.len()).sum::<usize>(),
+            missing.iter().map(|(m, p)| format!("{p} ({m})")).collect::<Vec<_>>().join(", "),
+            extra.join(", ")
+        )));
+    }
     let data = root.join("Data");
+    let mut files = BTreeMap::new();
+    for name in plugins.keys() {
+        let b = std::fs::read(data.join(name))?;
+        files.insert(name.clone(), FileReceipt { sha256: format!("{:x}", Sha256::digest(&b)), bytes: b.len() as u64 });
+    }
     let tmp = root.join(format!("{ZIP_NAME}.part"));
     {
         let f = std::fs::File::create(&tmp)?;
@@ -358,7 +496,7 @@ pub fn finish(root: &Path, hash: &str, plugins: BTreeMap<String, String>) -> Res
         bytes += n as u64;
         h.update(&buf[..n]);
     }
-    let rec = Record { list: hash.to_string(), plugins, zip_sha256: format!("{:x}", h.finalize()), zip_bytes: bytes };
+    let rec = Record { list: hash.to_string(), plugins, zip_sha256: format!("{:x}", h.finalize()), zip_bytes: bytes, files, source };
     std::fs::write(root.join(RECORD), serde_json::to_vec_pretty(&rec)?)?;
     let _ = std::fs::remove_file(root.join(FAILURES));
     // The sha256sum line the VPS checks the carried zip against.
@@ -375,7 +513,7 @@ pub fn start_over(root: &Path) -> Result<()> {
             std::fs::remove_dir_all(&d)?;
         }
     }
-    for f in [RECORD, ZIP_NAME] {
+    for f in [RECORD, ZIP_NAME, REPORT] {
         let _ = std::fs::remove_file(root.join(f));
     }
     let _ = std::fs::remove_file(root.join(format!("{ZIP_NAME}.sha256")));
@@ -407,28 +545,86 @@ mod tests {
     }
 
     #[test]
-    fn named_plugins_come_from_anywhere_in_the_archive() {
+    fn the_local_override_needs_both_files_and_matching_bytes() {
+        use sha2::{Digest, Sha256};
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path();
+        assert!(local_override(root).unwrap().is_none(), "none: the served list is used");
+        let body = br#"{"for_discord_id":"1","mods":[{"id":"a","name":"A","nexus":{"mod":2,"file":3},"plugins":["A.esp"]}]}"#;
+        let sha = format!("{:x}", Sha256::digest(body));
+        std::fs::write(root.join(OVERRIDE_LIST), body).unwrap();
+        assert!(local_override(root).unwrap_err().to_string().contains("without override.sha256"));
+        // A sha256sum line, any case, is accepted.
+        std::fs::write(root.join(OVERRIDE_SHA), format!("{}  override.json\n", sha.to_uppercase())).unwrap();
+        let (l, got) = local_override(root).unwrap().unwrap();
+        assert_eq!((l.mods.len(), got.as_str()), (1, sha.as_str()));
+        // One byte changed after the sha256 was written: refused, no fall back.
+        let mut other = body.to_vec();
+        *other.last_mut().unwrap() = b' ';
+        other.push(b'}');
+        std::fs::write(root.join(OVERRIDE_LIST), &other).unwrap();
+        assert!(local_override(root).unwrap_err().to_string().contains("won't run"));
+        std::fs::write(root.join(OVERRIDE_SHA), "").unwrap();
+        assert!(local_override(root).is_err());
+        std::fs::remove_file(root.join(OVERRIDE_LIST)).unwrap();
+        assert!(local_override(root).unwrap_err().to_string().contains("without override.json"));
+        // Bytes that match but don't read as a list.
+        std::fs::write(root.join(OVERRIDE_LIST), b"not json").unwrap();
+        std::fs::write(root.join(OVERRIDE_SHA), format!("{:x}", Sha256::digest(b"not json"))).unwrap();
+        assert!(local_override(root).unwrap_err().to_string().contains("doesn't read"));
+    }
+
+    #[test]
+    fn named_plugins_come_only_from_what_the_installer_puts_in_data() {
         let t = tempfile::tempdir().unwrap();
         let u = t.path().join("u");
         std::fs::create_dir_all(u.join("Patches/COTN")).unwrap();
-        std::fs::create_dir_all(u.join("Patches/Other")).unwrap();
         std::fs::write(u.join("Main.esp"), b"main").unwrap();
         std::fs::write(u.join("Patches/COTN/Patch A.esp"), b"a").unwrap();
-        std::fs::write(u.join("Patches/Other/Patch B.esp"), b"b1").unwrap();
-        std::fs::create_dir_all(u.join("Patches/More")).unwrap();
-        std::fs::write(u.join("Patches/More/Patch B.esp"), b"b2").unwrap();
         let mut m = lane(r#"{"for_discord_id":"1","mods":[{"id":"ocw","name":"OCW","nexus":{"mod":1,"file":2}}]}"#).mods.remove(0);
         let all = pick(&m, &u).unwrap();
         assert_eq!(all.iter().map(|p| p.1.as_str()).collect::<Vec<_>>(), vec!["Main.esp"]);
-        m.plugins = vec!["patch a.esp".into()];
+        m.plugins = vec!["main.ESP".into()];
         let a = pick(&m, &u).unwrap();
-        assert!(a[0].0.ends_with("Patches/COTN/Patch A.esp"));
+        assert!(a[0].0.ends_with("Main.esp"));
         // The list's spelling names the file on the server.
-        assert_eq!(a[0].1, "patch a.esp");
-        m.plugins = vec!["Patch B.esp".into()];
-        assert!(pick(&m, &u).unwrap_err().to_string().contains("different files"));
+        assert_eq!(a[0].1, "main.ESP");
+        // In the archive but not installed: refused, never searched for.
+        m.plugins = vec!["Patch A.esp".into()];
+        let e = pick(&m, &u).unwrap_err().to_string();
+        assert!(e.contains("don't pick it"), "{e}");
         m.plugins = vec!["Missing.esp".into()];
-        assert!(pick(&m, &u).is_err());
+        assert!(pick(&m, &u).unwrap_err().to_string().contains("no Missing.esp"));
+        // A pinned path still takes exactly that file.
+        m.paths.insert("Patch A.esp".into(), "Patches/COTN/Patch A.esp".into());
+        m.plugins = vec!["Patch A.esp".into()];
+        assert_eq!(std::fs::read(&pick(&m, &u).unwrap()[0].0).unwrap(), b"a");
+    }
+
+    #[test]
+    fn a_plugin_the_fomod_picks_leave_out_is_refused_though_the_archive_has_it() {
+        // MoreCraftableEquipment_USSEP.esp was collected while the log showed
+        // "[x] None": the players' picks leave the patch out, so the server
+        // must too (PR #7, Codex 5875889405).
+        let t = tempfile::tempdir().unwrap();
+        let u = t.path().join("u");
+        let xml = r#"<config><requiredInstallFiles><file source="core/MoreCraftableEquipment.esp" destination="MoreCraftableEquipment.esp"/></requiredInstallFiles><installSteps><installStep name="s"><optionalFileGroups>
+<group name="Patches" type="SelectExactlyOne"><plugins>
+<plugin name="None"><files></files><typeDescriptor><type name="Optional"/></typeDescriptor></plugin>
+<plugin name="USSEP"><files><file source="patches/MoreCraftableEquipment_USSEP.esp" destination="MoreCraftableEquipment_USSEP.esp"/></files><typeDescriptor><type name="Optional"/></typeDescriptor></plugin>
+</plugins></group></optionalFileGroups></installStep></installSteps></config>"#;
+        for (f, b) in [("fomod/ModuleConfig.xml", xml.as_bytes()), ("core/MoreCraftableEquipment.esp", b"main"), ("patches/MoreCraftableEquipment_USSEP.esp", b"patch")] {
+            std::fs::create_dir_all(u.join(f).parent().unwrap()).unwrap();
+            std::fs::write(u.join(f), b).unwrap();
+        }
+        let json = |fomod: &str| format!(r#"{{"for_discord_id":"1","mods":[{{"id":"mce","name":"MCE","nexus":{{"mod":1,"file":2}},"fomod":[{fomod}],"plugins":["MoreCraftableEquipment.esp","MoreCraftableEquipment_USSEP.esp"]}}]}}"#);
+        let none = lane(&json(r#""None""#)).mods.remove(0);
+        let e = pick(&none, &u).unwrap_err().to_string();
+        assert!(e.contains("MoreCraftableEquipment_USSEP.esp is in its download but the installer's options don't pick it"), "{e}");
+        assert!(!e.contains("MoreCraftableEquipment.esp is"), "the main plugin is fine: {e}");
+        // With the patch picked, both come from the plan.
+        let both = pick(&lane(&json(r#""USSEP""#)).mods[0], &u).unwrap();
+        assert_eq!(both.iter().map(|p| std::fs::read(&p.0).unwrap()).collect::<Vec<_>>(), vec![b"main".to_vec(), b"patch".to_vec()]);
     }
 
     #[test]
@@ -482,7 +678,17 @@ mod tests {
         let l = lane(r#"{"for_discord_id":"1","mods":[]}"#);
         let h = list_hash(&l);
         assert!(!done(&root, &h));
-        let rec = finish(&root, &h, seen).unwrap();
+        // A zip short of the list is refused, and says what's missing.
+        let l2 = lane(r#"{"for_discord_id":"1","mods":[{"id":"jks","name":"JK","nexus":{"mod":1,"file":2},"plugins":["JKs Skyrim.esp","JK Patch.esp"]}]}"#);
+        let e = finish(&root, &l2, &h, seen.clone(), Source::served()).unwrap_err().to_string();
+        assert!(e.contains("1 of 2 declared plugins (missing: JK Patch.esp (jks)"), "{e}");
+        assert!(!root.join(ZIP_NAME).exists());
+        let l = lane(r#"{"for_discord_id":"1","mods":[{"id":"jks","name":"JK","nexus":{"mod":1,"file":2},"plugins":["JKs Skyrim.esp"]}]}"#);
+        let h = list_hash(&l);
+        let rec = finish(&root, &l, &h, seen, Source::local("ab")).unwrap();
+        assert_eq!(rec.source, Source::local("ab"));
+        assert_eq!(rec.files["JKs Skyrim.esp"].bytes, 12);
+        assert_eq!(rec.files["JKs Skyrim.esp"].sha256.len(), 64);
         assert!(done(&root, &h));
         assert!(!done(&root, "other list"));
         let z = zip::ZipArchive::new(std::fs::File::open(root.join(ZIP_NAME)).unwrap()).unwrap();
@@ -490,6 +696,37 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join("server-lane.zip.sha256")).unwrap(), format!("{}  server-lane.zip\n", rec.zip_sha256));
         start_over(&root).unwrap();
         assert!(!done(&root, &h) && !root.join("Data").exists());
+    }
+
+    /// PR #7: the export folder held 53 plugins for a list declaring 70,
+    /// with no zip and no record of why. The report now names every mod's
+    /// outcome, the first failure, and each declared plugin not collected.
+    #[test]
+    fn a_failed_run_reports_the_first_failure_and_every_missing_plugin() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join(LANE_DIR);
+        let l = lane(
+            r#"{"for_discord_id":"1","mods":[
+            {"id":"a","name":"A","nexus":{"mod":1,"file":1},"plugins":["A.esp"]},
+            {"id":"sentinel","name":"Sentinel","nexus":{"mod":2,"file":2},"plugins":["Sentinel.esp","Sentinel - City Guards.esp"]},
+            {"id":"c","name":"C","nexus":{"mod":3,"file":3},"plugins":["C.esp"]}]}"#,
+        );
+        let mut plugins = BTreeMap::new();
+        plugins.insert("A.esp".to_string(), "a".to_string());
+        plugins.insert("C.esp".to_string(), "c".to_string());
+        plugins.insert("Stray.esp".to_string(), "c".to_string());
+        let outcomes = vec![
+            ModOutcome { id: "a".into(), name: "A".into(), declared: vec!["A.esp".into()], gave: vec!["A.esp".into()], error: None },
+            ModOutcome { id: "sentinel".into(), name: "Sentinel".into(), declared: vec!["Sentinel.esp".into(), "Sentinel - City Guards.esp".into()], gave: vec![], error: Some("no Sentinel - City Guards.esp in its download".into()) },
+            ModOutcome { id: "c".into(), name: "C".into(), declared: vec!["C.esp".into()], gave: vec!["C.esp".into()], error: None },
+        ];
+        let r = report(&root, &l, "h", &plugins, outcomes).unwrap();
+        assert_eq!((r.declared, r.collected), (4, 3));
+        assert_eq!(r.missing, vec![("sentinel".to_string(), "Sentinel.esp".to_string()), ("sentinel".to_string(), "Sentinel - City Guards.esp".to_string())]);
+        assert_eq!(r.extra, vec!["Stray.esp".to_string()]);
+        assert_eq!(r.first_failure.as_deref(), Some("Sentinel: no Sentinel - City Guards.esp in its download"));
+        let saved: Report = serde_json::from_slice(&std::fs::read(root.join("report.json")).unwrap()).unwrap();
+        assert_eq!(saved, r);
     }
 
     #[test]
@@ -527,7 +764,7 @@ mod tests {
         assert!(!gave_up(&root, "b"), "a changed list gets tries again");
         assert_eq!(failed(&root, "b").unwrap(), 1);
         // A good export clears the count.
-        finish(&root, "b", BTreeMap::new()).unwrap();
+        finish(&root, &lane(r#"{"for_discord_id":"1","mods":[]}"#), "b", BTreeMap::new(), Source::served()).unwrap();
         assert!(!gave_up(&root, "b") && failed(&root, "b").unwrap() == 1);
     }
 }
