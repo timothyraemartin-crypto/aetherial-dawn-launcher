@@ -721,6 +721,25 @@ mod tests {
     }
 
     #[test]
+    fn a_different_file_of_a_built_in_cannot_pass_play_even_when_deployed() {
+        let t = tempfile::tempdir().unwrap();
+        let path = t.path().join("Data/SKSE/Plugins/MCMHelper.dll");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"present").unwrap();
+        let entry = crate::modlist::builtin(Some("1.6.1170.0"))
+            .into_iter().find(|m| m.id == "mcm-helper").unwrap();
+        let set = ClientSet { collection: None, mods: vec![entry] };
+        let files = [VortexFile { rel: "Data/SKSE/Plugins/MCMHelper.dll".into(), source: "mcm-folder".into() }];
+        let mut status = active(vec![vm("mcm", 53000, 795510, true)]);
+        assert!(step(&set, Some(&status)).ok());
+        assert!(missing_deployment(&set.mods, &status, &files, t.path()).is_empty());
+
+        status.mods[0].nexus_file_id = Some(795511);
+        assert!(!step(&set, Some(&status)).ok());
+        assert_eq!(missing_deployment(&set.mods, &status, &files, t.path()), ["MCM Helper"]);
+    }
+
+    #[test]
     fn approved_sources_bind_an_unpinned_checkless_package_to_current_deployment() {
         let t = tempfile::tempdir().unwrap();
         let path = t.path().join("Data/textures/required.dds");

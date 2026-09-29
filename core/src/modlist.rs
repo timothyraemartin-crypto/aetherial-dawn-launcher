@@ -249,8 +249,9 @@ pub struct ModList {
     pub revision: Option<String>,
 }
 
-/// Nexus file ids the launcher installs for its own required mods where the
-/// newest or best-named file is the wrong one for Skyrim 1.6.1170.
+/// Nexus file ids for built-ins whose newer or best-named files can be wrong
+/// for Skyrim 1.6.1170. The other built-ins below are pinned to the exact
+/// files selected for this manual Vortex profile too.
 pub const ADDRESS_LIBRARY_FILE: u64 = 470707;
 pub const TRUE_DIRECTIONAL_MOVEMENT_FILE: u64 = 798770;
 
@@ -304,7 +305,7 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
     out.push(ModEntry {
         id: "engine-fixes".into(),
         name: "SSE Engine Fixes (All-In-One)".into(),
-        nexus: Some(NexusRef { mod_id: 17230, file: None, pick: Some("All-In-One".into()) }),
+        nexus: Some(NexusRef { mod_id: 17230, file: Some(669326), pick: Some("All-In-One".into()) }),
         game_files: r::ENGINE_FIXES_PRELOAD.iter().map(|s| s.to_string()).collect(),
         fomod: vec!["AE".into(), "1.6.1170".into()],
         check: ef_check,
@@ -323,7 +324,7 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
     out.push(ModEntry {
         id: "menu-framework".into(),
         name: "SKSE Menu Framework".into(),
-        nexus: Some(NexusRef { mod_id: 120352, file: None, pick: None }),
+        nexus: Some(NexusRef { mod_id: 120352, file: Some(806684), pick: None }),
         // With the strings, fonts and themes it can't start without (health.rs
         // required files): any missing, Play installs it again (text audit A6).
         check: vec![
@@ -338,7 +339,7 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
     out.push(ModEntry {
         id: "imgui-icons".into(),
         name: "ImGui Icons".into(),
-        nexus: Some(NexusRef { mod_id: 114790, file: None, pick: None }),
+        nexus: Some(NexusRef { mod_id: 114790, file: Some(690123), pick: None }),
         check: vec![format!("Data/Interface/{}", r::IMGUI_ICONS_DIR)],
         hint: Some("the main file".into()),
         ..Default::default()
@@ -346,7 +347,7 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
     out.push(ModEntry {
         id: "skyui".into(),
         name: "SkyUI".into(),
-        nexus: Some(NexusRef { mod_id: 12604, file: None, pick: Some("SkyUI".into()) }),
+        nexus: Some(NexusRef { mod_id: 12604, file: Some(749043), pick: Some("SkyUI".into()) }),
         check: vec![format!("Data/{}", r::SKYUI_PLUGIN), format!("Data/{}", r::SKYUI_ARCHIVE)],
         hint: Some("SkyUI 5.2SE (main file)".into()),
         ..Default::default()
@@ -356,7 +357,7 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
     out.push(ModEntry {
         id: "display-tweaks".into(),
         name: "SSE Display Tweaks".into(),
-        nexus: Some(NexusRef { mod_id: 34705, file: None, pick: Some("AE".into()) }),
+        nexus: Some(NexusRef { mod_id: 34705, file: Some(797175), pick: Some("AE".into()) }),
         check: vec![format!("Data/SKSE/Plugins/{}", r::DISPLAY_TWEAKS_DLL)],
         hint: Some("the main file for Anniversary Edition (1.6)".into()),
         ..Default::default()
@@ -364,7 +365,7 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
     out.push(ModEntry {
         id: "black-screen-fix".into(),
         name: "Black Screen and Startup Fix".into(),
-        nexus: Some(NexusRef { mod_id: 176509, file: None, pick: Some("1080".into()) }),
+        nexus: Some(NexusRef { mod_id: 176509, file: Some(738614), pick: Some("1080".into()) }),
         check: vec![format!("Data/SKSE/Plugins/{}", r::DISPLAY_TWEAKS_INI)],
         hint: Some("the file for your screen (1080p or 1440p)".into()),
         // Display Tweaks ships an ini of the same name; the fix's must win
@@ -379,7 +380,7 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
     out.push(ModEntry {
         id: "mcm-helper".into(),
         name: "MCM Helper".into(),
-        nexus: Some(NexusRef { mod_id: 53000, file: None, pick: None }),
+        nexus: Some(NexusRef { mod_id: 53000, file: Some(795510), pick: None }),
         check: vec!["Data/SKSE/Plugins/MCMHelper.dll".into()],
         hint: Some("the main file".into()),
         ..Default::default()
@@ -387,7 +388,7 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
     out.push(ModEntry {
         id: "smoothcam".into(),
         name: "SmoothCam".into(),
-        nexus: Some(NexusRef { mod_id: 41252, file: None, pick: Some("AE".into()) }),
+        nexus: Some(NexusRef { mod_id: 41252, file: Some(729856), pick: Some("AE".into()) }),
         check: vec!["Data/SKSE/Plugins/SmoothCam.dll".into()],
         hint: Some("the main file for Anniversary Edition (1.6)".into()),
         ..Default::default()
@@ -398,7 +399,7 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
     out.push(ModEntry {
         id: "smoothcam-modern-preset".into(),
         name: "SmoothCam - Modern Camera Preset".into(),
-        nexus: Some(NexusRef { mod_id: 41636, file: None, pick: None }),
+        nexus: Some(NexusRef { mod_id: 41636, file: Some(220887), pick: None }),
         check: vec!["Data/SKSE/Plugins/SmoothCamPreset*.json".into()],
         hint: Some("the main file".into()),
         ..Default::default()
@@ -416,7 +417,7 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
     out.push(ModEntry {
         id: "truehud".into(),
         name: "TrueHUD".into(),
-        nexus: Some(NexusRef { mod_id: 62775, file: None, pick: None }),
+        nexus: Some(NexusRef { mod_id: 62775, file: Some(798218), pick: None }),
         check: vec!["Data/SKSE/Plugins/TrueHUD.dll".into()],
         hint: Some("the main file".into()),
         ..Default::default()
@@ -1663,6 +1664,34 @@ mod tests {
         assert_eq!(pin("true-directional-movement"), (51614, Some(798770)));
         let al = list.iter().find(|e| e.id == "address-library").unwrap();
         assert_eq!(al.check, ["Data/SKSE/Plugins/versionlib-1-6-1170-0.bin"]);
+    }
+
+    #[test]
+    fn every_builtin_nexus_package_has_the_manual_vortex_file_pin() {
+        // These are the 13 selected mod/file pairs in the 2026-09-29
+        // migration inventory. A same-mod alternative must not become Ready.
+        let expected = [
+            ("address-library", 32444, 470707),
+            ("engine-fixes", 17230, 669326),
+            ("ussep", 266, 733846),
+            ("menu-framework", 120352, 806684),
+            ("imgui-icons", 114790, 690123),
+            ("skyui", 12604, 749043),
+            ("display-tweaks", 34705, 797175),
+            ("black-screen-fix", 176509, 738614),
+            ("mcm-helper", 53000, 795510),
+            ("smoothcam", 41252, 729856),
+            ("smoothcam-modern-preset", 41636, 220887),
+            ("true-directional-movement", 51614, 798770),
+            ("truehud", 62775, 798218),
+        ];
+        let builtins = builtin(Some("1.6.1170.0"));
+        assert_eq!(builtins.len(), expected.len());
+        for (id, mod_id, file_id) in expected {
+            let entry = builtins.iter().find(|entry| entry.id == id).unwrap();
+            let nexus = entry.nexus.as_ref().unwrap();
+            assert_eq!((nexus.mod_id, nexus.file), (mod_id, Some(file_id)), "{id}");
+        }
     }
 
     #[test]
