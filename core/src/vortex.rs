@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::modlist::ModEntry;
+use crate::allowlist::VortexFile;
+use crate::modlist::{safe_rel, ModEntry};
 use crate::{Error, Result};
 
 pub const TOKEN: &str = "token";
@@ -173,6 +174,10 @@ pub struct ActiveProfile {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct VortexMod {
     pub id: String,
+    /// Vortex's staging folder for this package. Deployment records use
+    /// this exact string as their `source`, rather than the Nexus mod id.
+    #[serde(default, rename = "installationPath")]
+    pub installation_path: Option<String>,
     #[serde(default)]
     pub state: Option<String>,
     #[serde(default, rename = "nexusModId")]
@@ -227,11 +232,12 @@ pub enum Step {
     TwoProfiles(usize),
     OtherProfileActive(Option<String>),
     CollectionNotAdded,
+    CollectionNotReady,
     WrongRevision { has: Option<u64>, needs: u64 },
-    /// Counts of the required files, from Vortex's own state only (never the
-    /// launcher's direct-to-Data ledger): installed (state "installed") and
-    /// switched on in the profile, with the ones still to come named, and
-    /// any other file of a listed mod still switched on.
+    /// Counts of the required packages, from Vortex's own state only (never
+    /// the launcher's direct-to-Data ledger): installed (state "installed")
+    /// and switched on in the profile, with unresolved mods named and any
+    /// ambiguous or wrong version still switched on.
     Counts { required: usize, installed: usize, enabled: usize, waiting: Vec<String>, other_versions_on: Vec<String> },
     Ready,
 }
@@ -249,6 +255,7 @@ impl Step {
             Step::TwoProfiles(n) => format!("Vortex: {n} profiles are named \"Aetherial Dawn\"; keep one"),
             Step::OtherProfileActive(name) => format!("Vortex: switch from {} to the \"Aetherial Dawn\" profile", name.as_deref().map(|n| format!("\"{n}\"")).unwrap_or_else(|| "another profile".into())),
             Step::CollectionNotAdded => "Collection: add the Aetherial Dawn collection in Vortex".into(),
+            Step::CollectionNotReady => "Collection: install and switch on the Aetherial Dawn collection in Vortex".into(),
             Step::WrongRevision { has, needs } => match has {
                 Some(h) => format!("Collection: revision {h} is installed; update to revision {needs}"),
                 None => format!("Collection: update to revision {needs}"),
@@ -283,20 +290,29 @@ pub fn step(set: &ClientSet, status: Option<&Status>) -> Step {
         if !mine.iter().any(|x| x.revision == Some(c.revision)) {
             return Step::WrongRevision { has: mine.iter().filter_map(|x| x.revision).max(), needs: c.revision };
         }
+        if !mine.iter().any(|x| x.revision == Some(c.revision) && x.state.as_deref() == Some("installed") && x.enabled) {
+            return Step::CollectionNotReady;
+        }
     }
-    let installed_state = |m: &VortexMod| m.state.as_deref().is_none_or(|s| s == "installed");
+    let installed_state = |m: &VortexMod| m.state.as_deref() == Some("installed");
     let mut required = 0;
     let (mut installed, mut enabled) = (0, 0);
     let mut waiting = Vec::new();
     for e in &set.mods {
         let Some(n) = &e.nexus else { continue };
-        let Some(file) = n.file else { continue };
         required += 1;
-        let found: Vec<&VortexMod> = st.mods.iter().filter(|m| m.nexus_mod_id == Some(n.mod_id) && m.nexus_file_id == Some(file) && installed_state(m)).collect();
+        let found: Vec<&VortexMod> = st.mods.iter().filter(|m| m.nexus_mod_id == Some(n.mod_id)
+            && n.file.is_none_or(|file| m.nexus_file_id == Some(file)) && installed_state(m)).collect();
         if !found.is_empty() {
             installed += 1;
         }
-        if found.iter().any(|m| m.enabled) {
+        let on = st.mods.iter().filter(|m| m.nexus_mod_id == Some(n.mod_id) && m.enabled).collect::<Vec<_>>();
+        let enabled_exact = if n.file.is_some() {
+            found.iter().any(|m| m.enabled)
+        } else {
+            on.len() == 1 && installed_state(on[0])
+        };
+        if enabled_exact {
             enabled += 1;
         } else {
             waiting.push(e.name.clone());
@@ -329,28 +345,79 @@ impl Membership {
     }
 }
 
-/// Checks the list against Vortex's own state, by Nexus mod and file id.
-/// Only Nexus-pinned entries are Vortex's to hold; the others (GitHub and
-/// built-in ones) are the launcher's.
+/// Checks the list against Vortex's own state. Pinned entries need the exact
+/// Nexus mod and file id; unpinned Nexus entries need exactly one enabled,
+/// installed package for that mod id. Non-Nexus entries are the launcher's.
 pub fn membership(list: &[ModEntry], status: &Status) -> Membership {
     let profile_active = status.profile.as_ref().is_some_and(|p| p.active);
-    let installed = |m: &VortexMod| m.state.as_deref().is_none_or(|s| s == "installed");
+    let installed = |m: &VortexMod| m.state.as_deref() == Some("installed");
     let mut missing = Vec::new();
     let mut other_versions_on = Vec::new();
     for e in list {
         let Some(n) = &e.nexus else { continue };
-        let Some(file) = n.file else { continue };
-        let exact = status.mods.iter().any(|m| m.nexus_mod_id == Some(n.mod_id) && m.nexus_file_id == Some(file) && m.enabled && installed(m));
+        let on: Vec<&VortexMod> = status.mods.iter().filter(|m| m.nexus_mod_id == Some(n.mod_id) && m.enabled).collect();
+        let exact = match n.file {
+            Some(file) => on.iter().any(|m| m.nexus_file_id == Some(file) && installed(m)),
+            None => on.len() == 1 && installed(on[0]),
+        };
         if !exact {
             missing.push(e.id.clone());
         }
-        for m in &status.mods {
-            if m.nexus_mod_id == Some(n.mod_id) && m.nexus_file_id != Some(file) && m.enabled && !list.iter().any(|o| o.nexus.as_ref().is_some_and(|on| on.mod_id == n.mod_id && on.file == m.nexus_file_id)) && !other_versions_on.contains(&m.id) {
-                other_versions_on.push(m.id.clone());
+        match n.file {
+            Some(file) => for m in &on {
+                if m.nexus_file_id != Some(file) && !list.iter().any(|o| o.nexus.as_ref().is_some_and(|on| on.mod_id == n.mod_id && on.file == m.nexus_file_id)) && !other_versions_on.contains(&m.id) {
+                    other_versions_on.push(m.id.clone());
+                }
+            },
+            None if on.len() > 1 => for m in on {
+                if !other_versions_on.contains(&m.id) { other_versions_on.push(m.id.clone()); }
+            },
+            None => {}
             }
-        }
     }
     Membership { profile_active, missing, other_versions_on }
+}
+
+/// Names of Nexus mods whose enabled Vortex package is not proven to supply
+/// its required game files. A pinned mod needs its exact Nexus file id; an
+/// unpinned mod needs exactly one enabled installed package for its mod id.
+/// The deployment record's `source` must be that package's exact Vortex
+/// `installationPath`. An absent path, record, or check file fails closed.
+/// A package with no Data checks still needs one current file from its source.
+pub fn missing_deployment(list: &[ModEntry], status: &Status, files: &[VortexFile], game_dir: &Path) -> Vec<String> {
+    fn matches_check(check: &str, rel: &str, directory: bool) -> bool {
+        let (c, r) = (check.replace('\\', "/").to_ascii_lowercase(), rel.replace('\\', "/").to_ascii_lowercase());
+        if let Some((head, tail)) = c.split_once('*') {
+            return !tail.contains('*') && !tail.contains('/') && r.len() >= head.len() + tail.len()
+                && r.starts_with(head) && r.ends_with(tail) && !r[head.len()..r.len() - tail.len()].contains('/');
+        }
+        c == r || (directory && r.starts_with(&(c + "/")))
+    }
+
+    list.iter().filter_map(|e| {
+        let n = e.nexus.as_ref()?;
+        let checks: Vec<&String> = e.check.iter().filter(|c| c.replace('\\', "/").to_ascii_lowercase().starts_with("data/")).collect();
+        let enabled: Vec<&VortexMod> = status.mods.iter().filter(|m| m.nexus_mod_id == Some(n.mod_id) && m.enabled).collect();
+        let valid = status.profile.as_ref().is_some_and(|p| p.active)
+            && checks.iter().all(|c| safe_rel(c).is_some())
+            && (n.file.is_some() || enabled.len() == 1)
+            && enabled.iter().any(|m| {
+                let Some(source) = m.installation_path.as_deref().filter(|s| !s.is_empty()) else { return false };
+                n.file.is_none_or(|file| m.nexus_file_id == Some(file))
+                    && m.state.as_deref() == Some("installed")
+                    && files.iter().any(|f| f.source == source && safe_rel(&f.rel).is_some_and(|rel| game_dir.join(rel).is_file()))
+                    && checks.iter().all(|check| {
+                        let check_path = game_dir.join(safe_rel(check).expect("checked above"));
+                        files.iter().filter(|f| f.source == source).any(|f| {
+                            safe_rel(&f.rel).is_some_and(|rel| {
+                                let path = game_dir.join(rel);
+                                path.is_file() && matches_check(check, &f.rel, check_path.is_dir())
+                            })
+                        })
+                    })
+            });
+        (!valid).then(|| e.name.clone())
+    }).collect()
 }
 
 /// The Vortex packages in the profile that are the exact Nexus file of a
@@ -513,8 +580,14 @@ mod tests {
         ModEntry { id: id.into(), name: id.to_uppercase(), nexus: Some(NexusRef { mod_id: m, file: Some(f), pick: None }), ..Default::default() }
     }
 
+    fn unpinned(id: &str, mod_id: u64) -> ModEntry {
+        let mut entry = e(id, mod_id, 0);
+        entry.nexus.as_mut().unwrap().file = None;
+        entry
+    }
+
     fn vm(id: &str, m: u64, f: u64, on: bool) -> VortexMod {
-        VortexMod { id: id.into(), state: Some("installed".into()), nexus_mod_id: Some(m), nexus_file_id: Some(f), enabled: on }
+        VortexMod { id: id.into(), installation_path: Some(format!("{id}-folder")), state: Some("installed".into()), nexus_mod_id: Some(m), nexus_file_id: Some(f), enabled: on }
     }
 
     fn active(mods: Vec<VortexMod>) -> Status {
@@ -547,6 +620,8 @@ mod tests {
         assert!(other.describe().contains("switch from \"Default\""));
         assert_eq!(with(&|s| s.collections.clear()), Step::CollectionNotAdded);
         assert_eq!(with(&|s| s.collections[0].revision = Some(1)), Step::WrongRevision { has: Some(1), needs: 2 });
+        assert_eq!(with(&|s| s.collections[0].enabled = false), Step::CollectionNotReady);
+        assert_eq!(with(&|s| s.collections[0].state = Some("installing".into())), Step::CollectionNotReady);
         // Downloading: SkyUI not there yet.
         let dl = with(&|s| { s.mods.pop(); });
         assert_eq!(dl, Step::Counts { required: 2, installed: 1, enabled: 1, waiting: vec!["SKYUI".into()], other_versions_on: vec![] });
@@ -555,6 +630,8 @@ mod tests {
         assert_eq!(with(&|s| s.mods[1].enabled = false), Step::Counts { required: 2, installed: 2, enabled: 1, waiting: vec!["SKYUI".into()], other_versions_on: vec![] });
         // Mid-install doesn't count as installed.
         assert_eq!(with(&|s| s.mods[1].state = Some("installing".into())), Step::Counts { required: 2, installed: 1, enabled: 1, waiting: vec!["SKYUI".into()], other_versions_on: vec![] });
+        // An absent state is unknown, not proof of installation.
+        assert_eq!(with(&|s| s.mods[1].state = None), Step::Counts { required: 2, installed: 1, enabled: 1, waiting: vec!["SKYUI".into()], other_versions_on: vec![] });
         // Another file of a listed mod still on (the 4.3.9c case): not ready, and said.
         let two = with(&|s| s.mods.push(vm("u439c", 266, 999999, true)));
         assert!(!two.ok());
@@ -586,10 +663,11 @@ mod tests {
     #[test]
     fn reads_the_extensions_status_answer() {
         let json = r#"{"ok":true,"activeProfile":{"id":"p1","name":"Aetherial Dawn"},"aetherialProfiles":1,"profile":{"id":"p1","name":"Aetherial Dawn","active":true},
-            "mods":[{"id":"u","state":"installed","nexusModId":266,"nexusFileId":733846,"enabled":true,"installerChoices":null}],
+            "mods":[{"id":"u","installationPath":"USSEP 4.3.8a folder","state":"installed","nexusModId":266,"nexusFileId":733846,"enabled":true,"installerChoices":null}],
             "collections":[{"id":"c","state":"installed","enabled":true,"slug":"adcol","revision":2}]}"#;
         let s: Status = serde_json::from_str(json).unwrap();
         assert_eq!((s.aetherial_profiles, s.mods[0].nexus_file_id, s.collections[0].revision), (1, Some(733846), Some(2)));
+        assert_eq!(s.mods[0].installation_path.as_deref(), Some("USSEP 4.3.8a folder"));
     }
 
     #[test]
@@ -624,9 +702,106 @@ mod tests {
         st.profile.as_mut().unwrap().active = true;
         st.mods[2].state = Some("installing".into());
         assert_eq!(membership(&list, &st).missing, ["ussep"]);
+        st.mods[2].state = None;
+        assert_eq!(membership(&list, &st).missing, ["ussep"], "unknown install state is not installed");
         // Approved for "Only the server's mods": the listed files only.
         let a = approved(&list, &st);
         assert_eq!(a.iter().map(|a| a.vortex_id.as_str()).collect::<Vec<_>>(), ["skyui", "u438a"]);
+    }
+
+    #[test]
+    fn deployment_binds_the_enabled_pinned_file_to_its_exact_vortex_source() {
+        let t = tempfile::tempdir().unwrap();
+        let rel = "Data/Unofficial Skyrim Special Edition Patch.esp";
+        let target = t.path().join(rel);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"plugin").unwrap();
+        let mut pinned = e("ussep", 266, 733846);
+        pinned.check = vec![rel.into()];
+        let list = vec![pinned];
+        let mut status = active(vec![vm("u438a", 266, 733846, true), vm("u439c", 266, 999999, false)]);
+        status.mods[0].installation_path = Some("USSEP 4.3.8a folder".into());
+        status.mods[1].installation_path = Some("USSEP 4.3.9c folder".into());
+        let mut deployed = vec![VortexFile { rel: rel.into(), source: "USSEP 4.3.9c folder".into() }];
+        let missing = |status: &Status, files: &[VortexFile]| missing_deployment(&list, status, files, t.path());
+
+        assert_eq!(missing(&status, &deployed), ["USSEP"], "an older file of the same Nexus mod is not the pinned file");
+        deployed[0].source = "USSEP 4.3.8a folder".into();
+        assert!(missing(&status, &deployed).is_empty(), "the exact enabled file, source and present check path agree");
+        status.mods[0].enabled = false;
+        assert_eq!(missing(&status, &deployed), ["USSEP"]);
+        status.mods[0].enabled = true;
+        status.mods[0].nexus_file_id = Some(999999);
+        assert_eq!(missing(&status, &deployed), ["USSEP"]);
+        status.mods[0].nexus_file_id = Some(733846);
+        status.mods[0].installation_path = None;
+        assert_eq!(missing(&status, &deployed), ["USSEP"], "an old extension without installationPath fails closed");
+        status.mods[0].installation_path = Some("USSEP 4.3.8a folder".into());
+        std::fs::remove_file(target).unwrap();
+        assert_eq!(missing(&status, &deployed), ["USSEP"], "a stale deployment record is not enough without the actual file");
+    }
+
+    #[test]
+    fn pinned_mod_without_checks_needs_a_current_file_from_its_exact_source() {
+        let t = tempfile::tempdir().unwrap();
+        let rel = "Data/Textures/Example.dds";
+        let target = t.path().join(rel);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"texture").unwrap();
+        let list = vec![e("textures", 1234, 5678)];
+        let status = active(vec![vm("textures", 1234, 5678, true)]);
+        let from = |source: &str| vec![VortexFile { rel: rel.into(), source: source.into() }];
+
+        assert_eq!(missing_deployment(&list, &status, &[], t.path()), ["TEXTURES"]);
+        assert_eq!(missing_deployment(&list, &status, &from("other-file-of-mod-1234"), t.path()), ["TEXTURES"]);
+        assert!(missing_deployment(&list, &status, &from("textures-folder"), t.path()).is_empty());
+        std::fs::remove_file(target).unwrap();
+        assert_eq!(missing_deployment(&list, &status, &from("textures-folder"), t.path()), ["TEXTURES"], "the deployment record cannot stand in for a missing file");
+    }
+
+    #[test]
+    fn unpinned_nexus_mod_needs_one_installed_package_switched_on() {
+        let list = vec![unpinned("skyui", 12604)];
+        let set = ClientSet { collection: None, mods: list.clone() };
+        let mut status = active(vec![vm("skyui-a", 12604, 101, true)]);
+        assert_eq!(step(&set, Some(&status)), Step::Ready);
+        assert!(membership(&list, &status).ready());
+
+        status.mods.push(vm("skyui-b", 12604, 102, true));
+        let ambiguous = step(&set, Some(&status));
+        assert!(!ambiguous.ok());
+        assert!(ambiguous.describe().contains("another version still on: skyui-a, skyui-b"), "{}", ambiguous.describe());
+        assert_eq!(membership(&list, &status).missing, ["skyui"]);
+
+        status.mods[1].enabled = false;
+        assert_eq!(step(&set, Some(&status)), Step::Ready);
+        status.mods[0].state = None;
+        assert_eq!(step(&set, Some(&status)), Step::Counts { required: 1, installed: 1, enabled: 0, waiting: vec!["SKYUI".into()], other_versions_on: vec![] });
+        assert_eq!(membership(&list, &status).missing, ["skyui"]);
+    }
+
+    #[test]
+    fn unpinned_deployment_needs_the_unique_enabled_package_source_and_live_file() {
+        let t = tempfile::tempdir().unwrap();
+        let rel = "Data/Interface/SkyUI.esp";
+        let target = t.path().join(rel);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"plugin").unwrap();
+        let mut entry = unpinned("skyui", 12604);
+        entry.check = vec![rel.into()];
+        let mut list = vec![entry];
+        let mut status = active(vec![vm("skyui-a", 12604, 101, true)]);
+        let from = |source: &str| vec![VortexFile { rel: rel.into(), source: source.into() }];
+
+        assert_eq!(missing_deployment(&list, &status, &from("skyui-b-folder"), t.path()), ["SKYUI"]);
+        assert!(missing_deployment(&list, &status, &from("skyui-a-folder"), t.path()).is_empty());
+        status.mods.push(vm("skyui-b", 12604, 102, true));
+        assert_eq!(missing_deployment(&list, &status, &from("skyui-a-folder"), t.path()), ["SKYUI"], "two enabled files are ambiguous");
+        status.mods[1].enabled = false;
+        list[0].check.clear();
+        assert!(missing_deployment(&list, &status, &from("skyui-a-folder"), t.path()).is_empty(), "an unpinned package without checks still needs a live source file");
+        std::fs::remove_file(target).unwrap();
+        assert_eq!(missing_deployment(&list, &status, &from("skyui-a-folder"), t.path()), ["SKYUI"]);
     }
 
     fn fake_vortex() -> (tempfile::TempDir, PathBuf) {

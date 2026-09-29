@@ -8,42 +8,61 @@ use std::time::{Duration, SystemTime};
 pub const GAME_PROCESS: &str = "SkyrimSE.exe";
 
 /// Process id of a running process with this file name.
-#[cfg(windows)]
 pub fn find_process(name: &str) -> Option<u32> {
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    find_process_checked(name).ok().flatten()
+}
+
+/// Process id of a running process, or an error if the process list could not
+/// be read. Callers that must prove a game is absent before changing the
+/// launcher should use this rather than treating an enumeration error as None.
+#[cfg(windows)]
+pub fn find_process_checked(name: &str) -> std::io::Result<Option<u32>> {
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
     };
     unsafe {
         let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if snap == INVALID_HANDLE_VALUE {
-            return None;
+            return Err(std::io::Error::last_os_error());
         }
-        let mut e: PROCESSENTRY32W = std::mem::zeroed();
-        e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-        let mut found = None;
-        let mut ok = Process32FirstW(snap, &mut e) != 0;
-        while ok {
-            let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
-            if String::from_utf16_lossy(&e.szExeFile[..len]).eq_ignore_ascii_case(name) {
-                found = Some(e.th32ProcessID);
-                break;
+        let result = (|| {
+            let mut e: PROCESSENTRY32W = std::mem::zeroed();
+            e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            if Process32FirstW(snap, &mut e) == 0 {
+                let error = std::io::Error::last_os_error();
+                return if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) { Ok(None) } else { Err(error) };
             }
-            ok = Process32NextW(snap, &mut e) != 0;
-        }
+            loop {
+                let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
+                if String::from_utf16_lossy(&e.szExeFile[..len]).eq_ignore_ascii_case(name) {
+                    return Ok(Some(e.th32ProcessID));
+                }
+                if Process32NextW(snap, &mut e) == 0 {
+                    let error = std::io::Error::last_os_error();
+                    return if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) { Ok(None) } else { Err(error) };
+                }
+            }
+        })();
         CloseHandle(snap);
-        found
+        result
     }
 }
 
 #[cfg(not(windows))]
-pub fn find_process(name: &str) -> Option<u32> {
+pub fn find_process_checked(name: &str) -> std::io::Result<Option<u32>> {
     let want = name.trim_end_matches(".exe");
-    std::fs::read_dir("/proc").ok()?.flatten().find_map(|e| {
-        let pid: u32 = e.file_name().to_str()?.parse().ok()?;
-        let comm = std::fs::read_to_string(e.path().join("comm")).ok()?;
-        (comm.trim() == want || comm.trim() == name).then_some(pid)
-    })
+    let entries = std::fs::read_dir("/proc")?;
+    for entry in entries {
+        let e = entry?;
+        let file_name = e.file_name();
+        let Some(pid) = file_name.to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
+        let Ok(comm) = std::fs::read_to_string(e.path().join("comm")) else { continue };
+        if comm.trim() == want || comm.trim() == name {
+            return Ok(Some(pid));
+        }
+    }
+    Ok(None)
 }
 
 /// File names of every running process.
@@ -507,5 +526,18 @@ mod tests {
             let me = std::fs::read_to_string("/proc/self/comm").unwrap();
             assert!(find_process(me.trim()).is_some());
         }
+    }
+
+    #[test]
+    #[cfg(any(windows, target_os = "linux"))]
+    fn checked_lookup_distinguishes_present_and_absent() {
+        #[cfg(windows)]
+        let name = std::env::current_exe().unwrap().file_name().unwrap().to_string_lossy().into_owned();
+        #[cfg(target_os = "linux")]
+        let name = std::fs::read_to_string("/proc/self/comm").unwrap().trim().to_owned();
+
+        assert!(find_process_checked(&name).unwrap().is_some());
+        // Longer than any process image name in the Windows snapshot or Linux comm.
+        assert_eq!(find_process_checked(&"a".repeat(300)).unwrap(), None);
     }
 }

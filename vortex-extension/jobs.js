@@ -78,6 +78,9 @@ class Jobs {
       profile: prof ? { id: prof.id, name: prof.name, active: active === prof.id } : null,
       mods: mods.filter(m => m.type !== 'collection').map(m => ({
         id: m.id,
+        // Vortex uses this staging folder name as the deployment record's
+        // `source`; the launcher binds it to the exact Nexus file below.
+        installationPath: m.installationPath || null,
         state: m.state,
         nexusModId: attr(m).modId,
         nexusFileId: attr(m).fileId,

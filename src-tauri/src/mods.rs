@@ -150,24 +150,27 @@ async fn fetch_server_list(state: &AppState) -> Option<modlist::ModList> {
 }
 
 /// Play fetches mods.json again, so a list changed while the launcher was
-/// open (cutover day) is the one used; when the server doesn't answer, the
-/// last one stays.
-pub async fn refresh_server_list(state: &AppState) {
+/// open is the one used. Returns false when the current feed cannot be
+/// confirmed; Play then stops rather than trusting the old cache.
+pub async fn refresh_server_list(state: &AppState) -> bool {
     let before = state.mods.server_list.lock().await.as_ref().map(|l| l.mods.len());
     let got = fetch_server_list(state).await;
     // Saved now, so Play's tidying (removed mods) goes by this list.
     if let (Some(l), Some(dir)) = (&got, state.config.lock().await.game_dir.clone()) {
         launcher_core::allowlist::save_server_list(&dir, l);
     }
+    let current = got.is_some();
     match got {
         Some(l) if before.is_some_and(|b| b != l.mods.len()) => log::line(&format!("mods: the server's list changed while the launcher was open ({} entries, was {})", l.mods.len(), before.unwrap_or(0))),
         Some(_) => {}
-        None => log::line("mods: couldn't fetch the server's list again; using the last one"),
+        None => log::line("mods: couldn't fetch the server's list again; Play waits for a current list"),
     }
+    current
 }
 
 /// The served client set (`aetherial-collection.json`, design 6.1), when the
-/// server publishes one. Until it does, Play is not gated on Vortex.
+/// server publishes one. During manual Vortex setup Play always checks the
+/// current mods.json pins, with this optional record adding collection pinning.
 pub async fn served_client_set(state: &AppState) -> Option<launcher_core::vortex::ClientSet> {
     let base = state.config.lock().await.base_url.clone();
     let url = format!("{}/aetherial-collection.json", base.trim_end_matches('/'));
@@ -177,14 +180,12 @@ pub async fn served_client_set(state: &AppState) -> Option<launcher_core::vortex
     }
 }
 
-/// The Vortex step line (design section 3) from the Aetherial Dawn
-/// extension, read-only. None when the launcher isn't paired with the
-/// extension yet: then nothing is shown and nothing is gated.
-pub async fn vortex_step(app: &AppHandle, state: &AppState, set: &launcher_core::vortex::ClientSet) -> Option<launcher_core::vortex::Step> {
+/// Read the active profile from the signed, read-only Vortex extension.
+pub async fn vortex_status(app: &AppHandle, state: &AppState) -> Option<launcher_core::vortex::Status> {
     use launcher_core::vortex;
     let home = vortex::home(&app.path().app_local_data_dir().ok()?);
     let token = vortex::token(&home).ok()?;
-    let status = match vortex::call(&state.http, &home, &token, "status", &serde_json::json!({}), "").await {
+    match vortex::call(&state.http, &home, &token, "status", &serde_json::json!({}), "").await {
         Ok(v) => serde_json::from_value::<vortex::Status>(v).ok(),
         Err(e) => {
             if !matches!(e, vortex::JobError::NotRunning) {
@@ -192,7 +193,16 @@ pub async fn vortex_step(app: &AppHandle, state: &AppState, set: &launcher_core:
             }
             None
         }
-    };
+    }
+}
+
+/// The Vortex step line for the Requirements window. A missing pairing token
+/// means the player sees Connect Vortex; a failed status read stays not ready.
+pub async fn vortex_step(app: &AppHandle, state: &AppState, set: &launcher_core::vortex::ClientSet) -> Option<launcher_core::vortex::Step> {
+    use launcher_core::vortex;
+    let home = vortex::home(&app.path().app_local_data_dir().ok()?);
+    vortex::token(&home).ok()?;
+    let status = vortex_status(app, state).await;
     Some(vortex::step(set, status.as_ref()))
 }
 

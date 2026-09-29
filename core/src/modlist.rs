@@ -169,6 +169,15 @@ impl ModEntry {
                 !files.is_empty() && files.iter().all(|f| safe_rel(f).is_some_and(|p| game_dir.join(p).exists()))
             }) && self.owns.iter().all(|o| self.owns_now(game_dir, o));
         }
+        self.game_files_present(game_dir)
+    }
+
+    /// Checks the listed files in Skyrim without trusting the launcher's old
+    /// direct-install receipt. A Vortex package has its own profile and
+    /// deployment proof, so a receipt for an older direct install must not
+    /// make a newly deployed Vortex package look missing. Entries with no
+    /// checks need Vortex deployment proof rather than an empty success.
+    pub fn game_files_present(&self, game_dir: &Path) -> bool {
         !self.check.is_empty()
             && self.check.iter().all(|c| safe_rel(c).map(|r| present_like(&game_dir.join(r))).unwrap_or(false))
             && self.owns.iter().all(|o| self.owns_now(game_dir, o))

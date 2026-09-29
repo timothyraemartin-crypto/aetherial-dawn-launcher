@@ -4,7 +4,7 @@
   // Every command's failure (and the outcome of the important ones) goes to the
   // launcher log, so Copy diagnostics shows what happened. Nothing secret
   // reaches the UI, so nothing secret can be logged from here.
-  const QUIET = new Set(['log_ui', 'diagnostics', 'files', 'server_status', 'auth_poll']);
+  const QUIET = new Set(['log_ui', 'diagnostics', 'files', 'server_status', 'auth_poll', 'game_running']);
   const logUi = msg => { try { T.core.invoke('log_ui', { msg: String(msg) }).catch(() => {}); } catch {} };
   const invoke = async (cmd, args) => {
     const t = performance.now();
@@ -659,6 +659,8 @@
       return playMode === 'play' ? onPlay(true) : undefined;
     }
     if (busy) return;
+    // Installing the launcher update closes the launcher; Play waits for it.
+    if (updating) { setStatus('The launcher is updating itself. Play is ready again once it restarts.'); return; }
     if (playMode === 'strays') return openStrays();
     if (playMode === 'retry') return check();
     if (playMode === 'update') return update();
@@ -673,6 +675,7 @@
     }
     setPlay('wait', 'LAUNCHING');
     setStatus('Starting Skyrim through SKSE…');
+    playing = true;
     try {
       await invokePlay();
       gameRunning = true;
@@ -707,6 +710,8 @@
       }
       setPlay('play', 'PLAY');
       helpStatus(`Skyrim didn't start: ${msg}`, `game didn't start: ${msg}`);
+    } finally {
+      playing = false;
     }
   }
 
@@ -763,26 +768,69 @@
   // ---------- launcher self-update ----------
   // Installs every new launcher release by itself: on start and every
   // minute, never while Skyrim is running or a download is in progress.
-  let gameRunning = false, updating = false;
+  // playing: Play has been pressed and hasn't finished starting the game.
+  // Installing an update closes the launcher, so it waits for all of these.
+  let gameRunning = false, updating = false, playing = false;
   let lastUpToDateLog = 0;
+  // An update downloaded while Play was starting, installed once it's safe.
+  let downloaded = null;
+  const updateWaits = () => gameRunning || playing || playInFlight || busy;
+  // gameRunning only knows a game Play started; Skyrim started from Steam,
+  // Vortex or MO2 is found by asking Windows. When that question fails, the
+  // game might be running, so the update waits (installing closes the
+  // launcher) and the next minute's check asks again.
+  let gameCheckFailed = false;
+  const skyrimUp = async () => {
+    try { const up = !!(await T.core.invoke('game_running')); gameCheckFailed = false; return up; }
+    catch (e) { gameCheckFailed = true; logUi('game_running failed, the launcher update waits: ' + e); return true; }
+  };
+  const waitReason = () => gameCheckFailed ? 'unknown' : 'busy';
   async function checkSelfUpdate(byHand) {
-    if (updating || gameRunning || busy) return byHand ? 'busy' : undefined;
+    if (updating || updateWaits()) return byHand ? 'busy' : undefined;
+    if (await skyrimUp()) return byHand ? waitReason() : undefined;
     try {
-      const upd = await T.updater.check();
+      const upd = downloaded || await T.updater.check();
       if (!upd) {
         if (byHand || Date.now() - lastUpToDateLog > 30 * 60 * 1000) { logUi('launcher is up to date'); lastUpToDateLog = Date.now(); }
         return 'latest';
       }
+      // Play may have started while the check was out.
+      if (updating || updateWaits()) return byHand ? 'busy' : undefined;
       updating = true;
       $('self-update-text').textContent = `Updating the launcher to ${upd.version}…`;
       $('self-update').hidden = false;
       $('self-update-go').hidden = true;
       logUi(`installing launcher ${upd.version} automatically`);
+      let reserved = false;
       try {
-        await upd.downloadAndInstall();
+        if (!downloaded) {
+          await upd.download();
+          downloaded = upd;
+        }
+        // And again after the download: installing closes the launcher.
+        const held = updateWaits() || await skyrimUp();
+        if (held) {
+          updating = false;
+          $('self-update-text').textContent = gameCheckFailed
+            ? `Launcher ${upd.version} is ready. It installs once the launcher can check that Skyrim isn't running.`
+            : `Launcher ${upd.version} is ready. It installs once you're done playing.`;
+          logUi(`launcher ${upd.version} downloaded; install waits for Play and the game`);
+          return byHand ? waitReason() : undefined;
+        }
+        // Reserve the final install with the game launcher itself. This
+        // closes the gap between the last process check and install().
+        reserved = !!(await T.core.invoke('self_update_begin'));
+        if (!reserved) {
+          updating = false;
+          $('self-update-text').textContent = `Launcher ${upd.version} is ready. It installs when Skyrim and file checks finish.`;
+          return byHand ? 'busy' : undefined;
+        }
+        await upd.install();
         await T.process.relaunch();
       } catch (e) {
+        if (reserved) await T.core.invoke('self_update_end').catch(() => {});
         updating = false;
+        downloaded = null;
         logUi('launcher self-update failed: ' + e);
         $('self-update-go').hidden = false;
         $('self-update-go').disabled = false;
@@ -801,7 +849,7 @@
     b.textContent = 'Checking…';
     const r = await checkSelfUpdate(true);
     b.disabled = false;
-    b.textContent = r === 'latest' ? 'Up to date' : r === 'busy' ? 'Try again after the game or download' : r === 'failed' ? "Couldn't check, try again" : 'Check for updates';
+    b.textContent = r === 'latest' ? 'Up to date' : r === 'busy' ? 'Try again after the game or download' : r === 'unknown' ? "Couldn't check the game, try again" : r === 'failed' ? "Couldn't check, try again" : 'Check for updates';
     setTimeout(() => { b.textContent = 'Check for updates'; }, 4000);
   };
 

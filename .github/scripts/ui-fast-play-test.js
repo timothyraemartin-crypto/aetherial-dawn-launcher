@@ -41,6 +41,9 @@ function fakeBackEnd() {
     update: () => null,
     server_status: () => ({ online: true, players: 1, maxPlayers: 50, discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
     files: () => [], game_check: () => game, play: () => null,
+    game_running: () => !!S.outsideGame,
+    self_update_begin: () => !S.updateReservationFails,
+    self_update_end: () => null,
     mods_state: () => S.modsState || ({ mods: [], nexus: null, vortex: false, running: false, sso: false }),
     download_all_mods: () => ({ installed: [], failed: [], cancelled: false }),
     plain_error: a => a.text,
@@ -53,6 +56,7 @@ function fakeBackEnd() {
         log.invokes.push([at(), 'answer', cmd]);
         if (cmd === 'get_state' && S.stateFails) return rej('settings are not writable');
         if (cmd === 'auth_status' && S.authFails) return rej('network down');
+        if (cmd === 'game_running' && (S.gameCheckFails || (S.gameCheckFailsFrom && (S.gameChecks = (S.gameChecks || 0) + 1) >= S.gameCheckFailsFrom))) return rej('process list unavailable');
         if (cmd === 'play' && S.playError && !S.played) { S.played = true; return rej(S.playError); }
         res(answers[cmd] ? answers[cmd](args || {}) : null);
       }, delay[cmd] ?? delay.default);
@@ -63,8 +67,13 @@ function fakeBackEnd() {
     } },
     window: { getCurrentWindow: () => ({ minimize: async () => {}, close: async () => {}, unminimize: async () => {}, setFocus: async () => {}, show: async () => {} }) },
     dialog: { open: async () => null },
-    // The fake latest.json: this launcher is the newest.
-    updater: { check: () => new Promise(r => setTimeout(() => r(null), 100)) },
+    // The fake latest.json: this launcher is the newest, unless S.update names a newer one.
+    updater: { check: () => new Promise(r => setTimeout(() => r(S.update ? {
+      version: S.update,
+      download: () => { log.invokes.push([at(), 'ask', 'updater_download']); return new Promise(res => setTimeout(res, 200)); },
+      install: async () => { log.invokes.push([at(), 'ask', 'updater_install']); },
+      downloadAndInstall: async () => { log.invokes.push([at(), 'ask', 'updater_install']); },
+    } : null), 100)) },
     process: { relaunch: async () => {} },
   };
   document.addEventListener('DOMContentLoaded', () => {
@@ -216,6 +225,30 @@ const scenarios = [
   { name: 'another Skyrim folder: no early PLAY', s: { ...base, seed: { ...seed, dir: 'D:\\Other' }, clicks: [] }, expect: r => [
     ['PLAY is not enabled before the checks', firstLabel(r, 'PLAY') === null || firstLabel(r, 'PLAY') >= answeredAt(r, 'check')],
   ] },
+  { name: 'launcher update found while Play is starting the game: it waits', s: { ...base, update: '9.9.10', delay: { play: 3000 } }, expect: r => [
+    ['the game starts', played(r)],
+    ['the launcher never installs its update while Play runs or the game is up', askedAt(r, 'updater_install') === null, JSON.stringify(r.invokes.filter(i => /updater|play/.test(i[2])))],
+  ] },
+  { name: 'launcher update found while Skyrim runs from Steam or Vortex: it waits', s: { ...base, update: '9.9.10', outsideGame: true, clicks: [] }, expect: r => [
+    ['the launcher asks Windows whether Skyrim runs', askedAt(r, 'game_running') !== null],
+    ['the update never installs while that Skyrim runs', askedAt(r, 'updater_install') === null, JSON.stringify(r.invokes.filter(i => /updater|game_running/.test(i[2])))],
+  ] },
+  { name: 'launcher update found but the game check fails: it waits', s: { ...base, update: '9.9.10', gameCheckFails: true, clicks: [] }, expect: r => [
+    ['the launcher asked whether Skyrim runs', askedAt(r, 'game_running') !== null],
+    ['the update never installs while the game state is unknown', askedAt(r, 'updater_install') === null, JSON.stringify(r.invokes.filter(i => /updater|game_running/.test(i[2])))],
+  ] },
+  { name: 'the game check fails between download and install: it waits', s: { ...base, update: '9.9.10', gameCheckFailsFrom: 2, clicks: [] }, expect: r => [
+    ['the update downloads', askedAt(r, 'updater_download') !== null],
+    ['it asks again right before installing', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'game_running').length >= 2],
+    ['the update never installs while the game state is unknown', askedAt(r, 'updater_install') === null, JSON.stringify(r.invokes.filter(i => /updater|game_running/.test(i[2])))],
+  ] },
+  { name: 'Play reserves the launch slot just before update install: updater waits', s: { ...base, update: '9.9.10', updateReservationFails: true, clicks: [] }, expect: r => [
+    ['the updater attempted the final reservation', askedAt(r, 'self_update_begin') !== null],
+    ['the update never installs after reservation was refused', askedAt(r, 'updater_install') === null],
+  ] },
+  { name: 'launcher update found with nothing running: it installs', s: { ...base, update: '9.9.10', clicks: [] }, expect: r => [
+    ['the update installs', askedAt(r, 'updater_install') !== null],
+  ] },
   { name: 'first start on this PC: the news box keeps its size', s: { ...base, seed: null, clicks: [] }, expect: r => [
     ['PLAY is not enabled before the checks', firstLabel(r, 'PLAY') !== null && firstLabel(r, 'PLAY') >= answeredAt(r, 'check')],
     // From when the window is shown (fonts settle before that, unseen).
@@ -309,7 +342,7 @@ for (const sc of scenarios) {
     const root = process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : [];
     out = execFileSync(chrome, [...root, '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
       `--user-data-dir=${path.join(dir, 'profile')}`, '--allow-file-access-from-files', '--window-size=1360,880',
-      '--virtual-time-budget=8000', '--dump-dom', url], { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] });
+      `--virtual-time-budget=${Math.max(8000, (sc.s.end || 6000) + 2000)}`, '--dump-dom', url], { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] });
   } catch (e) { out = String(e.stdout || ''); }
   const m = out.match(/<pre id="ui-test-result">([\s\S]*?)<\/pre>/);
   console.log(`== ${sc.name}`);

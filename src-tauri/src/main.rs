@@ -79,6 +79,9 @@ struct AppState {
     /// SKSE can exit before SkyrimSE.exe appears, so a process lookup alone
     /// cannot prevent a second Play during that gap.
     active_session: AtomicBool,
+    /// Set only during the final launcher-update install/relaunch window.
+    /// Play and file operations cannot begin after the updater reserves it.
+    update_installing: AtomicBool,
     http: reqwest::Client,
     /// The same, taking gzip-compressed answers: face sharing only, so every
     /// other download stays byte for byte what the server sent.
@@ -91,10 +94,15 @@ type CmdResult<T> = Result<T, String>;
 
 fn begin_game_operation(state: &AppState) -> CmdResult<tokio::sync::MutexGuard<'_, ()>> {
     let guard = state.game_operation.try_lock().map_err(|_| "The launcher is already checking files, updating, or starting Skyrim. Wait for that step to finish.".to_string())?;
+    if state.update_installing.load(Ordering::SeqCst) {
+        return Err("The launcher is installing an update. Wait for it to restart.".into());
+    }
     if state.active_session.load(Ordering::SeqCst) {
         return Err("Skyrim is already starting or running. Wait for it to close.".into());
     }
-    if watch::find_process(watch::GAME_PROCESS).is_some() {
+    if watch::find_process_checked(watch::GAME_PROCESS)
+        .map_err(|e| format!("Windows couldn't check whether Skyrim is running ({e}). Try again in a moment."))?
+        .is_some() {
         return Err("Close Skyrim before checking, updating, or starting another game session.".into());
     }
     Ok(guard)
@@ -345,7 +353,9 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     // The mod list as the server has it now (it may have changed while the
     // launcher was open, as on cutover day); the last one when it doesn't
     // answer.
-    mods::refresh_server_list(&state).await;
+    if !mods::refresh_server_list(&state).await {
+        return Err("The server's current mod list is unavailable. Try Play again when it responds.".into());
+    }
     require_vortex_profile(&app, &state, &dir).await?;
     tidy_game(&app, &dir, &m, config.only_server_mods)?;
     let half = launcher_core::modlist::half_installed(&dir);
@@ -1071,6 +1081,38 @@ fn not_patchable(dir: &std::path::Path, spec: &launcher_core::manifest::GameSpec
     }
 }
 
+/// Whether Skyrim or a game-file operation is active. The self-update waits
+/// while either one is happening, including the gap before SkyrimSE starts.
+#[tauri::command]
+fn game_running(state: State<'_, AppState>) -> CmdResult<bool> {
+    let held = state.game_operation.try_lock().is_err()
+        || state.active_session.load(Ordering::SeqCst)
+        || state.update_installing.load(Ordering::SeqCst);
+    if held { return Ok(true) }
+    watch::find_process_checked(watch::GAME_PROCESS)
+        .map(|pid| pid.is_some())
+        .map_err(|e| format!("Windows couldn't check whether Skyrim is running ({e})."))
+}
+
+/// Reserve the final install/relaunch so Play cannot start in the interval
+/// between the UI's process check and the updater's install call.
+#[tauri::command]
+fn self_update_begin(state: State<'_, AppState>) -> CmdResult<bool> {
+    let Ok(_operation) = state.game_operation.try_lock() else { return Ok(false) };
+    if state.active_session.load(Ordering::SeqCst) {
+        return Ok(false);
+    }
+    if watch::find_process_checked(watch::GAME_PROCESS)
+        .map_err(|e| format!("Windows couldn't check whether Skyrim is running ({e})."))?
+        .is_some() { return Ok(false) }
+    Ok(state.update_installing.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok())
+}
+
+#[tauri::command]
+fn self_update_end(state: State<'_, AppState>) {
+    state.update_installing.store(false, Ordering::SeqCst);
+}
+
 #[tauri::command]
 async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<version::GameCheck> {
     use launcher_core::{community, patcher};
@@ -1419,11 +1461,23 @@ async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path:
     send_client_status(app, dir);
     got?;
     let list = mods::full_list(state).await;
-    let missing: Vec<mods::Row> = launcher_core::modlist::missing(&list, dir).into_iter().map(|m| mods::row(m, dir)).collect();
+    // Vortex's profile and exact deployment are checked separately. An old
+    // direct-install receipt may describe a different file, even when the
+    // current Vortex package has put valid files in Data. For Nexus entries,
+    // check the actual game files here; checkless entries rely on the Vortex
+    // deployment gate. Other sources still use their installation receipt.
+    let missing: Vec<mods::Row> = list.iter()
+        .filter(|m| if m.nexus.is_some() { !m.check.is_empty() && !m.game_files_present(dir) } else { !m.installed(dir) })
+        .map(|m| mods::row(m, dir))
+        .collect();
     if !missing.is_empty() {
         log::line(&format!("play: stopped, {} mod(s) from the mod list are missing", missing.len()));
         return Err(format!("NEEDS_NEXUS_MODS:{}", serde_json::to_string(&missing).unwrap_or_default()));
     }
+    // Tidying and helper installs ran since the first profile check. Confirm
+    // that the Vortex package files are still deployed immediately before the
+    // load-order and launch steps.
+    require_vortex_profile(app, state, dir).await?;
     Ok(())
 }
 
@@ -1436,16 +1490,17 @@ async fn require_vortex_profile(app: &AppHandle, state: &AppState, dir: &std::pa
     let list = mods::full_list(state).await;
     let collection = mods::served_client_set(state).await.and_then(|s| s.collection);
     let set = launcher_core::vortex::ClientSet { collection, mods: list };
-    let step = mods::vortex_step(app, state, &set).await.unwrap_or(launcher_core::vortex::Step::VortexNotRunning);
+    let status = mods::vortex_status(app, state).await;
+    let step = launcher_core::vortex::step(&set, status.as_ref());
     log::line(&format!("play: {}", step.describe()));
     if !step.ok() {
         return Err(format!("VORTEX_NOT_READY:{}. Install and deploy the listed mods in Vortex, then press Play again.", step.describe()));
     }
-    let (standing, counts) = launcher_core::inventory::count(&set.mods, dir);
+    let status = status.expect("a ready Vortex step requires a status answer");
+    let (_, counts) = launcher_core::inventory::count(&set.mods, dir);
     log::line(&format!("play: {}", counts.describe()));
-    let not_deployed: Vec<&str> = set.mods.iter().zip(standing.iter())
-        .filter(|(m, s)| m.nexus.as_ref().is_some_and(|n| n.file.is_some()) && (!s.game_files || s.vortex_deployed != Some(true)))
-        .map(|(m, _)| m.name.as_str()).collect();
+    let deployed = launcher_core::allowlist::vortex_files(dir);
+    let not_deployed = launcher_core::vortex::missing_deployment(&set.mods, &status, &deployed, dir);
     if !not_deployed.is_empty() {
         return Err(format!("VORTEX_NOT_READY:Vortex has these packages switched on, but their files are not confirmed deployed in Skyrim: {}. Deploy in Vortex, then Check again.", not_deployed.join(", ")));
     }
@@ -2172,7 +2227,7 @@ fn main() {
                     .build()
             };
             let (http, faces_http) = (client(false)?, client(true)?);
-            app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), game_operation: Mutex::new(()), active_session: AtomicBool::new(false), http, faces_http, mods: Default::default(), music: music::Music::new() });
+            app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), game_operation: Mutex::new(()), active_session: AtomicBool::new(false), update_installing: AtomicBool::new(false), http, faces_http, mods: Default::default(), music: music::Music::new() });
             mods::restore_left_handler(app.handle());
             // A session that ended while the launcher was closed.
             if let Some(dir) = app.state::<AppState>().config.try_lock().ok().and_then(|c| c.game_dir.clone()) {
@@ -2190,7 +2245,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, report_problem, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::vortex_connect, restore_set_aside, skip_tool, window_ready, open_invite])
+        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, report_problem, patch_game, game_running, self_update_begin, self_update_end, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::vortex_connect, restore_set_aside, skip_tool, window_ready, open_invite])
         .build(tauri::generate_context!())
         .expect("error while running the launcher")
         .run(|_, event| {

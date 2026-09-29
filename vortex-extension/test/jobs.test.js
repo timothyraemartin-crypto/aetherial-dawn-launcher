@@ -19,8 +19,8 @@ function state() {
         p3: { id: 'p3', gameId: 'fallout4', name: PROFILE_NAME, modState: {} },
       },
       mods: { [GAME]: {
-        ussep439c: { id: 'ussep439c', state: 'installed', attributes: { modId: 266, fileId: 999999, version: '4.3.9c' } },
-        skyui: { id: 'skyui', state: 'installed', attributes: { modId: 12604, fileId: 35407, installerChoices: { type: 'fomod', options: [] } } },
+        ussep439c: { id: 'ussep439c', installationPath: 'Unofficial Skyrim Special Edition Patch 266 4.3.9c 2026-09-05T22-22Z lNkz9LChN', state: 'installed', attributes: { modId: 266, fileId: 999999, version: '4.3.9c' } },
+        skyui: { id: 'skyui', installationPath: 'SkyUI-12604-6-11-1778020881', state: 'installed', attributes: { modId: 12604, fileId: 35407, installerChoices: { type: 'fomod', options: [] } } },
         coll: { id: 'coll', type: 'collection', state: 'installed', attributes: { collectionSlug: 'abc123', revisionNumber: 3 } },
       } },
     },
@@ -68,6 +68,8 @@ test('status reports profiles, mods with Nexus ids and choices, and the collecti
   assert.deepEqual(s.activeProfile, { id: 'p1', name: PROFILE_NAME });
   const byId = Object.fromEntries(s.mods.map(m => [m.id, m]));
   assert.deepEqual([byId.ussep439c.nexusModId, byId.ussep439c.nexusFileId, byId.ussep439c.enabled], [266, 999999, true]);
+  assert.equal(byId.ussep439c.installationPath, 'Unofficial Skyrim Special Edition Patch 266 4.3.9c 2026-09-05T22-22Z lNkz9LChN');
+  assert.equal(byId.skyui.installationPath, 'SkyUI-12604-6-11-1778020881');
   assert.deepEqual(byId.skyui.installerChoices, { type: 'fomod', options: [] });
   assert.equal(byId.coll, undefined, 'the collection is listed apart');
   assert.deepEqual(s.collections, [{ id: 'coll', state: 'installed', enabled: true, slug: 'abc123', revision: 3 }]);
