@@ -62,10 +62,7 @@
     $('play-label').textContent = label;
     $('play').disabled = mode === 'wait';
     $('play-wrap').classList.toggle('off', mode === 'wait');
-    // Invalidate the legacy saved readiness marker when current checks fail.
-    if (lastSeen.play && (STOPS.includes(mode) || STOPS.includes(label))) remember({ play: false });
   }
-  const STOPS = ['mods', 'update', 'retry', 'auth-retry', 'downgrade', 'signin', 'strays', 'WRONG VERSION', 'OFFLINE'];
   let statusMsg = null;
   function setStatus(msg, isError) { statusMsg = msg ? { msg, isError } : null; renderStatus(); }
   let toolRunning = false;
@@ -96,6 +93,7 @@
     Object.assign(lastSeen, patch);
     try { localStorage.setItem(LAST, JSON.stringify(lastSeen)); } catch (_) {}
   }
+  if (lastSeen.play) remember({ play: false });
   let statusAsked = false;
   function setChip(kind, text) {
     const c = $('mods-chip');
@@ -327,6 +325,8 @@
     });
     try {
       await invoke('update', { verifyAll });
+      // The update command completed and verified the pending file changes.
+      pending = { ...pending, files: 0, remove: 0 };
       await ready();
     } catch (e) {
       setPlay('retry', 'RETRY');
@@ -341,7 +341,13 @@
   }
 
   function ready() {
-    pending = { ...pending, files: 0, remove: 0 };
+    // Only a current check or a completed update can claim file readiness.
+    if (!pending || pending.files || pending.remove) {
+      setPlay('retry', 'RECHECK');
+      setChip('warn', 'Game files need checking');
+      setStatus('Check the current game files before Play.', true);
+      return;
+    }
     setChip('busy', 'Client files ready · Vortex unchecked');
     loadFiles();
     renderGame();
@@ -383,7 +389,6 @@
     };
     if (view.vortex_ready === true && missingDirect.length === 0) {
       setPlay('play', 'PLAY');
-      remember({ dir: state.config.gameDir, build: pending.build, version: state.launcherVersion, play: true });
       if (gameCheck && gameCheck.warning) setStatus(gameCheck.warning, true);
       else if (gameCheck && gameCheck.target && !gameCheck.skseOk) setStatus(`The launcher installs SKSE ${gameCheck.skseVersion || ''} for you when you press Play.`);
       else setStatus(null);
@@ -444,10 +449,13 @@
     try {
       await refreshAuth();
       if (!signedIn()) {
-        if (pending) ready(); else setPlay('signin', 'SIGN IN');
+        modsCheckSeq++;
+        pending = null;
+        setPlay('signin', 'SIGN IN');
+        setChip('warn', 'Sign-in needed');
         showSignIn(auth.message);
       }
-      else if (pending && ['play', 'wait', 'auth-retry'].includes(playMode)) ready();
+      else if (pending && ['play', 'wait', 'auth-retry'].includes(playMode)) await check();
     } finally { authRechecking = false; }
   }
   // The invite the login service publishes; the last one seen stands in.
@@ -499,7 +507,10 @@
         auth = { signedIn: true, account: r.account };
         renderAccount();
         showPage('home');
-        if (pending) ready(); else check();
+        // A previous manifest may now require an update; never reuse it as
+        // readiness after the browser sign-in completes.
+        while (busy) await new Promise(r => setTimeout(r, 100));
+        await check();
         return;
       }
       showSignIn(r.message || 'Sign-in didn\'t finish. Try again.');
@@ -532,15 +543,15 @@
   function dgBusy(on) { for (const id of ['dg-go', 'dg-cancel', 'dg-skip']) $(id).disabled = on; busy = on; }
   // Set when Play started the version fix: Play carries on once it's done.
   let playAfterPatch = false;
-  function dgDone(c) {
+  async function dgDone(c) {
     gameCheck = c;
     dgBusy(false);
     showPage(page);
-    ready();
+    await ready();
     if (!gameCheck.needed && !statusMsg) setStatus(`Skyrim ${shortVer(gameCheck.installed)} matches the server version. Check required mods in Vortex before Play.`);
     const resume = playAfterPatch;
     playAfterPatch = false;
-    if (resume && playMode === 'play') onPlay();
+    if (resume && playMode === 'play') await onPlay();
     else if (resume && playMode === 'signin') showSignIn('Your game is ready. Sign in with Discord, then press Play.');
   }
   function dgFail(e) {
@@ -577,7 +588,7 @@
       const share = { check: 0.3 * f, fetch: 0.6 * f, unpack: 0.6, apply: 0.6 + 0.35 * f, swap: 0.95 + 0.05 * f, verify: 1 }[p.stage] ?? 0.3 + 0.7 * f;
       $('dg-bar-i').style.width = Math.round(share * 100) + '%';
     });
-    try { dgDone(await invoke('patch_game')); }
+    try { await dgDone(await invoke('patch_game')); }
     catch (e) {
       let msg = String(e);
       // The patches start from Steam's own files: have Steam repair them
@@ -597,7 +608,7 @@
           while (Date.now() < until && run === verifyRun) {
             await new Promise(r => { verifyWake = r; setTimeout(r, 30000); });
             if (run !== verifyRun) break;
-            try { const c = await invoke('patch_game'); verifyWake = null; verifyRun++; dgDone(c); return; }
+            try { const c = await invoke('patch_game'); verifyWake = null; verifyRun++; await dgDone(c); return; }
             catch (e2) { msg = String(e2); if (!msg.startsWith('NO_PATCH_FILES:')) break; }
           }
           verifyWake = null;
@@ -689,7 +700,6 @@
     try {
       const view = await invoke('mods_state');
       renderMods(view);
-      applyModReadiness(view);
     } catch (e) { rqError(e); }
   }
 
@@ -799,7 +809,7 @@
   async function loadStatus() {
     status = await invoke('server_status').catch(() => null);
     statusAsked = true;
-    if (status) remember({ status: { online: status.online, players: status.players, maxPlayers: status.maxPlayers }, news: Array.isArray(status.news) ? status.news.slice(0, 20) : lastSeen.news, invite: status.discordInvite || lastSeen.invite });
+    if (status) remember({ news: Array.isArray(status.news) ? status.news.slice(0, 20) : lastSeen.news, invite: status.discordInvite || lastSeen.invite });
     renderInvite();
     renderStatus();
     const online = $('srv-online');
@@ -1069,7 +1079,7 @@
     catch { $('cr-note').textContent = "Couldn't copy. Open the log folder and send the newest game-….txt file."; }
     $('cr-note').hidden = false;
   };
-  $('rq-close').onclick = () => showPage(page);
+  $('rq-close').onclick = () => { showPage(page); if (!gameRunning && !busy) check(); };
   $('files-mods').onclick = () => showRequiredMods();
   $('rq-vortex-go').onclick = async () => {
     rqError(null);

@@ -32,15 +32,22 @@ function fakeBackEnd() {
   const log = window.__T = { invokes: [], labels: [], statuses: [], lastReady: null, newsHeights: [], actions: [] };
   const listeners = {};
   const at = () => Math.round(performance.now() - t0);
+  if (S.authIntervalMs) {
+    const every = window.setInterval.bind(window);
+    window.setInterval = (fn, ms, ...args) => every(fn, ms === 10 * 60 * 1000 ? S.authIntervalMs : ms, ...args);
+  }
   try { localStorage.clear(); if (S.seed) localStorage.setItem('ad.lastReady', JSON.stringify(S.seed)); } catch (_) {}
   const game = Object.assign({ needed: false, installed: '1.6.1170.0', target: '1.6.1170.0', skseOk: true, canDowngrade: true }, S.game || {});
   const answers = {
     get_state: () => ({ launcherVersion: S.version, config: { gameDir: S.dir, closeOnLaunch: false, backgroundUpdates: !!S.backgroundUpdates, shareHealth: true, music: false, onlyServerMods: true }, game: { dir: S.dir, hasSkse: S.hasSkse !== false } }),
     auth_status: () => (S.authSequence && S.authSequence.shift()) || S.auth,
+    auth_begin: () => 'test-login',
+    auth_poll: () => ({ status: 'done', account: { discordUsername: 'Player' } }),
     check: () => Object.assign({ build: 'B2', server: { name: 'Aetherial Dawn', ip: '127.0.0.1', port: 7777 }, files: 0, remove: 0, bytes: 0, strays: [], game }, (S.checkSequence && S.checkSequence.shift()) || S.check || {}),
     update: () => null,
     server_status: () => ({ online: true, players: 1, maxPlayers: 50, discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
     files: () => [], game_check: () => game, play: () => null,
+    patch_game: () => S.patchResult || { ...game, needed: false },
     game_running: () => !!S.outsideGame,
     self_update_begin: () => !S.updateReservationFails,
     self_update_end: () => null,
@@ -210,6 +217,16 @@ const scenarios = [
     ['Play returns only after the second check', lastLabel(r) === 'PLAY' && firstLabel(r, 'PLAY') >= r.invokes.filter(i => i[1] === 'answer' && i[2] === 'auth_status')[1][0]],
     ['retry does not launch the game', !played(r)],
   ] },
+  { name: 'sign-out and browser sign-in preserve a pending game update', s: { ...base, clicks: [], end: 6500,
+    authIntervalMs: 1200, authSequence: [ok, { signedIn: false, message: 'Sign in again.' }],
+    check: { build: 'B2', files: 3, bytes: 3000000 },
+    actions: [{ at: 1700, kind: 'click', id: 'si-go' }],
+  }, expect: r => [
+    ['the saved sign-in was rechecked and rejected', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'auth_status').length >= 2],
+    ['the browser sign-in triggered a fresh manifest check', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'check').length >= 2],
+    ['Play never appears against the unapplied build', firstLabel(r, 'PLAY') === null && !played(r)],
+    ['the update remains the hero action', lastLabel(r) === 'UPDATE', lastLabel(r)],
+  ] },
   { name: 'an update found before Play offers the update', s: { ...base, clicks: [], check: { build: 'B2', files: 3, bytes: 3000000 } }, expect: r => [
     ['the game never starts', !played(r)],
     ['the button ends on UPDATE', lastLabel(r) === 'UPDATE'],
@@ -229,6 +246,18 @@ const scenarios = [
     ['the game never starts', !played(r)],
     ['the fix waits for a press made after the reason shows', askedAt(r, 'patch_game') === null],
     ['the status line gives the reason', /Skyrim needs changing/.test(r.status)],
+  ] },
+  { name: 'Play resumes after version repair and Vortex verification', s: { ...base,
+    game: { needed: true, canDowngrade: true, reason: 'Skyrim needs changing.' },
+    checkSequence: [
+      { game: { needed: true, canDowngrade: true, reason: 'Skyrim needs changing.' } },
+      { game: { needed: false, installed: '1.6.1170.0', target: '1.6.1170.0', skseOk: true } },
+    ],
+    patchResult: { needed: false, installed: '1.6.1170.0', target: '1.6.1170.0', skseOk: true },
+    delay: { mods_state: 1000 },
+  }, expect: r => [
+    ['the game version patch ran once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'patch_game').length === 1],
+    ['Play resumed after Vortex answered', askedAt(r, 'play') !== null && askedAt(r, 'play') >= answeredAt(r, 'mods_state')],
   ] },
   { name: 'launcher updated since last time: no early PLAY', s: { ...base, seed: { ...seed, version: '0.0.1' }, clicks: [] }, expect: r => [
     ['PLAY is not enabled before the checks', firstLabel(r, 'PLAY') === null || firstLabel(r, 'PLAY') >= answeredAt(r, 'check')],
@@ -306,6 +335,12 @@ const scenarios = [
     ['the summary does not report Vortex ready', /0 of 1 required Nexus mods confirmed/.test(r.modSummary), r.modSummary],
     ['the mod row identifies deployment as missing', /Vortex deployment or game files need attention/.test(r.modRow), r.modRow],
     ['the player is not offered a direct installer', !r.installerControl],
+  ] },
+  { name: 'Requirements refresh cannot enable Play ahead of hero Vortex check', s: { ...base, clicks: [],
+    delay: { mods_state: 2000 }, actions: [{ at: 200, kind: 'click', id: 'files-mods' }],
+  }, expect: r => [
+    ['both Requirements and hero Vortex requests completed', r.invokes.filter(i => i[1] === 'answer' && i[2] === 'mods_state').length >= 2],
+    ['Play waits for the hero Vortex answer', firstLabel(r, 'PLAY') >= Math.max(...r.invokes.filter(i => i[1] === 'answer' && i[2] === 'mods_state').map(i => i[0]))],
   ] },
   { name: 'incomplete Vortex setup changes the hero action to Requirements', s: { ...base, clicks: [], modsState: {
     mods: [{ id: 'a', name: 'Test Mod', installed: false, in_vortex: false, from: 'nexus' }],
