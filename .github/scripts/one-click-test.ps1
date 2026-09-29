@@ -119,14 +119,23 @@ if (Test-Path $uninstaller) {
   $null = $p.Handle
   $code = Wait-Exit $p 120
   Check 'the uninstaller exits with 0' ($code -eq 0) "exit $(Show $code)"
-  $deadline = (Get-Date).AddSeconds(30)
-  while ((Test-Path $exe) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
-  Check 'the launcher executable is removed' (-not (Test-Path $exe)) $exe
-  $remaining = Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' |
-    Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -eq 'Aetherial Dawn' }
-  Check 'the uninstall registry entry is removed' (@($remaining).Count -eq 0)
-  Check 'the desktop shortcut is removed' (-not (Test-Path $desktop)) $desktop
-  $start = @(Get-ChildItem $programs -Recurse -Filter 'Aetherial Dawn.lnk' -ErrorAction SilentlyContinue)
+  # NSIS may finish removing shortcuts and the registry entry in a child after
+  # the process started above has exited. Wait for the whole uninstall result,
+  # not merely the first executable deletion, with a fixed upper bound.
+  $deadline = (Get-Date).AddSeconds(60)
+  do {
+    $remaining = @(Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue |
+      Where-Object { (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).DisplayName -eq 'Aetherial Dawn' })
+    $start = @(Get-ChildItem $programs -Recurse -Filter 'Aetherial Dawn.lnk' -ErrorAction SilentlyContinue)
+    $exeLeft = Test-Path $exe
+    $desktopLeft = Test-Path $desktop
+    if (-not $exeLeft -and $remaining.Count -eq 0 -and -not $desktopLeft -and $start.Count -eq 0) { break }
+    if ((Get-Date) -ge $deadline) { break }
+    Start-Sleep -Milliseconds 500
+  } while ($true)
+  Check 'the launcher executable is removed' (-not $exeLeft) $exe
+  Check 'the uninstall registry entry is removed' ($remaining.Count -eq 0)
+  Check 'the desktop shortcut is removed' (-not $desktopLeft) $desktop
   Check 'the Start menu shortcut is removed' ($start.Count -eq 0) ($start.FullName -join ', ')
   Check 'no launcher is running after uninstall' ((Launchers).Count -eq 0)
 }
