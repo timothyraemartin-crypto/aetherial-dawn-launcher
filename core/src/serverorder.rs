@@ -59,6 +59,16 @@ pub fn beyond_base(order: &[ServerPlugin]) -> bool {
     order.len() > BASE.len()
 }
 
+/// A Play decision needs an ordered server list and fingerprints for all five
+/// base masters. The server may publish more plugins after those masters.
+pub fn valid_base(order: &[ServerPlugin]) -> bool {
+    order.len() >= BASE.len() && BASE.iter().zip(order).all(|(base, plugin)| {
+        plugin.name.eq_ignore_ascii_case(base)
+            && plugin.size.is_some_and(|size| size > 0)
+            && plugin.sha256.as_ref().is_some_and(|sha| sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+    })
+}
+
 fn ccc_paths(game_dir: &Path) -> Vec<PathBuf> {
     [game_dir.join("Skyrim.ccc"), game_dir.join("Data").join("Skyrim.ccc")].into_iter().filter(|p| p.is_file()).collect()
 }
@@ -285,6 +295,26 @@ pub fn set_exact(game_dir: &Path, plugins_txt: &Path, server: &[ServerPlugin]) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn play_requires_ordered_fingerprinted_base_masters_but_allows_later_plugins() {
+        let mut order: Vec<ServerPlugin> = BASE.iter().map(|name| ServerPlugin {
+            name: (*name).into(), size: Some(1), sha256: Some("a".repeat(64)), crc32: None,
+        }).collect();
+        assert!(valid_base(&order));
+        order.push(ServerPlugin { name: "ServerWorld.esp".into(), size: None, sha256: None, crc32: None });
+        assert!(valid_base(&order));
+        order[0].sha256 = None;
+        assert!(!valid_base(&order));
+        order[0].sha256 = Some("g".repeat(64));
+        assert!(!valid_base(&order));
+        order[0].sha256 = Some("a".repeat(64));
+        order.swap(0, 1);
+        assert!(!valid_base(&order));
+        order.swap(0, 1);
+        order.truncate(4);
+        assert!(!valid_base(&order));
+    }
 
     fn plugin(flags: u32) -> Vec<u8> {
         let mut b = b"TES4".to_vec();

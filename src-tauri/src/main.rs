@@ -437,8 +437,14 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     // exactly its plugins in its order: no Creation Club masters for the
     // session, and plugins.txt in the server's order (serverorder.rs).
     play_step(&app, "Setting the server's load order…");
+    let masters = fetch_masters(&state.http, &config.base_url).await
+        .ok_or("Could not verify the server's current game master list. Try Play again when the server responds.")?;
+    let order = serverorder::server_order(&masters);
+    if !serverorder::valid_base(&order) {
+        return Err("The server's game master list is incomplete or invalid. Play needs its five ordered base masters and fingerprints.".into());
+    }
     let mut ccc_guard = CccGuard { dir: dir.clone(), armed: false };
-    if let Some(order) = fetch_masters(&state.http, &config.base_url).await.map(|v| serverorder::server_order(&v)).filter(|o| serverorder::beyond_base(o)) {
+    if serverorder::beyond_base(&order) {
         match serverorder::hide_ccc(&dir) {
             Ok(h) => {
                 ccc_guard.armed = true;
@@ -457,8 +463,14 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
         }
     }
     play_step(&app, "Checking your game…");
-    let report = run_health(&app, &state.http, &config.base_url, &dir, Some(&m)).await;
+    let report = run_health_with_masters(&app, &dir, Some(&m), Some(masters)).await;
     log::line(&format!("health before play: worst={:?}\n{}", report.worst, report.text()));
+    let base_check = report.checks.iter().find(|c| c.id == "masters")
+        .ok_or("Could not finish checking the base game files. Try Play again.")?;
+    if base_check.status != health::Status::Ok {
+        let which = base_check.items.iter().take(3).cloned().collect::<Vec<_>>().join("; ");
+        return Err(format!("Your game files do not match the server's master list. Use Fix version for a base master or install the listed server mod, then try Play: {which}"));
+    }
     // The game would stop with SkyMP's "LOAD ORDER ERROR"; say it here.
     if let Some(c) = report.checks.iter().find(|c| c.id == "serverorder" && c.status == health::Status::Fail) {
         let which = c.items.iter().take(3).cloned().collect::<Vec<_>>().join("; ");
@@ -1625,6 +1637,10 @@ async fn fetch_masters(http: &reqwest::Client, base: &str) -> Option<serde_json:
 
 async fn run_health(app: &AppHandle, http: &reqwest::Client, base: &str, dir: &std::path::Path, m: Option<&Manifest>) -> health::Report {
     let masters = fetch_masters(http, base).await;
+    run_health_with_masters(app, dir, m, masters).await
+}
+
+async fn run_health_with_masters(app: &AppHandle, dir: &std::path::Path, m: Option<&Manifest>, masters: Option<serde_json::Value>) -> health::Report {
     let appdata = app.path().local_data_dir().ok().map(|d| d.join("Skyrim Special Edition"));
     let docs = app.path().document_dir().or_else(|_| app.path().home_dir().map(|h| h.join("Documents"))).ok();
     let cache = app.path().app_local_data_dir().ok().map(|d| health::cache_path(&d));
