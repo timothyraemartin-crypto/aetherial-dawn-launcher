@@ -120,6 +120,8 @@ function fakeBackEnd() {
       log.modSummary = document.getElementById('rq-summary').textContent;
       const vx = document.getElementById('rq-vortex-step');
       log.vortexLine = vx.hidden ? null : vx.textContent;
+      const own = document.getElementById('rq-ownership');
+      log.ownership = own.hidden ? null : own.textContent;
       log.vortexConnect = !document.getElementById('rq-vortex-connect').hidden;
       log.installerControl = !!document.querySelector('#rq-all, #rq-stop, #rq-sso-go, #rq-signin');
       log.playDisabled = btn.disabled;
@@ -321,6 +323,7 @@ const scenarios = [
     mods: [{ id: 'a', name: 'A', installed: true, from: 'nexus' }], nexus: null, vortex: true, running: false, sso: true,
   }, actions: [{ at: 1500, kind: 'click', id: 'files-mods' }] }, expect: r => [
     ['the required mods dialog opens', r.modsShown],
+    ['no ownership line without a report', r.ownership === null, r.ownership],
     ['the row waits for Vortex profile evidence', /Game files found.*waiting for Vortex profile check/.test(r.modRow), r.modRow],
     ['the dialog distinguishes files from deployment', /does not confirm deployment/.test(r.modLead), r.modLead],
     ['there is no direct installer control', !r.installerControl],
@@ -330,7 +333,9 @@ const scenarios = [
     counts_text: 'Vortex: 0 of 1 required Nexus mods confirmed · Game files: 1 of 1 present',
     vortex_line: 'Vortex: 1 required mod needs deployment or game files in Skyrim: Test Mod. Deploy in Vortex, then Check again.',
     vortex_ready: false, vortex_paired: true,
+    ownership_text: 'Installed by the launcher: 2 mods · 1 only in the launcher\'s files · 1 also deployed by Vortex (two owners): Test Mod',
   }, actions: [{ at: 1500, kind: 'click', id: 'files-mods' }] }, expect: r => [
+    ['mods held by both the launcher and Vortex are named', /1 also deployed by Vortex \(two owners\): Test Mod$/.test(r.ownership || ''), r.ownership],
     ['the missing count and name are visible', /1 required mod.*Test Mod/.test(r.vortexLine || ''), r.vortexLine],
     ['the summary does not report Vortex ready', /0 of 1 required Nexus mods confirmed/.test(r.modSummary), r.modSummary],
     ['the mod row identifies deployment as missing', /Vortex deployment or game files need attention/.test(r.modRow), r.modRow],

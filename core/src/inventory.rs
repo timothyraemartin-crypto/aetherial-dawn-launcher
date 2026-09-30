@@ -141,6 +141,77 @@ impl FeedReceipt {
     }
 }
 
+/// Who holds the files of one mod the launcher installed straight into the
+/// game folder (its ledger, `.aetherial-dawn/mods/installed.json`), against
+/// Vortex's deployment records (Codex 5910357069: hand direct-Data packages
+/// to Vortex without two owners). Read-only: nothing is moved or removed.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Ownership {
+    pub id: String,
+    pub name: String,
+    /// Placed by the launcher, in the game folder, listed by no Vortex record.
+    pub launcher_only: usize,
+    /// Placed by the launcher and also listed by a Vortex record: two owners.
+    pub both: usize,
+    /// The Vortex mod folders those shared files come from.
+    pub vortex_sources: Vec<String>,
+    /// In the ledger but no longer in the game folder.
+    pub gone: usize,
+    /// Left alone at install because Vortex already had them there.
+    pub left_to_vortex: usize,
+}
+
+/// Every mod in the launcher's ledger, with its files split by owner.
+pub fn ownership(game_dir: &Path) -> Vec<Ownership> {
+    let files = vortex_files(game_dir);
+    let deployed: std::collections::HashMap<String, &str> = files.iter().map(|f| (f.rel.to_ascii_lowercase(), f.source.as_str())).collect();
+    crate::modlist::load_installed(game_dir)
+        .mods
+        .into_iter()
+        .map(|(id, m)| {
+            let mut o = Ownership { id, name: m.name, launcher_only: 0, both: 0, vortex_sources: Vec::new(), gone: 0, left_to_vortex: m.skipped.len() };
+            for rel in &m.files {
+                if crate::modlist::safe_rel(rel).is_none() || !game_dir.join(rel).is_file() {
+                    o.gone += 1;
+                } else if let Some(source) = deployed.get(&rel.replace('\\', "/").to_ascii_lowercase()) {
+                    o.both += 1;
+                    if !o.vortex_sources.iter().any(|s| s == source) {
+                        o.vortex_sources.push(source.to_string());
+                    }
+                } else {
+                    o.launcher_only += 1;
+                }
+            }
+            o.vortex_sources.sort();
+            o
+        })
+        .collect()
+}
+
+/// One line for the mods window and the log.
+pub fn describe_ownership(list: &[Ownership], have_record: bool) -> String {
+    if list.is_empty() {
+        return "Installed by the launcher: none".into();
+    }
+    let only = list.iter().filter(|o| o.both == 0 && o.launcher_only > 0).count();
+    let shared: Vec<&str> = list.iter().filter(|o| o.both > 0).map(|o| o.name.as_str()).collect();
+    let mut out = format!("Installed by the launcher: {} mods · {} only in the launcher's files", list.len(), only);
+    if !have_record {
+        out.push_str(" · Vortex: no deployment found");
+    } else if shared.is_empty() {
+        out.push_str(" · none also deployed by Vortex");
+    } else {
+        let names = if shared.len() > 5 { format!("{} and {} more", shared[..5].join(", "), shared.len() - 5) } else { shared.join(", ") };
+        out.push_str(&format!(" · {} also deployed by Vortex (two owners): {names}", shared.len()));
+    }
+    let gone = list.iter().filter(|o| o.gone > 0).count();
+    if gone > 0 {
+        out.push_str(&format!(" · {gone} with files no longer in the game folder"));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,5 +325,53 @@ mod tests {
         assert!(r.describe().starts_with("mod list revision 3.4.6, 1 entries, sha256 "));
         let bare: ModList = serde_json::from_slice(br#"{"mods":[]}"#).unwrap();
         assert!(FeedReceipt::of(b"{\"mods\":[]}", &bare).describe().starts_with("mod list without a revision"));
+    }
+
+    fn ledger(game: &Path, mods: &[(&str, &[&str], &[&str])]) {
+        let mut all = crate::modlist::Installed::default();
+        for (id, files, skipped) in mods {
+            all.mods.insert(id.to_string(), crate::modlist::InstalledMod {
+                name: format!("{id} mod"),
+                files: files.iter().map(|f| f.to_string()).collect(),
+                skipped: skipped.iter().map(|f| f.to_string()).collect(),
+                ..Default::default()
+            });
+        }
+        let p = game.join(crate::modlist::MODS_DIR);
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::write(p.join("installed.json"), serde_json::to_vec(&all).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn each_launcher_file_is_counted_by_who_else_claims_it() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        for f in ["Data/a.esp", "Data/Scripts/a.pex", "Data/b.esp", "Data/B/Tex.dds"] {
+            put(g, f);
+        }
+        ledger(g, &[
+            ("a", &["Data/a.esp", "Data/Scripts/a.pex"], &[]),
+            ("b", &["Data/b.esp", "Data/B/Tex.dds", "Data/gone.esp"], &["Data/b.ini"]),
+        ]);
+        // Before Vortex deploys anything here.
+        let own = ownership(g);
+        assert_eq!(own.iter().map(|o| (o.launcher_only, o.both, o.gone)).collect::<Vec<_>>(), [(2, 0, 0), (2, 0, 1)]);
+        assert!(!has_vortex_record(g));
+        assert_eq!(describe_ownership(&own, false), "Installed by the launcher: 2 mods · 2 only in the launcher's files · Vortex: no deployment found · 1 with files no longer in the game folder");
+        // Vortex deploys b's texture (paths compared the way Windows does).
+        let dep = serde_json::json!({ "files": [
+            { "relPath": "B\\tex.DDS", "source": "B Textures-123-1-0" },
+            { "relPath": "other.esp", "source": "Other-9-1" },
+        ] });
+        std::fs::write(g.join("Data/vortex.deployment.json"), serde_json::to_vec(&dep).unwrap()).unwrap();
+        let own = ownership(g);
+        let b = own.iter().find(|o| o.id == "b").unwrap();
+        assert_eq!((b.launcher_only, b.both, b.gone, b.left_to_vortex), (1, 1, 1, 1));
+        assert_eq!(b.vortex_sources, ["B Textures-123-1-0"]);
+        assert_eq!(own.iter().find(|o| o.id == "a").unwrap().both, 0);
+        assert_eq!(describe_ownership(&own, has_vortex_record(g)), "Installed by the launcher: 2 mods · 1 only in the launcher's files · 1 also deployed by Vortex (two owners): b mod · 1 with files no longer in the game folder");
+        // Nothing was written by the report.
+        assert!(!g.join("Data/b.esp.aetherial-part").exists());
+        assert_eq!(describe_ownership(&[], true), "Installed by the launcher: none");
     }
 }
