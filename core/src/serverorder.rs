@@ -62,6 +62,43 @@ pub fn server_order(masters: &serde_json::Value) -> Vec<ServerPlugin> {
         .collect()
 }
 
+/// The served masters.json for an export: the five base masters as the
+/// current masters.json has them (name, size, sha256), then every master
+/// past them and every lane plugin from the exporter's `export.json`, in
+/// load-order `index`, each under its `run_name` with the canonical values
+/// every PC's copy must match (`canonical_sha256`, `canonical_size` from
+/// `canonical_bytes`, `canonical_crc32`). The export's plain `sha256` is the
+/// exporting PC's original file and is left out. Refuses an export whose
+/// indexes don't run on from the base masters with no gap or repeat.
+pub fn masters_json(base: &[serde_json::Value], export: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let head = server_order(&serde_json::json!({ "masters": base }));
+    if head.len() != BASE.len() || !valid_base(&head) {
+        return Err("the base masters must be the five, in order, each with a size and sha256".into());
+    }
+    let mut rest: Vec<(u64, &serde_json::Value)> = Vec::new();
+    let masters = export.get("masters").and_then(|m| m.as_array()).map(|a| a.iter().collect::<Vec<_>>()).unwrap_or_default();
+    let files = export.get("files").and_then(|f| f.as_object()).map(|o| o.values().collect::<Vec<_>>()).unwrap_or_default();
+    for e in masters.into_iter().chain(files) {
+        let index = e.get("index").and_then(|i| i.as_u64()).ok_or("an export entry has no index")?;
+        rest.push((index, e));
+    }
+    rest.sort_by_key(|(i, _)| *i);
+    let mut out: Vec<serde_json::Value> = base.to_vec();
+    for (k, (index, e)) in rest.into_iter().enumerate() {
+        let want = (BASE.len() + k) as u64;
+        let name = e.get("run_name").and_then(|n| n.as_str()).filter(|n| !n.is_empty()).ok_or(format!("the export entry at index {index} has no run_name"))?;
+        if index != want {
+            return Err(format!("{name} is at index {index}; the next index is {want}"));
+        }
+        let sha = e.get("canonical_sha256").and_then(|s| s.as_str()).filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+            .ok_or(format!("{name} has no canonical_sha256"))?;
+        let bytes = e.get("canonical_bytes").and_then(|b| b.as_u64()).filter(|b| *b > 0).ok_or(format!("{name} has no canonical_bytes"))?;
+        let crc = e.get("canonical_crc32").and_then(|c| c.as_u64()).and_then(|c| u32::try_from(c).ok()).ok_or(format!("{name} has no canonical_crc32"))?;
+        out.push(serde_json::json!({ "name": name, "canonical_sha256": sha.to_ascii_lowercase(), "canonical_size": bytes, "canonical_crc32": crc }));
+    }
+    Ok(serde_json::json!({ "masters": out }))
+}
+
 /// Whether the server loads more than the five base masters: only then do
 /// Creation Club plugins and plugins.txt have to follow it exactly.
 pub fn beyond_base(order: &[ServerPlugin]) -> bool {
@@ -304,6 +341,37 @@ pub fn set_exact(game_dir: &Path, plugins_txt: &Path, server: &[ServerPlugin]) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn masters_json_is_made_from_the_export_record() {
+        let base: Vec<serde_json::Value> = BASE.iter().enumerate().map(|(i, n)| serde_json::json!({"name": n, "size": 10 + i, "sha256": format!("{i}").repeat(64)})).collect();
+        let h = |c: char| c.to_string().repeat(64);
+        let export = serde_json::json!({
+            "masters": [
+                {"file": "_ResourcePack.esl", "run_name": "_ResourcePack.esm", "index": 5, "sha256": h('a'), "canonical_sha256": h('B'), "canonical_bytes": 90, "canonical_crc32": 4000000000u32},
+                {"file": "ccBGSSSE001-Fish.esm", "run_name": "ccBGSSSE001-Fish.esm", "index": 6, "sha256": h('c'), "canonical_sha256": h('c'), "canonical_bytes": 70, "canonical_crc32": 7}],
+            "files": {
+                "COTN Dawnstar.esp": {"sha256": h('d'), "bytes": 5, "index": 8, "run_name": "COTN-Dawnstar.esp", "canonical_sha256": h('e'), "canonical_bytes": 6, "canonical_crc32": 8},
+                "Unofficial Skyrim Special Edition Patch.esp": {"sha256": h('f'), "bytes": 9, "index": 7, "run_name": "Unofficial-Skyrim-Special-Edition-Patch.esp", "canonical_sha256": h('f'), "canonical_bytes": 9, "canonical_crc32": 9}}});
+        let m = masters_json(&base, &export).unwrap();
+        let order = server_order(&m);
+        let names: Vec<&str> = order.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names[5..], ["_ResourcePack.esm", "ccBGSSSE001-Fish.esm", "Unofficial-Skyrim-Special-Edition-Patch.esp", "COTN-Dawnstar.esp"]);
+        assert!(valid_base(&order));
+        assert_eq!((order[5].size, order[5].crc32, order[5].sha256.clone()), (Some(90), Some(4000000000), Some("b".repeat(64))));
+        // Only canonical values, never the exporting PC's own file hash.
+        assert!(!m.to_string().contains(&h('a')));
+        // The health check reads the same values.
+        assert_eq!(crate::health::parse_masters(&m)[5], ("_ResourcePack.esm".into(), Some(90), Some("b".repeat(64))));
+        // A gap, a missing canonical value, or bad base masters are refused.
+        let mut gap = export.clone();
+        gap["files"]["COTN Dawnstar.esp"]["index"] = 9.into();
+        assert!(masters_json(&base, &gap).unwrap_err().contains("next index is 8"));
+        let mut no_crc = export.clone();
+        no_crc["masters"][1].as_object_mut().unwrap().remove("canonical_crc32");
+        assert!(masters_json(&base, &no_crc).unwrap_err().contains("canonical_crc32"));
+        assert!(masters_json(&base[..4], &export).is_err());
+    }
 
     #[test]
     fn a_converted_master_is_compared_by_its_canonical_bytes() {
