@@ -2113,6 +2113,16 @@ async fn diagnostics(app: AppHandle, state: State<'_, AppState>) -> CmdResult<St
             let settings = dir.join(settings::SETTINGS_PATH);
             let _ = writeln!(o, "skymp5-client-settings.txt: {}", if settings.exists() { "present" } else { "not written yet" });
             o.push_str(&game_data_report(&app, dir));
+            // Read-only: the launcher's own installs and who else holds their files.
+            let own = launcher_core::inventory::ownership(dir);
+            let _ = writeln!(o, "\n[Mods the launcher installed]");
+            let _ = writeln!(o, "{}", launcher_core::inventory::describe_ownership(&own, launcher_core::inventory::has_vortex_record(dir)));
+            for m in &own {
+                let _ = writeln!(o, "{} ({}): launcher only {}, also deployed by Vortex {}{}, gone {}, left to Vortex at install {}",
+                    m.name, m.id, m.launcher_only, m.both,
+                    if m.vortex_sources.is_empty() { String::new() } else { format!(" from {}", m.vortex_sources.join(", ")) },
+                    m.gone, m.left_to_vortex);
+            }
         }
     }
     let _ = writeln!(o, "\n[Server]");
