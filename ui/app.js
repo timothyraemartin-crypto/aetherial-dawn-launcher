@@ -313,6 +313,7 @@
     }
   }
 
+  let helperWarning = null;
   function ready() {
     pending = { ...pending, files: 0, remove: 0 };
     setChip('ok', 'Up to date');
@@ -331,6 +332,7 @@
     if (c && c.warning) setStatus(c.warning, true);
     if (c && c.target && !c.skseOk) setStatus(`The launcher installs SKSE ${c.skseVersion || ''} for you when you press Play.`);
     else if (!(c && c.warning)) setStatus(null);
+    if (helperWarning && !(c && c.warning)) setStatus(helperWarning, true);
   }
 
   // ---------- discord sign-in ----------
@@ -706,7 +708,11 @@ let autoMods = false;
     setPlay('wait', 'LAUNCHING');
     setStatus('Starting Skyrim through SKSE…');
     try {
-      await invoke('play');
+      // Helper mods that couldn't be installed: the game starts without
+      // them, and the reason stays on the status line.
+      const warns = await invoke('play');
+      helperWarning = Array.isArray(warns) && warns.length ? warns.join(' ') : null;
+      if (helperWarning) setStatus(helperWarning, true);
       gameRunning = true;
       setTimeout(() => { if (playMode === 'wait' && !busy) ready(); }, 8000);
     } catch (e) {

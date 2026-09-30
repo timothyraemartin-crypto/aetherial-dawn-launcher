@@ -39,7 +39,7 @@ function fakeBackEnd() {
     check: () => Object.assign({ build: 'B2', server: { name: 'Aetherial Dawn', ip: '127.0.0.1', port: 7777 }, files: 0, remove: 0, bytes: 0, strays: [], game }, S.check || {}),
     update: () => null,
     server_status: () => ({ online: true, players: 1, maxPlayers: 50, discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
-    files: () => [], game_check: () => game, play: () => null,
+    files: () => [], game_check: () => game, play: () => S.playWarnings || null,
     mods_state: () => S.modsState || ({ mods: [], nexus: null, vortex: false, running: false, sso: false }),
     download_all_mods: () => ({ installed: [], failed: [], cancelled: false }),
     plain_error: a => a.text,
@@ -178,6 +178,10 @@ const scenarios = [
     ['the game never starts', !played(r)],
     ['the fix waits for a press made after the reason shows', askedAt(r, 'patch_game') === null],
     ['the status line gives the reason', /Skyrim needs changing/.test(r.status)],
+  ] },
+  { name: 'a helper mod could not be installed: the game still starts and the reason stays shown', s: { ...base, playWarnings: ["Crash Logger 1.25.0 isn't installed: the download didn't get through. Skyrim starts without it; Play tries again next time."] }, expect: r => [
+    ['the game starts', played(r)],
+    ['the status line keeps the warning', /Crash Logger 1\.25\.0 isn't installed/.test(r.status), r.status],
   ] },
   { name: 'launcher updated since last time: no early PLAY', s: { ...base, seed: { ...seed, version: '0.0.1' }, clicks: [] }, expect: r => [
     ['PLAY is not enabled before the checks', firstLabel(r, 'PLAY') === null || firstLabel(r, 'PLAY') >= answeredAt(r, 'check')],

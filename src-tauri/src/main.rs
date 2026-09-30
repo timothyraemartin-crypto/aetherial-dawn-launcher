@@ -300,7 +300,9 @@ async fn update(app: AppHandle, state: State<'_, AppState>, verify_all: bool) ->
 /// settings and remembered login, and starts Skyrim through SKSE.
 /// Errors that start with "SIGNED_OUT:" mean the player must sign in again.
 #[tauri::command]
-async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+/// Returns warnings to show once the game is starting (a helper mod that
+/// couldn't be installed).
+async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<String>> {
     let config = state.config.lock().await.clone();
     let dir = config.game_dir.clone().ok_or("Pick your Skyrim folder first.")?;
     let m = state.manifest.lock().await.clone().ok_or("The server's file list hasn't loaded yet. The launcher is fetching it; try again in a moment.")?;
@@ -315,6 +317,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
         } else if !requirements::crash_logger_ok(&dir) || !requirements::souls_ok(&dir) {
             play_step(&app, "Installing the launcher's helper mods…");
         }
+        // Its warnings are given by the second pass below.
         if let Err(e) = install_missing_mods(&state.http, &dir).await {
             send_client_status(&app, &dir);
             return Err(e);
@@ -334,7 +337,8 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     // Missing mods come before the load order: a changed list names plugins
     // this PC doesn't have yet, and the order check would refuse Play
     // before the downloads were ever offered.
-    ensure_requirements(&app, &state, &dir).await?;
+    // Helpers still missing after this pass are shown once the game starts.
+    let warnings = ensure_requirements(&app, &state, &dir).await?;
     // Each listed mod's settings as the server sets them, once; the
     // player's later changes stay.
     let list = mods::full_list(&state).await;
@@ -478,7 +482,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
         }
     }
     tauri::async_runtime::spawn(watch_game(app.clone(), dir.clone(), started, config.close_on_launch));
-    Ok(())
+    Ok(warnings)
 }
 
 #[derive(Clone, Serialize)]
@@ -1353,35 +1357,25 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_m
 /// Required mods (Timothy, 2026-09-26): the ones on GitHub are installed here
 /// when missing; the ones only on Nexus Mods stop Play with
 /// "NEEDS_NEXUS_MODS:<json list>" and the UI walks the player through them.
-/// Installs SKSE 2.2.6 and Crash Logger from their official GitHub releases
-/// when they're missing.
-async fn install_missing_mods(http: &reqwest::Client, dir: &std::path::Path) -> CmdResult<()> {
-    let cleaned = requirements::clean_partials(dir);
-    if !cleaned.is_empty() {
-        log::line(&format!("removed half-written mod files: {}", cleaned.join(", ")));
-    }
-    if !requirements::skse_ok(dir) {
-        match requirements::install_skse(http, dir).await {
-            Ok(()) => log::line(&format!("installed SKSE {}", requirements::SKSE_VERSION)),
-            Err(e) => {
-                log::line(&format!("couldn't install SKSE: {e}"));
-                return Err(format!("Couldn't install SKSE {} ({e}). Check your internet connection and try again.", requirements::SKSE_VERSION));
-            }
-        }
-    }
-    if !requirements::crash_logger_ok(dir) {
-        match requirements::install_crash_logger(http, dir).await {
-            Ok(()) => log::line(&format!("installed Crash Logger {}", requirements::CRASH_LOGGER_VERSION)),
-            Err(e) => log::line(&format!("couldn't install Crash Logger: {e}")),
-        }
-    }
-    if !requirements::souls_ok(dir) {
-        match requirements::install_souls(http, dir).await {
-            Ok(()) => log::line(&format!("installed Skyrim Souls RE {}", requirements::SOULS_VERSION)),
-            Err(e) => log::line(&format!("couldn't install Skyrim Souls RE: {e}")),
-        }
-    }
-    Ok(())
+/// Installs SKSE 2.2.6, Crash Logger and Skyrim Souls RE from their official
+/// GitHub releases when they're missing. All three are required for every
+/// player, so one that can't be installed stops Play with the reason instead
+/// of the game starting without it.
+/// SKSE that can't be installed stops Play; Crash Logger or Souls RE that
+/// can't are returned as warnings and Play carries on.
+async fn install_missing_mods(http: &reqwest::Client, dir: &std::path::Path) -> CmdResult<Vec<String>> {
+    let mut line = |l: &str| log::line(l);
+    let missing = requirements::ensure_helpers(http, dir, &requirements::Sources::official(), &mut line).await.map_err(|f| {
+        log::line(&format!("couldn't install {}: {}", f.name, f.cause));
+        f.message()
+    })?;
+    Ok(missing
+        .iter()
+        .map(|f| {
+            log::line(&format!("couldn't install {}: {}; starting without it", f.name, f.cause));
+            f.warning()
+        })
+        .collect())
 }
 
 /// What Play is doing now, for the status line under the Play button, so a
@@ -1391,19 +1385,19 @@ fn play_step(app: &AppHandle, text: &str) {
     let _ = app.emit("play-step", text);
 }
 
-async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path::Path) -> CmdResult<()> {
+async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path::Path) -> CmdResult<Vec<String>> {
     let got = install_missing_mods(&state.http, dir).await;
     // Sent whether or not the installs worked: a failed one is the case
     // staff most want to see.
     send_client_status(app, dir);
-    got?;
+    let warnings = got?;
     let list = mods::full_list(state).await;
     let missing: Vec<mods::Row> = launcher_core::modlist::missing(&list, dir).into_iter().map(|m| mods::row(m, dir)).collect();
     if !missing.is_empty() {
         log::line(&format!("play: stopped, {} mod(s) from the mod list are missing", missing.len()));
         return Err(format!("NEEDS_NEXUS_MODS:{}", serde_json::to_string(&missing).unwrap_or_default()));
     }
-    Ok(())
+    Ok(warnings)
 }
 
 /// Tells the login service, in the background, which of the server's mods
@@ -1452,25 +1446,13 @@ fn clear_browser_cache() {
     }
 }
 
-/// Launchers before 0.1.20 moved crash loggers aside with other SKSE plugins.
-/// Puts the newest one back, so the next crash names the module that failed.
+/// Launchers before 0.1.20 moved crash loggers aside with other SKSE plugins;
+/// the newest one SKSE would load is put back (see requirements.rs).
 fn restore_crash_logger(dir: &std::path::Path) {
-    let plugins = dir.join("Data").join("SKSE").join("Plugins");
-    if strays::CRASH_LOGGERS.iter().any(|n| plugins.join(n).is_file()) {
-        return;
-    }
-    let Ok(rd) = std::fs::read_dir(dir.join(strays::DISABLED_DIR)) else { return };
-    let mut stamps: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
-    stamps.sort();
-    for stamp in stamps.iter().rev() {
-        let from = stamp.join("Data").join("SKSE").join("Plugins").join("CrashLogger.dll");
-        if from.is_file() {
-            match std::fs::rename(&from, plugins.join("CrashLogger.dll")) {
-                Ok(()) => log::line(&format!("play: put the crash logger back from {}", stamp.display())),
-                Err(e) => log::line(&format!("play: couldn't put the crash logger back: {e}")),
-            }
-            return;
-        }
+    match requirements::restore_crash_logger(dir) {
+        Ok(Some(stamp)) => log::line(&format!("play: put the crash logger back from {}", stamp.display())),
+        Ok(None) => {}
+        Err(e) => log::line(&format!("play: couldn't put the crash logger back: {e}")),
     }
 }
 
