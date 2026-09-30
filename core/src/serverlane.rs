@@ -231,8 +231,11 @@ fn order(lane: &ServerLane) -> Vec<(&str, &str)> {
     lane.mods.iter().flat_map(|m| m.plugins.iter().map(move |p| (m.entry.id.as_str(), p.as_str()))).collect()
 }
 
-/// Every collected plugin in `data` checked against the server's master
-/// contract: each master its TES4 header names must be one of the server's
+/// Every collected plugin in `data` checked against what the server can
+/// load. A light plugin (the ESL header flag 0x200 or an `.esl` name) is
+/// refused outright until the paired client/server canonical path is
+/// decided and proven (PR #7, Codex 5916972572 and #28 5916986323); the
+/// export never zips one and only records it. Then the master contract: each master its TES4 header names must be one of the server's
 /// masters (`ServerLane::masters`) or a lane plugin that loads before it. A Creation Club master
 /// (Fish, Survival Mode, Curios...), a master nobody lists, or one listed
 /// later would stop the server at load, so each is named here, as is a file
@@ -246,6 +249,9 @@ pub fn master_problems(lane: &ServerLane, data: &Path) -> Vec<String> {
     for (i, (_, name)) in all.iter().enumerate() {
         let path = data.join(name);
         if path.is_file() {
+            if name.to_ascii_lowercase().ends_with(".esl") || light_flag(&path) {
+                out.push(format!("{name} is a light (ESL) plugin, which the server can't load yet"));
+            }
             match crate::loadorder::masters(&path) {
                 None => out.push(format!("{name} has no readable plugin header")),
                 Some(ms) => {
@@ -265,6 +271,13 @@ pub fn master_problems(lane: &ServerLane, data: &Path) -> Vec<String> {
         before.push(name);
     }
     out
+}
+
+/// Whether a plugin's TES4 header carries the light (ESL) flag.
+fn light_flag(path: &Path) -> bool {
+    use std::io::Read;
+    let mut h = [0u8; 12];
+    std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut h)).is_ok() && &h[..4] == b"TES4" && u32::from_le_bytes([h[8], h[9], h[10], h[11]]) & 0x200 != 0
 }
 
 /// Writes `report.json` for this run and returns it.
@@ -812,6 +825,7 @@ mod tests {
         std::fs::write(data.join("Late.esm"), esp(&["Dragonborn.esm"], 1)).unwrap();
         std::fs::write(data.join("Junk.esp"), b"not a plugin").unwrap();
         let want = vec![
+            "COTN Dawnstar.esp is a light (ESL) plugin, which the server can't load yet".to_string(),
             "COTN Dawnstar.esp needs ccBGSSSE001-Fish.esm, which isn't one of the server's masters or in the list".to_string(),
             "Patch.esp needs Late.esm, which the list loads after it".to_string(),
             "Junk.esp has no readable plugin header".to_string(),
@@ -826,7 +840,8 @@ mod tests {
         let e = finish(&root, &l, "h", plugins.clone(), Source::served()).unwrap_err().to_string();
         assert!(e.contains("ccBGSSSE001-Fish.esm") && e.contains("no zip made"), "{e}");
         assert!(!root.join(ZIP_NAME).exists() && !root.join("export.json").exists());
-        // Fixed: the CC master gone, the order corrected, the junk replaced.
+        // Fixed: the CC master and light flag gone, the order corrected,
+        // the junk replaced.
         let l = lane(
             r#"{"for_discord_id":"1","mods":[
             {"id":"tgc","name":"TGC","nexus":{"mod":1,"file":1},"plugins":["TGC.esm"]},
@@ -835,14 +850,39 @@ mod tests {
             {"id":"patch","name":"Patch","nexus":{"mod":3,"file":3},"plugins":["Patch.esp"]},
             {"id":"junk","name":"Junk","nexus":{"mod":5,"file":5},"plugins":["Junk.esp"]}]}"#,
         );
-        std::fs::write(data.join("COTN Dawnstar.esp"), esp(&["Skyrim.esm", "TGC.esm"], 0x200)).unwrap();
+        std::fs::write(data.join("COTN Dawnstar.esp"), esp(&["Skyrim.esm", "TGC.esm"], 0)).unwrap();
         std::fs::write(data.join("Junk.esp"), esp(&[], 0)).unwrap();
         assert!(master_problems(&l, &data).is_empty());
         let rec = finish(&root, &l, "h2", plugins, Source::served()).unwrap();
         let idx: Vec<(&str, usize)> = rec.files.iter().map(|(n, f)| (n.as_str(), f.index)).collect();
         assert_eq!(idx, vec![("COTN Dawnstar.esp", 6), ("Junk.esp", 9), ("Late.esm", 7), ("Patch.esp", 8), ("TGC.esm", 5)]);
-        assert!(rec.files["COTN Dawnstar.esp"].light && !rec.files["TGC.esm"].light);
+        assert!(!rec.files["COTN Dawnstar.esp"].light && !rec.files["TGC.esm"].light);
         assert_eq!(rec.files["Patch.esp"].masters, vec!["tgc.esm", "Late.esm"]);
+    }
+
+    #[test]
+    fn a_light_plugin_with_valid_masters_still_stops_the_export() {
+        let t = tempfile::tempdir().unwrap();
+        let data = t.path().join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        let l = lane(
+            r#"{"for_discord_id":"1","mods":[
+            {"id":"cotn","name":"COTN","nexus":{"mod":2,"file":2},"plugins":["COTN Dawnstar.esp"]},
+            {"id":"lite","name":"Lite","nexus":{"mod":3,"file":3},"plugins":["Lite.esl"]}]}"#,
+        );
+        std::fs::write(data.join("COTN Dawnstar.esp"), esp(&["Skyrim.esm", "Dawnguard.esm"], 0x200)).unwrap();
+        std::fs::write(data.join("Lite.esl"), esp(&["Skyrim.esm"], 0)).unwrap();
+        assert_eq!(
+            master_problems(&l, &data),
+            vec![
+                "COTN Dawnstar.esp is a light (ESL) plugin, which the server can't load yet".to_string(),
+                "Lite.esl is a light (ESL) plugin, which the server can't load yet".to_string(),
+            ]
+        );
+        let plugins: BTreeMap<String, String> = [("COTN Dawnstar.esp".to_string(), "cotn".to_string()), ("Lite.esl".to_string(), "lite".to_string())].into();
+        let e = finish(t.path(), &l, "h", plugins, Source::served()).unwrap_err().to_string();
+        assert!(e.contains("light (ESL)") && e.contains("no zip made"), "{e}");
+        assert!(!t.path().join(ZIP_NAME).exists() && !t.path().join("export.json").exists());
     }
 
     #[test]
