@@ -23,38 +23,52 @@ U2 no; U3 set-aside files go back, then the folder goes; U4 **leave** the
 launcher's mods in Data; U5, U6, U7 yes.
 
 ## 2. Disposable setup
+Run each script from PowerShell as `powershell -ExecutionPolicy Bypass -File <script> …`
+(a fresh Sandbox blocks scripts otherwise).
 1. Use Windows Sandbox (Windows 10/11 Pro: Start, "Turn Windows features on or
    off", tick **Windows Sandbox**) or a fresh VM. Everything is thrown away on close.
 2. Inside it, run `docs/qa/sandbox-fixture.ps1` (it refuses outside Windows
-   Sandbox unless `-Disposable` is given, and refuses an existing folder). It
-   builds a **fake Steam library** that has:
+   Sandbox unless `-Disposable` is given, refuses a folder it did not make, and
+   never overwrites a real `plugins.txt`). It writes the same bytes and file
+   times every run, builds in `C:\ADTest.partial` and renames it only when done,
+   so an interrupted run is rebuilt on the next try. It builds a **fake Steam library** that has:
    `steamapps\appmanifest_489830.acf` (read-only, `AutoUpdateBehavior 1`),
    `common\Skyrim Special Edition\SkyrimSE.exe` (a dummy file),
    `.aetherial-dawn\` with a marker, a mod record and one set-aside file in
    `disabled\`, a
    `Data\` with two dummy plugins, and
-   `%LOCALAPPDATA%\Skyrim Special Edition\plugins.txt` plus its
+   `%LOCALAPPDATA%\Skyrim Special Edition\plugins.txt` and `loadorder.txt`, each with its
    `.aetherial-dawn-backup`, and a renamed `Skyrim.ccc` in the game folder. No real game files or
    keys are used.
 3. Install the launcher build from the PR's CI artifact. Never use the public
    release channel, and never push to `main`. At first start choose
    `C:\ADTest\SteamLibrary\steamapps\common\Skyrim Special Edition` so its
    settings name the fake game, then close it without signing in.
-4. Take snapshot A: every path, size, SHA-256 and read-only flag under the fake
-   library, `%LOCALAPPDATA%\Skyrim Special Edition` and the launcher's app data
-   with `docs/qa/snapshot.ps1 -Paths "C:\ADTest;$env:LOCALAPPDATA\Skyrim Special Edition;$env:LOCALAPPDATA\gg.aetherialdawn.launcher" -Out A.txt`
-   (read-only: path, size, SHA-256, read-only flag).
-5. Uninstall from **Settings > Apps**. Take snapshot B the same way (`-Out B.txt`).
-6. Compare with `Compare-Object (Get-Content A.txt) (Get-Content B.txt)` and
-   check each U-row against section 1: pass or fail.
+4. Take snapshot A with `docs/qa/snapshot.ps1 -Out A.txt -Label before`.
+   It is read-only. It lists the fake library, `%LOCALAPPDATA%\Skyrim Special Edition`,
+   the launcher's app data (`%APPDATA%` and `%LOCALAPPDATA%\gg.aetherialdawn.launcher`)
+   and the install folder (`%LOCALAPPDATA%\Aetherial Dawn`). App data and the
+   install folder are recorded by name and size only, never opened. Paths are
+   printed as `FIXTURE/…`, `SAVES/…` and so on, so no user name appears.
+   Exit 2 means the snapshot is incomplete: its `error` lines say why; take it again.
+5. Uninstall from **Settings > Apps**. Write down whether the "delete app data"
+   box was ticked. Take snapshot B: `docs/qa/snapshot.ps1 -Out B.txt -Label after`.
+6. Run `docs/qa/compare.ps1 -Before A.txt -After B.txt`. It prints PASS or FAIL
+   for U1-U7 against the default above, and `UNEXPECTED` for any other change
+   under the fake library or `SAVES`. It refuses (exit 2) an incomplete snapshot.
+7. Keep A.txt, B.txt, the compare output, the launcher build's commit and the
+   box answer together as the D18 receipt.
 
 ## 3. Pass
-- Today (live 0.1.87 and 0.1.98): expected **all fail** except U7 if the
-  installer's box removes app data. That fail list is the D18 evidence.
+- Today (live 0.1.87 and 0.1.98): expected U1, U3, U5 and U6 **FAIL**; U2 and
+  U4 PASS because nothing touches them; U7 depends on the installer's box.
+  That result is the D18 evidence. (Checked on fixtures: `compare.ps1` gives
+  exactly this when nothing is reverted, and all PASS when every row is.)
 - After an uninstall-cleanup fix: each row Timothy marks "Yes" is reverted.
   Rows marked "No" are unchanged, and nothing outside section 1 changed.
 
 ## 4. Not in this plan
 - No code change yet. The fix (a `--uninstall-cleanup` mode run from
-  `NSIS_HOOK_PREUNINSTALL`) follows the "Settings only" default above.
+  `NSIS_HOOK_PREUNINSTALL`) is proposed only after a disposable Windows run
+  gives the receipt in step 7, and follows whatever Timothy picks for U1, U2 and U4.
 - The Vortex route (Packages A and C) is not touched here.
