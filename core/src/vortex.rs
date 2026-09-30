@@ -508,9 +508,15 @@ pub fn package_states(list: &[ModEntry], entry: &ModEntry, status: Option<&Statu
         && n.file.is_none_or(|f| m.nexus_file_id == Some(f));
     let packages: Vec<&VortexMod> = status.mods.iter().filter(installed).collect();
     let on = packages.iter().filter(|m| m.enabled).count();
+    // A pinned file is only "switched on" alone: another file of the same
+    // mod on beside it (one the list doesn't pin itself) blocks Play too.
+    let other_on = n.file.is_some_and(|file| status.mods.iter().any(|m| m.nexus_mod_id == Some(n.mod_id) && m.enabled
+        && m.nexus_file_id != Some(file)
+        && !(male_face_selected(list) && n.mod_id == 22487 && m.nexus_file_id == Some(104828))
+        && !list.iter().any(|o| o.nexus.as_ref().is_some_and(|x| x.mod_id == n.mod_id && x.file == m.nexus_file_id))));
     PackageStates {
         installed: Some(!packages.is_empty()),
-        enabled: Some(if n.file.is_some() { on > 0 } else { on == 1 }),
+        enabled: Some(if n.file.is_some() { on > 0 && !other_on } else { on == 1 }),
         deployed: Some(deployment_ready_for(list, entry, status, files, game_dir)),
     }
 }
@@ -1124,6 +1130,10 @@ mod tests {
         status.mods.push(pkg(733846, false));
         assert_eq!(states(&status, &[]), PackageStates { installed: Some(true), enabled: Some(false), deployed: Some(false) });
         status.mods[1].enabled = true;
+        // The pinned file on beside another file of the mod isn't "switched
+        // on": Play is blocked until the other one is off.
+        assert_eq!(states(&status, &[]), PackageStates { installed: Some(true), enabled: Some(false), deployed: Some(false) });
+        status.mods[0].enabled = false;
         assert_eq!(states(&status, &[]), PackageStates { installed: Some(true), enabled: Some(true), deployed: Some(false) });
         std::fs::create_dir_all(t.path().join("Data")).unwrap();
         std::fs::write(t.path().join("Data/U.esp"), b"x").unwrap();
