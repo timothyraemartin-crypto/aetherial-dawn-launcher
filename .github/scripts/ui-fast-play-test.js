@@ -35,7 +35,7 @@ function fakeBackEnd() {
   try { localStorage.clear(); if (S.seed) localStorage.setItem('ad.lastReady', JSON.stringify(S.seed)); } catch (_) {}
   const game = Object.assign({ needed: false, installed: '1.6.1170.0', target: '1.6.1170.0', skseOk: true, canDowngrade: true }, S.game || {});
   const answers = {
-    get_state: () => ({ launcherVersion: S.version, config: { gameDir: S.dir, closeOnLaunch: false, backgroundUpdates: !!S.backgroundUpdates, shareHealth: true, music: false, onlyServerMods: true }, game: { dir: S.dir, hasSkse: S.hasSkse !== false } }),
+    get_state: () => ({ launcherVersion: S.version, config: { gameDir: S.dir, closeOnLaunch: false, backgroundUpdates: !!S.backgroundUpdates, shareHealth: true, music: false, onlyServerMods: true }, game: S.gameGone ? null : { dir: S.dir, hasSkse: S.hasSkse !== false }, gameError: S.gameGone || null }),
     auth_status: () => (S.authAfter && (S.authCalls = (S.authCalls || 0) + 1) > 1) ? S.authAfter : S.auth,
     check: () => Object.assign({ build: 'B2', server: { name: 'Aetherial Dawn', ip: '127.0.0.1', port: 7777 }, files: 0, remove: 0, bytes: 0, strays: [], game }, S.check || {}),
     update: () => null,
@@ -286,6 +286,11 @@ const scenarios = [
   { name: 'first start, a second pick while the first is still checked: ignored, so answers never cross', s: { ...base, seed: null, clicks: [], picks: [{ at: 3000, dir: 'D:\\Games', error: "SkyrimSE.exe isn't in D:\\Games.", delay: 1500 }, { at: 3300, dir: 'C:\\Games\\Skyrim Special Edition' }] }, expect: r => [
     ['the launcher checks one folder at a time', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'set_game_dir').length === 1],
     ['the answer shown is the one for the folder checked', /isn't in D:/.test(r.gameRow), r.gameRow],
+  ] },
+  { name: 'the saved folder stopped being Skyrim: Steam\'s other copy is only suggested', s: { ...base, gameGone: "E:\\Skyrim Special Edition can't be opened. If Skyrim is now in C:\\Steam\\steamapps\\common\\Skyrim Special Edition, choose that folder." }, expect: r => [
+    ['the game never starts', !played(r)],
+    ['the launcher never switches folder by itself', askedAt(r, 'set_game_dir') === null],
+    ['the player is told where Steam has Skyrim', /choose that folder/.test(r.gameRow), r.gameRow],
   ] },
   { name: 'first start, a folder that is not Skyrim is picked: the first-run sheet says why', s: { ...base, seed: null, clicks: [], pickDir: 'D:\\Games', setDirError: "D:\\Games doesn't have SkyrimSE.exe in it." }, expect: r => [
     ['the reason shows in the first-run sheet', /doesn't have SkyrimSE\.exe/.test(r.gameRow), r.gameRow],
