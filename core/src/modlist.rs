@@ -463,8 +463,11 @@ pub fn merged(game_version: Option<&str>, server: Option<&ModList>) -> Vec<ModEn
             if m.id.is_empty() || (m.nexus.is_none() && m.url.is_none()) || m.check.iter().chain(&m.owns).chain(&m.skip).chain(&m.file).any(|c| safe_rel(c).is_none()) {
                 continue;
             }
-            // A one-file download is pinned or it isn't used.
-            if m.file.is_some() && m.sha256.as_ref().is_none_or(|h| h.len() != 64) {
+            // A one-file download is pinned or it isn't used, and it's never
+            // one of the game's own files (base masters, Creation Club,
+            // _ResourcePack): those only come from the player's own Skyrim.
+            let game_own = m.file.as_deref().and_then(|f| Path::new(f).file_name()).is_some_and(|n| crate::aliases::shipped_with_game(&n.to_string_lossy()));
+            if m.file.is_some() && (game_own || m.sha256.as_ref().is_none_or(|h| h.len() != 64)) {
                 continue;
             }
             if let Some(url) = &m.url {
@@ -905,6 +908,10 @@ pub fn plan(entry: &ModEntry, unpacked: &Path) -> Result<Vec<Copy>> {
 /// `plan` on a CPU with these instruction sets.
 pub fn plan_for(entry: &ModEntry, unpacked: &Path, supports: &[&str]) -> Result<Vec<Copy>> {
     let mut out = plan_unskipped(entry, unpacked, supports)?;
+    // The game's own plugins (base masters, Creation Club, _ResourcePack)
+    // only ever come from the player's own Skyrim, never from a download.
+    out.retain(|c| !(c.to.parent().is_some_and(|p| p == Path::new("Data"))
+        && c.to.file_name().is_some_and(|n| crate::aliases::shipped_with_game(&n.to_string_lossy()))));
     if !entry.skip.is_empty() {
         let norm = |p: &Path| p.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
         let skip: Vec<String> = entry.skip.iter().map(|s| s.replace('\\', "/").to_ascii_lowercase()).collect();
@@ -1744,6 +1751,10 @@ mod tests {
         assert!(!has(list(serde_json::json!({"id": "racemenu-patch", "name": "P", "url": "https://example.invalid/x.ini", "file": rel}))));
         assert!(!has(list(serde_json::json!({"id": "racemenu-patch", "name": "P", "url": "https://example.invalid/x.ini", "file": "../x.ini", "sha256": crate::patcher::sha256_bytes(body)}))));
         assert!(!has(list(serde_json::json!({"id": "racemenu-patch", "name": "P", "nexus": {"mod": 1}, "skip": ["../x"]}))));
+        // The game's own files are never downloaded, pinned or not.
+        for game_file in ["Data/ccBGSSSE001-Fish.esm", "Data/_ResourcePack.esl", "Data/Skyrim.esm", "Data/ccQDRSSE001-SurvivalMode.esm"] {
+            assert!(!has(list(serde_json::json!({"id": "racemenu-patch", "name": "P", "url": "https://example.invalid/x", "file": game_file, "sha256": crate::patcher::sha256_bytes(body)}))), "{game_file}");
+        }
     }
 
     #[test]
@@ -1776,6 +1787,10 @@ mod tests {
         to.sort();
         assert_eq!(to, ["Data/meshes/actors/character/FaceGenMorphs/other.tri", "Data/textures/head.dds"]);
         let all = ModEntry { skip: vec![], ..e.clone() };
+        assert_eq!(plan(&all, &u).unwrap().len(), 3);
+        // A download that carries a game file never installs it.
+        std::fs::write(u.join("ccBGSSSE001-Fish.esm"), "cc").unwrap();
+        std::fs::write(u.join("_ResourcePack.esl"), "rp").unwrap();
         assert_eq!(plan(&all, &u).unwrap().len(), 3);
     }
     use super::*;
