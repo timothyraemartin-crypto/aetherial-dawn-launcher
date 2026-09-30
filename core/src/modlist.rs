@@ -586,6 +586,21 @@ fn is_plugin(p: &Path) -> bool {
     l.ends_with(".esp") || l.ends_with(".esm") || l.ends_with(".esl")
 }
 
+/// Files a listed mod must go without that are in the game folder anyway
+/// (Vortex deploys a package whole): Play sets them aside each time.
+pub fn skipped_present(list: &[ModEntry], game_dir: &Path) -> Vec<String> {
+    let mut out: Vec<String> = list
+        .iter()
+        .flat_map(|m| &m.skip)
+        .filter_map(|s| safe_rel(s).map(|p| (s, p)))
+        .filter(|(_, p)| present_like(&game_dir.join(p)))
+        .map(|(s, _)| s.replace('\\', "/"))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 pub fn missing<'a>(list: &'a [ModEntry], game_dir: &Path) -> Vec<&'a ModEntry> {
     list.iter().filter(|m| !m.installed(game_dir)).collect()
 }
@@ -1729,6 +1744,22 @@ mod tests {
         assert!(!has(list(serde_json::json!({"id": "racemenu-patch", "name": "P", "url": "https://example.invalid/x.ini", "file": rel}))));
         assert!(!has(list(serde_json::json!({"id": "racemenu-patch", "name": "P", "url": "https://example.invalid/x.ini", "file": "../x.ini", "sha256": crate::patcher::sha256_bytes(body)}))));
         assert!(!has(list(serde_json::json!({"id": "racemenu-patch", "name": "P", "nexus": {"mod": 1}, "skip": ["../x"]}))));
+    }
+
+    #[test]
+    fn the_racemenu_guard_entries_are_taken_and_a_deployed_skip_is_found() {
+        let list: ModList = serde_json::from_str(include_str!("../../docs/examples/racemenu-sync-guard.json")).unwrap();
+        let all = merged(None, Some(&list));
+        let guard = all.iter().find(|m| m.id == "racemenu-sync-guard").expect("pinned one-file entry kept");
+        assert_eq!(guard.file.as_deref(), Some("Data/SKSE/Plugins/skee64_custom.ini"));
+        let ahph = all.iter().find(|m| m.id == "alternate-high-poly-head").unwrap();
+        let t = tempfile::tempdir().unwrap();
+        assert!(skipped_present(&all, t.path()).is_empty());
+        // Vortex deployed the whole package, morphs.ini included.
+        let ini = t.path().join(&ahph.skip[0]);
+        std::fs::create_dir_all(ini.parent().unwrap()).unwrap();
+        std::fs::write(&ini, "[x]").unwrap();
+        assert_eq!(skipped_present(&all, t.path()), ahph.skip);
     }
 
     #[test]
