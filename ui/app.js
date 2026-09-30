@@ -698,6 +698,8 @@ let autoMods = false;
       return playMode === 'play' ? onPlay(auto) : undefined;
     }
     if (busy) return;
+    // Installing the launcher update closes the launcher; Play waits for it.
+    if (updating) { setStatus('The launcher is updating itself. Play is ready again once it restarts.'); return; }
     if (playMode === 'strays') return openStrays();
     if (playMode === 'retry') return check();
     if (playMode === 'update') return update();
@@ -707,6 +709,7 @@ let autoMods = false;
     if (playMode !== 'play') return;
     setPlay('wait', 'LAUNCHING');
     setStatus('Starting Skyrim through SKSE…');
+    playing = true;
     try {
       // Helper mods that couldn't be installed: the game starts without
       // them, and the reason stays on the status line.
@@ -761,6 +764,8 @@ let autoMods = false;
       }
       setPlay('play', 'PLAY');
       helpStatus(`Skyrim didn't start: ${msg}`, `game didn't start: ${msg}`);
+    } finally {
+      playing = false;
     }
   }
 
@@ -817,26 +822,45 @@ let autoMods = false;
   // ---------- launcher self-update ----------
   // Installs every new launcher release by itself: on start and every
   // minute, never while Skyrim is running or a download is in progress.
-  let gameRunning = false, updating = false;
+  // playing: Play has been pressed and hasn't finished starting the game.
+  // Installing an update closes the launcher, so it waits for all of these.
+  let gameRunning = false, updating = false, playing = false;
   let lastUpToDateLog = 0;
+  // An update downloaded while Play was starting, installed once it's safe.
+  let downloaded = null;
+  const updateWaits = () => gameRunning || playing || busy || modsRunning;
   async function checkSelfUpdate(byHand) {
-    if (updating || gameRunning || busy || modsRunning) return byHand ? 'busy' : undefined;
+    if (updating || updateWaits()) return byHand ? 'busy' : undefined;
     try {
-      const upd = await T.updater.check();
+      const upd = downloaded || await T.updater.check();
       if (!upd) {
         if (byHand || Date.now() - lastUpToDateLog > 30 * 60 * 1000) { logUi('launcher is up to date'); lastUpToDateLog = Date.now(); }
         return 'latest';
       }
+      // Play may have started while the check was out.
+      if (updating || updateWaits()) return byHand ? 'busy' : undefined;
       updating = true;
       $('self-update-text').textContent = `Updating the launcher to ${upd.version}…`;
       $('self-update').hidden = false;
       $('self-update-go').hidden = true;
       logUi(`installing launcher ${upd.version} automatically`);
       try {
-        await upd.downloadAndInstall();
+        if (!downloaded) {
+          await upd.download();
+          downloaded = upd;
+        }
+        // And again after the download: installing closes the launcher.
+        if (updateWaits()) {
+          updating = false;
+          $('self-update-text').textContent = `Launcher ${upd.version} is ready. It installs once you're done playing.`;
+          logUi(`launcher ${upd.version} downloaded; install waits for Play and the game`);
+          return byHand ? 'busy' : undefined;
+        }
+        await upd.install();
         await T.process.relaunch();
       } catch (e) {
         updating = false;
+        downloaded = null;
         logUi('launcher self-update failed: ' + e);
         $('self-update-go').hidden = false;
         $('self-update-go').disabled = false;
