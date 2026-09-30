@@ -202,7 +202,16 @@
   }
 
   let pickError = null;
+  // One folder pick at a time: a second press while the launcher is still
+  // checking the first folder is ignored, so an older answer can never land
+  // after a newer one (on screen or in the saved settings).
+  let picking = false;
   async function pickFolder() {
+    if (picking) return;
+    picking = true;
+    try { await pickFolderOnce(); } finally { picking = false; }
+  }
+  async function pickFolderOnce() {
     const dir = await T.dialog.open({ directory: true, title: 'Choose your Skyrim Special Edition folder' });
     if (!dir) return;
     try {
