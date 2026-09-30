@@ -138,6 +138,14 @@ async fn get_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Snap
             config.game_dir = Some(found.dir);
             save_config(&app, &config)?;
         }
+    } else if let Some(saved) = config.game_dir.clone().filter(|d| game::inspect(d).is_err()) {
+        // The saved folder stopped being Skyrim (moved to another drive,
+        // reinstalled elsewhere): Steam's own install is used if it has one.
+        if let Some(found) = game::detect().filter(|f| f.dir != saved) {
+            log::line(&format!("game folder {} isn't a Skyrim folder any more; using {} found through Steam", saved.display(), found.dir.display()));
+            config.game_dir = Some(found.dir);
+            save_config(&app, &config)?;
+        }
     }
     let (game, game_error) = match &config.game_dir {
         Some(dir) => match game::inspect(dir) {
@@ -151,7 +159,7 @@ async fn get_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Snap
 
 #[tauri::command]
 async fn set_game_dir(app: AppHandle, state: State<'_, AppState>, dir: PathBuf) -> CmdResult<game::GameInfo> {
-    let info = game::inspect(&dir).map_err(err)?;
+    let info = game::pick(&dir).map_err(err)?;
     let mut config = state.config.lock().await;
     config.game_dir = Some(info.dir.clone());
     save_config(&app, &config)?;

@@ -50,17 +50,21 @@ function fakeBackEnd() {
   window.__TAURI__ = {
     core: { invoke: (cmd, args) => new Promise((res, rej) => {
       log.invokes.push([at(), 'ask', cmd]);
+      const pickDelay = cmd === 'set_game_dir' && S.picks && (S.picks.find(p => p.dir === (args || {}).dir) || {}).delay;
       setTimeout(() => {
         log.invokes.push([at(), 'answer', cmd]);
         if (cmd === 'auth_status' && S.authFails) return rej('network down');
         if (cmd === 'game_running' && (S.gameCheckFails || (S.gameCheckFailsFrom && (S.gameChecks = (S.gameChecks || 0) + 1) >= S.gameCheckFailsFrom))) return rej('process list unavailable');
+        if (cmd === 'set_game_dir' && S.setDirError) return rej(S.setDirError);
+        if (cmd === 'set_game_dir' && S.picks && S.picks.find(p => p.dir === args.dir && p.error)) return rej(S.picks.find(p => p.dir === args.dir).error);
         if (cmd === 'play' && S.playError && !S.played) { S.played = true; return rej(S.playError); }
         res(answers[cmd] ? answers[cmd](args || {}) : null);
-      }, delay[cmd] ?? delay.default);
+      }, pickDelay || (delay[cmd] ?? delay.default));
     }) },
     event: { listen: async () => () => {} },
     window: { getCurrentWindow: () => ({ minimize: async () => {}, close: async () => {}, unminimize: async () => {}, setFocus: async () => {}, show: async () => {} }) },
-    dialog: { open: async () => null },
+    // S.picks: what each press of "Choose folder" returns in turn (dir null = cancelled).
+    dialog: { open: async () => S.picks ? (S.picks[(S.picked = (S.picked || 0) + 1) - 1] || {}).dir || null : S.pickDir || null },
     // The fake latest.json: this launcher is the newest, unless S.update names a newer one.
     updater: { check: () => new Promise(r => setTimeout(() => r(S.update ? {
       version: S.update,
@@ -80,6 +84,9 @@ function fakeBackEnd() {
     box();
     setInterval(box, 100);
     // The player presses Play as soon as it shows enabled (and once more later).
+    // The player picks a folder in the first-run sheet.
+    if (S.pickDir) setTimeout(() => document.getElementById('c-game-pick').click(), 3000);
+    for (const p of S.picks || []) setTimeout(() => document.getElementById('c-game-pick').click(), p.at);
     for (const t of S.clicks || []) setTimeout(() => { log.invokes.push([at(), 'click', label.textContent]); btn.click(); }, t);
     setTimeout(() => {
       try { log.lastReady = JSON.parse(localStorage.getItem('ad.lastReady')); } catch (_) {}
@@ -90,6 +97,7 @@ function fakeBackEnd() {
       const playBtn = document.getElementById('play');
       playBtn.focus({ focusVisible: true });
       log.playRing = playBtn.matches(':focus-visible') ? getComputedStyle(document.getElementById('play-wrap')).outlineStyle : 'not focus-visible';
+      log.gameRow = document.querySelector('#c-game small').textContent;
       const join = document.getElementById('si-join');
       log.join = join.hidden ? null : join.textContent;
       const errLink = document.querySelector('#si-error button');
@@ -246,6 +254,17 @@ const scenarios = [
     ['the game starts once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
     ['the button shows IN GAME once the launch settles', firstLabel(r, 'IN GAME [off]') !== null],
     ['PLAY is never offered again while the game runs', !r.labels.some(l => l[0] > answeredAt(r, 'play') && l[1] === 'PLAY'), JSON.stringify(r.labels.slice(-4))],
+  ] },
+  { name: 'first start, a wrong folder, then a cancelled pick: the reason stays and nothing is saved', s: { ...base, seed: null, clicks: [], picks: [{ at: 3000, dir: 'D:\\Games', error: "SkyrimSE.exe isn't in D:\\Games." }, { at: 3500, dir: null }] }, expect: r => [
+    ['the folder was sent to the launcher once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'set_game_dir').length === 1],
+    ['the reason still shows', /isn't in D:/.test(r.gameRow), r.gameRow],
+  ] },
+  { name: 'first start, a second pick while the first is still checked: ignored, so answers never cross', s: { ...base, seed: null, clicks: [], picks: [{ at: 3000, dir: 'D:\\Games', error: "SkyrimSE.exe isn't in D:\\Games.", delay: 1500 }, { at: 3300, dir: 'C:\\Games\\Skyrim Special Edition' }] }, expect: r => [
+    ['the launcher checks one folder at a time', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'set_game_dir').length === 1],
+    ['the answer shown is the one for the folder checked', /isn't in D:/.test(r.gameRow), r.gameRow],
+  ] },
+  { name: 'first start, a folder that is not Skyrim is picked: the first-run sheet says why', s: { ...base, seed: null, clicks: [], pickDir: 'D:\\Games', setDirError: "D:\\Games doesn't have SkyrimSE.exe in it." }, expect: r => [
+    ['the reason shows in the first-run sheet', /doesn't have SkyrimSE\.exe/.test(r.gameRow), r.gameRow],
   ] },
   { name: 'first start on this PC: the news box keeps its size', s: { ...base, seed: null, clicks: [] }, expect: r => [
     ['PLAY is not enabled before the checks', firstLabel(r, 'PLAY') !== null && firstLabel(r, 'PLAY') >= answeredAt(r, 'check')],

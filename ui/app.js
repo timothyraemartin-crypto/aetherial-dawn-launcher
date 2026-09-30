@@ -163,7 +163,9 @@
   }
   function renderGame() {
     const g = state.game;
-    const gameRow = [!!g, g ? 'Skyrim Special Edition' : 'Skyrim not found', g ? g.dir : (state.gameError || 'Pick the folder that has SkyrimSE.exe in it.')];
+    // A folder just picked that wasn't Skyrim: said here too, since the
+    // first-run sheet has no Settings error line.
+    const gameRow = [!!g, g ? 'Skyrim Special Edition' : 'Skyrim not found', g ? (pickError ? `${pickError} Still using ${g.dir}.` : g.dir) : (pickError || state.gameError || 'Pick the folder that has SkyrimSE.exe in it.')];
     // SKSE is the launcher's job: nothing here asks the player to get it.
     const skseRow = g && g.hasSkse ? [true, 'SKSE installed', ''] : [null, 'SKSE', 'Installed for you when you press Play.'];
     renderRow($('g-game'), ...gameRow); renderRow($('g-skse'), ...skseRow);
@@ -207,15 +209,27 @@
     return state;
   }
 
+  let pickError = null;
+  // One folder pick at a time: a second press while the launcher is still
+  // checking the first folder is ignored, so an older answer can never land
+  // after a newer one (on screen or in the saved settings).
+  let picking = false;
   async function pickFolder() {
+    if (picking) return;
+    picking = true;
+    try { await pickFolderOnce(); } finally { picking = false; }
+  }
+  async function pickFolderOnce() {
     const dir = await T.dialog.open({ directory: true, title: 'Choose your Skyrim Special Edition folder' });
     if (!dir) return;
     try {
       await invoke('set_game_dir', { dir });
       $('set-error').hidden = true;
+      pickError = null;
     } catch (e) {
       $('set-error').textContent = e;
       $('set-error').hidden = false;
+      pickError = String(e);
     }
     await refreshState();
     pending = null;
