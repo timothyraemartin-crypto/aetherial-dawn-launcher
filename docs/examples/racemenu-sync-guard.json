@@ -1,0 +1,17 @@
+{
+  "mods": [
+    {
+      "id": "racemenu-sync-guard",
+      "name": "RaceMenu sync guard",
+      "url": "https://vps-d38c928e.vps.ovh.us/launcher/patches/racemenu/1/skee64_custom.ini",
+      "file": "Data/SKSE/Plugins/skee64_custom.ini",
+      "sha256": "6a76a01640673873b810dd7c6b693c5de9dba1ba601a3b272417675def02c4eb"
+    },
+    {
+      "id": "alternate-high-poly-head",
+      "name": "Alternate High Poly Head",
+      "nexus": { "mod": 148541, "file": 736347 },
+      "skip": ["Data/meshes/actors/character/facegenmorphs/AlternateHighPolyHead_SE.esp/morphs.ini"]
+    }
+  ]
+}

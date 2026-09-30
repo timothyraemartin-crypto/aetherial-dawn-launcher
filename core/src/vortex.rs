@@ -365,8 +365,11 @@ pub fn membership(list: &[ModEntry], status: &Status) -> Membership {
         }
         match n.file {
             Some(file) => for m in &on {
+                // The female Community Overlays face archive may stay on
+                // beside the selected male one.
+                let spare_face = male_face_selected(list) && n.mod_id == 22487 && m.nexus_file_id == Some(104828);
                 if m.nexus_file_id != Some(file)
-                    && !(male_face_selected(list) && n.mod_id == 22487 && m.nexus_file_id == Some(104828))
+                    && !spare_face
                     && !list.iter().any(|o| o.nexus.as_ref().is_some_and(|on| on.mod_id == n.mod_id && on.file == m.nexus_file_id))
                     && !other_versions_on.contains(&m.id) {
                     other_versions_on.push(m.id.clone());

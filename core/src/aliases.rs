@@ -134,7 +134,7 @@ const LIGHT: u32 = 0x200;
 /// Club content by its name. Their ESL flags are the game's own business.
 /// Only the name counts, never Skyrim.ccc: the server has none, and the
 /// launcher empties the PC's for a session, so both decide the same way.
-fn shipped_with_game(plugin: &str) -> bool {
+pub(crate) fn shipped_with_game(plugin: &str) -> bool {
     if crate::health::MASTERS.iter().any(|m| m.eq_ignore_ascii_case(plugin)) || plugin.eq_ignore_ascii_case("_ResourcePack.esl") {
         return true;
     }
