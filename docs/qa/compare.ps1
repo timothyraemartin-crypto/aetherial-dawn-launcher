@@ -1,0 +1,103 @@
+<#
+D18: compares snapshot A (before uninstall) with snapshot B (after) and marks
+each row U1-U10 of PLAN-D18-UNINSTALL.md PASS or FAIL against the
+"Settings only" default. Read-only: it reads the two snapshot files only.
+Any change no row explains is listed as UNEXPECTED.
+With -Unchanged (the launcher-update and same-version one-click reinstall
+check) it passes only if nothing under FIXTURE, SAVES or DOCS changed.
+Exit 0: compared (PASS and FAIL are both evidence). Exit 2: a snapshot is
+missing, not snapshot/1, or incomplete, so nothing is judged.
+#>
+param([Parameter(Mandatory)][string]$Before, [Parameter(Mandatory)][string]$After, [switch]$Unchanged)
+$ErrorActionPreference = "Stop"
+
+function Load($path) {
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Write-Host "INCOMPLETE: $path is missing."; exit 2 }
+  $all = @(Get-Content -LiteralPath $path)
+  if ($all.Count -lt 3 -or $all[0] -ne "snapshot/1") { Write-Host "INCOMPLETE: $path is not a snapshot/1 file."; exit 2 }
+  if ($all[2] -ne "complete=true") { Write-Host "INCOMPLETE: $path says $($all[2]); take it again."; exit 2 }
+  $s = @{ Files = @{}; Fields = @{}; Roots = @{} }
+  foreach ($l in $all[3..($all.Count - 1)]) {
+    $c = $l -split "`t"
+    switch ($c[0]) {
+      "root" { $s.Roots[$c[1]] = $c[2] }
+      "file" { $s.Files[$c[1]] = ($c[2..($c.Count - 1)] -join " ") }
+      "field" { $s.Fields[$c[1]] = $c[2] }
+    }
+  }
+  return $s
+}
+$A = Load $Before
+$B = Load $After
+
+if ($Unchanged) {
+  $keys = @($A.Files.Keys) + @($B.Files.Keys) | Where-Object { $_ -match "^(FIXTURE|SAVES|DOCS)/" } | Sort-Object -Unique
+  $diff = @($keys | Where-Object { $A.Files[$_] -ne $B.Files[$_] })
+  $fields = @(@($A.Fields.Keys) + @($B.Fields.Keys) | Sort-Object -Unique | Where-Object { $A.Fields[$_] -ne $B.Fields[$_] })
+  foreach ($k in $diff + $fields) { "CHANGED`t$k" }
+  "{0}`t{1} file(s) and {2} setting(s) changed under the fake library, SAVES and DOCS" -f $(if ($diff.Count + $fields.Count -eq 0) { "PASS" } else { "FAIL" }), $diff.Count, $fields.Count
+  exit 0
+}
+
+$G = "FIXTURE/SteamLibrary/steamapps/common/Skyrim Special Edition"
+$ACF = "FIXTURE/SteamLibrary/steamapps/appmanifest_489830.acf"
+$STRAY = "$G/.aetherial-dawn/disabled/1727000000-strays/Data/PlayersOwn.esp"
+function Hash($s, $p) { if ($s.Files.ContainsKey($p)) { ($s.Files[$p] -split " " | Where-Object { $_ -like "sha256=*" }) } else { "absent" } }
+function Ro($s, $p) { if ($s.Files.ContainsKey($p)) { ($s.Files[$p] -split " " | Where-Object { $_ -like "ro=*" }) } else { "absent" } }
+function Row($id, $ok, $why) { "{0}`t{1}`t{2}" -f $id, $(if ($ok) { "PASS" } else { "FAIL" }), $why }
+$claimed = New-Object System.Collections.Generic.HashSet[string]
+
+# U1: read-only cleared and auto-update back on (0 = always keep updated).
+$claimed.Add($ACF) | Out-Null
+$au = $B.Fields[$ACF]; $ro = Ro $B $ACF
+Row "U1" (($ro -eq "ro=False") -and ($au -eq "AutoUpdateBehavior=0")) "after: $ro, $au"
+
+# U2: game files stay on the server build.
+$claimed.Add("$G/SkyrimSE.exe") | Out-Null
+Row "U2" ((Hash $A "$G/SkyrimSE.exe") -eq (Hash $B "$G/SkyrimSE.exe") -and (Hash $B "$G/SkyrimSE.exe") -ne "absent") "SkyrimSE.exe unchanged"
+
+# U3: set-aside file back in Data with the same bytes, disabled folder empty.
+$claimed.Add($STRAY) | Out-Null; $claimed.Add("$G/Data/PlayersOwn.esp") | Out-Null
+$left = @($B.Files.Keys | Where-Object { $_.StartsWith("$G/.aetherial-dawn/disabled/") })
+$back = (Hash $B "$G/Data/PlayersOwn.esp") -eq (Hash $A $STRAY) -and (Hash $A $STRAY) -ne "absent"
+Row "U3" ($back -and $left.Count -eq 0) "PlayersOwn.esp back in Data: $back; files still set aside: $($left.Count)"
+
+# U4: launcher's mod and Vortex's plugin both left alone.
+$claimed.Add("$G/Data/FeedMod.esp") | Out-Null; $claimed.Add("$G/Data/VortexOwned.esp") | Out-Null
+$u4 = ((Hash $A "$G/Data/FeedMod.esp") -eq (Hash $B "$G/Data/FeedMod.esp")) -and ((Hash $A "$G/Data/VortexOwned.esp") -eq (Hash $B "$G/Data/VortexOwned.esp")) -and ((Hash $B "$G/Data/FeedMod.esp") -ne "absent")
+Row "U4" $u4 "FeedMod.esp and VortexOwned.esp unchanged"
+
+# U5 and U6: each file has the backup's bytes and the backup is gone.
+foreach ($x in @(@("U5", "SAVES/plugins.txt"), @("U5", "SAVES/loadorder.txt"), @("U6", "$G/Skyrim.ccc"))) {
+  $file = $x[1]; $bak = "$file.aetherial-dawn-backup"
+  $claimed.Add($file) | Out-Null; $claimed.Add($bak) | Out-Null
+  $restored = (Hash $A $bak) -ne "absent" -and (Hash $B $file) -eq (Hash $A $bak)
+  $gone = -not $B.Files.ContainsKey($bak)
+  Row $x[0] ($restored -and $gone) "$(Split-Path -Leaf $file): has the backup's bytes: $restored; backup removed: $gone"
+}
+
+# U8: the game's remembered login is gone (the session in the client
+# settings file isn't checked: the snapshot never reads that file's contents).
+$AUTH = "$G/Data/Platform/PluginsNoLoad/auth-data-no-load.js"
+$claimed.Add($AUTH) | Out-Null
+Row "U8" (-not $B.Files.ContainsKey($AUTH) -and $A.Files.ContainsKey($AUTH)) "auth-data-no-load.js removed: $(-not $B.Files.ContainsKey($AUTH))"
+
+# U9 and U10: left alone.
+$claimed.Add("DOCS/Skyrim.ini") | Out-Null; $claimed.Add("DOCS/Skyrim.ini.aetherial-dawn-backup") | Out-Null
+$u9 = ((Hash $A "DOCS/Skyrim.ini") -eq (Hash $B "DOCS/Skyrim.ini")) -and ((Hash $A "DOCS/Skyrim.ini.aetherial-dawn-backup") -eq (Hash $B "DOCS/Skyrim.ini.aetherial-dawn-backup")) -and ((Hash $B "DOCS/Skyrim.ini") -ne "absent")
+Row "U9" $u9 "Skyrim.ini and its backup unchanged"
+Row "U10" ($A.Fields["REG/GpuPreference"] -eq $B.Fields["REG/GpuPreference"]) "graphics preference before: $($A.Fields['REG/GpuPreference']), after: $($B.Fields['REG/GpuPreference'])"
+
+# U7: launcher app data removed (config in ROAMING, the rest in LOCAL).
+$u7 = @("ROAMING", "LOCAL" | Where-Object { $B.Roots[$_] -ne "missing" })
+Row "U7" ($u7.Count -eq 0) "still present: $(if ($u7.Count) { $u7 -join ', ' } else { 'none' }) (the installer's 'delete app data' box: note if it was ticked)"
+
+# Anything else that changed under FIXTURE, SAVES or DOCS.
+$keys = @($A.Files.Keys) + @($B.Files.Keys) | Where-Object { $_ -match "^(FIXTURE|SAVES|DOCS)/" } | Sort-Object -Unique
+foreach ($k in $keys) {
+  if ($claimed.Contains($k)) { continue }
+  if (-not $A.Files.ContainsKey($k)) { "UNEXPECTED`tadded`t$k" }
+  elseif (-not $B.Files.ContainsKey($k)) { "UNEXPECTED`tremoved`t$k" }
+  elseif ($A.Files[$k] -ne $B.Files[$k]) { "UNEXPECTED`tchanged`t$k" }
+}
+"INFO`tINSTALL`t$($B.Roots['INSTALL'])"
