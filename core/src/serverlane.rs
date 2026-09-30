@@ -19,6 +19,20 @@ pub struct ServerLane {
     /// Only the launcher signed in with this Discord account exports.
     pub for_discord_id: String,
     pub mods: Vec<LaneMod>,
+    /// The server's masters before the lane's plugins, when the list widens
+    /// them past the five base masters (world-1.3 adds four Creation Club
+    /// masters). It must start with the five base masters in order, and an
+    /// `.esl` master is refused until the light-plugin handling exists. Left
+    /// out, it is the five base masters, and the list hash is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub masters: Option<Vec<String>>,
+}
+
+impl ServerLane {
+    /// The master contract: the list's own, or the five base masters.
+    pub fn masters(&self) -> Vec<String> {
+        self.masters.clone().unwrap_or_else(|| crate::health::MASTERS.iter().map(|m| m.to_string()).collect())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -152,8 +166,8 @@ pub fn local_override(root: &Path) -> Result<Option<(ServerLane, String)>> {
 pub struct FileReceipt {
     pub sha256: String,
     pub bytes: u64,
-    /// Its index in the server's load order: the five base masters are
-    /// 00-04, then the lane's plugins in list order.
+    /// Its index in the server's load order: the list's masters first (the
+    /// five base masters are 00-04), then the lane's plugins in list order.
     #[serde(default)]
     pub index: usize,
     /// The masters its TES4 header names, in header order.
@@ -218,14 +232,15 @@ fn order(lane: &ServerLane) -> Vec<(&str, &str)> {
 }
 
 /// Every collected plugin in `data` checked against the server's master
-/// contract: each master its TES4 header names must be one of the five base
-/// masters or a lane plugin that loads before it. A Creation Club master
+/// contract: each master its TES4 header names must be one of the server's
+/// masters (`ServerLane::masters`) or a lane plugin that loads before it. A Creation Club master
 /// (Fish, Survival Mode, Curios...), a master nobody lists, or one listed
 /// later would stop the server at load, so each is named here, as is a file
 /// with no readable header (PR #7, Codex 5916681442). Plugins not collected
 /// are skipped: `reconcile` already names them.
 pub fn master_problems(lane: &ServerLane, data: &Path) -> Vec<String> {
     let all = order(lane);
+    let contract = lane.masters();
     let mut before: Vec<&str> = Vec::new();
     let mut out = Vec::new();
     for (i, (_, name)) in all.iter().enumerate() {
@@ -235,13 +250,13 @@ pub fn master_problems(lane: &ServerLane, data: &Path) -> Vec<String> {
                 None => out.push(format!("{name} has no readable plugin header")),
                 Some(ms) => {
                     for m in ms {
-                        if crate::health::MASTERS.iter().any(|b| b.eq_ignore_ascii_case(&m)) || before.iter().any(|b| b.eq_ignore_ascii_case(&m)) {
+                        if contract.iter().any(|b| b.eq_ignore_ascii_case(&m)) || before.iter().any(|b| b.eq_ignore_ascii_case(&m)) {
                             continue;
                         }
                         if all[i + 1..].iter().any(|(_, later)| later.eq_ignore_ascii_case(&m)) {
                             out.push(format!("{name} needs {m}, which the list loads after it"));
                         } else {
-                            out.push(format!("{name} needs {m}, which isn't a base master or in the list"));
+                            out.push(format!("{name} needs {m}, which isn't one of the server's masters or in the list"));
                         }
                     }
                 }
@@ -317,6 +332,20 @@ pub fn list_hash(lane: &ServerLane) -> String {
 /// file (the server needs exactly the bytes players get), ids usable as
 /// file names, no plugin taken twice.
 pub fn check(lane: &ServerLane) -> Result<()> {
+    if let Some(ms) = &lane.masters {
+        let base = crate::health::MASTERS;
+        if ms.len() < base.len() || !ms.iter().zip(base.iter()).all(|(a, b)| a.eq_ignore_ascii_case(b)) {
+            return Err(Error::Game(format!("server lane: masters must start with {}", base.join(", "))));
+        }
+        for m in ms {
+            if !is_plugin(m) || m.contains(['/', '\\']) {
+                return Err(Error::Game(format!("server lane: master {m:?} isn't a plugin file name")));
+            }
+            if m.to_ascii_lowercase().ends_with(".esl") {
+                return Err(Error::Game(format!("server lane: master {m} is a light plugin (.esl), which the server can't load yet")));
+            }
+        }
+    }
     let mut ids = std::collections::HashSet::new();
     let mut names = std::collections::HashSet::new();
     for m in &lane.mods {
@@ -531,7 +560,7 @@ pub fn finish(root: &Path, lane: &ServerLane, hash: &str, plugins: BTreeMap<Stri
     for name in plugins.keys() {
         let path = data.join(name);
         let b = std::fs::read(&path)?;
-        let index = crate::health::MASTERS.len() + at.iter().position(|(_, p)| p.eq_ignore_ascii_case(name)).unwrap_or_default();
+        let index = lane.masters().len() + at.iter().position(|(_, p)| p.eq_ignore_ascii_case(name)).unwrap_or_default();
         let light = b.len() >= 12 && u32::from_le_bytes([b[8], b[9], b[10], b[11]]) & 0x200 != 0;
         files.insert(
             name.clone(),
@@ -783,7 +812,7 @@ mod tests {
         std::fs::write(data.join("Late.esm"), esp(&["Dragonborn.esm"], 1)).unwrap();
         std::fs::write(data.join("Junk.esp"), b"not a plugin").unwrap();
         let want = vec![
-            "COTN Dawnstar.esp needs ccBGSSSE001-Fish.esm, which isn't a base master or in the list".to_string(),
+            "COTN Dawnstar.esp needs ccBGSSSE001-Fish.esm, which isn't one of the server's masters or in the list".to_string(),
             "Patch.esp needs Late.esm, which the list loads after it".to_string(),
             "Junk.esp has no readable plugin header".to_string(),
         ];
@@ -814,6 +843,31 @@ mod tests {
         assert_eq!(idx, vec![("COTN Dawnstar.esp", 6), ("Junk.esp", 9), ("Late.esm", 7), ("Patch.esp", 8), ("TGC.esm", 5)]);
         assert!(rec.files["COTN Dawnstar.esp"].light && !rec.files["TGC.esm"].light);
         assert_eq!(rec.files["Patch.esp"].masters, vec!["tgc.esm", "Late.esm"]);
+    }
+
+    #[test]
+    fn a_list_can_widen_the_masters_but_not_to_light_ones() {
+        let base = r#""Skyrim.esm","Update.esm","Dawnguard.esm","HearthFires.esm","Dragonborn.esm""#;
+        let mods = r#"[{"id":"cotn","name":"COTN","nexus":{"mod":2,"file":2},"plugins":["COTN Dawnstar.esp"]}]"#;
+        // No field: the five base masters, and the hash a list had before.
+        let plain = lane(&format!(r#"{{"for_discord_id":"1","mods":{mods}}}"#));
+        assert_eq!(plain.masters().len(), 5);
+        assert!(!serde_json::to_string(&plain).unwrap().contains("masters\":["));
+        let wide = lane(&format!(r#"{{"for_discord_id":"1","mods":{mods},"masters":[{base},"ccBGSSSE001-Fish.esm"]}}"#));
+        check(&wide).unwrap();
+        let t = tempfile::tempdir().unwrap();
+        let data = t.path().join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("COTN Dawnstar.esp"), esp(&["Skyrim.esm", "ccBGSSSE001-Fish.esm"], 0)).unwrap();
+        assert_eq!(master_problems(&plain, &data).len(), 1);
+        assert!(master_problems(&wide, &data).is_empty());
+        let rec = finish(t.path(), &wide, "h", [("COTN Dawnstar.esp".to_string(), "cotn".to_string())].into(), Source::served()).unwrap();
+        assert_eq!(rec.files["COTN Dawnstar.esp"].index, 6);
+        // A light master, a list not starting with the base five, a path.
+        for bad in [format!(r#"[{base},"ccQDRSSE001-SurvivalMode.esl"]"#), r#"["Skyrim.esm","ccBGSSSE001-Fish.esm"]"#.to_string(), format!(r#"[{base},"x/Fish.esm"]"#)] {
+            let l = lane(&format!(r#"{{"for_discord_id":"1","mods":{mods},"masters":{bad}}}"#));
+            assert!(check(&l).is_err(), "{bad}");
+        }
     }
 
     #[test]
