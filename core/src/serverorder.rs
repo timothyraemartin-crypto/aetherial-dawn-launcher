@@ -29,13 +29,26 @@ pub struct ServerPlugin {
     pub crc32: Option<u32>,
 }
 
+/// A plugin name a PC can be told to load: a bare file name ending in
+/// .esp, .esm or .esl, with no path separators, control characters or a
+/// leading "*" or "#" (a served name becomes a plugins.txt line).
+pub fn plain_plugin_name(n: &str) -> bool {
+    let l = n.to_ascii_lowercase();
+    !n.is_empty()
+        && n == n.trim()
+        && !n.chars().any(|c| c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        && !n.starts_with('#')
+        && n != "." && n != ".."
+        && [".esp", ".esm", ".esl"].iter().any(|x| l.ends_with(x) && l.len() > x.len())
+}
+
 /// The server's order from its masters.json (list order is load order).
 /// Only a list says an order: the object form comes back sorted, so it
 /// gives no order at all.
 pub fn server_order(masters: &serde_json::Value) -> Vec<ServerPlugin> {
     let list = masters.get("masters").or_else(|| masters.get("files")).unwrap_or(masters);
     let Some(a) = list.as_array() else { return Vec::new() };
-    a.iter()
+    let out: Vec<ServerPlugin> = a.iter()
         .filter_map(|e| {
             let n = e.get("name").or_else(|| e.get("file")).or_else(|| e.get("path")).and_then(|n| n.as_str())?;
             // A master every PC runs as a converted copy is compared by the
@@ -59,7 +72,15 @@ pub fn server_order(masters: &serde_json::Value) -> Vec<ServerPlugin> {
                 crc32,
             })
         })
-        .collect()
+        .collect();
+    // A name that isn't a plain plugin file name, or that appears twice,
+    // makes the whole list unusable: Play then refuses, as for a list with
+    // no base masters, rather than write it into plugins.txt.
+    let mut seen = std::collections::HashSet::new();
+    if out.len() != a.len() || !out.iter().all(|p| plain_plugin_name(&p.name) && seen.insert(p.name.to_ascii_lowercase())) {
+        return Vec::new();
+    }
+    out
 }
 
 /// The served masters.json for an export: the five base masters as the
@@ -87,6 +108,9 @@ pub fn masters_json(base: &[serde_json::Value], export: &serde_json::Value) -> R
     for (k, (index, e)) in rest.into_iter().enumerate() {
         let want = (BASE.len() + k) as u64;
         let name = e.get("run_name").and_then(|n| n.as_str()).filter(|n| !n.is_empty()).ok_or(format!("the export entry at index {index} has no run_name"))?;
+        if !plain_plugin_name(name) || BASE.iter().any(|b| b.eq_ignore_ascii_case(name)) || out.iter().any(|o| o["name"].as_str().is_some_and(|x| x.eq_ignore_ascii_case(name))) {
+            return Err(format!("{name:?} at index {index} isn't a plain, new plugin name"));
+        }
         if index != want {
             return Err(format!("{name} is at index {index}; the next index is {want}"));
         }
@@ -94,7 +118,10 @@ pub fn masters_json(base: &[serde_json::Value], export: &serde_json::Value) -> R
             .ok_or(format!("{name} has no canonical_sha256"))?;
         let bytes = e.get("canonical_bytes").and_then(|b| b.as_u64()).filter(|b| *b > 0).ok_or(format!("{name} has no canonical_bytes"))?;
         let crc = e.get("canonical_crc32").and_then(|c| c.as_u64()).and_then(|c| u32::try_from(c).ok()).ok_or(format!("{name} has no canonical_crc32"))?;
-        out.push(serde_json::json!({ "name": name, "canonical_sha256": sha.to_ascii_lowercase(), "canonical_size": bytes, "canonical_crc32": crc }));
+        // The plain fields carry the same values, so a launcher from before
+        // canonical_* checks the converted copy too, never the original.
+        let sha = sha.to_ascii_lowercase();
+        out.push(serde_json::json!({ "name": name, "size": bytes, "crc32": crc, "sha256": sha, "canonical_sha256": sha, "canonical_size": bytes, "canonical_crc32": crc }));
     }
     Ok(serde_json::json!({ "masters": out }))
 }
@@ -343,50 +370,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn masters_json_is_made_from_the_export_record() {
-        let base: Vec<serde_json::Value> = BASE.iter().enumerate().map(|(i, n)| serde_json::json!({"name": n, "size": 10 + i, "sha256": format!("{i}").repeat(64)})).collect();
-        let h = |c: char| c.to_string().repeat(64);
-        let export = serde_json::json!({
-            "masters": [
-                {"file": "_ResourcePack.esl", "run_name": "_ResourcePack.esm", "index": 5, "sha256": h('a'), "canonical_sha256": h('B'), "canonical_bytes": 90, "canonical_crc32": 4000000000u32},
-                {"file": "ccBGSSSE001-Fish.esm", "run_name": "ccBGSSSE001-Fish.esm", "index": 6, "sha256": h('c'), "canonical_sha256": h('c'), "canonical_bytes": 70, "canonical_crc32": 7}],
-            "files": {
-                "COTN Dawnstar.esp": {"sha256": h('d'), "bytes": 5, "index": 8, "run_name": "COTN-Dawnstar.esp", "canonical_sha256": h('e'), "canonical_bytes": 6, "canonical_crc32": 8},
-                "Unofficial Skyrim Special Edition Patch.esp": {"sha256": h('f'), "bytes": 9, "index": 7, "run_name": "Unofficial-Skyrim-Special-Edition-Patch.esp", "canonical_sha256": h('f'), "canonical_bytes": 9, "canonical_crc32": 9}}});
-        let m = masters_json(&base, &export).unwrap();
-        let order = server_order(&m);
-        let names: Vec<&str> = order.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names[5..], ["_ResourcePack.esm", "ccBGSSSE001-Fish.esm", "Unofficial-Skyrim-Special-Edition-Patch.esp", "COTN-Dawnstar.esp"]);
-        assert!(valid_base(&order));
-        assert_eq!((order[5].size, order[5].crc32, order[5].sha256.clone()), (Some(90), Some(4000000000), Some("b".repeat(64))));
-        // Only canonical values, never the exporting PC's own file hash.
-        assert!(!m.to_string().contains(&h('a')));
-        // The health check reads the same values.
-        assert_eq!(crate::health::parse_masters(&m)[5], ("_ResourcePack.esm".into(), Some(90), Some("b".repeat(64))));
-        // A gap, a missing canonical value, or bad base masters are refused.
-        let mut gap = export.clone();
-        gap["files"]["COTN Dawnstar.esp"]["index"] = 9.into();
-        assert!(masters_json(&base, &gap).unwrap_err().contains("next index is 8"));
-        let mut no_crc = export.clone();
-        no_crc["masters"][1].as_object_mut().unwrap().remove("canonical_crc32");
-        assert!(masters_json(&base, &no_crc).unwrap_err().contains("canonical_crc32"));
-        assert!(masters_json(&base[..4], &export).is_err());
-    }
-
-    #[test]
-    fn a_converted_master_is_compared_by_its_canonical_bytes() {
-        let v = serde_json::json!({"masters": [
-            {"name": "_ResourcePack.esm", "size": 9, "crc32": "0000000a", "sha256": "AA", "canonical_sha256": "BB", "canonical_size": 8, "canonical_crc32": "0000000b"},
-            {"name": "ccBGSSSE001-Fish.esm", "size": 7, "crc32": 12, "sha256": "cc"},
-            {"name": "ccQDRSSE001-SurvivalMode.esm", "size": 9, "crc32": 1, "sha256": "dd", "canonicalSha256": "ee"}]});
-        let o = server_order(&v);
-        assert_eq!((o[0].size, o[0].crc32, o[0].sha256.as_deref()), (Some(8), Some(0xb), Some("bb")));
-        assert_eq!((o[1].size, o[1].crc32, o[1].sha256.as_deref()), (Some(7), Some(12), Some("cc")));
-        // Canonical hash without a canonical size or crc: those aren't checked.
-        assert_eq!((o[2].size, o[2].crc32, o[2].sha256.as_deref()), (None, None, Some("ee")));
-    }
-
-    #[test]
     fn play_requires_ordered_fingerprinted_base_masters_but_allows_later_plugins() {
         let mut order: Vec<ServerPlugin> = BASE.iter().map(|name| ServerPlugin {
             name: (*name).into(), size: Some(1), sha256: Some("a".repeat(64)), crc32: None,
@@ -507,5 +490,71 @@ mod tests {
         assert!(!beyond_base(&o));
         // The object form has no order.
         assert!(server_order(&serde_json::json!({"Skyrim.esm": {"size": 1}, "A.esp": {"size": 2}})).is_empty());
+    }
+
+    #[test]
+    fn a_converted_master_is_compared_by_its_canonical_bytes() {
+        let v = serde_json::json!({"masters": [
+            {"name": "_ResourcePack.esm", "size": 9, "crc32": "0000000a", "sha256": "AA", "canonical_sha256": "BB", "canonical_size": 8, "canonical_crc32": "0000000b"},
+            {"name": "ccBGSSSE001-Fish.esm", "size": 7, "crc32": 12, "sha256": "cc"},
+            {"name": "ccQDRSSE001-SurvivalMode.esm", "size": 9, "crc32": 1, "sha256": "dd", "canonicalSha256": "ee"}]});
+        let o = server_order(&v);
+        assert_eq!((o[0].size, o[0].crc32, o[0].sha256.as_deref()), (Some(8), Some(0xb), Some("bb")));
+        assert_eq!((o[1].size, o[1].crc32, o[1].sha256.as_deref()), (Some(7), Some(12), Some("cc")));
+        // Canonical hash without a canonical size or crc: those aren't checked.
+        assert_eq!((o[2].size, o[2].crc32, o[2].sha256.as_deref()), (None, None, Some("ee")));
+        // A served name that could write a line of its own into plugins.txt,
+        // a path, or a repeat makes the whole list unusable (Play refuses).
+        let base: Vec<serde_json::Value> = BASE.iter().map(|n| serde_json::json!({"name": n, "size": 1, "sha256": "a".repeat(64)})).collect();
+        let with = |extra: &[&str]| {
+            let mut v = base.clone();
+            v.extend(extra.iter().map(|n| serde_json::json!({"name": n, "size": 1})));
+            server_order(&serde_json::json!({ "masters": v }))
+        };
+        assert_eq!(with(&["COTN-Dawnstar.esp"]).len(), 6);
+        // A "Data/..." path is read as its file name, as before.
+        assert_eq!(with(&["Data/COTN-Dawnstar.esp"])[5].name, "COTN-Dawnstar.esp");
+        for bad in [&["../../evil\n*X.esp"][..], &["X.esp\r"], &["*X.esp"], &["A.esp", "a.ESP"], &["Skyrim.esm"]] {
+            assert!(with(bad).is_empty(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn masters_json_is_made_from_the_export_record() {
+        let base: Vec<serde_json::Value> = BASE.iter().enumerate().map(|(i, n)| serde_json::json!({"name": n, "size": 10 + i, "sha256": format!("{i}").repeat(64)})).collect();
+        let h = |c: char| c.to_string().repeat(64);
+        let export = serde_json::json!({
+            "masters": [
+                {"file": "_ResourcePack.esl", "run_name": "_ResourcePack.esm", "index": 5, "sha256": h('a'), "canonical_sha256": h('B'), "canonical_bytes": 90, "canonical_crc32": 4000000000u32},
+                {"file": "ccBGSSSE001-Fish.esm", "run_name": "ccBGSSSE001-Fish.esm", "index": 6, "sha256": h('c'), "canonical_sha256": h('c'), "canonical_bytes": 70, "canonical_crc32": 7}],
+            "files": {
+                "COTN Dawnstar.esp": {"sha256": h('d'), "bytes": 5, "index": 8, "run_name": "COTN-Dawnstar.esp", "canonical_sha256": h('e'), "canonical_bytes": 6, "canonical_crc32": 8},
+                "Unofficial Skyrim Special Edition Patch.esp": {"sha256": h('f'), "bytes": 9, "index": 7, "run_name": "Unofficial-Skyrim-Special-Edition-Patch.esp", "canonical_sha256": h('f'), "canonical_bytes": 9, "canonical_crc32": 9}}});
+        let m = masters_json(&base, &export).unwrap();
+        let order = server_order(&m);
+        let names: Vec<&str> = order.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names[5..], ["_ResourcePack.esm", "ccBGSSSE001-Fish.esm", "Unofficial-Skyrim-Special-Edition-Patch.esp", "COTN-Dawnstar.esp"]);
+        assert!(valid_base(&order));
+        assert_eq!((order[5].size, order[5].crc32, order[5].sha256.clone()), (Some(90), Some(4000000000), Some("b".repeat(64))));
+        // Only canonical values, never the exporting PC's own file hash.
+        assert!(!m.to_string().contains(&h('a')));
+        // The health check reads the same values.
+        assert_eq!(crate::health::parse_masters(&m)[5], ("_ResourcePack.esm".into(), Some(90), Some("b".repeat(64))));
+        // A gap, a missing canonical value, or bad base masters are refused.
+        let mut gap = export.clone();
+        gap["files"]["COTN Dawnstar.esp"]["index"] = 9.into();
+        assert!(masters_json(&base, &gap).unwrap_err().contains("next index is 8"));
+        let mut no_crc = export.clone();
+        no_crc["masters"][1].as_object_mut().unwrap().remove("canonical_crc32");
+        assert!(masters_json(&base, &no_crc).unwrap_err().contains("canonical_crc32"));
+        assert!(masters_json(&base[..4], &export).is_err());
+        // Older launchers read the plain fields: they carry the canonical values.
+        assert_eq!((m["masters"][5]["size"].as_u64(), m["masters"][5]["sha256"].as_str()), (Some(90), Some("b".repeat(64).as_str())));
+        // A name that isn't a plain plugin file name, a base name, or a repeat is refused.
+        for bad in ["../../evil\n*X.esp", "Data/X.esp", "*X.esp", "#X.esp", "X.txt", "Skyrim.esm", "_resourcepack.ESM"] {
+            let mut e = export.clone();
+            e["files"]["COTN Dawnstar.esp"]["run_name"] = bad.into();
+            assert!(masters_json(&base, &e).is_err(), "{bad:?}");
+        }
     }
 }
