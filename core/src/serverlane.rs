@@ -152,6 +152,16 @@ pub fn local_override(root: &Path) -> Result<Option<(ServerLane, String)>> {
 pub struct FileReceipt {
     pub sha256: String,
     pub bytes: u64,
+    /// Its index in the server's load order: the five base masters are
+    /// 00-04, then the lane's plugins in list order.
+    #[serde(default)]
+    pub index: usize,
+    /// The masters its TES4 header names, in header order.
+    #[serde(default)]
+    pub masters: Vec<String>,
+    /// Whether its header carries the light (ESL) flag.
+    #[serde(default)]
+    pub light: bool,
 }
 
 /// One mod's outcome in an export run, kept in `report.json` whether the
@@ -180,6 +190,10 @@ pub struct Report {
     /// The first mod that failed, with its reason.
     pub first_failure: Option<String>,
     pub mods: Vec<ModOutcome>,
+    /// Collected plugins whose header masters the server couldn't load
+    /// (see `master_problems`).
+    #[serde(default)]
+    pub master_problems: Vec<String>,
 }
 
 const REPORT: &str = "report.json";
@@ -198,6 +212,46 @@ pub fn reconcile(lane: &ServerLane, plugins: &BTreeMap<String, String>) -> (Vec<
     (missing, extra)
 }
 
+/// The lane's plugins in load order (list order), each with its mod id.
+fn order(lane: &ServerLane) -> Vec<(&str, &str)> {
+    lane.mods.iter().flat_map(|m| m.plugins.iter().map(move |p| (m.entry.id.as_str(), p.as_str()))).collect()
+}
+
+/// Every collected plugin in `data` checked against the server's master
+/// contract: each master its TES4 header names must be one of the five base
+/// masters or a lane plugin that loads before it. A Creation Club master
+/// (Fish, Survival Mode, Curios...), a master nobody lists, or one listed
+/// later would stop the server at load, so each is named here, as is a file
+/// with no readable header (PR #7, Codex 5916681442). Plugins not collected
+/// are skipped: `reconcile` already names them.
+pub fn master_problems(lane: &ServerLane, data: &Path) -> Vec<String> {
+    let all = order(lane);
+    let mut before: Vec<&str> = Vec::new();
+    let mut out = Vec::new();
+    for (i, (_, name)) in all.iter().enumerate() {
+        let path = data.join(name);
+        if path.is_file() {
+            match crate::loadorder::masters(&path) {
+                None => out.push(format!("{name} has no readable plugin header")),
+                Some(ms) => {
+                    for m in ms {
+                        if crate::health::MASTERS.iter().any(|b| b.eq_ignore_ascii_case(&m)) || before.iter().any(|b| b.eq_ignore_ascii_case(&m)) {
+                            continue;
+                        }
+                        if all[i + 1..].iter().any(|(_, later)| later.eq_ignore_ascii_case(&m)) {
+                            out.push(format!("{name} needs {m}, which the list loads after it"));
+                        } else {
+                            out.push(format!("{name} needs {m}, which isn't a base master or in the list"));
+                        }
+                    }
+                }
+            }
+        }
+        before.push(name);
+    }
+    out
+}
+
 /// Writes `report.json` for this run and returns it.
 pub fn report(root: &Path, lane: &ServerLane, hash: &str, plugins: &BTreeMap<String, String>, mods: Vec<ModOutcome>) -> Result<Report> {
     let (missing, extra) = reconcile(lane, plugins);
@@ -209,6 +263,7 @@ pub fn report(root: &Path, lane: &ServerLane, hash: &str, plugins: &BTreeMap<Str
         extra,
         first_failure: mods.iter().find_map(|m| m.error.as_ref().map(|e| format!("{}: {e}", m.name))),
         mods,
+        master_problems: master_problems(lane, &root.join("Data")),
     };
     std::fs::create_dir_all(root)?;
     std::fs::write(root.join(REPORT), serde_json::to_vec_pretty(&rep)?)?;
@@ -465,10 +520,23 @@ pub fn finish(root: &Path, lane: &ServerLane, hash: &str, plugins: BTreeMap<Stri
         )));
     }
     let data = root.join("Data");
+    // Never a zip the server couldn't load: every header master must be a
+    // base master or come earlier in the list.
+    let bad = master_problems(lane, &data);
+    if !bad.is_empty() {
+        return Err(Error::Game(format!("the export's plugins name masters the server can't load ({}); no zip made", bad.join("; "))));
+    }
+    let at: Vec<(&str, &str)> = order(lane);
     let mut files = BTreeMap::new();
     for name in plugins.keys() {
-        let b = std::fs::read(data.join(name))?;
-        files.insert(name.clone(), FileReceipt { sha256: format!("{:x}", Sha256::digest(&b)), bytes: b.len() as u64 });
+        let path = data.join(name);
+        let b = std::fs::read(&path)?;
+        let index = crate::health::MASTERS.len() + at.iter().position(|(_, p)| p.eq_ignore_ascii_case(name)).unwrap_or_default();
+        let light = b.len() >= 12 && u32::from_le_bytes([b[8], b[9], b[10], b[11]]) & 0x200 != 0;
+        files.insert(
+            name.clone(),
+            FileReceipt { sha256: format!("{:x}", Sha256::digest(&b)), bytes: b.len() as u64, index, masters: crate::loadorder::masters(&path).unwrap_or_default(), light },
+        );
     }
     let tmp = root.join(format!("{ZIP_NAME}.part"));
     {
@@ -666,12 +734,95 @@ mod tests {
         assert_eq!(plugins_in(t.path()), vec!["Heavy Armory.esp", "Options/B/Patch.ESM", "Options/Patch A.esl"]);
     }
 
+    /// A plugin: a TES4 header naming `masters`, with `flags`.
+    fn esp(masters: &[&str], flags: u32) -> Vec<u8> {
+        let mut sub = Vec::new();
+        sub.extend(b"HEDR");
+        sub.extend(12u16.to_le_bytes());
+        sub.extend(1.71f32.to_le_bytes());
+        sub.extend([0u8; 8]);
+        for m in masters {
+            let mut z = m.as_bytes().to_vec();
+            z.push(0);
+            sub.extend(b"MAST");
+            sub.extend((z.len() as u16).to_le_bytes());
+            sub.extend(z);
+            sub.extend(b"DATA");
+            sub.extend(8u16.to_le_bytes());
+            sub.extend([0u8; 8]);
+        }
+        let mut b = b"TES4".to_vec();
+        b.extend((sub.len() as u32).to_le_bytes());
+        b.extend(flags.to_le_bytes());
+        b.extend([0u8; 8]);
+        b.extend(44u16.to_le_bytes());
+        b.extend([0u8; 2]);
+        b.extend(sub);
+        b
+    }
+
+    #[test]
+    fn a_master_the_server_cant_load_stops_the_export_and_is_named() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join(LANE_DIR);
+        let data = root.join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        // The shape of PR #7 5916681442: COTN Dawnstar names Creation Club
+        // masters outside the five-master contract.
+        let l = lane(
+            r#"{"for_discord_id":"1","mods":[
+            {"id":"tgc","name":"TGC","nexus":{"mod":1,"file":1},"plugins":["TGC.esm"]},
+            {"id":"cotn","name":"COTN","nexus":{"mod":2,"file":2},"plugins":["COTN Dawnstar.esp"]},
+            {"id":"patch","name":"Patch","nexus":{"mod":3,"file":3},"plugins":["Patch.esp"]},
+            {"id":"late","name":"Late","nexus":{"mod":4,"file":4},"plugins":["Late.esm"]},
+            {"id":"junk","name":"Junk","nexus":{"mod":5,"file":5},"plugins":["Junk.esp"]}]}"#,
+        );
+        std::fs::write(data.join("TGC.esm"), esp(&["Skyrim.esm"], 1)).unwrap();
+        std::fs::write(data.join("COTN Dawnstar.esp"), esp(&["Skyrim.esm", "ccBGSSSE001-Fish.esm", "TGC.esm"], 0x200)).unwrap();
+        std::fs::write(data.join("Patch.esp"), esp(&["tgc.esm", "Late.esm"], 0)).unwrap();
+        std::fs::write(data.join("Late.esm"), esp(&["Dragonborn.esm"], 1)).unwrap();
+        std::fs::write(data.join("Junk.esp"), b"not a plugin").unwrap();
+        let want = vec![
+            "COTN Dawnstar.esp needs ccBGSSSE001-Fish.esm, which isn't a base master or in the list".to_string(),
+            "Patch.esp needs Late.esm, which the list loads after it".to_string(),
+            "Junk.esp has no readable plugin header".to_string(),
+        ];
+        assert_eq!(master_problems(&l, &data), want);
+        let plugins: BTreeMap<String, String> = [("TGC.esm", "tgc"), ("COTN Dawnstar.esp", "cotn"), ("Patch.esp", "patch"), ("Late.esm", "late"), ("Junk.esp", "junk")]
+            .into_iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        let r = report(&root, &l, "h", &plugins, vec![]).unwrap();
+        assert_eq!(r.master_problems, want);
+        let e = finish(&root, &l, "h", plugins.clone(), Source::served()).unwrap_err().to_string();
+        assert!(e.contains("ccBGSSSE001-Fish.esm") && e.contains("no zip made"), "{e}");
+        assert!(!root.join(ZIP_NAME).exists() && !root.join("export.json").exists());
+        // Fixed: the CC master gone, the order corrected, the junk replaced.
+        let l = lane(
+            r#"{"for_discord_id":"1","mods":[
+            {"id":"tgc","name":"TGC","nexus":{"mod":1,"file":1},"plugins":["TGC.esm"]},
+            {"id":"cotn","name":"COTN","nexus":{"mod":2,"file":2},"plugins":["COTN Dawnstar.esp"]},
+            {"id":"late","name":"Late","nexus":{"mod":4,"file":4},"plugins":["Late.esm"]},
+            {"id":"patch","name":"Patch","nexus":{"mod":3,"file":3},"plugins":["Patch.esp"]},
+            {"id":"junk","name":"Junk","nexus":{"mod":5,"file":5},"plugins":["Junk.esp"]}]}"#,
+        );
+        std::fs::write(data.join("COTN Dawnstar.esp"), esp(&["Skyrim.esm", "TGC.esm"], 0x200)).unwrap();
+        std::fs::write(data.join("Junk.esp"), esp(&[], 0)).unwrap();
+        assert!(master_problems(&l, &data).is_empty());
+        let rec = finish(&root, &l, "h2", plugins, Source::served()).unwrap();
+        let idx: Vec<(&str, usize)> = rec.files.iter().map(|(n, f)| (n.as_str(), f.index)).collect();
+        assert_eq!(idx, vec![("COTN Dawnstar.esp", 6), ("Junk.esp", 9), ("Late.esm", 7), ("Patch.esp", 8), ("TGC.esm", 5)]);
+        assert!(rec.files["COTN Dawnstar.esp"].light && !rec.files["TGC.esm"].light);
+        assert_eq!(rec.files["Patch.esp"].masters, vec!["tgc.esm", "Late.esm"]);
+    }
+
     #[test]
     fn zips_the_plugins_and_remembers_the_list() {
         let t = tempfile::tempdir().unwrap();
         let root = t.path().join(LANE_DIR);
         let src = t.path().join("a.esp");
-        std::fs::write(&src, b"plugin bytes").unwrap();
+        let bytes = esp(&["Skyrim.esm", "Update.esm"], 0);
+        std::fs::write(&src, &bytes).unwrap();
         let mut seen = BTreeMap::new();
         collect(&root, "jks", &[(src.clone(), "JKs Skyrim.esp".into())], &mut seen).unwrap();
         assert!(collect(&root, "other", &[(src, "jks skyrim.esp".into())], &mut seen).is_err());
@@ -687,7 +838,10 @@ mod tests {
         let h = list_hash(&l);
         let rec = finish(&root, &l, &h, seen, Source::local("ab")).unwrap();
         assert_eq!(rec.source, Source::local("ab"));
-        assert_eq!(rec.files["JKs Skyrim.esp"].bytes, 12);
+        assert_eq!(rec.files["JKs Skyrim.esp"].bytes, bytes.len() as u64);
+        assert_eq!(rec.files["JKs Skyrim.esp"].index, 5);
+        assert_eq!(rec.files["JKs Skyrim.esp"].masters, vec!["Skyrim.esm", "Update.esm"]);
+        assert!(!rec.files["JKs Skyrim.esp"].light);
         assert_eq!(rec.files["JKs Skyrim.esp"].sha256.len(), 64);
         assert!(done(&root, &h));
         assert!(!done(&root, "other list"));

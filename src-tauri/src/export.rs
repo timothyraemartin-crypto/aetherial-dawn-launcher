@@ -176,13 +176,19 @@ async fn run(app: &AppHandle) -> Result<(), String> {
     }
     // What each mod gave or why it didn't, whether or not the run finished.
     match serverlane::report(&root, &lane, &hash, &plugins, outcomes) {
-        Ok(r) => say(&format!(
-            "export: {} of {} declared plugins collected{}{}",
-            r.collected,
-            r.declared,
-            r.first_failure.as_ref().map(|f| format!("; first failure: {f}")).unwrap_or_default(),
-            if r.missing.is_empty() { String::new() } else { format!("; missing: {}", r.missing.iter().map(|(m, p)| format!("{p} ({m})")).collect::<Vec<_>>().join(", ")) }
-        )),
+        Ok(r) => {
+            // Masters the server couldn't load, named before the zip is refused.
+            for p in &r.master_problems {
+                say(&format!("export: masters: {p}"));
+            }
+            say(&format!(
+                "export: {} of {} declared plugins collected{}{}",
+                r.collected,
+                r.declared,
+                r.first_failure.as_ref().map(|f| format!("; first failure: {f}")).unwrap_or_default(),
+                if r.missing.is_empty() { String::new() } else { format!("; missing: {}", r.missing.iter().map(|(m, p)| format!("{p} ({m})")).collect::<Vec<_>>().join(", ")) }
+            ))
+        }
         Err(e) => say(&format!("export: couldn't write the report: {e}")),
     }
     if !failed.is_empty() {
