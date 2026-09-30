@@ -651,6 +651,17 @@
   // ---------- required mods: manual installation through Vortex ----------
   const rqError = (e) => { $('rq-error').textContent = e ? String(e) : ''; $('rq-error').hidden = !e; };
 
+  // Vortex's three answers for one mod, each named; a step Vortex hasn't
+  // answered is left out rather than guessed.
+  function vortexSteps(m) {
+    const parts = [
+      [m.vortex_installed, 'installed', 'not installed'],
+      [m.vortex_enabled, 'switched on', 'not switched on'],
+      [m.vortex_deployed, 'deployed', 'not deployed'],
+    ].filter(([v]) => v === true || v === false).map(([v, yes, no]) => (v ? yes : no));
+    return parts.length ? ` · In Vortex: ${parts.join(', ')}` : '';
+  }
+
   function renderMods(view, fromPlay = false) {
     $('rq-summary').textContent = fromPlay
       ? `Play stopped because these ${plural(view.mods.length, 'required mod')} need attention in Vortex.`
@@ -673,7 +684,7 @@
         : m.from === 'direct'
         ? (m.installed ? 'Game files found' : m.looks_for ? `Missing files: ${m.looks_for}` : 'Game files not found')
         : m.in_vortex === true ? 'Vortex profile, deployment, and game files confirmed'
-        : m.in_vortex === false ? (m.looks_for ? `Vortex deployment or game files need attention: ${m.looks_for}` : 'Vortex deployment needs attention')
+        : m.in_vortex === false ? (m.looks_for ? `Vortex deployment or game files need attention: ${m.looks_for}` : 'Vortex deployment needs attention') + vortexSteps(m)
         : m.installed ? 'Game files found — waiting for Vortex profile check'
         : m.looks_for ? `Missing files: ${m.looks_for}` : 'Waiting for Vortex profile check';
       text.append(name, sub);

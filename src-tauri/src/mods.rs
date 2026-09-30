@@ -236,6 +236,10 @@ pub struct Row {
     installed: bool,
     /// Vortex deployed it (Vortex's deployment record); None without one.
     in_vortex: Option<bool>,
+    /// Vortex's three answers, each on its own; None is unknown.
+    vortex_installed: Option<bool>,
+    vortex_enabled: Option<bool>,
+    vortex_deployed: Option<bool>,
     from: &'static str,
 }
 
@@ -253,6 +257,9 @@ fn row_with(m: &ModEntry, _game_dir: &Path, st: launcher_core::inventory::Standi
         looks_for: m.check.join(", "),
         installed: st.game_files,
         in_vortex: st.vortex_deployed,
+        vortex_installed: None,
+        vortex_enabled: None,
+        vortex_deployed: None,
         from: if m.nexus.is_some() { "nexus" } else { "direct" },
     }
 }
@@ -381,6 +388,11 @@ pub async fn mods_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult
     let rows = list.iter().zip(st).zip(&readout.exact).map(|((m, s), exact)| {
         let mut row = row_with(m, &dir, s);
         row.in_vortex = *exact;
+        // Unknown while the server's current lists can't be read, like the gate.
+        if current_issue.is_none() {
+            let v = launcher_core::vortex::package_states(&set.mods, m, status.as_ref(), &deployed, &dir);
+            (row.vortex_installed, row.vortex_enabled, row.vortex_deployed) = (v.installed, v.enabled, v.deployed);
+        }
         row
     }).collect();
     let counts_text = if current_issue.is_some() {
