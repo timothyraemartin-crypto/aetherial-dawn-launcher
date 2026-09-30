@@ -402,7 +402,7 @@ mod tests {
             "profile": {"id": "p1", "name": "Aetherial Dawn", "active": true},
             "mods": [{"id": "engine", "installationPath": source, "state": "installed", "nexusModId": 17230, "nexusFileId": 73, "enabled": true}]
         })).unwrap();
-        assert!(crate::vortex::missing_deployment(&[entry.clone()], &status, &files, game).is_empty());
+        assert!(crate::vortex::missing_deployment(std::slice::from_ref(&entry), &status, &files, game).is_empty());
         assert!(entry.game_files_present(game), "both game-root and Data checks are present");
         std::fs::remove_file(game.join("d3dx9_42.dll")).unwrap();
         assert!(!entry.game_files_present(game), "a missing root file still blocks the physical gate");
