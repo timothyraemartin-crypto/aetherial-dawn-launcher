@@ -1,16 +1,19 @@
 <#
 D18: read-only snapshot of everything the uninstall test looks at
-(PLAN-D18-UNINSTALL.md section 1, rows U1-U7). It only lists and hashes; it
+(PLAN-D18-UNINSTALL.md section 1, rows U1-U10). It only lists and hashes; it
 never changes, moves or deletes a file.
 
 Roots, each printed by a short name so no user name or drive path appears:
   FIXTURE  the fake library from sandbox-fixture.ps1   (U1-U6)
   SAVES    %LOCALAPPDATA%\Skyrim Special Edition       (U5)
+  DOCS     Documents\My Games\Skyrim Special Edition   (U9, the game's ini files)
   ROAMING  %APPDATA%\gg.aetherialdawn.launcher         (U7, config)
   LOCAL    %LOCALAPPDATA%\gg.aetherialdawn.launcher    (U7, logs, cache, sign-in)
   INSTALL  %LOCALAPPDATA%\Aetherial Dawn               (the installed program)
 ROAMING, LOCAL and INSTALL are private: only each file's name and size are
 recorded, never its contents or hash, so the sign-in file is never opened.
+Also recorded: Windows' graphics-card preference for the fake SkyrimSE.exe
+(U10, a registry value read only).
 
 Output: "snapshot/1", the label, "complete=true|false", then sorted lines.
 Same files in, same bytes out. Written to "<Out>.partial" and renamed at the
@@ -23,6 +26,7 @@ param(
   [string]$Label = "",
   [string]$Root = "C:\ADTest",
   [string]$Saves = $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Skyrim Special Edition" } else { "" }),
+  [string]$Docs = $(try { Join-Path ([Environment]::GetFolderPath("MyDocuments")) "My Games\Skyrim Special Edition" } catch { "" }),
   [string]$Roaming = $(if ($env:APPDATA) { Join-Path $env:APPDATA "gg.aetherialdawn.launcher" } else { "" }),
   [string]$Local = $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "gg.aetherialdawn.launcher" } else { "" }),
   [string]$Install = $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Aetherial Dawn" } else { "" })
@@ -34,6 +38,7 @@ if ($Label -match "[`r`n]") { throw "Refusing: -Label must be one line." }
 $roots = @(
   @{ N = "FIXTURE"; P = $Root; Private = $false }
   @{ N = "SAVES"; P = $Saves; Private = $false }
+  @{ N = "DOCS"; P = $Docs; Private = $false }
   @{ N = "ROAMING"; P = $Roaming; Private = $true }
   @{ N = "LOCAL"; P = $Local; Private = $true }
   @{ N = "INSTALL"; P = $Install; Private = $true }
@@ -65,6 +70,18 @@ foreach ($r in $roots) {
     }
   }
 }
+
+# U10: the value Windows keeps under the game exe's full path. Only on Windows.
+if ($env:OS -eq "Windows_NT") {
+  $exe = Join-Path $Root "SteamLibrary\steamapps\common\Skyrim Special Edition\SkyrimSE.exe"
+  $key = "HKCU:\Software\Microsoft\DirectX\UserGpuPreferences"
+  try {
+    $v = (Get-ItemProperty -LiteralPath $key -Name $exe -ErrorAction Stop).$exe
+    $lines.Add("field`tREG/GpuPreference`tvalue=$v")
+  } catch [System.Management.Automation.PSArgumentException] { $lines.Add("field`tREG/GpuPreference`tvalue=absent") }
+    catch [System.Management.Automation.ItemNotFoundException] { $lines.Add("field`tREG/GpuPreference`tvalue=absent") }
+    catch { Err "REG/GpuPreference`tcould not read" }
+} else { $lines.Add("field`tREG/GpuPreference`tvalue=not-windows") }
 
 $body = $lines.ToArray()
 [Array]::Sort($body, [StringComparer]::Ordinal)

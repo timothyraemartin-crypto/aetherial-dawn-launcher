@@ -1,6 +1,6 @@
 <#
 D18: compares snapshot A (before uninstall) with snapshot B (after) and marks
-each row U1-U7 of PLAN-D18-UNINSTALL.md PASS or FAIL against the
+each row U1-U10 of PLAN-D18-UNINSTALL.md PASS or FAIL against the
 "Settings only" default. Read-only: it reads the two snapshot files only.
 Any change no row explains is listed as UNEXPECTED.
 Exit 0: compared (PASS and FAIL are both evidence). Exit 2: a snapshot is
@@ -65,12 +65,24 @@ foreach ($x in @(@("U5", "SAVES/plugins.txt"), @("U5", "SAVES/loadorder.txt"), @
   Row $x[0] ($restored -and $gone) "$(Split-Path -Leaf $file): has the backup's bytes: $restored; backup removed: $gone"
 }
 
+# U8: the game's remembered login is gone (the session in the client
+# settings file isn't checked: the snapshot never reads that file's contents).
+$AUTH = "$G/Data/Platform/PluginsNoLoad/auth-data-no-load.js"
+$claimed.Add($AUTH) | Out-Null
+Row "U8" (-not $B.Files.ContainsKey($AUTH) -and $A.Files.ContainsKey($AUTH)) "auth-data-no-load.js removed: $(-not $B.Files.ContainsKey($AUTH))"
+
+# U9 and U10: left alone.
+$claimed.Add("DOCS/Skyrim.ini") | Out-Null; $claimed.Add("DOCS/Skyrim.ini.aetherial-dawn-backup") | Out-Null
+$u9 = ((Hash $A "DOCS/Skyrim.ini") -eq (Hash $B "DOCS/Skyrim.ini")) -and ((Hash $A "DOCS/Skyrim.ini.aetherial-dawn-backup") -eq (Hash $B "DOCS/Skyrim.ini.aetherial-dawn-backup")) -and ((Hash $B "DOCS/Skyrim.ini") -ne "absent")
+Row "U9" $u9 "Skyrim.ini and its backup unchanged"
+Row "U10" ($A.Fields["REG/GpuPreference"] -eq $B.Fields["REG/GpuPreference"]) "graphics preference before: $($A.Fields['REG/GpuPreference']), after: $($B.Fields['REG/GpuPreference'])"
+
 # U7: launcher app data removed (config in ROAMING, the rest in LOCAL).
 $u7 = @("ROAMING", "LOCAL" | Where-Object { $B.Roots[$_] -ne "missing" })
 Row "U7" ($u7.Count -eq 0) "still present: $(if ($u7.Count) { $u7 -join ', ' } else { 'none' }) (the installer's 'delete app data' box: note if it was ticked)"
 
-# Anything else that changed under FIXTURE or SAVES.
-$keys = @($A.Files.Keys) + @($B.Files.Keys) | Where-Object { $_ -match "^(FIXTURE|SAVES)/" } | Sort-Object -Unique
+# Anything else that changed under FIXTURE, SAVES or DOCS.
+$keys = @($A.Files.Keys) + @($B.Files.Keys) | Where-Object { $_ -match "^(FIXTURE|SAVES|DOCS)/" } | Sort-Object -Unique
 foreach ($k in $keys) {
   if ($claimed.Contains($k)) { continue }
   if (-not $A.Files.ContainsKey($k)) { "UNEXPECTED`tadded`t$k" }

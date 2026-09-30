@@ -41,11 +41,13 @@ Run each script from PowerShell as `powershell -ExecutionPolicy Bypass -File <sc
    so an interrupted run is rebuilt on the next try. It builds a **fake Steam library** that has:
    `steamapps\appmanifest_489830.acf` (read-only, `AutoUpdateBehavior 1`),
    `common\Skyrim Special Edition\SkyrimSE.exe` (a dummy file),
-   `.aetherial-dawn\` with a marker, a mod record and one set-aside file in
+   `.aetherial-dawn\` with the launcher's own version record, a mod record and one set-aside file in
    `disabled\`, a
    `Data\` with two dummy plugins, and
    `%LOCALAPPDATA%\Skyrim Special Edition\plugins.txt` and `loadorder.txt`, each with its
-   `.aetherial-dawn-backup`, and a renamed `Skyrim.ccc` in the game folder. No real game files or
+   `.aetherial-dawn-backup`, a renamed `Skyrim.ccc` in the game folder, the
+   game's remembered-login file (fake contents), and a repaired `Skyrim.ini`
+   with its backup in `Documents\My Games\Skyrim Special Edition`. No real game files or
    keys are used.
 3. Install the launcher build from the PR's CI artifact. Never use the public
    release channel, and never push to `main`. At first start choose
@@ -53,6 +55,7 @@ Run each script from PowerShell as `powershell -ExecutionPolicy Bypass -File <sc
    settings name the fake game, then close it without signing in.
 4. Take snapshot A with `docs/qa/snapshot.ps1 -Out A.txt -Label before`.
    It is read-only. It lists the fake library, `%LOCALAPPDATA%\Skyrim Special Edition`,
+   `Documents\My Games\Skyrim Special Edition`, the graphics-card preference,
    the launcher's app data (`%APPDATA%` and `%LOCALAPPDATA%\gg.aetherialdawn.launcher`)
    and the install folder (`%LOCALAPPDATA%\Aetherial Dawn`). App data and the
    install folder are recorded by name and size only, never opened. Paths are
@@ -61,8 +64,8 @@ Run each script from PowerShell as `powershell -ExecutionPolicy Bypass -File <sc
 5. Uninstall from **Settings > Apps**. Write down whether the "delete app data"
    box was ticked. Take snapshot B: `docs/qa/snapshot.ps1 -Out B.txt -Label after`.
 6. Run `docs/qa/compare.ps1 -Before A.txt -After B.txt`. It prints PASS or FAIL
-   for U1-U7 against the default above, and `UNEXPECTED` for any other change
-   under the fake library or `SAVES`. It refuses (exit 2) an incomplete snapshot.
+   for U1-U10 against the default above, and `UNEXPECTED` for any other change
+   under the fake library, `SAVES` or `DOCS`. It refuses (exit 2) an incomplete snapshot.
 7. Keep A.txt, B.txt, the compare output, the launcher build's commit and the
    box answer together as the D18 receipt.
 
