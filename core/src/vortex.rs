@@ -489,6 +489,43 @@ pub fn deployment_ready_for(list: &[ModEntry], entry: &ModEntry, status: &Status
     missing_deployment(&context, status, files, game_dir).is_empty()
 }
 
+/// A listed mod's three Vortex answers, each on its own (Codex 5910357069,
+/// 5917004813): its package is installed in Vortex, switched on in the
+/// Aetherial Dawn profile, and its files are deployed into the game from
+/// that package. None means unknown: the extension hasn't answered, or the
+/// mod isn't a Nexus mod Vortex would hold. Play still goes by
+/// `missing_deployment`; this only says which step is missing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct PackageStates {
+    pub installed: Option<bool>,
+    pub enabled: Option<bool>,
+    pub deployed: Option<bool>,
+}
+
+pub fn package_states(list: &[ModEntry], entry: &ModEntry, status: Option<&Status>, files: &[VortexFile], game_dir: &Path) -> PackageStates {
+    let (Some(n), Some(status)) = (entry.nexus.as_ref(), status) else { return PackageStates::default() };
+    // Without exactly one Aetherial Dawn profile, active, Vortex's answers
+    // aren't about the server's mods: every step is unknown.
+    if status.aetherial_profiles != 1 || !status.profile.as_ref().is_some_and(|p| p.active) {
+        return PackageStates::default();
+    }
+    let installed = |m: &&VortexMod| m.nexus_mod_id == Some(n.mod_id) && m.state.as_deref() == Some("installed")
+        && n.file.is_none_or(|f| m.nexus_file_id == Some(f));
+    let packages: Vec<&VortexMod> = status.mods.iter().filter(installed).collect();
+    let on = packages.iter().filter(|m| m.enabled).count();
+    // A pinned file is only "switched on" alone: another file of the same
+    // mod on beside it (one the list doesn't pin itself) blocks Play too.
+    let other_on = n.file.is_some_and(|file| status.mods.iter().any(|m| m.nexus_mod_id == Some(n.mod_id) && m.enabled
+        && m.nexus_file_id != Some(file)
+        && !(male_face_selected(list) && n.mod_id == 22487 && m.nexus_file_id == Some(104828))
+        && !list.iter().any(|o| o.nexus.as_ref().is_some_and(|x| x.mod_id == n.mod_id && x.file == m.nexus_file_id))));
+    PackageStates {
+        installed: Some(!packages.is_empty()),
+        enabled: Some(if n.file.is_some() { on > 0 && !other_on } else { on == 1 }),
+        deployed: Some(deployment_ready_for(list, entry, status, files, game_dir)),
+    }
+}
+
 /// Exact deployment sources of the required, currently enabled packages.
 /// The caller saves this only after the whole profile and deployment gate
 /// passes, so tidying can keep checkless packages with opaque folder names.
@@ -1080,5 +1117,42 @@ mod tests {
         let (_t, plugins) = fake_vortex();
         assert!(install_extension(&plugins, &[("../x.js", b"x"), ("info.json", br#"{"version":"1"}"#)]).is_err());
         assert!(!plugins.exists());
+    }
+
+    #[test]
+    fn installed_switched_on_and_deployed_are_three_answers() {
+        let t = tempfile::tempdir().unwrap();
+        let entry = ModEntry { id: "u".into(), name: "USSEP".into(), nexus: Some(NexusRef { mod_id: 266, file: Some(733846), ..Default::default() }), check: vec!["Data/U.esp".into()], ..Default::default() };
+        let list = vec![entry.clone()];
+        let pkg = |file: u64, on: bool| VortexMod { id: format!("v{file}"), installation_path: Some(format!("USSEP-{file}")), state: Some("installed".into()), nexus_mod_id: Some(266), nexus_file_id: Some(file), enabled: on };
+        let mut status = Status { profile: Some(Profile { id: "p".into(), name: "Aetherial Dawn".into(), active: true }), aetherial_profiles: 1, ..Default::default() };
+        let states = |status: &Status, files: &[VortexFile]| package_states(&list, &entry, Some(status), files, t.path());
+        // Without an answer from Vortex every step is unknown, never "no".
+        assert_eq!(package_states(&list, &entry, None, &[], t.path()), PackageStates::default());
+        // Another file of the same mod doesn't count as the pinned one.
+        status.mods = vec![pkg(1, true)];
+        assert_eq!(states(&status, &[]), PackageStates { installed: Some(false), enabled: Some(false), deployed: Some(false) });
+        status.mods.push(pkg(733846, false));
+        assert_eq!(states(&status, &[]), PackageStates { installed: Some(true), enabled: Some(false), deployed: Some(false) });
+        status.mods[1].enabled = true;
+        // The pinned file on beside another file of the mod isn't "switched
+        // on": Play is blocked until the other one is off.
+        assert_eq!(states(&status, &[]), PackageStates { installed: Some(true), enabled: Some(false), deployed: Some(false) });
+        status.mods[0].enabled = false;
+        assert_eq!(states(&status, &[]), PackageStates { installed: Some(true), enabled: Some(true), deployed: Some(false) });
+        std::fs::create_dir_all(t.path().join("Data")).unwrap();
+        std::fs::write(t.path().join("Data/U.esp"), b"x").unwrap();
+        let files = [VortexFile { rel: "Data/U.esp".into(), source: "USSEP-733846".into() }];
+        assert_eq!(states(&status, &files), PackageStates { installed: Some(true), enabled: Some(true), deployed: Some(true) });
+        // No single active Aetherial Dawn profile: unknown, never yes or no.
+        for (count, active) in [(0, true), (2, true), (1, false)] {
+            let mut odd = status.clone();
+            odd.aetherial_profiles = count;
+            odd.profile.as_mut().unwrap().active = active;
+            assert_eq!(states(&odd, &files), PackageStates::default(), "{count} profiles, active {active}");
+        }
+        // A launcher-only mod has no Vortex answers.
+        let direct = ModEntry { id: "d".into(), name: "Direct".into(), ..Default::default() };
+        assert_eq!(package_states(&list, &direct, Some(&status), &files, t.path()), PackageStates::default());
     }
 }
