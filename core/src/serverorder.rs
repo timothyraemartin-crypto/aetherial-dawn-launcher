@@ -190,14 +190,7 @@ pub fn game_order(game_dir: &Path, plugins_txt: &Path) -> Vec<String> {
 /// Standard CRC-32 (the one SkyMP's client computes).
 pub fn crc32(path: &Path) -> Option<u32> {
     use std::io::Read;
-    let mut table = [0u32; 256];
-    for (i, t) in table.iter_mut().enumerate() {
-        let mut c = i as u32;
-        for _ in 0..8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
-        }
-        *t = c;
-    }
+    let table = crc_table();
     let mut f = std::fs::File::open(path).ok()?;
     let mut buf = vec![0u8; 1 << 20];
     let mut crc = 0xFFFF_FFFFu32;
@@ -206,11 +199,33 @@ pub fn crc32(path: &Path) -> Option<u32> {
         if n == 0 {
             break;
         }
-        for b in &buf[..n] {
-            crc = table[((crc ^ *b as u32) & 0xFF) as usize] ^ (crc >> 8);
-        }
+        crc = crc_update(&table, crc, &buf[..n]);
     }
     Some(!crc)
+}
+
+/// `crc32` of bytes in memory (a converted plugin's canonical bytes).
+pub fn crc32_bytes(b: &[u8]) -> u32 {
+    !crc_update(&crc_table(), 0xFFFF_FFFF, b)
+}
+
+fn crc_table() -> [u32; 256] {
+    let mut table = [0u32; 256];
+    for (i, t) in table.iter_mut().enumerate() {
+        let mut c = i as u32;
+        for _ in 0..8 {
+            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+        }
+        *t = c;
+    }
+    table
+}
+
+fn crc_update(table: &[u32; 256], mut crc: u32, bytes: &[u8]) -> u32 {
+    for b in bytes {
+        crc = table[((crc ^ *b as u32) & 0xFF) as usize] ^ (crc >> 8);
+    }
+    crc
 }
 
 /// Where the game's list differs from the server's, by position: name,
@@ -295,6 +310,15 @@ pub fn set_exact(game_dir: &Path, plugins_txt: &Path, server: &[ServerPlugin]) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crc32_of_bytes_is_the_standard_one_and_matches_the_file_reading() {
+        assert_eq!(crc32_bytes(b"123456789"), 0xCBF4_3926);
+        let t = tempfile::tempdir().unwrap();
+        let f = t.path().join("p.esp");
+        std::fs::write(&f, b"123456789").unwrap();
+        assert_eq!(crc32(&f), Some(0xCBF4_3926));
+    }
 
     #[test]
     fn play_requires_ordered_fingerprinted_base_masters_but_allows_later_plugins() {
