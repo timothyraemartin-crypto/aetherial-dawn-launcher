@@ -45,6 +45,10 @@ function fakeBackEnd() {
     mods_state: () => S.modsState || ({ mods: [], nexus: null, vortex: false, running: false, sso: false }),
     download_all_mods: () => ({ installed: [], failed: [], cancelled: false }),
     plain_error: a => a.text,
+    auth_begin: () => 'st',
+    // S.signIn: when the launcher has the answer, and an error each poll gives.
+    auth_poll: () => S.signIn.error ? { status: 'save_failed', kind: 'denied', message: S.signIn.error } : S.signIn.refuseFirst && !S.refused ? (S.refused = true, { status: 'refused', message: 'An old refusal.' })
+      : at() - (S.signInAt || 0) >= S.signIn.doneAfter ? { status: 'done', account: { discordUsername: 'Player' } } : { status: 'pending' },
   };
   const delay = Object.assign({ get_state: 20, auth_status: 300, check: 900, update: 600, server_status: 300, play: 50, default: 10 }, S.delay || {});
   window.__TAURI__ = {
@@ -102,6 +106,9 @@ function fakeBackEnd() {
       setTimeout(() => { log.dialog.backTo = id(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); }, 3900);
       setTimeout(() => { log.dialog.closedByEscape = document.getElementById('settings').hidden; log.dialog.focusAfter = id(); log.dialog.dockAfter = dock(); }, 4200);
     }
+    if (S.signIn) setTimeout(() => { S.signInAt = at(); document.getElementById('si-go').click(); }, 1500);
+    // Cancel while the first answer is on its way, then sign in again.
+    if (S.signIn && S.signIn.restartAt) setTimeout(() => { document.getElementById('si-cancel').click(); document.getElementById('si-go').click(); }, S.signIn.restartAt);
     for (const t of S.clicks || []) setTimeout(() => { log.invokes.push([at(), 'click', label.textContent]); btn.click(); }, t);
     setTimeout(() => {
       try { log.lastReady = JSON.parse(localStorage.getItem('ad.lastReady')); } catch (_) {}
@@ -125,6 +132,8 @@ function fakeBackEnd() {
       log.modsShown = !document.getElementById('reqs').hidden;
       const rect = sel => { const b = document.querySelector(sel).getBoundingClientRect(); return [Math.round(b.top), Math.round(b.bottom)]; };
       log.layout = { height: document.querySelector('.app').offsetHeight, width: document.querySelector('.app').offsetWidth, titlebar: rect('.titlebar'), dock: rect('.dock'), play: rect('#play') };
+      log.signInError = document.getElementById('si-error').hidden ? null : document.getElementById('si-error').textContent;
+      log.me = document.getElementById('me').hidden ? null : document.getElementById('me-name').textContent;
       const pre = document.createElement('pre');
       pre.id = 'ui-test-result';
       pre.textContent = JSON.stringify(log);
@@ -306,6 +315,21 @@ scenarios.push({ name: 'the smallest window: PLAY and the news fit under the tit
   ['the page is laid out at the minimum size', r.layout.width === 1024 && r.layout.height === 560, JSON.stringify(r.layout)],
   ['PLAY is fully on screen', r.layout.play[0] >= 0 && r.layout.play[1] <= r.layout.height],
   ['the dock starts below the title bar buttons', r.layout.dock[0] >= r.layout.titlebar[1]],
+] });
+// Signing in: the launcher can take up to 5 minutes and a few seconds to
+// answer, and a sign-in it couldn't save is tried again, then told.
+const signedOut = { ...base, auth: { signedIn: false }, seed: null, clicks: [] };
+scenarios.push({ name: 'a sign-in the launcher finishes just after 5 minutes is kept', s: { ...signedOut, signIn: { doneAfter: 5 * 60 * 1000 + 4000 }, end: 5 * 60 * 1000 + 12000 }, expect: r => [
+  ['the player ends up signed in', r.me === 'Player', JSON.stringify([r.me, r.signInError])],
+] });
+scenarios.push({ name: 'an answer to a cancelled sign-in is ignored', s: { ...signedOut, signIn: { doneAfter: 6000, refuseFirst: true, restartAt: 4000 }, delay: { auth_poll: 3000 }, end: 16000 }, expect: r => [
+  ['the new sign-in finishes', r.me === 'Player', JSON.stringify([r.me, r.signInError])],
+  ['the old refusal is never shown', r.signInError === null],
+] });
+scenarios.push({ name: 'a sign-in that can never be saved says why', s: { ...signedOut, signIn: { doneAfter: 0, error: "Couldn't save your sign-in: Access is denied" }, end: 6 * 60 * 1000 + 10000 }, expect: r => [
+  ['the sign-in window says the save failed', /Couldn't save your sign-in: Access is denied/.test(r.signInError || ''), JSON.stringify(r.signInError)],
+  ['the player is not signed in', r.me === null],
+  ['the save is tried again until the wait ends', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'auth_poll').length > 100, String(r.invokes.filter(i => i[1] === 'ask' && i[2] === 'auth_poll').length)],
 ] });
 
 const chrome = findChrome();
