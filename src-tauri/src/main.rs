@@ -573,17 +573,12 @@ async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::
 /// player chose to close it on launch).
 async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: std::time::SystemTime, close_on_launch: bool) -> bool {
     let game_dir = game_dir.to_path_buf();
-    // skse64_loader starts SkyrimSE.exe and exits, so look for the game itself.
-    let mut pid = None;
-    for _ in 0..90 {
-        if let Some(p) = watch::find_process(watch::GAME_PROCESS) {
-            pid = Some(p);
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    }
+    // skse64_loader starts SkyrimSE.exe and exits, so look for the game
+    // itself; while the loader still runs (Steam starting or updating), keep
+    // waiting rather than calling a slow start a crash.
+    let pid = watch::wait_for_game(watch::find_process, std::time::Duration::from_secs(1), watch::START_WAIT, watch::START_WAIT_MAX).await;
     let (code, ran, summary) = match pid {
-        None => (None, std::time::Duration::ZERO, "Skyrim didn't start: SKSE's loader ran, but SkyrimSE.exe never appeared within 90 seconds.".to_string()),
+        None => (None, std::time::Duration::ZERO, "Skyrim didn't start: SkyrimSE.exe never appeared within 90 seconds of SKSE's loader finishing.".to_string()),
         Some(pid) => {
             log::line(&format!("game: SkyrimSE.exe running as process {pid}"));
             tokio::spawn(end_when_window_closed(pid));
