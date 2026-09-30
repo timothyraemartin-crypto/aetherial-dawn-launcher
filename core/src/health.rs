@@ -427,6 +427,30 @@ pub fn crash_cause(crash: &str) -> Option<String> {
 
 /// The launcher's own best guess at a crash's cause, from the checks, most
 /// specific first. None when nothing points anywhere.
+/// What Play says when the server's masters don't match. Steam's own files
+/// (the base masters, the free Creation Club masters, _ResourcePack) come
+/// back through Steam's Verify and Fix version, never from a mod; one the
+/// launcher moved aside as made for a newer Skyrim is named as such.
+pub fn masters_fix_message(game_dir: &Path, items: &[String]) -> String {
+    let name = |i: &String| i.split(": ").next().unwrap_or(i).to_string();
+    let steam = |n: &str| crate::patcher::patchable(&format!("Data/{n}"));
+    let set_aside = |n: &str| {
+        std::fs::read_dir(game_dir.join(strays::DISABLED_DIR)).into_iter().flatten().flatten()
+            .any(|e| e.file_name().to_string_lossy().ends_with("-plugins") && e.path().join("Data").join(n).is_file())
+    };
+    let which = items.iter().take(3).cloned().collect::<Vec<_>>().join("; ");
+    let names: Vec<String> = items.iter().map(name).collect();
+    let newer: Vec<&String> = names.iter().filter(|n| steam(n) && set_aside(n)).collect();
+    if !newer.is_empty() {
+        let list = newer.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", ");
+        return format!("Steam updated {list} for a newer Skyrim, so the launcher set it aside. Click Fix version to put the server's copy back, then try Play: {which}");
+    }
+    if !names.is_empty() && names.iter().all(|n| steam(n)) {
+        return format!("Your game files do not match the server's. They come with Skyrim: in Steam, right-click Skyrim Special Edition, Properties, Installed Files, Verify integrity of game files; then click Fix version and try Play: {which}");
+    }
+    format!("Your game files do not match the server's master list. Use Fix version for a game file or install the listed server mod, then try Play: {which}")
+}
+
 pub fn likely_cause(r: &Report) -> Option<String> {
     let failed = |id: &str, st: Status| r.checks.iter().find(|c| c.id == id && c.status >= st);
     if let Some(c) = failed("requiredfiles", Status::Fail) {
@@ -675,6 +699,22 @@ pub fn cache_path(app_data: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_steam_master_mismatch_points_to_verify_and_fix_version_not_a_mod() {
+        let tmp = tempfile::tempdir().unwrap();
+        let g = tmp.path();
+        let cc = vec!["ccBGSSSE037-Curios.esl: missing".to_string(), "_ResourcePack.esl: same size, different contents".to_string()];
+        let m = masters_fix_message(g, &cc);
+        assert!(m.contains("Verify integrity") && m.contains("Fix version") && !m.contains("server mod"), "{m}");
+        let modded = vec!["ccBGSSSE001-Fish.esm: missing".to_string(), "JKs-Skyrim.esp: missing".to_string()];
+        assert!(masters_fix_message(g, &modded).contains("install the listed server mod"));
+        let aside = g.join(strays::DISABLED_DIR).join("2026-09-30-19-40-00-plugins/Data");
+        std::fs::create_dir_all(&aside).unwrap();
+        std::fs::write(aside.join("ccBGSSSE001-Fish.esm"), b"newer").unwrap();
+        let m = masters_fix_message(g, &["ccBGSSSE001-Fish.esm: missing".to_string()]);
+        assert!(m.starts_with("Steam updated ccBGSSSE001-Fish.esm for a newer Skyrim") && m.contains("Fix version"), "{m}");
+    }
 
     #[test]
     fn parses_master_list_shapes() {
