@@ -57,12 +57,15 @@
   // ---------- play button + status line ----------
   function setPlay(mode, label) {
     playMode = mode;
+    // The automatic sign-in retry belongs to the RETRY button only.
+    if (mode !== 'authretry') { clearTimeout(authRetryTimer); authRetryTimer = null; }
     $('play-label').textContent = label;
     $('play').disabled = mode === 'wait';
     $('play-wrap').classList.toggle('off', mode === 'wait');
     // Only a session that ends ready to play opens on PLAY next time.
     if (lastSeen.play && (STOPS.includes(mode) || STOPS.includes(label))) remember({ play: false });
   }
+  let authRetryTimer = null;
   const STOPS = ['update', 'retry', 'authretry', 'downgrade', 'signin', 'strays', 'WRONG VERSION', 'OFFLINE'];
   let statusMsg = null;
   function setStatus(msg, isError) { statusMsg = msg ? { msg, isError } : null; renderStatus(); }
@@ -362,13 +365,18 @@
     $('acc-note').textContent = auth.offline ? 'Signed in with Discord (not re-checked yet)' : 'Signed in with Discord';
     paintAvatar($('me-avatar'), a); paintAvatar($('acc-avatar'), a);
   }
-  async function refreshAuth() {
-    try { auth = await invoke('auth_status'); }
-    catch (e) { auth = { signedIn: false, message: String(e) }; }
-    renderAccount();
-    return auth;
+  // One question to the login service at a time: a Retry press, the
+  // minute retry and the 10-minute check share the answer in flight.
+  let authAsk = null;
+  function refreshAuth() {
+    authAsk = authAsk || (async () => {
+      try { auth = await invoke('auth_status'); }
+      catch (e) { auth = { signedIn: false, message: String(e) }; }
+      renderAccount();
+      return auth;
+    })().finally(() => { authAsk = null; });
+    return authAsk;
   }
-  let authRetryTimer = null;
   async function retryAuth() {
     setPlay('wait', 'CHECKING');
     await refreshAuth();

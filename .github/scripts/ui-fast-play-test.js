@@ -164,6 +164,10 @@ const scenarios = [
     ['the button ends on PLAY', lastLabel(r) === 'PLAY', lastLabel(r)],
     ['the game never starts by itself', !played(r)],
   ] },
+  { name: 'account locked, then the login service answers: the minute retry brings PLAY back once', s: { ...base, auth: { ...ok, locked: true, message: 'Your account is locked.' }, authAfter: ok, clicks: [], end: 130000 }, expect: r => [
+    ['the login service was asked twice, not more', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'auth_status').length === 2, String(r.invokes.filter(i => i[1] === 'ask' && i[2] === 'auth_status').length)],
+    ['the button ends on PLAY', lastLabel(r) === 'PLAY', lastLabel(r)],
+  ] },
   { name: 'an update found behind PLAY takes over the button', s: { ...base, check: { build: 'B2', files: 3, bytes: 3000000 } }, expect: r => [
     ['the game never starts', !played(r)],
     ['the button ends on UPDATE', lastLabel(r) === 'UPDATE'],
@@ -213,7 +217,7 @@ for (const sc of scenarios) {
     const root = process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : [];
     out = execFileSync(chrome, [...root, '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
       `--user-data-dir=${path.join(dir, 'profile')}`, '--allow-file-access-from-files', '--window-size=1360,880',
-      '--virtual-time-budget=8000', '--dump-dom', url], { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] });
+      `--virtual-time-budget=${(sc.s.end || 6000) + 2000}`, '--dump-dom', url], { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] });
   } catch (e) { out = String(e.stdout || ''); }
   const m = out.match(/<pre id="ui-test-result">([\s\S]*?)<\/pre>/);
   console.log(`== ${sc.name}`);
