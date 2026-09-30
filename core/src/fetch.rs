@@ -17,6 +17,34 @@ use tokio::io::AsyncWriteExt;
 /// Tries after a dropped connection, with waits of 2, 4, 8, 16, 30, 30 s.
 pub const RETRIES: u32 = 6;
 
+/// A connection that sends nothing for this long counts as dropped, so a
+/// stalled download picks up again instead of waiting for ever.
+pub const STALL: Duration = Duration::from_secs(30);
+
+enum Waited<T> {
+    Got(T),
+    Cancelled,
+    Stalled,
+}
+
+/// Waits for `fut`, checking `cancel` four times a second, for at most `stall`.
+async fn watch<T>(fut: impl std::future::Future<Output = T>, cancel: &AtomicBool, stall: Duration) -> Waited<T> {
+    tokio::pin!(fut);
+    let until = tokio::time::Instant::now() + stall;
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            return Waited::Cancelled;
+        }
+        let left = until.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return Waited::Stalled;
+        }
+        if let Ok(v) = tokio::time::timeout(left.min(Duration::from_millis(250)), &mut fut).await {
+            return Waited::Got(v);
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 struct Note {
     key: String,
@@ -76,12 +104,18 @@ pub struct Fetched {
 /// Downloads `url` to `path`. `key` names the exact file (not the link, which
 /// changes), so only the same file is ever continued. `progress(done, total)`
 /// is called at most every 250 ms. Only https, except to 127.0.0.1 in tests.
-pub async fn fetch(
+pub async fn fetch(http: &reqwest::Client, url: &str, path: &Path, key: &str, cancel: &AtomicBool, progress: impl FnMut(u64, u64)) -> Result<Fetched, String> {
+    fetch_within(http, url, path, key, cancel, STALL, progress).await
+}
+
+/// `fetch`, with the silence that counts as a dropped connection.
+async fn fetch_within(
     http: &reqwest::Client,
     url: &str,
     path: &Path,
     key: &str,
     cancel: &AtomicBool,
+    stall: Duration,
     mut progress: impl FnMut(u64, u64),
 ) -> Result<Fetched, String> {
     if !(url.starts_with("https://") || cfg!(test) && url.starts_with("http://127.0.0.1:")) {
@@ -119,7 +153,11 @@ pub async fn fetch(
             req = req.header(reqwest::header::RANGE, format!("bytes={have}-"));
         }
         let attempt = async {
-            let resp = req.send().await.map_err(|e| (true, e.to_string()))?;
+            let resp = match watch(req.send(), cancel, stall).await {
+                Waited::Got(r) => r.map_err(|e| (true, e.to_string()))?,
+                Waited::Cancelled => return Err((false, "cancelled".to_string())),
+                Waited::Stalled => return Err((true, "the server stopped answering".to_string())),
+            };
             let status = resp.status();
             if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE && known == Some(have) {
                 return Ok::<_, (bool, String)>(None);
@@ -171,14 +209,23 @@ pub async fn fetch(
                 let mut stream = resp.bytes_stream();
                 let mut last = std::time::Instant::now();
                 let mut dropped = None;
-                while let Some(chunk) = stream.next().await {
-                    if cancel.load(Ordering::SeqCst) {
+                loop {
+                    let next = watch(stream.next(), cancel, stall).await;
+                    if matches!(next, Waited::Cancelled) || cancel.load(Ordering::SeqCst) {
                         // The part stays for next time.
                         if let Some(mut f) = f.take() {
                             let _ = f.flush().await;
                         }
                         return Err("cancelled".into());
                     }
+                    let chunk = match next {
+                        Waited::Got(Some(c)) => c,
+                        Waited::Got(None) => break,
+                        _ => {
+                            dropped = Some(format!("no data for {} s", stall.as_secs()));
+                            break;
+                        }
+                    };
                     match chunk {
                         Ok(c) => {
                             f.as_mut().unwrap().write_all(&c).await.map_err(|e| e.to_string())?;
@@ -200,6 +247,11 @@ pub async fn fetch(
                 }
                 if dropped.is_some() || (total > 0 && got < total) {
                     first = false;
+                    // A connection that got somewhere starts the count again:
+                    // only drops in a row with nothing gained give up.
+                    if got > start {
+                        failures = 0;
+                    }
                     if failures >= RETRIES {
                         return Err(dropped.unwrap_or_else(|| "the download stopped early".into()));
                     }
@@ -586,5 +638,107 @@ mod tests {
         let mods = [(7_000, 10_400, 7_000), (2_700, 4_600, 0)];
         assert_eq!(space_needed(&mods, true), 17_700);
         assert_eq!(space_needed(&[], true), 0);
+    }
+
+    /// Sends the headers and `first` bytes, then goes silent on the first
+    /// connection (holding it open); later connections get the rest.
+    fn serve_stalling(body: Arc<Vec<u8>>, first: usize) -> String {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/file", l.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for (n, s) in l.incoming().enumerate() {
+                let Ok(mut s) = s else { continue };
+                let mut buf = [0u8; 4096];
+                let len = s.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..len]).to_ascii_lowercase();
+                let start = head.lines().find_map(|l| l.strip_prefix("range: bytes=")).and_then(|r| r.trim_end_matches('-').trim().trim_end_matches('-').parse::<usize>().ok()).unwrap_or(0);
+                let total = body.len();
+                let hdr = if start > 0 {
+                    format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{}/{total}\r\nConnection: close\r\n\r\n", total - start, total - 1)
+                } else {
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n")
+                };
+                let _ = s.write_all(hdr.as_bytes());
+                if n == 0 {
+                    let _ = s.write_all(&body[..first]);
+                    let _ = s.flush();
+                    held.push(s);
+                } else {
+                    let _ = s.write_all(&body[start..]);
+                }
+            }
+        });
+        url
+    }
+
+    #[test]
+    fn a_stalled_connection_counts_as_dropped_and_carries_on() {
+        let data = body(200_000);
+        let url = serve_stalling(data.clone(), 50_000);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.7z");
+        let t = std::time::Instant::now();
+        let got = rt().block_on(fetch_within(&reqwest::Client::new(), &url, &path, "k", &AtomicBool::new(false), Duration::from_secs(1), |_, _| {})).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), *data);
+        assert_eq!(got.resumed, 1);
+        // One second of silence, the 2 s wait, then the rest.
+        assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn stop_works_while_the_connection_is_silent() {
+        let url = serve_stalling(body(200_000), 50_000);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.7z");
+        let stop = Arc::new(AtomicBool::new(false));
+        let s2 = stop.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            s2.store(true, Ordering::SeqCst);
+        });
+        let t = std::time::Instant::now();
+        let r = rt().block_on(fetch_within(&reqwest::Client::new(), &url, &path, "k", &stop, Duration::from_secs(60), |_, _| {}));
+        assert_eq!(r, Err("cancelled".into()));
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+        // What came before the silence stays for next time.
+        assert_eq!(have(&path, "k"), 50_000);
+    }
+
+    /// Every connection sends `per` bytes from where it was asked, then drops.
+    fn serve_short_connections(body: Arc<Vec<u8>>, per: usize) -> String {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/file", l.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                let Ok(mut s) = s else { continue };
+                let mut buf = [0u8; 4096];
+                let len = s.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..len]).to_ascii_lowercase();
+                let start = head.lines().find_map(|l| l.strip_prefix("range: bytes=")).and_then(|r| r.trim().trim_end_matches('-').parse::<usize>().ok()).unwrap_or(0);
+                let total = body.len();
+                let hdr = if start > 0 {
+                    format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{}/{total}\r\nConnection: close\r\n\r\n", total - start, total - 1)
+                } else {
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n")
+                };
+                let _ = s.write_all(hdr.as_bytes());
+                let _ = s.write_all(&body[start..(start + per).min(total)]);
+            }
+        });
+        url
+    }
+
+    #[test]
+    fn many_drops_that_each_get_somewhere_still_finish() {
+        // Eight connections, each dropping: more drops than RETRIES, but
+        // every one brings part of the file.
+        let data = body(80_000);
+        let url = serve_short_connections(data.clone(), 10_000);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.7z");
+        let got = rt().block_on(fetch(&reqwest::Client::new(), &url, &path, "k", &AtomicBool::new(false), |_, _| {})).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), *data);
+        assert_eq!(got.resumed, 7);
     }
 }

@@ -142,7 +142,18 @@ async fn get_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Snap
     let (game, game_error) = match &config.game_dir {
         Some(dir) => match game::inspect(dir) {
             Ok(g) => (Some(g), None),
-            Err(e) => (None, Some(err(e))),
+            // The saved folder stopped being Skyrim (a drive not plugged in
+            // yet, or the game moved). Another install Steam knows about is
+            // only suggested: the launcher changes and may downgrade the
+            // folder it uses, so it never switches to one the player didn't
+            // choose.
+            Err(e) => (None, Some(match game::detect().filter(|f| &f.dir != dir) {
+                Some(found) => {
+                    log::line(&format!("game folder {} isn't a Skyrim folder now ({e}); Steam has one at {}, left for the player to choose", dir.display(), found.dir.display()));
+                    format!("{} If Skyrim is now in {}, choose that folder.", err(e), found.dir.display())
+                }
+                None => err(e),
+            })),
         },
         None => (None, Some("Skyrim Special Edition wasn't found. Pick its folder.".into())),
     };
@@ -151,7 +162,7 @@ async fn get_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Snap
 
 #[tauri::command]
 async fn set_game_dir(app: AppHandle, state: State<'_, AppState>, dir: PathBuf) -> CmdResult<game::GameInfo> {
-    let info = game::inspect(&dir).map_err(err)?;
+    let info = game::pick(&dir).map_err(err)?;
     let mut config = state.config.lock().await;
     config.game_dir = Some(info.dir.clone());
     save_config(&app, &config)?;
@@ -300,7 +311,14 @@ async fn update(app: AppHandle, state: State<'_, AppState>, verify_all: bool) ->
 /// settings and remembered login, and starts Skyrim through SKSE.
 /// Errors that start with "SIGNED_OUT:" mean the player must sign in again.
 #[tauri::command]
-async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+/// Returns warnings to show once the game is starting (a helper mod that
+/// couldn't be installed).
+async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<String>> {
+    // A second Play while the game runs would install into locked files,
+    // rewrite the load order under it and start a second copy.
+    if watch::find_process(watch::GAME_PROCESS).is_some() {
+        return Err("Skyrim is already running. Close it first, then press Play.".into());
+    }
     let config = state.config.lock().await.clone();
     let dir = config.game_dir.clone().ok_or("Pick your Skyrim folder first.")?;
     let m = state.manifest.lock().await.clone().ok_or("The server's file list hasn't loaded yet. The launcher is fetching it; try again in a moment.")?;
@@ -315,6 +333,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
         } else if !requirements::crash_logger_ok(&dir) || !requirements::souls_ok(&dir) {
             play_step(&app, "Installing the launcher's helper mods…");
         }
+        // Its warnings are given by the second pass below.
         if let Err(e) = install_missing_mods(&state.http, &dir).await {
             send_client_status(&app, &dir);
             return Err(e);
@@ -334,7 +353,8 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     // Missing mods come before the load order: a changed list names plugins
     // this PC doesn't have yet, and the order check would refuse Play
     // before the downloads were ever offered.
-    ensure_requirements(&app, &state, &dir).await?;
+    // Helpers still missing after this pass are shown once the game starts.
+    let warnings = ensure_requirements(&app, &state, &dir).await?;
     // Each listed mod's settings as the server sets them, once; the
     // player's later changes stay.
     let list = mods::full_list(&state).await;
@@ -395,7 +415,12 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     // session, and plugins.txt in the server's order (serverorder.rs).
     play_step(&app, "Setting the server's load order…");
     let mut ccc_guard = CccGuard { dir: dir.clone(), armed: false };
-    if let Some(order) = fetch_masters(&state.http, &config.base_url).await.map(|v| serverorder::server_order(&v)).filter(|o| serverorder::beyond_base(o)) {
+    // Fetched once for the load order and the health check. Without it the
+    // order can't be set, and the game would be refused at the server.
+    let masters = masters_for_play(&app, &state.http, &config.base_url)
+        .await
+        .ok_or("Couldn't load the server's plugin list. Check your internet connection and try again.")?;
+    if let Some(order) = Some(serverorder::server_order(&masters)).filter(|o| serverorder::beyond_base(o)) {
         match serverorder::hide_ccc(&dir) {
             Ok(h) => {
                 ccc_guard.armed = true;
@@ -414,7 +439,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
         }
     }
     play_step(&app, "Checking your game…");
-    let report = run_health(&app, &state.http, &config.base_url, &dir, Some(&m)).await;
+    let report = run_health_with(&app, &dir, Some(&m), Some(masters)).await;
     log::line(&format!("health before play: worst={:?}\n{}", report.worst, report.text()));
     // The game would stop with SkyMP's "LOAD ORDER ERROR"; say it here.
     if let Some(c) = report.checks.iter().find(|c| c.id == "serverorder" && c.status == health::Status::Fail) {
@@ -478,7 +503,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
         }
     }
     tauri::async_runtime::spawn(watch_game(app.clone(), dir.clone(), started, config.close_on_launch));
-    Ok(())
+    Ok(warnings)
 }
 
 #[derive(Clone, Serialize)]
@@ -564,17 +589,12 @@ async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::
 /// player chose to close it on launch).
 async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: std::time::SystemTime, close_on_launch: bool) -> bool {
     let game_dir = game_dir.to_path_buf();
-    // skse64_loader starts SkyrimSE.exe and exits, so look for the game itself.
-    let mut pid = None;
-    for _ in 0..90 {
-        if let Some(p) = watch::find_process(watch::GAME_PROCESS) {
-            pid = Some(p);
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    }
+    // skse64_loader starts SkyrimSE.exe and exits, so look for the game
+    // itself; while the loader still runs (Steam starting or updating), keep
+    // waiting rather than calling a slow start a crash.
+    let pid = watch::wait_for_game(watch::find_process, std::time::Duration::from_secs(1), watch::START_WAIT, watch::START_WAIT_MAX).await;
     let (code, ran, summary) = match pid {
-        None => (None, std::time::Duration::ZERO, "Skyrim didn't start: SKSE's loader ran, but SkyrimSE.exe never appeared within 90 seconds.".to_string()),
+        None => (None, std::time::Duration::ZERO, "Skyrim didn't start: SkyrimSE.exe never appeared within 90 seconds of SKSE's loader finishing.".to_string()),
         Some(pid) => {
             log::line(&format!("game: SkyrimSE.exe running as process {pid}"));
             tokio::spawn(end_when_window_closed(pid));
@@ -876,7 +896,7 @@ async fn auth_status(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Au
                 offline: true,
                 locked: !fresh,
                 message: Some(if fresh {
-                    "Couldn't reach the login service. You can still play for now.".into()
+                    "Couldn't reach the login service. You're still signed in, but Play needs it to start the game, so try again when it's back.".into()
                 } else {
                     "Couldn't confirm your Discord sign-in for over a day. Connect to the internet and try again.".into()
                 }),
@@ -947,15 +967,17 @@ fn logins() -> &'static std::sync::Mutex<Logins> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PollResult {
-    /// pending | done | refused | expired | offline
+    /// pending | done | refused | expired | offline | save_failed
     status: &'static str,
     message: Option<String>,
     account: Option<auth::Profile>,
+    /// For save_failed: no_place | denied | full | io | protect | other.
+    kind: Option<&'static str>,
 }
 
 #[tauri::command]
 async fn auth_poll(app: AppHandle, state: State<'_, AppState>, st: String) -> CmdResult<PollResult> {
-    let r = |status, message: Option<String>| PollResult { status, message, account: None };
+    let r = |status, message: Option<String>| PollResult { status, message, account: None, kind: None };
     let answer = {
         let mut all = logins().lock().unwrap();
         match all.get_mut(&st) {
@@ -964,6 +986,22 @@ async fn auth_poll(app: AppHandle, state: State<'_, AppState>, st: String) -> Cm
         }
     };
     let answer = match answer {
+        // Removed only once it is used, so a failed save can be tried again.
+        Some(auth::Answer::Ok(done)) => {
+            let saved = match token_path(&app) {
+                None => Err(("no_place", "there's no folder to save it in".to_string())),
+                Some(path) => auth::save_token(&path, &done.token).map_err(|e| (auth::save_failure_kind(&e), err(e))),
+            };
+            if let Err((kind, e)) = saved {
+                log::line(&format!("sign-in: couldn't save it ({kind}), will try again: {e}"));
+                if let Some(slot) = logins().lock().unwrap().get_mut(&st) {
+                    *slot = Some(auth::Answer::Ok(done));
+                }
+                return Ok(PollResult { status: "save_failed", message: Some(format!("Couldn't save your sign-in: {e}")), account: None, kind: Some(kind) });
+            }
+            logins().lock().unwrap().remove(&st);
+            auth::Answer::Ok(done)
+        }
         Some(a) => {
             logins().lock().unwrap().remove(&st);
             a
@@ -976,10 +1014,8 @@ async fn auth_poll(app: AppHandle, state: State<'_, AppState>, st: String) -> Cm
     Ok(match answer {
         auth::Answer::Pending => r("pending", None),
         auth::Answer::Ok(done) => {
-            let path = token_path(&app).ok_or("No place to save the sign-in.")?;
-            auth::save_token(&path, &done.token).map_err(err)?;
             signed_in(&app, &state, done.profile.clone()).await?;
-            PollResult { status: "done", message: None, account: Some(done.profile) }
+            PollResult { status: "done", message: None, account: Some(done.profile), kind: None }
         }
         auth::Answer::Refused { message, .. } => r("refused", Some(message)),
         auth::Answer::SignedOut(message) => r("expired", Some(message)),
@@ -1051,11 +1087,30 @@ fn not_patchable(dir: &std::path::Path, spec: &launcher_core::manifest::GameSpec
     }
 }
 
+/// Whether Skyrim is running, however it was started (Play, Steam, Vortex,
+/// MO2). The launcher's self-update waits while it is.
+#[tauri::command]
+fn game_running() -> bool {
+    watch::find_process(watch::GAME_PROCESS).is_some()
+}
+
 #[tauri::command]
 async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<version::GameCheck> {
     use launcher_core::{community, patcher};
     let dir = game_dir(&state).await?;
     let spec = game_spec(&state).await?;
+    // A version fix cut short (launcher closed, power lost) is put back first,
+    // or the half-changed game reads as neither build.
+    if community::needs_recovery(&dir) {
+        if watch::find_process(watch::GAME_PROCESS).is_some() {
+            return Err("Close Skyrim first.".into());
+        }
+        log::line("patch: an earlier version fix was cut short, putting the game's files back");
+        community::recover(&dir).map_err(|e| {
+            log::line(&format!("patch: putting back failed: {e}"));
+            format!("Couldn't patch the game: {e}")
+        })?;
+    }
     // Steam's current build: MulderLoad's public patches, no Steam sign-in.
     if spec.version.as_deref() == Some(community::TARGET) && community::supported(&dir) {
         if watch::find_process(watch::GAME_PROCESS).is_some() {
@@ -1085,7 +1140,7 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
         log::line(&format!("patch: {} file(s) changed: {}", changed.len(), changed.join(", ")));
         let _ = app.emit("patch-progress", PatchProgress { stage: "verify", file: String::new(), done: 1, total: 1 });
         let gc = finish_downgrade(&dir, &spec, false)?;
-        install_missing_mods(&state.http, &dir).await?;
+        helpers_after_patch(&state.http, &dir).await;
         return Ok(gc);
     }
     let base = state.config.lock().await.base_url.clone();
@@ -1145,6 +1200,53 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
     let tmp = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("patches");
     std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
     let total = steps.len();
+    // Every patched file is made first; the game only changes in the one
+    // journalled swap after the loop, so a failure here leaves it as it was.
+    let stage = patcher::stage_dir(&dir);
+    let _ = std::fs::remove_dir_all(&stage);
+    let made = server_patch_files(&app, &state, &dir, &base, &local_dir, &tmp, &stage, &steps).await;
+    let swaps = match made {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&stage);
+            return Err(e);
+        }
+    };
+    let _ = app.emit("patch-progress", PatchProgress { stage: "swap", file: String::new(), done: 0, total });
+    let (dir2, app2) = (dir.clone(), app.clone());
+    let swapped = tokio::task::spawn_blocking(move || {
+        let mut report = move |_: &str, file: &str, done: u64, total: u64| {
+            let _ = app2.emit("patch-progress", PatchProgress { stage: "swap", file: file.to_string(), done: done as usize, total: total as usize });
+        };
+        community::swap_in(&dir2, &swaps, &mut report)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_dir_all(&stage);
+    swapped.map_err(|e| format!("Couldn't patch the game: {e}"))?;
+    log::line(&format!("patch: swapped in {total} patched file(s)"));
+    let _ = app.emit("patch-progress", PatchProgress { stage: "verify", file: String::new(), done: total, total });
+    let gc = finish_downgrade(&dir, &spec, false)?;
+    helpers_after_patch(&state.http, &dir).await;
+    Ok(gc)
+}
+
+/// Downloads each needed server patch and makes its patched file in `stage`.
+/// Nothing in the game changes here.
+#[allow(clippy::too_many_arguments)]
+async fn server_patch_files(
+    app: &AppHandle,
+    state: &AppState,
+    dir: &std::path::Path,
+    base: &str,
+    local_dir: &std::path::Path,
+    tmp: &std::path::Path,
+    stage: &std::path::Path,
+    steps: &[launcher_core::patcher::Step],
+) -> CmdResult<Vec<launcher_core::community::Swap>> {
+    use launcher_core::patcher;
+    let total = steps.len();
+    let mut swaps = Vec::new();
     for (i, step) in steps.iter().enumerate() {
         let patch = step.patch.as_ref().expect("checked");
         let _ = app.emit("patch-progress", PatchProgress { stage: "download", file: step.file.path.clone(), done: i, total });
@@ -1161,20 +1263,29 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
             std::fs::write(&local, &bytes).map_err(|e| e.to_string())?;
         }
         let _ = app.emit("patch-progress", PatchProgress { stage: "apply", file: step.file.path.clone(), done: i, total });
-        let (dir2, step2, local2) = (dir.clone(), step.clone(), local.clone());
-        tokio::task::spawn_blocking(move || patcher::apply_step(&dir2, &step2, &local2))
+        let (dir2, stage2, step2, local2) = (dir.to_path_buf(), stage.to_path_buf(), step.clone(), local.clone());
+        let swap = tokio::task::spawn_blocking(move || patcher::make_patched(&dir2, &stage2, &step2, &local2))
             .await
             .map_err(|e| e.to_string())?
-            .map_err(|e| format!("Couldn't patch {} ({e}). Close Skyrim, Steam and Vortex, then try again.", step.file.path))?;
-        if local.starts_with(&tmp) {
+            .map_err(|e| format!("Couldn't patch {} ({e}). Nothing in the game was changed. Close Skyrim, Steam and Vortex, then try again.", step.file.path))?;
+        if local.starts_with(tmp) {
             let _ = std::fs::remove_file(&local);
         }
-        log::line(&format!("patch: patched {}", step.file.path));
+        log::line(&format!("patch: made {}", step.file.path));
+        swaps.push(swap);
     }
-    let _ = app.emit("patch-progress", PatchProgress { stage: "verify", file: String::new(), done: total, total });
-    let gc = finish_downgrade(&dir, &spec, false)?;
-    install_missing_mods(&state.http, &dir).await?;
-    Ok(gc)
+    Ok(swaps)
+}
+
+/// Installs SKSE and the helper mods once the game is on the server's
+/// version. The version fix itself has worked by then, so a failure here
+/// doesn't report it as failed (running it again would only say the game is
+/// already on that version); Play installs them again and stops with the
+/// reason if they still can't be installed.
+async fn helpers_after_patch(http: &reqwest::Client, dir: &std::path::Path) {
+    if let Err(e) = install_missing_mods(http, dir).await {
+        log::line(&format!("patch: the game is on the server's version, but the helper mods didn't install yet ({e}); Play tries again"));
+    }
 }
 
 fn patch_build_dir(game_dir: &std::path::Path) -> PathBuf {
@@ -1353,35 +1464,25 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_m
 /// Required mods (Timothy, 2026-09-26): the ones on GitHub are installed here
 /// when missing; the ones only on Nexus Mods stop Play with
 /// "NEEDS_NEXUS_MODS:<json list>" and the UI walks the player through them.
-/// Installs SKSE 2.2.6 and Crash Logger from their official GitHub releases
-/// when they're missing.
-async fn install_missing_mods(http: &reqwest::Client, dir: &std::path::Path) -> CmdResult<()> {
-    let cleaned = requirements::clean_partials(dir);
-    if !cleaned.is_empty() {
-        log::line(&format!("removed half-written mod files: {}", cleaned.join(", ")));
-    }
-    if !requirements::skse_ok(dir) {
-        match requirements::install_skse(http, dir).await {
-            Ok(()) => log::line(&format!("installed SKSE {}", requirements::SKSE_VERSION)),
-            Err(e) => {
-                log::line(&format!("couldn't install SKSE: {e}"));
-                return Err(format!("Couldn't install SKSE {} ({e}). Check your internet connection and try again.", requirements::SKSE_VERSION));
-            }
-        }
-    }
-    if !requirements::crash_logger_ok(dir) {
-        match requirements::install_crash_logger(http, dir).await {
-            Ok(()) => log::line(&format!("installed Crash Logger {}", requirements::CRASH_LOGGER_VERSION)),
-            Err(e) => log::line(&format!("couldn't install Crash Logger: {e}")),
-        }
-    }
-    if !requirements::souls_ok(dir) {
-        match requirements::install_souls(http, dir).await {
-            Ok(()) => log::line(&format!("installed Skyrim Souls RE {}", requirements::SOULS_VERSION)),
-            Err(e) => log::line(&format!("couldn't install Skyrim Souls RE: {e}")),
-        }
-    }
-    Ok(())
+/// Installs SKSE 2.2.6, Crash Logger and Skyrim Souls RE from their official
+/// GitHub releases when they're missing. All three are required for every
+/// player, so one that can't be installed stops Play with the reason instead
+/// of the game starting without it.
+/// SKSE that can't be installed stops Play; Crash Logger or Souls RE that
+/// can't are returned as warnings and Play carries on.
+async fn install_missing_mods(http: &reqwest::Client, dir: &std::path::Path) -> CmdResult<Vec<String>> {
+    let mut line = |l: &str| log::line(l);
+    let missing = requirements::ensure_helpers(http, dir, &requirements::Sources::official(), &mut line).await.map_err(|f| {
+        log::line(&format!("couldn't install {}: {}", f.name, f.cause));
+        f.message()
+    })?;
+    Ok(missing
+        .iter()
+        .map(|f| {
+            log::line(&format!("couldn't install {}: {}; starting without it", f.name, f.cause));
+            f.warning()
+        })
+        .collect())
 }
 
 /// What Play is doing now, for the status line under the Play button, so a
@@ -1391,19 +1492,19 @@ fn play_step(app: &AppHandle, text: &str) {
     let _ = app.emit("play-step", text);
 }
 
-async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path::Path) -> CmdResult<()> {
+async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path::Path) -> CmdResult<Vec<String>> {
     let got = install_missing_mods(&state.http, dir).await;
     // Sent whether or not the installs worked: a failed one is the case
     // staff most want to see.
     send_client_status(app, dir);
-    got?;
+    let warnings = got?;
     let list = mods::full_list(state).await;
     let missing: Vec<mods::Row> = launcher_core::modlist::missing(&list, dir).into_iter().map(|m| mods::row(m, dir)).collect();
     if !missing.is_empty() {
         log::line(&format!("play: stopped, {} mod(s) from the mod list are missing", missing.len()));
         return Err(format!("NEEDS_NEXUS_MODS:{}", serde_json::to_string(&missing).unwrap_or_default()));
     }
-    Ok(())
+    Ok(warnings)
 }
 
 /// Tells the login service, in the background, which of the server's mods
@@ -1452,25 +1553,13 @@ fn clear_browser_cache() {
     }
 }
 
-/// Launchers before 0.1.20 moved crash loggers aside with other SKSE plugins.
-/// Puts the newest one back, so the next crash names the module that failed.
+/// Launchers before 0.1.20 moved crash loggers aside with other SKSE plugins;
+/// the newest one SKSE would load is put back (see requirements.rs).
 fn restore_crash_logger(dir: &std::path::Path) {
-    let plugins = dir.join("Data").join("SKSE").join("Plugins");
-    if strays::CRASH_LOGGERS.iter().any(|n| plugins.join(n).is_file()) {
-        return;
-    }
-    let Ok(rd) = std::fs::read_dir(dir.join(strays::DISABLED_DIR)) else { return };
-    let mut stamps: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
-    stamps.sort();
-    for stamp in stamps.iter().rev() {
-        let from = stamp.join("Data").join("SKSE").join("Plugins").join("CrashLogger.dll");
-        if from.is_file() {
-            match std::fs::rename(&from, plugins.join("CrashLogger.dll")) {
-                Ok(()) => log::line(&format!("play: put the crash logger back from {}", stamp.display())),
-                Err(e) => log::line(&format!("play: couldn't put the crash logger back: {e}")),
-            }
-            return;
-        }
+    match requirements::restore_crash_logger(dir) {
+        Ok(Some(stamp)) => log::line(&format!("play: put the crash logger back from {}", stamp.display())),
+        Ok(None) => {}
+        Err(e) => log::line(&format!("play: couldn't put the crash logger back: {e}")),
     }
 }
 
@@ -1504,8 +1593,29 @@ async fn fetch_masters(http: &reqwest::Client, base: &str) -> Option<serde_json:
     }
 }
 
+/// masters.json for Play: the server's, kept as the last good copy, or that
+/// copy when the server doesn't answer (logged). None when neither exists.
+async fn masters_for_play(app: &AppHandle, http: &reqwest::Client, base: &str) -> Option<serde_json::Value> {
+    let kept = app.path().app_local_data_dir().ok().map(|d| d.join("masters-last.json"));
+    if let Some(v) = fetch_masters(http, base).await {
+        if let Some(p) = &kept {
+            let _ = std::fs::write(p, serde_json::to_vec(&v).unwrap_or_default());
+        }
+        return Some(v);
+    }
+    let v = kept.and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok());
+    if v.is_some() {
+        log::line("play: using the last server plugin list this PC loaded");
+    }
+    v
+}
+
 async fn run_health(app: &AppHandle, http: &reqwest::Client, base: &str, dir: &std::path::Path, m: Option<&Manifest>) -> health::Report {
     let masters = fetch_masters(http, base).await;
+    run_health_with(app, dir, m, masters).await
+}
+
+async fn run_health_with(app: &AppHandle, dir: &std::path::Path, m: Option<&Manifest>, masters: Option<serde_json::Value>) -> health::Report {
     let appdata = app.path().local_data_dir().ok().map(|d| d.join("Skyrim Special Edition"));
     let docs = app.path().document_dir().or_else(|_| app.path().home_dir().map(|h| h.join("Documents"))).ok();
     let cache = app.path().app_local_data_dir().ok().map(|d| health::cache_path(&d));
@@ -2079,6 +2189,31 @@ fn open_invite(app: tauri::AppHandle, url: String) -> CmdResult<()> {
     Ok(())
 }
 
+/// Shrinks the still-hidden window to the usable part of its screen, so the
+/// frameless window and its PLAY button never open under the taskbar.
+fn fit_window(app: &tauri::AppHandle) {
+    let Some(w) = app.get_webview_window("main") else { return };
+    // A window that opens off every screen goes on the main one.
+    let Some(monitor) = w.current_monitor().ok().flatten().or_else(|| w.primary_monitor().ok().flatten()) else { return };
+    let Ok(size) = w.inner_size() else { return };
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area();
+    let work = area.size.to_logical::<f64>(scale);
+    let want = size.to_logical::<f64>(scale);
+    let (width, height) = launcher_core::window::fit((want.width, want.height), (work.width, work.height));
+    if (width, height) != (want.width, want.height) {
+        log::line(&format!("window: {}x{} doesn't fit the screen's {}x{}, opening at {width}x{height}", want.width, want.height, work.width, work.height));
+        let _ = w.set_size(tauri::LogicalSize::new(width, height));
+    }
+    // Centred in the usable area in physical pixels, so a taskbar (at any
+    // edge) never covers the PLAY button.
+    let (x, y) = launcher_core::window::centre_in(
+        (area.position.x as f64, area.position.y as f64, area.size.width as f64, area.size.height as f64),
+        (width * scale, height * scale),
+    );
+    let _ = w.set_position(tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32));
+}
+
 #[tauri::command]
 fn window_ready(app: tauri::AppHandle) {
     show_window_once(&app, "page");
@@ -2120,6 +2255,9 @@ fn main() {
                     .user_agent(concat!("AetherialDawnLauncher/", env!("CARGO_PKG_VERSION")))
                     .default_headers(headers.clone())
                     .connect_timeout(std::time::Duration::from_secs(10))
+                    // A server that goes silent mid-answer is an error, not
+                    // a wait for ever (sync, file list, sign-in, session).
+                    .read_timeout(launcher_core::fetch::STALL)
                     .gzip(gzip)
                     .build()
             };
@@ -2135,6 +2273,7 @@ fn main() {
             }
             // The server-mods export, only on the PC the server names.
             export::start(app.handle());
+            fit_window(app.handle());
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(3));
@@ -2142,7 +2281,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, report_problem, patch_game, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside, skip_tool, window_ready, open_invite])
+        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, report_problem, patch_game, game_running, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::download_all_mods, restore_set_aside, skip_tool, window_ready, open_invite])
         .build(tauri::generate_context!())
         .expect("error while running the launcher")
         .run(|_, event| {

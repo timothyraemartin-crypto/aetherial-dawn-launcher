@@ -4,7 +4,7 @@
   // Every command's failure (and the outcome of the important ones) goes to the
   // launcher log, so Copy diagnostics shows what happened. Nothing secret
   // reaches the UI, so nothing secret can be logged from here.
-  const QUIET = new Set(['log_ui', 'diagnostics', 'files', 'server_status', 'auth_poll']);
+  const QUIET = new Set(['log_ui', 'diagnostics', 'files', 'server_status', 'auth_poll', 'game_running']);
   const logUi = msg => { try { T.core.invoke('log_ui', { msg: String(msg) }).catch(() => {}); } catch {} };
   const invoke = async (cmd, args) => {
     const t = performance.now();
@@ -57,15 +57,23 @@
   // ---------- play button + status line ----------
   function setPlay(mode, label) {
     playMode = mode;
+    // The automatic sign-in retry belongs to the RETRY button only.
+    if (mode !== 'authretry') { clearTimeout(authRetryTimer); authRetryTimer = null; }
     $('play-label').textContent = label;
     $('play').disabled = mode === 'wait';
     $('play-wrap').classList.toggle('off', mode === 'wait');
     // Only a session that ends ready to play opens on PLAY next time.
     if (lastSeen.play && (STOPS.includes(mode) || STOPS.includes(label))) remember({ play: false });
   }
-  const STOPS = ['update', 'retry', 'downgrade', 'signin', 'strays', 'WRONG VERSION', 'OFFLINE'];
+  let authRetryTimer = null;
+  const STOPS = ['update', 'retry', 'authretry', 'downgrade', 'signin', 'strays', 'WRONG VERSION', 'OFFLINE'];
   let statusMsg = null;
-  function setStatus(msg, isError) { statusMsg = msg ? { msg, isError } : null; renderStatus(); }
+  function setStatus(msg, isError) {
+    statusMsg = msg ? { msg, isError } : null;
+    renderStatus();
+    const live = $('status-live');
+    if (live && live.textContent !== (msg || '')) live.textContent = msg || '';
+  }
   let toolRunning = false;
   function renderStatus() {
     const parts = [];
@@ -134,7 +142,64 @@
       for (const nav of Object.values(PAGES)) $(nav).removeAttribute('aria-current');
       $('nav-settings').setAttribute('aria-current', 'page');
     }
+    openDialog(id ? $(id) : null);
   }
+  // Sheets are modal dialogs for keyboards and screen readers: focus moves
+  // in when one opens, Tab stays inside it, Escape presses its "Not now" or
+  // Close button (sheets without one, like first run, stay open), and focus
+  // goes back where it was when it closes.
+  const SHEETS = ['first', 'settings', 'downgrade', 'signin', 'strays', 'crash', 'health', 'reqs'];
+  const CLOSERS = { settings: 'set-done', downgrade: 'dg-cancel', strays: 'st-cancel', reqs: 'rq-close', crash: 'cr-close', health: 'hl-close' };
+  for (const sid of SHEETS) {
+    const el = $(sid);
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-modal', 'true');
+    // Takes focus itself while none of its buttons can (Health while checking).
+    el.tabIndex = -1;
+    const h = el.querySelector('h2');
+    if (h) { h.id = h.id || `${sid}-title`; el.setAttribute('aria-labelledby', h.id); }
+  }
+  // Behind an open sheet, the page and the PLAY dock are inert (not
+  // clickable, focusable or read). The side menu and the window buttons stay
+  // live: choosing a page leaves the sheet, and the window can always close.
+  const STAY_LIVE = ['nav', '.titlebar', '.plate'];
+  const behind = () => [...$('first').parentElement.children].filter(x => !SHEETS.includes(x.id) && !STAY_LIVE.some(q => x.matches(q)));
+  let openSheet = null, focusBefore = null;
+  // Where focus was in each sheet when another opened over it (Settings,
+  // then Health, then back), so it comes back to the same button.
+  const focusIn = new Map();
+  const focusables = el => [...el.querySelectorAll('button, input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])')]
+    .filter(x => !x.disabled && !x.hidden && x.offsetParent !== null);
+  function openDialog(el) {
+    if (el === openSheet) return;
+    if (!openSheet && el) focusBefore = document.activeElement;
+    if (openSheet && el && openSheet.contains(document.activeElement)) focusIn.set(openSheet, document.activeElement);
+    openSheet = el;
+    for (const x of behind()) x.inert = !!el;
+    if (el) {
+      const back = focusIn.get(el);
+      focusIn.delete(el);
+      if (back && el.contains(back) && focusables(el).includes(back)) back.focus();
+      else { const f = focusables(el); (f[0] || el).focus(); }
+    } else {
+      focusIn.clear();
+      if (focusBefore && focusBefore.isConnected) focusBefore.focus();
+      focusBefore = null;
+    }
+  }
+  document.addEventListener('keydown', e => {
+    if (!openSheet || openSheet.hidden) return;
+    if (e.key === 'Escape') {
+      const close = CLOSERS[openSheet.id] && $(CLOSERS[openSheet.id]);
+      if (close && !close.disabled && !close.hidden) { e.preventDefault(); close.click(); }
+    } else if (e.key === 'Tab') {
+      const f = focusables(openSheet);
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && (document.activeElement === last || !openSheet.contains(document.activeElement))) { e.preventDefault(); first.focus(); }
+    }
+  });
   // SKSE, Crash Logger and the right game version are the launcher's job, so
   // a Skyrim folder is all a player needs to get going.
   const ready_ = () => !!state.game;
@@ -155,7 +220,9 @@
   }
   function renderGame() {
     const g = state.game;
-    const gameRow = [!!g, g ? 'Skyrim Special Edition' : 'Skyrim not found', g ? g.dir : (state.gameError || 'Pick the folder that has SkyrimSE.exe in it.')];
+    // A folder just picked that wasn't Skyrim: said here too, since the
+    // first-run sheet has no Settings error line.
+    const gameRow = [!!g, g ? 'Skyrim Special Edition' : 'Skyrim not found', g ? (pickError ? `${pickError} Still using ${g.dir}.` : g.dir) : (pickError || state.gameError || 'Pick the folder that has SkyrimSE.exe in it.')];
     // SKSE is the launcher's job: nothing here asks the player to get it.
     const skseRow = g && g.hasSkse ? [true, 'SKSE installed', ''] : [null, 'SKSE', 'Installed for you when you press Play.'];
     renderRow($('g-game'), ...gameRow); renderRow($('g-skse'), ...skseRow);
@@ -199,15 +266,27 @@
     return state;
   }
 
+  let pickError = null;
+  // One folder pick at a time: a second press while the launcher is still
+  // checking the first folder is ignored, so an older answer can never land
+  // after a newer one (on screen or in the saved settings).
+  let picking = false;
   async function pickFolder() {
+    if (picking) return;
+    picking = true;
+    try { await pickFolderOnce(); } finally { picking = false; }
+  }
+  async function pickFolderOnce() {
     const dir = await T.dialog.open({ directory: true, title: 'Choose your Skyrim Special Edition folder' });
     if (!dir) return;
     try {
       await invoke('set_game_dir', { dir });
       $('set-error').hidden = true;
+      pickError = null;
     } catch (e) {
       $('set-error').textContent = e;
       $('set-error').hidden = false;
+      pickError = String(e);
     }
     await refreshState();
     pending = null;
@@ -313,6 +392,7 @@
     }
   }
 
+  let helperWarning = null;
   function ready() {
     pending = { ...pending, files: 0, remove: 0 };
     setChip('ok', 'Up to date');
@@ -325,12 +405,27 @@
       return;
     }
     if (!signedIn()) { setPlay('signin', 'SIGN IN'); setStatus('Sign in with Discord to play.', true); return; }
-    if (auth.locked) { setPlay('wait', 'OFFLINE'); setStatus(auth.message, true); return; }
+    // The login service couldn't confirm the sign-in for over a day. The
+    // button asks it again (and the launcher does every minute), so the
+    // player isn't stuck for the 10 minutes until the next routine check.
+    if (auth.locked) {
+      setPlay('authretry', 'RETRY');
+      setStatus(`${auth.message} Press Retry to check again.`, true);
+      clearTimeout(authRetryTimer);
+      authRetryTimer = setTimeout(() => { if (playMode === 'authretry' && !busy) retryAuth(); }, 60000);
+      return;
+    }
+    // Skyrim started from here is still running: no second Play until it ends.
+    if (gameRunning) { setPlay('wait', 'IN GAME'); return; }
     setPlay('play', 'PLAY');
     remember({ dir: state.config.gameDir, build: pending.build, version: state.launcherVersion, play: true });
     if (c && c.warning) setStatus(c.warning, true);
     if (c && c.target && !c.skseOk) setStatus(`The launcher installs SKSE ${c.skseVersion || ''} for you when you press Play.`);
     else if (!(c && c.warning)) setStatus(null);
+    if (helperWarning && !(c && c.warning)) setStatus(helperWarning, true);
+    // Signed in, but the login service didn't answer: Play needs it for the
+    // game session, so say so now rather than after Play's slow steps.
+    if (auth.offline && auth.message) setStatus(auth.message, true);
   }
 
   // ---------- discord sign-in ----------
@@ -353,11 +448,22 @@
     $('acc-note').textContent = auth.offline ? 'Signed in with Discord (not re-checked yet)' : 'Signed in with Discord';
     paintAvatar($('me-avatar'), a); paintAvatar($('acc-avatar'), a);
   }
-  async function refreshAuth() {
-    try { auth = await invoke('auth_status'); }
-    catch (e) { auth = { signedIn: false, message: String(e) }; }
-    renderAccount();
-    return auth;
+  // One question to the login service at a time: a Retry press, the
+  // minute retry and the 10-minute check share the answer in flight.
+  let authAsk = null;
+  function refreshAuth() {
+    authAsk = authAsk || (async () => {
+      try { auth = await invoke('auth_status'); }
+      catch (e) { auth = { signedIn: false, message: String(e) }; }
+      renderAccount();
+      return auth;
+    })().finally(() => { authAsk = null; });
+    return authAsk;
+  }
+  async function retryAuth() {
+    setPlay('wait', 'CHECKING');
+    await refreshAuth();
+    if (!signedIn()) { ready(); showSignIn(auth.message); } else ready();
   }
   // Every 10 minutes: a ban or leaving the Discord signs the player out here.
   async function recheckAuth() {
@@ -392,6 +498,12 @@
     $('si-go').disabled = false;
     showSheet('signin');
   }
+  function signedInNow() {
+    bringToFront();
+    renderAccount();
+    showPage('home');
+    if (pending) ready(); else check();
+  }
   let signInRun = 0;
   async function beginSignIn() {
     const run = ++signInRun;
@@ -401,25 +513,40 @@
     catch (e) { showSignIn("Couldn't open your browser. " + e); return; }
     $('si-go').disabled = true;
     $('si-wait').hidden = false;
-    const until = Date.now() + 5 * 60 * 1000;
+    // The launcher gives up on the browser after 5 minutes and says so; this
+    // later limit only covers a launcher that stops answering, so a sign-in
+    // finished just before 5 minutes isn't dropped here.
+    const until = Date.now() + 6 * 60 * 1000;
+    let lastError = '';
     while (run === signInRun && Date.now() < until) {
       await new Promise(r => setTimeout(r, 2000));
       if (run !== signInRun) return;
       let r;
-      try { r = await invoke('auth_poll', { st }); } catch (e) { r = { status: 'offline', message: String(e) }; }
+      try { r = await invoke('auth_poll', { st }); lastError = ''; } catch (e) { r = { status: 'offline' }; lastError = String(e); }
+      // Cancelled or started again while this answer was on its way. A
+      // finished one is already saved by the launcher, so the page asks it
+      // who is signed in rather than showing signed out; a sign-in started
+      // since goes on and its answer wins.
+      if (run !== signInRun) {
+        if (r.status === 'done') {
+          await refreshAuth();
+          if (signedIn() && $('si-wait').hidden) signedInNow();
+        }
+        return;
+      }
+      // The launcher has the sign-in but couldn't save it yet; it tries again
+      // on the next ask.
+      if (r.status === 'save_failed') { lastError = r.message || "Couldn't save your sign-in"; continue; }
       if (r.status === 'pending' || r.status === 'offline') continue;
       if (r.status === 'done') {
-        bringToFront();
         auth = { signedIn: true, account: r.account };
-        renderAccount();
-        showPage('home');
-        if (pending) ready(); else check();
+        signedInNow();
         return;
       }
       showSignIn(r.message || 'Sign-in didn\'t finish. Try again.');
       return;
     }
-    if (run === signInRun) showSignIn('Sign-in timed out. Try again.');
+    if (run === signInRun) showSignIn(lastError ? lastError + '. Try again.' : 'Sign-in timed out. Try again.');
   }
 
   // ---------- game version ----------
@@ -696,8 +823,11 @@ let autoMods = false;
       return playMode === 'play' ? onPlay(auto) : undefined;
     }
     if (busy) return;
+    // Installing the launcher update closes the launcher; Play waits for it.
+    if (updating) { setStatus('The launcher is updating itself. Play is ready again once it restarts.'); return; }
     if (playMode === 'strays') return openStrays();
     if (playMode === 'retry') return check();
+    if (playMode === 'authretry') return retryAuth();
     if (playMode === 'update') return update();
     // Play fixes the game version by itself, then starts the game.
     if (playMode === 'downgrade') { openDowngrade(); playAfterPatch = true; return patchGame(); }
@@ -705,8 +835,13 @@ let autoMods = false;
     if (playMode !== 'play') return;
     setPlay('wait', 'LAUNCHING');
     setStatus('Starting Skyrim through SKSE…');
+    playing = true;
     try {
-      await invoke('play');
+      // Helper mods that couldn't be installed: the game starts without
+      // them, and the reason stays on the status line.
+      const warns = await invoke('play');
+      helperWarning = Array.isArray(warns) && warns.length ? warns.join(' ') : null;
+      if (helperWarning) setStatus(helperWarning, true);
       gameRunning = true;
       setTimeout(() => { if (playMode === 'wait' && !busy) ready(); }, 8000);
     } catch (e) {
@@ -755,6 +890,8 @@ let autoMods = false;
       }
       setPlay('play', 'PLAY');
       helpStatus(`Skyrim didn't start: ${msg}`, `game didn't start: ${msg}`);
+    } finally {
+      playing = false;
     }
   }
 
@@ -811,26 +948,59 @@ let autoMods = false;
   // ---------- launcher self-update ----------
   // Installs every new launcher release by itself: on start and every
   // minute, never while Skyrim is running or a download is in progress.
-  let gameRunning = false, updating = false;
+  // playing: Play has been pressed and hasn't finished starting the game.
+  // Installing an update closes the launcher, so it waits for all of these.
+  let gameRunning = false, updating = false, playing = false;
   let lastUpToDateLog = 0;
+  // An update downloaded while Play was starting, installed once it's safe.
+  let downloaded = null;
+  const updateWaits = () => gameRunning || playing || busy || modsRunning;
+  // gameRunning only knows a game Play started; Skyrim started from Steam,
+  // Vortex or MO2 is found by asking Windows. When that question fails, the
+  // game might be running, so the update waits (installing closes the
+  // launcher) and the next minute's check asks again.
+  let gameCheckFailed = false;
+  const skyrimUp = async () => {
+    try { const up = !!(await T.core.invoke('game_running')); gameCheckFailed = false; return up; }
+    catch (e) { gameCheckFailed = true; logUi('game_running failed, the launcher update waits: ' + e); return true; }
+  };
+  const waitReason = () => gameCheckFailed ? 'unknown' : 'busy';
   async function checkSelfUpdate(byHand) {
-    if (updating || gameRunning || busy || modsRunning) return byHand ? 'busy' : undefined;
+    if (updating || updateWaits()) return byHand ? 'busy' : undefined;
+    if (await skyrimUp()) return byHand ? waitReason() : undefined;
     try {
-      const upd = await T.updater.check();
+      const upd = downloaded || await T.updater.check();
       if (!upd) {
         if (byHand || Date.now() - lastUpToDateLog > 30 * 60 * 1000) { logUi('launcher is up to date'); lastUpToDateLog = Date.now(); }
         return 'latest';
       }
+      // Play may have started while the check was out.
+      if (updating || updateWaits()) return byHand ? 'busy' : undefined;
       updating = true;
       $('self-update-text').textContent = `Updating the launcher to ${upd.version}…`;
       $('self-update').hidden = false;
       $('self-update-go').hidden = true;
       logUi(`installing launcher ${upd.version} automatically`);
       try {
-        await upd.downloadAndInstall();
+        if (!downloaded) {
+          await upd.download();
+          downloaded = upd;
+        }
+        // And again after the download: installing closes the launcher.
+        const held = updateWaits() || await skyrimUp();
+        if (held) {
+          updating = false;
+          $('self-update-text').textContent = gameCheckFailed
+            ? `Launcher ${upd.version} is ready. It installs once the launcher can check that Skyrim isn't running.`
+            : `Launcher ${upd.version} is ready. It installs once you're done playing.`;
+          logUi(`launcher ${upd.version} downloaded; install waits for Play and the game`);
+          return byHand ? waitReason() : undefined;
+        }
+        await upd.install();
         await T.process.relaunch();
       } catch (e) {
         updating = false;
+        downloaded = null;
         logUi('launcher self-update failed: ' + e);
         $('self-update-go').hidden = false;
         $('self-update-go').disabled = false;
@@ -849,7 +1019,7 @@ let autoMods = false;
     b.textContent = 'Checking…';
     const r = await checkSelfUpdate(true);
     b.disabled = false;
-    b.textContent = r === 'latest' ? 'Up to date' : r === 'busy' ? 'Try again after the game or download' : r === 'failed' ? "Couldn't check, try again" : 'Check for updates';
+    b.textContent = r === 'latest' ? 'Up to date' : r === 'busy' ? 'Try again after the game or download' : r === 'unknown' ? "Couldn't check the game, try again" : r === 'failed' ? "Couldn't check, try again" : 'Check for updates';
     setTimeout(() => { b.textContent = 'Check for updates'; }, 4000);
   };
 
@@ -857,11 +1027,13 @@ let autoMods = false;
   const HL_TAG = { ok: 'OK', info: 'INFO', warn: 'WARN', fail: 'FAIL' };
   let healthText = '';
   async function openHealth() {
-    showSheet('health');
+    // Set up before it opens, so focus doesn't land on a button that is
+    // about to be disabled.
     $('hl-title').textContent = 'Checking your game…';
     $('hl-list').innerHTML = '';
     $('hl-note').hidden = true;
     $('hl-again').disabled = true;
+    showSheet('health');
     try {
       const h = await invoke('health_check');
       healthText = h.text;

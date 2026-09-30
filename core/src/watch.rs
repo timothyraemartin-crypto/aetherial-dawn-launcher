@@ -7,6 +7,37 @@ use std::time::{Duration, SystemTime};
 
 pub const GAME_PROCESS: &str = "SkyrimSE.exe";
 
+/// SKSE's loader, which starts SkyrimSE.exe and then exits.
+pub const LOADER_PROCESS: &str = "skse64_loader.exe";
+/// How long Play waits for SkyrimSE.exe once the loader has gone.
+pub const START_WAIT: Duration = Duration::from_secs(90);
+/// The most Play waits while the loader is still running (Steam starting or
+/// updating first can hold it for minutes).
+pub const START_WAIT_MAX: Duration = Duration::from_secs(10 * 60);
+
+/// Waits for the game to appear after Play and returns its process id, or
+/// None when it never did. The 90 seconds count from when SKSE's loader was
+/// last seen, not from Play, so a slow start (Steam signing in or updating)
+/// isn't taken for a crash; `max` bounds the whole wait. `find` looks up a
+/// process by name (`find_process`); one check per `tick`.
+pub async fn wait_for_game(find: impl Fn(&str) -> Option<u32>, tick: Duration, wait: Duration, max: Duration) -> Option<u32> {
+    let start = tokio::time::Instant::now();
+    let mut quiet_since = start;
+    loop {
+        if let Some(pid) = find(GAME_PROCESS) {
+            return Some(pid);
+        }
+        let now = tokio::time::Instant::now();
+        if find(LOADER_PROCESS).is_some() {
+            quiet_since = now;
+        }
+        if now.duration_since(quiet_since) >= wait || now.duration_since(start) >= max {
+            return None;
+        }
+        tokio::time::sleep(tick).await;
+    }
+}
+
 /// Process id of a running process with this file name.
 #[cfg(windows)]
 pub fn find_process(name: &str) -> Option<u32> {
@@ -507,5 +538,41 @@ mod tests {
             let me = std::fs::read_to_string("/proc/self/comm").unwrap();
             assert!(find_process(me.trim()).is_some());
         }
+    }
+
+    /// A fake process list: `loader_until` and `game_from` are in ticks.
+    fn fake(loader_until: u32, game_from: Option<u32>) -> (impl Fn(&str) -> Option<u32>, std::rc::Rc<std::cell::Cell<u32>>) {
+        let t = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let t2 = t.clone();
+        let f = move |name: &str| {
+            let now = t2.get();
+            if name == GAME_PROCESS {
+                // Each game lookup is one tick of time.
+                t2.set(now + 1);
+                return game_from.filter(|&g| now >= g).map(|_| 42);
+            }
+            (name == LOADER_PROCESS && now < loader_until).then_some(7)
+        };
+        (f, t)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_start_is_waited_for_while_the_loader_runs() {
+        let tick = Duration::from_secs(1);
+        // Old rule: 90 s from Play. Here the loader holds for 200 s (Steam
+        // updating) and the game appears at 250 s: found, not a crash.
+        let (f, _) = fake(200, Some(250));
+        assert_eq!(wait_for_game(f, tick, START_WAIT, START_WAIT_MAX).await, Some(42));
+        // Loader gone at 5 s and no game: gives up 90 s later.
+        let (f, t) = fake(5, None);
+        assert_eq!(wait_for_game(f, tick, START_WAIT, START_WAIT_MAX).await, None);
+        assert!((94..=97).contains(&t.get()), "{}", t.get());
+        // A loader that never exits doesn't hold Play's watch forever.
+        let (f, t) = fake(u32::MAX, None);
+        assert_eq!(wait_for_game(f, tick, START_WAIT, START_WAIT_MAX).await, None);
+        assert!((600..=602).contains(&t.get()), "{}", t.get());
+        // A normal start is found at once.
+        let (f, _) = fake(3, Some(2));
+        assert_eq!(wait_for_game(f, tick, START_WAIT, START_WAIT_MAX).await, Some(42));
     }
 }
