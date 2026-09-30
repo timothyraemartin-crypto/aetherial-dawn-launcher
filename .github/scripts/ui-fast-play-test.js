@@ -35,7 +35,7 @@ function fakeBackEnd() {
   const game = Object.assign({ needed: false, installed: '1.6.1170.0', target: '1.6.1170.0', skseOk: true, canDowngrade: true }, S.game || {});
   const answers = {
     get_state: () => ({ launcherVersion: S.version, config: { gameDir: S.dir, closeOnLaunch: false, backgroundUpdates: !!S.backgroundUpdates, shareHealth: true, music: false, onlyServerMods: true }, game: { dir: S.dir, hasSkse: S.hasSkse !== false } }),
-    auth_status: () => S.auth,
+    auth_status: () => (S.authAfter && (S.authCalls = (S.authCalls || 0) + 1) > 1) ? S.authAfter : S.auth,
     check: () => Object.assign({ build: 'B2', server: { name: 'Aetherial Dawn', ip: '127.0.0.1', port: 7777 }, files: 0, remove: 0, bytes: 0, strays: [], game }, S.check || {}),
     update: () => null,
     server_status: () => ({ online: true, players: 1, maxPlayers: 50, discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
@@ -154,10 +154,19 @@ const scenarios = [
     ['the game never starts', !played(r)],
     ['the button ends on SIGN IN', lastLabel(r) === 'SIGN IN'],
   ] },
-  { name: 'account locked: OFFLINE, the game never starts', s: { ...base, auth: { ...ok, locked: true, message: 'Your account is locked.' } }, expect: r => [
+  { name: 'account locked: RETRY, the game never starts', s: { ...base, auth: { ...ok, locked: true, message: 'Your account is locked.' } }, expect: r => [
     ['the game never starts', !played(r)],
-    ['the button ends on OFFLINE', lastLabel(r) === 'OFFLINE [off]'],
+    ['the button ends on RETRY, which can be pressed', lastLabel(r) === 'RETRY', lastLabel(r)],
     ['next start does not open on PLAY', r.lastReady && r.lastReady.play === false],
+  ] },
+  { name: 'account locked, then the login service answers: Retry brings PLAY back', s: { ...base, auth: { ...ok, locked: true, message: 'Your account is locked.' }, authAfter: ok, clicks: [2500] }, expect: r => [
+    ['Retry asked the login service again', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'auth_status').length >= 2],
+    ['the button ends on PLAY', lastLabel(r) === 'PLAY', lastLabel(r)],
+    ['the game never starts by itself', !played(r)],
+  ] },
+  { name: 'account locked, then the login service answers: the minute retry brings PLAY back once', s: { ...base, auth: { ...ok, locked: true, message: 'Your account is locked.' }, authAfter: ok, clicks: [], end: 130000 }, expect: r => [
+    ['the login service was asked twice, not more', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'auth_status').length === 2, String(r.invokes.filter(i => i[1] === 'ask' && i[2] === 'auth_status').length)],
+    ['the button ends on PLAY', lastLabel(r) === 'PLAY', lastLabel(r)],
   ] },
   { name: 'an update found behind PLAY takes over the button', s: { ...base, check: { build: 'B2', files: 3, bytes: 3000000 } }, expect: r => [
     ['the game never starts', !played(r)],
@@ -208,7 +217,7 @@ for (const sc of scenarios) {
     const root = process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : [];
     out = execFileSync(chrome, [...root, '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
       `--user-data-dir=${path.join(dir, 'profile')}`, '--allow-file-access-from-files', '--window-size=1360,880',
-      '--virtual-time-budget=8000', '--dump-dom', url], { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] });
+      `--virtual-time-budget=${(sc.s.end || 6000) + 2000}`, '--dump-dom', url], { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] });
   } catch (e) { out = String(e.stdout || ''); }
   const m = out.match(/<pre id="ui-test-result">([\s\S]*?)<\/pre>/);
   console.log(`== ${sc.name}`);
