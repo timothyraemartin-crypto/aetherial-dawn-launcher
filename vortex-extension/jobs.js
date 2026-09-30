@@ -27,10 +27,13 @@ function sign(token, body) {
 
 class Jobs {
   // vortex: { state() }
-  // opts: { token, now() }
+  // opts: { token, now(), version }
   constructor(vortex, opts) {
     this.v = vortex;
     this.token = opts.token;
+    // The version in this extension's own info.json, so the launcher can
+    // prove which version Vortex actually loaded.
+    this.version = opts.version || null;
     this.now = opts.now || (() => Date.now());
     this.seen = new Map();
   }
@@ -73,6 +76,7 @@ class Jobs {
     const attr = m => m.attributes || {};
     return {
       ok: true,
+      extensionVersion: this.version,
       activeProfile: profiles.some(p => p.id === active) ? { id: active, name: (profiles.find(p => p.id === active) || {}).name } : null,
       aetherialProfiles: mine.length,
       profile: prof ? { id: prof.id, name: prof.name, active: active === prof.id } : null,

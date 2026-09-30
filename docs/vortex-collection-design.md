@@ -101,10 +101,18 @@ The launcher shows one line per step, with exact counts and a per-item error lis
 
 ## 5. Extension install and pairing (Codex 5876119420 / 5875974143)
 
-- The launcher copies the extension into `%APPDATA%\Vortex\plugins\aetherial-dawn\` **(verify)**. The copy goes into a versioned temp folder and is renamed into place. Unknown files there are preserved.
+- The launcher copies the extension into `%APPDATA%\Vortex\plugins\aetherial-dawn\` **(verify)**. The whole version is built outside the plugins folder and swapped in as one folder. Unknown files there are preserved.
   - Built (`vortex::install_extension`): only when the player presses **Connect Vortex** in the mods window, which shows when Vortex manages the game and the launcher isn't paired yet.
-  - The launcher carries the extension's files. Each file is written in full to `%APPDATA%\Vortex\aetherial-dawn-extension.staging`, then renamed over the old one. `info.json` goes last, so a stopped install is finished by the next one.
-  - If the files are identical, nothing is written. A later version (by `info.json`) left by a newer launcher is kept. With no `%APPDATA%\Vortex` folder, nothing is written.
+  - The launcher carries the extension's files. An update is one whole version, not file by file (Codex 5880406786):
+    1. The new files, plus any files in the live folder that aren't the extension's, are written to `%APPDATA%\Vortex\aetherial-dawn-extension.staging`, outside the plugins folder, so Vortex never loads them there.
+    2. A marker, `.aetherial-dawn-complete`, holding the version and each extension file's sha256, is written last and flushed. It stays in the live folder.
+    3. Two folder renames: the live folder to `aetherial-dawn-extension.previous`, then staging to the live folder. Between them Vortex finds no extension, never a mix of two versions. If the second rename fails, the first is undone.
+    4. Every run first finishes or undoes an interrupted update: a complete staged version with no live folder is moved in; otherwise `.previous` is put back; leftovers are removed.
+  - The swap happens only while Vortex is closed (Codex 5916923163). If Connect Vortex would write anything and `Vortex.exe` is running, or Windows can't list processes, it writes nothing and asks the player to close Vortex.
+  - Since extension 0.2.1 the `status` answer carries `extensionVersion`, read from the extension's own `info.json`. The launcher trusts an answer only when that is the version it carries, so an older helper that Vortex still has loaded after an update counts as not connected until Vortex restarts.
+  - `vortex::extension_state` reads the live folder without changing it: absent, current, another whole version, or **mixed** (files that don't match the marker). Connect Vortex refuses to pair with a mixed folder.
+  - Tests stop an update after each step and check that Vortex would find the old version or nothing, and that the next run finishes it and keeps the player's own files.
+  - If the files are identical, nothing is written. A later whole version (by its marker) left by a newer launcher is kept; a folder that isn't one whole version is replaced, whatever its `info.json` says. With no `%APPDATA%\Vortex` folder, nothing is written.
   - Afterwards the player is told to restart Vortex once. The command `vortex_connect { fresh: true }` is the re-pair; it has no button yet.
   - Manual ZIP install stays documented as a recovery route.
 - Pairing uses a persistent 32-byte token in `%LOCALAPPDATA%\gg.aetherialdawn.launcher\vortex\token`.
