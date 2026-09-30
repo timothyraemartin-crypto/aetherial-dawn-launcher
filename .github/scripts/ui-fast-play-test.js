@@ -85,6 +85,11 @@ function fakeBackEnd() {
       try { log.lastReady = JSON.parse(localStorage.getItem('ad.lastReady')); } catch (_) {}
       log.signinShown = !document.getElementById('signin').hidden;
       log.status = document.getElementById('status').textContent;
+      const live = document.getElementById('status-live');
+      log.announced = live ? live.textContent : null;
+      const playBtn = document.getElementById('play');
+      playBtn.focus({ focusVisible: true });
+      log.playRing = playBtn.matches(':focus-visible') ? getComputedStyle(document.getElementById('play-wrap')).outlineStyle : 'not focus-visible';
       const join = document.getElementById('si-join');
       log.join = join.hidden ? null : join.textContent;
       const errLink = document.querySelector('#si-error button');
@@ -195,6 +200,12 @@ const scenarios = [
   ] },
   { name: 'login service unreachable, still signed in: told before Play', s: { ...base, auth: { ...ok, offline: true, message: "Couldn't reach the login service. You're still signed in, but Play needs it to start the game, so try again when it's back." }, clicks: [] }, expect: r => [
     ['the status line says Play needs the login service', /Play needs it/.test(r.status), r.status],
+  ] },
+  { name: 'a message on the status line is announced to screen readers', s: { ...base, game: { needed: true, canDowngrade: false, reason: 'Skyrim is not the version the server needs.' } }, expect: r => [
+    ['screen readers get the message', /not the version the server needs/.test(r.announced || ''), r.announced],
+  ] },
+  { name: 'PLAY shows a keyboard focus ring', s: { ...base, clicks: [] }, expect: r => [
+    ['PLAY\'s focus ring is drawn on its frame', r.playRing === 'solid', r.playRing],
   ] },
   { name: 'launcher updated since last time: no early PLAY', s: { ...base, seed: { ...seed, version: '0.0.1' }, clicks: [] }, expect: r => [
     ['PLAY is not enabled before the checks', firstLabel(r, 'PLAY') === null || firstLabel(r, 'PLAY') >= answeredAt(r, 'check')],
