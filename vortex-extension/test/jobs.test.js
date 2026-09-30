@@ -93,3 +93,13 @@ test('the signature matches the launcher\'s (the same vector as core/src/vortex.
   const body = '{"verb":"status","args":{},"revision":"r1","ts":1000000,"nonce":"0123456789abcdef0123456789abcdef"}';
   assert.equal(sign('a'.repeat(64), body), '3122895dea18179f37ba45ba8220fd633975ccaf40b2fb1a200c5422edc3ab00');
 });
+
+test('status says which extension version Vortex loaded, from its own info.json', async () => {
+  const { version } = require('../info.json');
+  const body = JSON.stringify({ verb: 'status', args: {}, revision: 'r1', ts: 5, nonce: 'nonce-version-0123456789' });
+  const jobs = new Jobs({ state: () => state() }, { token: TOKEN, now: () => 5, version });
+  const out = await jobs.handle(body, sign(TOKEN, body));
+  assert.strictEqual(out.extensionVersion, version);
+  const old = new Jobs({ state: () => state() }, { token: TOKEN, now: () => 5 });
+  assert.strictEqual((await old.handle(body, sign(TOKEN, body))).extensionVersion, null);
+});

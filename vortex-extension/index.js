@@ -13,6 +13,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { Jobs } = require('./jobs');
+const { version } = require('./info.json');
 
 const HOME = path.join(process.env.LOCALAPPDATA || '', 'gg.aetherialdawn.launcher', 'vortex');
 
@@ -25,7 +26,7 @@ function start(api) {
     return;
   }
   if (!/^[0-9a-f]{64}$/.test(token)) return;
-  const jobs = new Jobs({ state: () => api.getState() }, { token });
+  const jobs = new Jobs({ state: () => api.getState() }, { token, version });
   const server = http.createServer((req, res) => {
     if (req.method !== 'POST' || req.url !== '/job') {
       res.writeHead(404).end();

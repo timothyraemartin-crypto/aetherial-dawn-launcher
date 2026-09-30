@@ -155,6 +155,10 @@ pub struct Status {
     pub mods: Vec<VortexMod>,
     #[serde(default)]
     pub collections: Vec<Collection>,
+    /// The version of the extension Vortex has loaded, from its own
+    /// info.json. Missing from extensions before 0.2.1.
+    #[serde(default, rename = "extensionVersion")]
+    pub extension_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -639,6 +643,31 @@ pub fn extension_state(plugins: &Path, files: &[(&str, &[u8])]) -> ExtensionStat
     }
 }
 
+/// The version this launcher carries.
+pub fn bundled_version(files: &[(&str, &[u8])]) -> Option<String> {
+    files.iter().find(|(n, _)| *n == "info.json").and_then(|(_, b)| info_version(b))
+}
+
+/// Whether the extension answering is the one this launcher put in Vortex.
+/// Vortex keeps running the version it loaded at start, so after an update
+/// its answers aren't trusted until Vortex is restarted.
+pub fn loaded_is_current(status: &Status, files: &[(&str, &[u8])]) -> bool {
+    status.extension_version.is_some() && status.extension_version == bundled_version(files)
+}
+
+/// Whether installing would write anything: the folder is missing, mixed,
+/// or holds an older or different whole version. A later whole version is
+/// kept and needs no write.
+pub fn needs_write(plugins: &Path, files: &[(&str, &[u8])]) -> bool {
+    match extension_state(plugins, files) {
+        ExtensionState::Current => false,
+        ExtensionState::Other { version } => {
+            bundled_version(files).is_none_or(|b| version_parts(&version) <= version_parts(&b))
+        }
+        ExtensionState::Absent | ExtensionState::Mixed => true,
+    }
+}
+
 /// The steps of an update, so a test can stop it after any one of them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum UpdateStep {
@@ -840,6 +869,7 @@ mod tests {
             active_profile: Some(ActiveProfile { id: "p1".into(), name: Some("Aetherial Dawn".into()) }),
             mods,
             collections: vec![],
+            extension_version: None,
         }
     }
 
@@ -1323,6 +1353,32 @@ mod tests {
         recover(vortex, &plugins.join(EXT_DIR)).unwrap();
         assert_eq!(extension_state(&plugins, EXTENSION), ExtensionState::Other { version: "0.1.0".into() });
         assert!(!staging_dir(vortex).exists());
+    }
+
+    #[test]
+    fn only_the_carried_version_answering_is_trusted() {
+        let mut s: Status = serde_json::from_str(r#"{"mods":[]}"#).unwrap();
+        assert!(!loaded_is_current(&s, EXTENSION), "an extension before 0.2.1 doesn't say its version");
+        s.extension_version = Some("0.2.0".into());
+        assert!(!loaded_is_current(&s, EXTENSION));
+        s.extension_version = bundled_version(EXTENSION);
+        assert!(loaded_is_current(&s, EXTENSION));
+    }
+
+    #[test]
+    fn a_write_is_needed_only_when_the_folder_isnt_this_or_a_later_whole_version() {
+        let (_t, plugins) = fake_vortex();
+        let dir = plugins.join(EXT_DIR);
+        assert!(needs_write(&plugins, EXTENSION));
+        put_whole(&dir, OLD);
+        assert!(needs_write(&plugins, EXTENSION));
+        install_extension(&plugins, EXTENSION).unwrap();
+        assert!(!needs_write(&plugins, EXTENSION));
+        std::fs::remove_dir_all(&dir).unwrap();
+        put_whole(&dir, &[("index.js", b"n"), ("jobs.js", b"n"), ("info.json", br#"{"version":"9.0.0"}"#)]);
+        assert!(!needs_write(&plugins, EXTENSION));
+        std::fs::write(dir.join("jobs.js"), "changed").unwrap();
+        assert!(needs_write(&plugins, EXTENSION));
     }
 
     #[test]

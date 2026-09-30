@@ -186,7 +186,16 @@ pub async fn vortex_status(app: &AppHandle, state: &AppState) -> Option<launcher
     let home = vortex::home(&app.path().app_local_data_dir().ok()?);
     let token = vortex::token(&home).ok()?;
     match vortex::call(&state.http, &home, &token, "status", &serde_json::json!({}), "").await {
-        Ok(v) => serde_json::from_value::<vortex::Status>(v).ok(),
+        Ok(v) => {
+            let status = serde_json::from_value::<vortex::Status>(v).ok()?;
+            if !vortex::loaded_is_current(&status, vortex::EXTENSION) {
+                // Vortex is still running an older helper: nothing it says
+                // counts until Vortex is restarted with this one.
+                log::line(&format!("mods: Vortex runs helper {:?}, not {:?}; restart Vortex", status.extension_version, vortex::bundled_version(vortex::EXTENSION)));
+                return None;
+            }
+            Some(status)
+        }
         Err(e) => {
             if !matches!(e, vortex::JobError::NotRunning) {
                 log::line(&format!("mods: the Vortex extension didn't answer: {e}"));
@@ -205,13 +214,29 @@ pub async fn vortex_connect(app: AppHandle, state: State<'_, AppState>, fresh: O
     let home = vortex::home(&app.path().app_local_data_dir().map_err(|e| e.to_string())?);
     let token = if fresh.unwrap_or(false) { vortex::rotate(&home) } else { vortex::pair(&home) }.map_err(|e| e.to_string())?;
     let roaming = app.path().data_dir().map_err(|e| e.to_string())?;
-    let done = vortex::install_extension(&vortex::plugins_dir(&roaming), vortex::EXTENSION).map_err(|e| e.to_string())?;
+    let plugins = vortex::plugins_dir(&roaming);
+    if vortex::needs_write(&plugins, vortex::EXTENSION) {
+        // The helper's folder is swapped only while Vortex is closed, so
+        // Vortex never holds it open or loads it mid-swap. If Windows can't
+        // list processes, it is treated as running.
+        match launcher_core::watch::find_process_checked("Vortex.exe") {
+            Ok(None) => {}
+            Ok(Some(_)) => return Err("Close Vortex first, then press Connect Vortex again. The helper is only put in while Vortex is closed.".into()),
+            Err(e) => {
+                log::line(&format!("vortex: couldn't check whether Vortex is running: {e}"));
+                return Err("The launcher couldn't check whether Vortex is running. Close Vortex, then press Connect Vortex again.".into());
+            }
+        }
+    }
+    let done = vortex::install_extension(&plugins, vortex::EXTENSION).map_err(|e| e.to_string())?;
     log::line(&format!("vortex: extension {done:?}{}", if fresh.unwrap_or(false) { ", new pairing" } else { "" }));
-    if vortex::extension_state(&vortex::plugins_dir(&roaming), vortex::EXTENSION) == vortex::ExtensionState::Mixed {
+    if vortex::extension_state(&plugins, vortex::EXTENSION) == vortex::ExtensionState::Mixed {
         log::line("vortex: extension folder is not one whole version; not pairing");
         return Err("The Aetherial Dawn helper in Vortex is incomplete. Close Vortex, then press Connect Vortex again.".into());
     }
-    let answers = vortex::call(&state.http, &home, &token, "status", &serde_json::json!({}), "").await.is_ok();
+    let answers = vortex::call(&state.http, &home, &token, "status", &serde_json::json!({}), "").await.ok()
+        .and_then(|v| serde_json::from_value::<vortex::Status>(v).ok())
+        .is_some_and(|s| vortex::loaded_is_current(&s, vortex::EXTENSION));
     Ok(match (&done, answers) {
         (_, true) if !done.needs_restart() => "Vortex is connected.".into(),
         (vortex::Installed::NewerKept { installed }, false) => format!("A newer Aetherial Dawn helper ({installed}) is already in Vortex. Start or restart Vortex and it connects."),
