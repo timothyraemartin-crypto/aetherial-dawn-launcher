@@ -562,6 +562,27 @@ fn is_plugin(p: &Path) -> bool {
     l.ends_with(".esp") || l.ends_with(".esm") || l.ends_with(".esl")
 }
 
+/// Skyrim's own files, which only ever come from the player's own Steam
+/// copy: the game's programs next to SkyrimSE.exe (any .exe but SKSE's
+/// loader), Skyrim.ccc, and in Data the base and Creation Club plugins,
+/// _ResourcePack, and their archives ("Skyrim - *.bsa", "cc*.bsa").
+pub fn game_owned(rel: &str) -> bool {
+    let l = rel.replace('\\', "/").to_ascii_lowercase();
+    match l.strip_prefix("data/") {
+        None => !l.contains('/') && (matches!(l.as_str(), "skyrim.ccc" | "steam_api64.dll" | "bink2w64.dll") || (l.ends_with(".exe") && l != "skse64_loader.exe")),
+        Some(n) => {
+            let stem = n.rsplit_once('.').map(|(s, _)| s).unwrap_or(n);
+            !n.contains('/')
+                && (n == "skyrim.ccc"
+                    || n.starts_with("_resourcepack.")
+                    || n.starts_with("marketplacetextures.")
+                    || (n.starts_with("skyrim - ") && n.ends_with(".bsa"))
+                    || crate::aliases::shipped_with_game(n)
+                    || (n.ends_with(".bsa") && crate::aliases::shipped_with_game(&format!("{stem}.esm"))))
+        }
+    }
+}
+
 pub fn missing<'a>(list: &'a [ModEntry], game_dir: &Path) -> Vec<&'a ModEntry> {
     list.iter().filter(|m| !m.installed(game_dir)).collect()
 }
