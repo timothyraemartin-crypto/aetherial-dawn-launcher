@@ -45,7 +45,7 @@ function fakeBackEnd() {
     plain_error: a => a.text,
     auth_begin: () => 'st',
     // S.signIn: when the launcher has the answer, and an error each poll gives.
-    auth_poll: () => S.signIn.refuseFirst && !S.refused ? (S.refused = true, { status: 'refused', message: 'An old refusal.' })
+    auth_poll: () => S.signIn.error ? { status: 'save_failed', kind: 'denied', message: S.signIn.error } : S.signIn.refuseFirst && !S.refused ? (S.refused = true, { status: 'refused', message: 'An old refusal.' })
       : at() - (S.signInAt || 0) >= S.signIn.doneAfter ? { status: 'done', account: { discordUsername: 'Player' } } : { status: 'pending' },
   };
   const delay = Object.assign({ get_state: 20, auth_status: 300, check: 900, update: 600, server_status: 300, play: 50, default: 10 }, S.delay || {});
@@ -55,7 +55,6 @@ function fakeBackEnd() {
       setTimeout(() => {
         log.invokes.push([at(), 'answer', cmd]);
         if (cmd === 'auth_status' && S.authFails) return rej('network down');
-        if (cmd === 'auth_poll' && S.signIn.error) return rej(S.signIn.error);
         if (cmd === 'play' && S.playError && !S.played) { S.played = true; return rej(S.playError); }
         res(answers[cmd] ? answers[cmd](args || {}) : null);
       }, delay[cmd] ?? delay.default);
@@ -216,6 +215,7 @@ scenarios.push({ name: 'an answer to a cancelled sign-in is ignored', s: { ...si
 scenarios.push({ name: 'a sign-in that can never be saved says why', s: { ...signedOut, signIn: { doneAfter: 0, error: "Couldn't save your sign-in: Access is denied" }, end: 6 * 60 * 1000 + 10000 }, expect: r => [
   ['the sign-in window says the save failed', /Couldn't save your sign-in: Access is denied/.test(r.signInError || ''), JSON.stringify(r.signInError)],
   ['the player is not signed in', r.me === null],
+  ['the save is tried again until the wait ends', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'auth_poll').length > 100, String(r.invokes.filter(i => i[1] === 'ask' && i[2] === 'auth_poll').length)],
 ] });
 
 const chrome = findChrome();

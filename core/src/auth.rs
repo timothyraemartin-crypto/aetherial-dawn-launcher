@@ -338,6 +338,21 @@ pub fn save_token(path: &std::path::Path, token: &str) -> Result<()> {
     written
 }
 
+/// What kind of failure stopped a sign-in being saved, as a fixed word the
+/// page can act on (it never reads the message to decide).
+pub fn save_failure_kind(e: &crate::Error) -> &'static str {
+    match e {
+        crate::Error::Io(io) => match io.kind() {
+            std::io::ErrorKind::PermissionDenied => "denied",
+            std::io::ErrorKind::StorageFull => "full",
+            _ => "io",
+        },
+        // Windows wouldn't encrypt it for this user.
+        crate::Error::Game(_) => "protect",
+        _ => "other",
+    }
+}
+
 pub fn load_token(path: &std::path::Path) -> Option<String> {
     let raw = std::fs::read(path).ok()?;
     String::from_utf8(protect(&raw, false).ok()?).ok().filter(|t| !t.is_empty())
@@ -359,6 +374,20 @@ mod tests {
         save_token(&path, "second").unwrap();
         assert_eq!(load_token(&path).as_deref(), Some("second"));
         assert!(!path.with_extension("part").exists());
+    }
+
+    #[test]
+    fn save_failures_have_fixed_kinds() {
+        use std::io::{Error as IoError, ErrorKind};
+        assert_eq!(save_failure_kind(&IoError::from(ErrorKind::PermissionDenied).into()), "denied");
+        assert_eq!(save_failure_kind(&IoError::from(ErrorKind::StorageFull).into()), "full");
+        assert_eq!(save_failure_kind(&IoError::from(ErrorKind::NotFound).into()), "io");
+        assert_eq!(save_failure_kind(&crate::Error::Game("no".into())), "protect");
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("token.bin");
+        std::fs::create_dir(path.with_extension("part")).unwrap();
+        let kind = save_failure_kind(&save_token(&path, "t").unwrap_err());
+        assert!(kind == "io" || kind == "denied", "{kind}");
     }
 
     #[test]

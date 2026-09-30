@@ -413,6 +413,9 @@
       try { r = await invoke('auth_poll', { st }); lastError = ''; } catch (e) { r = { status: 'offline' }; lastError = String(e); }
       // Cancelled or started again while this answer was on its way.
       if (run !== signInRun) return;
+      // The launcher has the sign-in but couldn't save it yet; it tries again
+      // on the next ask.
+      if (r.status === 'save_failed') { lastError = r.message || "Couldn't save your sign-in"; continue; }
       if (r.status === 'pending' || r.status === 'offline') continue;
       if (r.status === 'done') {
         bringToFront();
