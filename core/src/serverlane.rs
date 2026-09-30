@@ -724,6 +724,13 @@ pub fn finish(root: &Path, lane: &ServerLane, hash: &str, plugins: BTreeMap<Stri
 pub fn finish_with(root: &Path, lane: &ServerLane, hash: &str, plugins: BTreeMap<String, String>, source: Source, game_data: Option<&Path>) -> Result<Record> {
     use sha2::{Digest, Sha256};
     use std::io::{Read, Write};
+    // Never the game's own plugins (base masters, Creation Club content,
+    // _ResourcePack): they're Bethesda's, and the zip must never carry them,
+    // even by a mistake in the list.
+    let licensed: Vec<&str> = plugins.keys().filter(|n| crate::aliases::shipped_with_game(n)).map(String::as_str).collect();
+    if !licensed.is_empty() {
+        return Err(Error::Game(format!("the export would carry the game's own plugins ({}), which never go in the zip; no zip made", licensed.join(", "))));
+    }
     // Never a zip short of what the list declares, or with more.
     let (missing, extra) = reconcile(lane, &plugins);
     if !missing.is_empty() || !extra.is_empty() {
@@ -1135,7 +1142,16 @@ mod tests {
             ]
         );
         let plugins: BTreeMap<String, String> = [("COTN Morthal.esp", "cotn"), ("ccBGSSSE099-Thing.esp", "cc"), ("Lite.esl", "lite")].into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
-        let e = finish_with(t.path(), &l, "h", plugins, Source::served(), Some(&game)).unwrap_err().to_string();
+        let e = finish_with(t.path(), &l, "h", plugins.clone(), Source::served(), Some(&game)).unwrap_err().to_string();
+        assert!(e.contains("the game's own plugins (ccBGSSSE099-Thing.esp)") && e.contains("no zip made"), "{e}");
+        let mut rest = plugins;
+        rest.remove("ccBGSSSE099-Thing.esp");
+        let l = lane(&format!(
+            r#"{{"for_discord_id":"1","masters":[{base},"ccBGSSSE037-Curios.esm"],"mods":[
+            {{"id":"cotn","name":"COTN","nexus":{{"mod":1,"file":1}},"plugins":["COTN Morthal.esp"]}},
+            {{"id":"lite","name":"Lite","nexus":{{"mod":3,"file":3}},"plugins":["Lite.esl"]}}]}}"#
+        ));
+        let e = finish_with(t.path(), &l, "h", rest, Source::served(), Some(&game)).unwrap_err().to_string();
         assert!(e.contains("lightCleared") && e.contains("no zip made"), "{e}");
         assert!(!t.path().join(ZIP_NAME).exists());
         // A master missing from the game folder stops it too.
@@ -1149,6 +1165,24 @@ mod tests {
             let l = lane(&format!(r#"{{"for_discord_id":"1",{bad},"mods":[{{"id":"a","name":"A","nexus":{{"mod":1,"file":1}},"plugins":["A.esp"]}}]}}"#));
             assert!(check(&l).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_games_own_plugins_never_go_in_the_zip() {
+        // Base masters, Creation Club content and _ResourcePack are
+        // Bethesda's: finish refuses them whatever the list says.
+        for name in ["Skyrim.esm", "dawnguard.esm", "_ResourcePack.esl", "ccBGSSSE001-Fish.esm", "ccQDRSSE001-SurvivalMode.esl", "ccBGSSSE025-AdvDSGS.esm"] {
+            let t = tempfile::tempdir().unwrap();
+            let data = t.path().join("Data");
+            std::fs::create_dir_all(&data).unwrap();
+            std::fs::write(data.join(name), esp(&[], 1)).unwrap();
+            let l = lane(&format!(r#"{{"for_discord_id":"1","mods":[{{"id":"x","name":"X","nexus":{{"mod":1,"file":1}},"plugins":["{name}"]}}]}}"#));
+            let e = finish(t.path(), &l, "h", [(name.to_string(), "x".to_string())].into(), Source::served()).unwrap_err().to_string();
+            assert!(e.contains(&format!("the game's own plugins ({name})")), "{name}: {e}");
+            assert!(!t.path().join(ZIP_NAME).exists() && !t.path().join("export.json").exists(), "{name}");
+        }
+        // A mod's own file with a Creation Club-like name is still a mod.
+        assert!(!crate::aliases::shipped_with_game("ccBGSSSE001-Fish - Patch.esp"));
     }
 
     #[test]
