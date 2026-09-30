@@ -57,13 +57,16 @@
   // ---------- play button + status line ----------
   function setPlay(mode, label) {
     playMode = mode;
+    // The automatic sign-in retry belongs to the RETRY button only.
+    if (mode !== 'authretry') { clearTimeout(authRetryTimer); authRetryTimer = null; }
     $('play-label').textContent = label;
     $('play').disabled = mode === 'wait';
     $('play-wrap').classList.toggle('off', mode === 'wait');
     // Only a session that ends ready to play opens on PLAY next time.
     if (lastSeen.play && (STOPS.includes(mode) || STOPS.includes(label))) remember({ play: false });
   }
-  const STOPS = ['update', 'retry', 'downgrade', 'signin', 'strays', 'WRONG VERSION', 'OFFLINE'];
+  let authRetryTimer = null;
+  const STOPS = ['update', 'retry', 'authretry', 'downgrade', 'signin', 'strays', 'WRONG VERSION', 'OFFLINE'];
   let statusMsg = null;
   function setStatus(msg, isError) {
     statusMsg = msg ? { msg, isError } : null;
@@ -331,7 +334,16 @@
       return;
     }
     if (!signedIn()) { setPlay('signin', 'SIGN IN'); setStatus('Sign in with Discord to play.', true); return; }
-    if (auth.locked) { setPlay('wait', 'OFFLINE'); setStatus(auth.message, true); return; }
+    // The login service couldn't confirm the sign-in for over a day. The
+    // button asks it again (and the launcher does every minute), so the
+    // player isn't stuck for the 10 minutes until the next routine check.
+    if (auth.locked) {
+      setPlay('authretry', 'RETRY');
+      setStatus(`${auth.message} Press Retry to check again.`, true);
+      clearTimeout(authRetryTimer);
+      authRetryTimer = setTimeout(() => { if (playMode === 'authretry' && !busy) retryAuth(); }, 60000);
+      return;
+    }
     // Skyrim started from here is still running: no second Play until it ends.
     if (gameRunning) { setPlay('wait', 'IN GAME'); return; }
     setPlay('play', 'PLAY');
@@ -365,11 +377,22 @@
     $('acc-note').textContent = auth.offline ? 'Signed in with Discord (not re-checked yet)' : 'Signed in with Discord';
     paintAvatar($('me-avatar'), a); paintAvatar($('acc-avatar'), a);
   }
-  async function refreshAuth() {
-    try { auth = await invoke('auth_status'); }
-    catch (e) { auth = { signedIn: false, message: String(e) }; }
-    renderAccount();
-    return auth;
+  // One question to the login service at a time: a Retry press, the
+  // minute retry and the 10-minute check share the answer in flight.
+  let authAsk = null;
+  function refreshAuth() {
+    authAsk = authAsk || (async () => {
+      try { auth = await invoke('auth_status'); }
+      catch (e) { auth = { signedIn: false, message: String(e) }; }
+      renderAccount();
+      return auth;
+    })().finally(() => { authAsk = null; });
+    return authAsk;
+  }
+  async function retryAuth() {
+    setPlay('wait', 'CHECKING');
+    await refreshAuth();
+    if (!signedIn()) { ready(); showSignIn(auth.message); } else ready();
   }
   // Every 10 minutes: a ban or leaving the Discord signs the player out here.
   async function recheckAuth() {
@@ -712,6 +735,7 @@ let autoMods = false;
     if (updating) { setStatus('The launcher is updating itself. Play is ready again once it restarts.'); return; }
     if (playMode === 'strays') return openStrays();
     if (playMode === 'retry') return check();
+    if (playMode === 'authretry') return retryAuth();
     if (playMode === 'update') return update();
     // Play fixes the game version by itself, then starts the game.
     if (playMode === 'downgrade') { openDowngrade(); playAfterPatch = true; return patchGame(); }
