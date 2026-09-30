@@ -17,6 +17,8 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     env:
       # Where the server publishes launcher files, and the Discord login service.
       # Override with repository variables if the server moves.
@@ -24,6 +26,31 @@ jobs:
       AD_AUTH_URL: ${{ vars.AD_AUTH_URL || 'https://vps-d38c928e.vps.ovh.us/ad' }}
     steps:
       - uses: actions/checkout@v4
+      # One version for the whole run (both jobs publish to it), from the
+      # workspace Cargo.toml the installer is built from.
+      - name: Read the version
+        id: version
+        shell: bash
+        run: |
+          v=$(sed -n '/^\[workspace.package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ -z "$v" ]; then echo "::error::No version in Cargo.toml's [workspace.package]"; exit 1; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Version $v"
+      # A push that would publish must not replace a release players already
+      # have: the same version number would swap its installer and
+      # latest.json in place while installed launchers never see a change.
+      # Bump the version to publish.
+      - name: Refuse to overwrite a published release
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "v$V" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::error title=Release v$V already exists::Bump the version in Cargo.toml to publish a new release. Nothing was published."
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Test
@@ -73,6 +100,7 @@ jobs:
             # signature keep pointing at the versioned file.
             cp "$f" "dist/AetherialDawn-Setup.exe"
             echo "VERSION=$v" >> "$GITHUB_ENV"
+            if [ "$v" != "${{ steps.version.outputs.version }}" ]; then echo "::error::Installer version $v differs from Cargo.toml's ${{ steps.version.outputs.version }}"; exit 1; fi
             # Signed builds also get the self-update feed, latest.json. The launcher
             # reads it from this repo's latest release (the repo is public for this),
             # or from <server>/launcher/app/latest.json if it's copied there.
@@ -102,7 +130,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: Aetherial Dawn Launcher ${{ env.VERSION }}
           make_latest: true
-          overwrite_files: true
+          overwrite_files: false
           files: dist/*
           body: |
             Windows installer for the Aetherial Dawn launcher.
@@ -131,7 +159,7 @@ jobs:
           mkdir dist
           cp target/x86_64-unknown-linux-musl/release/canonical-plugins dist/canonical-plugins-linux-x86_64
           (cd dist && sha256sum canonical-plugins-linux-x86_64 | tee canonical-plugins-linux-x86_64.sha256)
-          echo "VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)" >> "$GITHUB_ENV"
+          echo "VERSION=${{ needs.windows.outputs.version }}" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:
           name: canonical-plugins-linux-x86_64
@@ -143,5 +171,5 @@ jobs:
           tag_name: v${{ env.VERSION }}
           target_commitish: ${{ github.sha }}
           make_latest: true
-          overwrite_files: true
+          overwrite_files: false
           files: dist/*
