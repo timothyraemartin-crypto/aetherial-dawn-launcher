@@ -134,7 +134,7 @@ const LIGHT: u32 = 0x200;
 /// Club content by its name. Their ESL flags are the game's own business.
 /// Only the name counts, never Skyrim.ccc: the server has none, and the
 /// launcher empties the PC's for a session, so both decide the same way.
-fn shipped_with_game(plugin: &str) -> bool {
+pub(crate) fn shipped_with_game(plugin: &str) -> bool {
     if crate::health::MASTERS.iter().any(|m| m.eq_ignore_ascii_case(plugin)) || plugin.eq_ignore_ascii_case("_ResourcePack.esl") {
         return true;
     }
@@ -179,16 +179,62 @@ fn light_flagged(plugin: &str, bytes: &[u8]) -> bool {
         && !shipped_with_game(plugin)
 }
 
+/// The TES4 "master" flag.
+const MASTER: u32 = 0x1;
+
+/// Whether an .esl is one the server's list runs as a full plugin
+/// (desync/esl-on-server.md, 2026-09-30): the SkyMP server gives every
+/// plugin a full index, so a light plugin the PC loads as FE would disagree
+/// with it. Only the .esl files named in `full` are converted, Creation Club
+/// ones included; any other .esl stays as it is.
+fn full_esl(plugin: &str, full: &[String]) -> bool {
+    plugin.to_ascii_lowercase().ends_with(".esl") && full.iter().any(|f| f.eq_ignore_ascii_case(plugin))
+}
+
+/// The .esl files a list runs as full plugins: every name in `server` ending
+/// in .esm that Data holds only as "<stem>.esl" (or as the launcher's own
+/// .esm copy of it). "_ResourcePack.esm" on the list and "_ResourcePack.esl"
+/// in Data gives "_ResourcePack.esl".
+pub fn light_as_full(game_dir: &Path, server: &[String]) -> Vec<String> {
+    let data = game_dir.join("Data");
+    let ours = load(game_dir).links;
+    let mut out: Vec<String> = Vec::new();
+    for n in server {
+        if !n.to_ascii_lowercase().ends_with(".esm") {
+            continue;
+        }
+        let esl = format!("{}.esl", stem(n));
+        let Some(real) = std::fs::read_dir(&data).ok().and_then(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).find(|f| f.eq_ignore_ascii_case(&esl))) else { continue };
+        let esm_there = data.join(n).exists();
+        let esm_ours = ours.iter().any(|l| l.to.eq_ignore_ascii_case(&format!("Data/{n}")) && l.from.eq_ignore_ascii_case(&format!("Data/{real}")));
+        if (!esm_there || esm_ours) && !out.iter().any(|o| o.eq_ignore_ascii_case(&real)) {
+            out.push(real);
+        }
+    }
+    out
+}
+
 /// The canonical bytes of a plugin in `data`: masters that run under
 /// another name renamed, and the ESL flag cleared on an .esp or .esm. None
 /// when neither is needed (or the header can't be read).
 pub fn canonical_bytes(data: &Path, plugin: &str, bytes: &[u8]) -> Option<Vec<u8>> {
-    let renamed = with_masters_in(data, bytes);
-    if !light_flagged(plugin, bytes) {
+    canonical_bytes_full(data, plugin, bytes, &[])
+}
+
+/// `canonical_bytes`, with the .esl files in `full` run as full plugins:
+/// their copy has the light flag cleared and the master flag set, so it
+/// stays in the game's master block on PCs.
+pub fn canonical_bytes_full(data: &Path, plugin: &str, bytes: &[u8], full: &[String]) -> Option<Vec<u8>> {
+    let renamed = with_masters_in_full(data, bytes, full);
+    let (clear, set) = if full_esl(plugin, full) && full_header(bytes) {
+        (LIGHT, MASTER)
+    } else if light_flagged(plugin, bytes) {
+        (LIGHT, 0)
+    } else {
         return renamed;
-    }
+    };
     let mut out = renamed.unwrap_or_else(|| bytes.to_vec());
-    let f = u32::from_le_bytes([out[8], out[9], out[10], out[11]]) & !LIGHT;
+    let f = (u32::from_le_bytes([out[8], out[9], out[10], out[11]]) & !clear) | set;
     out[8..12].copy_from_slice(&f.to_le_bytes());
     Some(out)
 }
@@ -196,21 +242,26 @@ pub fn canonical_bytes(data: &Path, plugin: &str, bytes: &[u8]) -> Option<Vec<u8
 /// Whether a plugin in Data runs as a rewritten copy: it's ESL-flagged, or
 /// a master it names runs under another name (a dashed alias, or itself a
 /// rewritten copy's "-AD" name, down a chain of patches).
-fn rewritten_in(data: &Path, plugin: &str, depth: u8) -> bool {
+fn rewritten_in(data: &Path, plugin: &str, depth: u8, full: &[String]) -> bool {
     if depth > 32 {
         return false;
+    }
+    if full_esl(plugin, full) {
+        return true;
     }
     if head(&data.join(plugin)).is_some_and(|h| light_flagged(plugin, &h)) {
         return true;
     }
-    crate::loadorder::masters(&data.join(plugin)).unwrap_or_default().iter().any(|m| !client_can_load_name(m) || rewritten_in(data, m, depth + 1))
+    crate::loadorder::masters(&data.join(plugin)).unwrap_or_default().iter().any(|m| !client_can_load_name(m) || rewritten_in(data, m, depth + 1, full))
 }
 
 /// The name a master runs under in Data, when it isn't its own.
-fn master_run_name(data: &Path, m: &str) -> Option<String> {
-    if !client_can_load_name(m) {
+fn master_run_name(data: &Path, m: &str, full: &[String]) -> Option<String> {
+    if full_esl(m, full) {
+        Some(run_name_full(m, true, full))
+    } else if !client_can_load_name(m) {
         Some(alias_name(m))
-    } else if rewritten_in(data, m, 0) {
+    } else if rewritten_in(data, m, 0, full) {
         Some(run_name(m, true))
     } else {
         None
@@ -220,7 +271,13 @@ fn master_run_name(data: &Path, m: &str) -> Option<String> {
 /// `with_aliased_masters` for a plugin in `data`: masters that run as
 /// rewritten copies ("Patch-AD.esp") are renamed too.
 pub fn with_masters_in(data: &Path, bytes: &[u8]) -> Option<Vec<u8>> {
-    rename_masters(bytes, &|m: &str| master_run_name(data, m))
+    with_masters_in_full(data, bytes, &[])
+}
+
+/// `with_masters_in`, with the .esl files in `full` named by their .esm
+/// run names ("_ResourcePack.esl" -> "_ResourcePack.esm").
+pub fn with_masters_in_full(data: &Path, bytes: &[u8], full: &[String]) -> Option<Vec<u8>> {
+    rename_masters(bytes, &|m: &str| master_run_name(data, m, full))
 }
 
 fn rename_masters(bytes: &[u8], rename: &dyn Fn(&str) -> Option<String>) -> Option<Vec<u8>> {
@@ -285,14 +342,14 @@ fn head(path: &Path) -> Option<Vec<u8>> {
 }
 
 /// Whether a plugin names a master the client can't load, or is ESL-flagged.
-fn needs_rewrite(data: &Path, path: &Path) -> bool {
+fn needs_rewrite(data: &Path, path: &Path, full: &[String]) -> bool {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    head(path).is_some_and(|h| canonical_bytes(data, &name, &h).is_some())
+    head(path).is_some_and(|h| canonical_bytes_full(data, &name, &h, full).is_some())
 }
 
 /// Writes the rewritten copy, keeping the original's modified time so it's
 /// only rewritten when the original changes.
-fn rewrite(from: &Path, to: &Path) -> std::io::Result<()> {
+fn rewrite(from: &Path, to: &Path, full: &[String]) -> std::io::Result<()> {
     let t = std::fs::metadata(from)?.modified()?;
     // Up to date only when it's already a rewritten copy: a dashed alias
     // made by 0.1.49-0.1.67 is a hard link with the same time and the old
@@ -301,12 +358,12 @@ fn rewrite(from: &Path, to: &Path) -> std::io::Result<()> {
     // original's (the master names follow the current naming rule).
     let data = from.parent().unwrap_or(Path::new("."));
     let name = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let fresh = head(from).and_then(|h| canonical_bytes(data, &name, &h)).is_some_and(|want| head(to).as_deref() == Some(&want[..]));
+    let fresh = head(from).and_then(|h| canonical_bytes_full(data, &name, &h, full)).is_some_and(|want| head(to).as_deref() == Some(&want[..]));
     if std::fs::metadata(to).and_then(|m| m.modified()).ok() == Some(t) && fresh {
         return Ok(());
     }
     let bytes = std::fs::read(from)?;
-    let new = canonical_bytes(data, &name, &bytes).ok_or_else(|| std::io::Error::other("the plugin's header can't be rewritten"))?;
+    let new = canonical_bytes_full(data, &name, &bytes, full).ok_or_else(|| std::io::Error::other("the plugin's header can't be rewritten"))?;
     // Remove the old name first and write a new file: writing through a
     // hard link would change the original (Vortex's copy) too.
     if to.exists() {
@@ -331,13 +388,28 @@ pub fn run_name(plugin: &str, rewritten: bool) -> String {
     plugin.to_string()
 }
 
+/// `run_name`, where an .esl in `full` runs as "<same stem>.esm": the stem
+/// is kept so its archives and the strings inside them are still found.
+pub fn run_name_full(plugin: &str, rewritten: bool, full: &[String]) -> String {
+    if rewritten && full_esl(plugin, full) {
+        let base = if client_can_load_name(plugin) { plugin.to_string() } else { alias_name(plugin) };
+        return format!("{}.esm", stem(&base));
+    }
+    run_name(plugin, rewritten)
+}
+
 /// The canonical form of a plugin for the server and every PC: the name it
 /// runs under, and its bytes with renamed masters (None when they're
 /// unchanged). The launcher makes the same bytes on each PC, so the server's
 /// copy and the players' copies are identical.
 pub fn canonical(data: &Path, plugin: &str, bytes: &[u8]) -> (String, Option<Vec<u8>>) {
-    let new = canonical_bytes(data, plugin, bytes);
-    (run_name(plugin, new.is_some()), new)
+    canonical_full(data, plugin, bytes, &[])
+}
+
+/// `canonical`, with the .esl files in `full` run as full plugins.
+pub fn canonical_full(data: &Path, plugin: &str, bytes: &[u8], full: &[String]) -> (String, Option<Vec<u8>>) {
+    let new = canonical_bytes_full(data, plugin, bytes, full);
+    (run_name_full(plugin, new.is_some(), full), new)
 }
 
 /// One plugin as `canonicalize_dir` wrote it.
@@ -362,6 +434,12 @@ pub struct CanonicalPlugin {
 /// its archives, ini and string files follow its name. Returns what was
 /// written, in name order.
 pub fn canonicalize_dir(data: &Path, out: &Path) -> std::io::Result<Vec<CanonicalPlugin>> {
+    canonicalize_dir_full(data, out, &[])
+}
+
+/// `canonicalize_dir`, with the .esl files in `full` run as full plugins
+/// ("<stem>.esm"). A different "<stem>.esm" already there is refused.
+pub fn canonicalize_dir_full(data: &Path, out: &Path, full: &[String]) -> std::io::Result<Vec<CanonicalPlugin>> {
     use sha2::{Digest, Sha256};
     std::fs::create_dir_all(out)?;
     let mut names: Vec<String> = std::fs::read_dir(data)?
@@ -375,7 +453,7 @@ pub fn canonicalize_dir(data: &Path, out: &Path) -> std::io::Result<Vec<Canonica
     let mut seen: Vec<(String, String)> = Vec::new();
     for n in &names {
         let bytes = head(&data.join(n)).unwrap_or_default();
-        let name = run_name(n, canonical_bytes(data, n, &bytes).is_some()).to_ascii_lowercase();
+        let name = run_name_full(n, canonical_bytes_full(data, n, &bytes, full).is_some(), full).to_ascii_lowercase();
         if let Some((other, _)) = seen.iter().find(|(_, c)| c == &name) {
             return Err(std::io::Error::other(format!("{other} and {n} would both load as {name}")));
         }
@@ -384,7 +462,7 @@ pub fn canonicalize_dir(data: &Path, out: &Path) -> std::io::Result<Vec<Canonica
     let mut done = Vec::new();
     for n in names {
         let bytes = std::fs::read(data.join(&n))?;
-        let (name, new) = canonical(data, &n, &bytes);
+        let (name, new) = canonical_full(data, &n, &bytes, full);
         let body = new.as_deref().unwrap_or(&bytes);
         std::fs::write(out.join(&name), body)?;
         let mut companions_out = Vec::new();
@@ -464,6 +542,13 @@ fn rename_in(txt: &Path, from: &str, to: &str) -> std::io::Result<bool> {
 /// loadorder.txt at them, and removes links whose original is gone. Returns
 /// the plugins now running under another name, (original, alias).
 pub fn ensure(game_dir: &Path, plugins_txt: Option<&Path>) -> std::io::Result<Vec<(String, String)>> {
+    ensure_full(game_dir, plugins_txt, &[])
+}
+
+/// `ensure`, with the .esl files in `full` (from `light_as_full`) run as
+/// full plugins under "<stem>.esm". A "<stem>.esm" in Data that isn't the
+/// launcher's own copy stops it: two files would load under one name.
+pub fn ensure_full(game_dir: &Path, plugins_txt: Option<&Path>, full: &[String]) -> std::io::Result<Vec<(String, String)>> {
     let data = game_dir.join("Data");
     let mut rec = load(game_dir);
     // Links whose original is gone go too, so a mod removed in Vortex
@@ -480,7 +565,7 @@ pub fn ensure(game_dir: &Path, plugins_txt: Option<&Path>) -> std::io::Result<Ve
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
             if is_plugin(&n) && e.path().is_file() && !rec.links.iter().any(|l| l.to.eq_ignore_ascii_case(&format!("Data/{n}"))) {
-                let rewritten = needs_rewrite(&data, &e.path());
+                let rewritten = needs_rewrite(&data, &e.path(), full);
                 if !client_can_load_name(&n) || rewritten {
                     plugins.push((n, rewritten));
                 }
@@ -488,14 +573,21 @@ pub fn ensure(game_dir: &Path, plugins_txt: Option<&Path>) -> std::io::Result<Ve
         }
     }
     plugins.sort();
+    for (p, rewritten) in &plugins {
+        let alias = run_name_full(p, *rewritten, full);
+        let ours = rec.links.iter().any(|l| l.to.eq_ignore_ascii_case(&format!("Data/{alias}")) && l.from.eq_ignore_ascii_case(&format!("Data/{p}")));
+        if full_esl(p, full) && *rewritten && data.join(&alias).exists() && !ours {
+            return Err(std::io::Error::other(format!("{p} would run as {alias}, but a different {alias} is already in Data")));
+        }
+    }
     // What each original maps to now. A link made under an older naming rule
     // ("JK-s-Skyrim.esp" before apostrophes were dropped) goes, and the load
     // order moves to the new name.
     let mut now: Vec<(String, String)> = Vec::new();
     for (p, rewritten) in &plugins {
-        let alias = run_name(p, *rewritten);
+        let alias = run_name_full(p, *rewritten, full);
         now.push((format!("Data/{p}"), format!("Data/{alias}")));
-        for (f, t) in companions(&data, p, &alias) {
+        for (f, t) in companions(&data, p, &alias).into_iter().filter(|(f, t)| !f.eq_ignore_ascii_case(t)) {
             now.push((format!("Data/{f}"), format!("Data/{t}")));
         }
     }
@@ -521,12 +613,13 @@ pub fn ensure(game_dir: &Path, plugins_txt: Option<&Path>) -> std::io::Result<Ve
     }
     let mut out = Vec::new();
     for (p, rewritten) in plugins {
-        let alias = run_name(&p, rewritten);
+        let alias = run_name_full(&p, rewritten, full);
         if rewritten {
-            rewrite(&data.join(&p), &data.join(&alias))?;
+            rewrite(&data.join(&p), &data.join(&alias), full)?;
         }
         let mut pairs = if rewritten { Vec::new() } else { vec![(p.clone(), alias.clone())] };
-        pairs.extend(companions(&data, &p, &alias));
+        // An .esl run as "<stem>.esm" keeps its archives' names as they are.
+        pairs.extend(companions(&data, &p, &alias).into_iter().filter(|(f, t)| !f.eq_ignore_ascii_case(t)));
         let a = Alias { from: format!("Data/{p}"), to: format!("Data/{alias}") };
         if rewritten && !rec.links.contains(&a) {
             rec.links.push(a);
@@ -826,6 +919,94 @@ mod tests {
             assert_eq!(run_as(&g, n), n);
         }
         assert_eq!(run_as(&g, "Cut.esp"), "Cut.esp");
+    }
+
+    #[test]
+    fn listed_light_plugins_run_as_full_masters_on_the_server_and_every_pc() {
+        // desync/esl-on-server.md: USSEP masters _ResourcePack.esl, COTN
+        // needs Survival Mode; the server gives every plugin a full index.
+        let flags = |mut b: Vec<u8>, f: u32| {
+            b[8..12].copy_from_slice(&f.to_le_bytes());
+            b
+        };
+        let flag = |p: &Path| {
+            let b = std::fs::read(p).unwrap();
+            u32::from_le_bytes([b[8], b[9], b[10], b[11]])
+        };
+        let t = tempfile::tempdir().unwrap();
+        let (g, out) = (t.path().join("game"), t.path().join("server"));
+        let data = g.join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("Skyrim.esm"), flags(plugin_with_masters(&[]), 0x1)).unwrap();
+        std::fs::write(data.join("_ResourcePack.esl"), flags(plugin_with_masters(&["Skyrim.esm"]), 0x201)).unwrap();
+        std::fs::write(data.join("_ResourcePack.bsa"), b"bsa").unwrap();
+        std::fs::write(data.join("ccQDRSSE001-SurvivalMode.esl"), flags(plugin_with_masters(&["Skyrim.esm"]), 0x201)).unwrap();
+        std::fs::write(data.join("Unofficial Skyrim Special Edition Patch.esp"), flags(plugin_with_masters(&["Skyrim.esm", "_ResourcePack.esl"]), 0x1)).unwrap();
+        std::fs::write(data.join("COTN Patch.esp"), plugin_with_masters(&["Skyrim.esm", "ccQDRSSE001-SurvivalMode.esl"])).unwrap();
+        // An .esl the list doesn't name stays light, as before.
+        std::fs::write(data.join("Other.esl"), flags(plugin_with_masters(&["Skyrim.esm"]), 0x200)).unwrap();
+        let server: Vec<String> = ["Skyrim.esm", "_ResourcePack.esm", "ccQDRSSE001-SurvivalMode.esm", "Unofficial-Skyrim-Special-Edition-Patch.esp", "COTN Patch-AD.esp"].iter().map(|s| s.to_string()).collect();
+        let full = light_as_full(&g, &server);
+        assert_eq!(full, ["_ResourcePack.esl", "ccQDRSSE001-SurvivalMode.esl"]);
+
+        let got = canonicalize_dir_full(&data, &out, &full).unwrap();
+        let names: Vec<(&str, &str, bool)> = got.iter().map(|c| (c.original.as_str(), c.name.as_str(), c.rewritten)).collect();
+        assert_eq!(
+            names,
+            [
+                ("_ResourcePack.esl", "_ResourcePack.esm", true),
+                ("ccQDRSSE001-SurvivalMode.esl", "ccQDRSSE001-SurvivalMode.esm", true),
+                ("COTN Patch.esp", "COTN-Patch.esp", true),
+                ("Other.esl", "Other.esl", false),
+                ("Skyrim.esm", "Skyrim.esm", false),
+                ("Unofficial Skyrim Special Edition Patch.esp", "Unofficial-Skyrim-Special-Edition-Patch.esp", true),
+            ]
+        );
+        // Light cleared, master set; the archive keeps its name.
+        assert_eq!(flag(&out.join("_ResourcePack.esm")), 0x1);
+        assert_eq!(flag(&out.join("ccQDRSSE001-SurvivalMode.esm")), 0x1);
+        assert_eq!(flag(&out.join("Other.esl")), 0x200);
+        assert_eq!(got[0].companions, ["_ResourcePack.bsa"]);
+        let m = |d: &Path, n: &str| crate::loadorder::masters(&d.join(n)).unwrap();
+        assert_eq!(m(&out, "Unofficial-Skyrim-Special-Edition-Patch.esp"), ["Skyrim.esm", "_ResourcePack.esm"]);
+        assert_eq!(m(&out, "COTN-Patch.esp"), ["Skyrim.esm", "ccQDRSSE001-SurvivalMode.esm"]);
+
+        // A PC makes the same bytes under the same names, and plugins.txt
+        // names the copies; the .esl originals are left untouched.
+        let txt = g.join("plugins.txt");
+        std::fs::write(&txt, "*_ResourcePack.esl\n*Unofficial Skyrim Special Edition Patch.esp\n*COTN Patch.esp\n").unwrap();
+        let before = std::fs::read(data.join("_ResourcePack.esl")).unwrap();
+        ensure_full(&g, Some(&txt), &full).unwrap();
+        for c in &got {
+            assert_eq!(std::fs::read(data.join(&c.name)).unwrap(), std::fs::read(out.join(&c.name)).unwrap(), "{}", c.name);
+            assert_eq!(run_as(&g, &c.original), c.name);
+        }
+        assert_eq!(std::fs::read(data.join("_ResourcePack.esl")).unwrap(), before);
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*_ResourcePack.esm\n*Unofficial-Skyrim-Special-Edition-Patch.esp\n*COTN-Patch.esp\n");
+        // Again: the copies are the launcher's own, so the list still maps,
+        // and nothing changes.
+        assert_eq!(light_as_full(&g, &server), full);
+        ensure_full(&g, Some(&txt), &full).unwrap();
+        assert!(!data.join("_ResourcePack-AD.esm").exists());
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*_ResourcePack.esm\n*Unofficial-Skyrim-Special-Edition-Patch.esp\n*COTN-Patch.esp\n");
+        // With no list, nothing is converted (the old behaviour).
+        assert_eq!(canonical(&data, "_ResourcePack.esl", &before).0, "_ResourcePack.esl");
+    }
+
+    #[test]
+    fn a_different_esm_under_the_run_name_is_refused() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        let data = g.join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("Curios.esl"), plugin_with_masters(&["Skyrim.esm"])).unwrap();
+        std::fs::write(data.join("Curios.esm"), plugin_with_masters(&["Skyrim.esm", "Other.esm"])).unwrap();
+        // The list can't pick it up (Data has a real Curios.esm)...
+        assert!(light_as_full(g, &["Curios.esm".to_string()]).is_empty());
+        // ...and naming it anyway stops both sides.
+        let full = vec!["Curios.esl".to_string()];
+        assert!(ensure_full(g, None, &full).unwrap_err().to_string().contains("a different Curios.esm"));
+        assert!(canonicalize_dir_full(&data, &t.path().join("out"), &full).unwrap_err().to_string().contains("would both load as curios.esm"));
     }
 
     #[test]
