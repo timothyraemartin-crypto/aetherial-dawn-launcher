@@ -17,27 +17,36 @@ real Skyrim, real Steam library or real Vortex profile.
 | U6 | `Skyrim.ccc` renamed while playing | `serverorder::restore_ccc`, `main.rs` `CccGuard` | **Yes:** put it back if it is still renamed. |
 | U7 | `%LOCALAPPDATA%\gg.aetherialdawn.launcher\` (settings, logs, cache, encrypted sign-in) | Tauri app data | **Yes:** remove it (sign-out). The installer's own "delete app data" box may already do this; to be checked. |
 
-The "proposal" column is a proposal. U2 and U4 are Timothy's calls because they
-change what the player's game looks like after uninstall.
+**Default taken: "Settings only"** (2026-09-30, while Timothy is away; he can
+still change it): U1 clears read-only **and** puts Steam's auto-update back;
+U2 no; U3 set-aside files go back, then the folder goes; U4 **leave** the
+launcher's mods in Data; U5, U6, U7 yes.
 
 ## 2. Disposable setup
 1. Use Windows Sandbox (Windows 10/11 Pro: Start, "Turn Windows features on or
    off", tick **Windows Sandbox**) or a fresh VM. Everything is thrown away on close.
-2. Inside it, build a **fake Steam library** with a script that makes:
+2. Inside it, run `docs/qa/sandbox-fixture.ps1` (it refuses outside Windows
+   Sandbox unless `-Disposable` is given, and refuses an existing folder). It
+   builds a **fake Steam library** that has:
    `steamapps\appmanifest_489830.acf` (read-only, `AutoUpdateBehavior 1`),
    `common\Skyrim Special Edition\SkyrimSE.exe` (a dummy file),
-   `.aetherial-dawn\` with a marker, a mod record and one set-aside file, a
+   `.aetherial-dawn\` with a marker, a mod record and one set-aside file in
+   `disabled\`, a
    `Data\` with two dummy plugins, and
    `%LOCALAPPDATA%\Skyrim Special Edition\plugins.txt` plus its
    `.aetherial-dawn-backup`, and a renamed `Skyrim.ccc` in the game folder. No real game files or
    keys are used.
 3. Install the launcher build from the PR's CI artifact. Never use the public
-   release channel, and never push to `main`.
+   release channel, and never push to `main`. At first start choose
+   `C:\ADTest\SteamLibrary\steamapps\common\Skyrim Special Edition` so its
+   settings name the fake game, then close it without signing in.
 4. Take snapshot A: every path, size, SHA-256 and read-only flag under the fake
    library, `%LOCALAPPDATA%\Skyrim Special Edition` and the launcher's app data
-   (a read-only script like `windows-evidence.ps1`).
-5. Uninstall from **Settings > Apps**. Take snapshot B.
-6. Compare A and B against section 1. Each U-row is pass or fail.
+   with `docs/qa/snapshot.ps1 -Paths "C:\ADTest;$env:LOCALAPPDATA\Skyrim Special Edition;$env:LOCALAPPDATA\gg.aetherialdawn.launcher" -Out A.txt`
+   (read-only: path, size, SHA-256, read-only flag).
+5. Uninstall from **Settings > Apps**. Take snapshot B the same way (`-Out B.txt`).
+6. Compare with `Compare-Object (Get-Content A.txt) (Get-Content B.txt)` and
+   check each U-row against section 1: pass or fail.
 
 ## 3. Pass
 - Today (live 0.1.87 and 0.1.98): expected **all fail** except U7 if the
@@ -46,6 +55,6 @@ change what the player's game looks like after uninstall.
   Rows marked "No" are unchanged, and nothing outside section 1 changed.
 
 ## 4. Not in this plan
-- No code change. The fix (a `--uninstall-cleanup` mode run from
-  `NSIS_HOOK_PREUNINSTALL`) waits for Timothy's answers to U1, U2 and U4.
+- No code change yet. The fix (a `--uninstall-cleanup` mode run from
+  `NSIS_HOOK_PREUNINSTALL`) follows the "Settings only" default above.
 - The Vortex route (Packages A and C) is not touched here.
