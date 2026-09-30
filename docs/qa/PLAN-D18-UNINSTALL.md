@@ -29,7 +29,7 @@ change what the player's game looks like after uninstall.
    `.aetherial-dawn\` with a marker, a mod record and one set-aside file, a
    `Data\` with two dummy plugins, and
    `%LOCALAPPDATA%\Skyrim Special Edition\plugins.txt` plus its
-   `.aetherial-dawn-backup` and a renamed `Skyrim.ccc`. No real game files or
+   `.aetherial-dawn-backup`, and a renamed `Skyrim.ccc` in the game folder. No real game files or
    keys are used.
 3. Install the launcher build from the PR's CI artifact. Never use the public
    release channel, and never push to `main`.
