@@ -392,6 +392,12 @@
     $('si-go').disabled = false;
     showSheet('signin');
   }
+  function signedInNow() {
+    bringToFront();
+    renderAccount();
+    showPage('home');
+    if (pending) ready(); else check();
+  }
   let signInRun = 0;
   async function beginSignIn() {
     const run = ++signInRun;
@@ -411,18 +417,24 @@
       if (run !== signInRun) return;
       let r;
       try { r = await invoke('auth_poll', { st }); lastError = ''; } catch (e) { r = { status: 'offline' }; lastError = String(e); }
-      // Cancelled or started again while this answer was on its way.
-      if (run !== signInRun) return;
+      // Cancelled or started again while this answer was on its way. A
+      // finished one is already saved by the launcher, so the page asks it
+      // who is signed in rather than showing signed out; a sign-in started
+      // since goes on and its answer wins.
+      if (run !== signInRun) {
+        if (r.status === 'done') {
+          await refreshAuth();
+          if (signedIn() && $('si-wait').hidden) signedInNow();
+        }
+        return;
+      }
       // The launcher has the sign-in but couldn't save it yet; it tries again
       // on the next ask.
       if (r.status === 'save_failed') { lastError = r.message || "Couldn't save your sign-in"; continue; }
       if (r.status === 'pending' || r.status === 'offline') continue;
       if (r.status === 'done') {
-        bringToFront();
         auth = { signedIn: true, account: r.account };
-        renderAccount();
-        showPage('home');
-        if (pending) ready(); else check();
+        signedInNow();
         return;
       }
       showSignIn(r.message || 'Sign-in didn\'t finish. Try again.');
