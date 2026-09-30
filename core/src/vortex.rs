@@ -578,12 +578,130 @@ fn version_parts(v: &str) -> Vec<u64> {
     v.split('.').map(|p| p.trim().parse().unwrap_or(0)).collect()
 }
 
-/// Puts the extension into `plugins/aetherial-dawn`. Each file is written in
-/// full beside Vortex's folder, then renamed over the old one, info.json
-/// last, so Vortex never loads a half-written file and a stopped install is
-/// finished by the next one. Files there that aren't the extension's are
-/// left alone, and a later version put there by a newer launcher is kept.
+/// The marker written last into a complete staged version, and kept in the
+/// live folder: the version and each of the extension's files with its
+/// sha256. A folder whose files don't match its marker is not a whole version.
+pub const EXT_MARKER: &str = ".aetherial-dawn-complete";
+
+fn staging_dir(vortex: &Path) -> PathBuf {
+    vortex.join("aetherial-dawn-extension.staging")
+}
+
+fn previous_dir(vortex: &Path) -> PathBuf {
+    vortex.join("aetherial-dawn-extension.previous")
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(bytes))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Marker {
+    version: String,
+    files: std::collections::BTreeMap<String, String>,
+}
+
+/// The version a folder holds when every file its marker names is there
+/// with the marker's sha256; `None` for a missing, partial or mixed folder.
+fn whole_version(dir: &Path) -> Option<String> {
+    let marker: Marker = serde_json::from_slice(&std::fs::read(dir.join(EXT_MARKER)).ok()?).ok()?;
+    if marker.files.is_empty() || !marker.files.contains_key("info.json") {
+        return None;
+    }
+    let whole = marker.files.iter().all(|(name, sum)| std::fs::read(dir.join(name)).is_ok_and(|b| sha256_hex(&b) == *sum));
+    whole.then_some(marker.version)
+}
+
+/// What Vortex would load from its plugins folder right now.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExtensionState {
+    /// No extension folder.
+    Absent,
+    /// Exactly the files this launcher carries.
+    Current,
+    /// A whole version, but not this launcher's (older or newer).
+    Other { version: String },
+    /// Files that don't make one whole version: never pair with it.
+    Mixed,
+}
+
+/// Reads, without changing anything, what is in `plugins/aetherial-dawn`.
+pub fn extension_state(plugins: &Path, files: &[(&str, &[u8])]) -> ExtensionState {
+    let dir = plugins.join(EXT_DIR);
+    if !dir.exists() {
+        return ExtensionState::Absent;
+    }
+    match whole_version(&dir) {
+        Some(_) if files.iter().all(|(n, b)| std::fs::read(dir.join(n)).is_ok_and(|have| have == *b)) => ExtensionState::Current,
+        Some(version) => ExtensionState::Other { version },
+        None => ExtensionState::Mixed,
+    }
+}
+
+/// The steps of an update, so a test can stop it after any one of them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum UpdateStep {
+    Staged,
+    Marked,
+    LiveMovedAside,
+    Activated,
+}
+
+/// Finishes or undoes an update a crash or power cut interrupted. Runs
+/// before every install. A complete staged version with no live folder is
+/// activated; otherwise the previous live folder is put back; leftovers go.
+fn recover(vortex: &Path, dir: &Path) -> Result<()> {
+    let staging = staging_dir(vortex);
+    let previous = previous_dir(vortex);
+    if !dir.exists() && (staging.exists() || previous.exists()) {
+        if let Some(plugins) = dir.parent() {
+            std::fs::create_dir_all(plugins)?;
+        }
+        if staging.exists() && whole_version(&staging).is_some() {
+            std::fs::rename(&staging, dir)?;
+        } else if previous.exists() {
+            std::fs::rename(&previous, dir)?;
+        }
+    }
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging)?;
+    }
+    if previous.exists() && dir.exists() {
+        std::fs::remove_dir_all(&previous)?;
+    }
+    Ok(())
+}
+
+fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Puts the extension into `plugins/aetherial-dawn` as one whole version.
+///
+/// The new version is built in full outside Vortex's plugins folder, with
+/// any files in the live folder that aren't the extension's, and a marker
+/// holding every file's sha256 is written last. It then goes live by two
+/// folder renames: the old folder is moved aside, the new one moved in.
+/// Between the two Vortex finds no extension, never a mix of two versions,
+/// and the next run finishes or undoes an interrupted update (`recover`).
+/// A whole later version put there by a newer launcher is kept; a folder
+/// that isn't one whole version is replaced.
 pub fn install_extension(plugins: &Path, files: &[(&str, &[u8])]) -> Result<Installed> {
+    install_extension_stopping(plugins, files, &mut |_| Ok(()))
+}
+
+fn install_extension_stopping(plugins: &Path, files: &[(&str, &[u8])], after: &mut dyn FnMut(UpdateStep) -> Result<()>) -> Result<Installed> {
     let vortex = plugins.parent().ok_or_else(|| Error::Game("Vortex's folder has no parent".into()))?;
     if !vortex.is_dir() {
         return Err(Error::Game("Vortex isn't set up for this Windows user (no Vortex folder in AppData)".into()));
@@ -596,26 +714,64 @@ pub fn install_extension(plugins: &Path, files: &[(&str, &[u8])]) -> Result<Inst
         }
     }
     let dir = plugins.join(EXT_DIR);
+    recover(vortex, &dir)?;
     let installed = std::fs::read(dir.join("info.json")).ok().and_then(|b| info_version(&b));
-    if files.iter().all(|(n, b)| std::fs::read(dir.join(n)).is_ok_and(|have| have == *b)) {
-        return Ok(Installed::Current);
+    match extension_state(plugins, files) {
+        ExtensionState::Current => return Ok(Installed::Current),
+        ExtensionState::Other { version } if version_parts(&version) > version_parts(&bundled) => {
+            return Ok(Installed::NewerKept { installed: version });
+        }
+        _ => {}
     }
-    if let Some(v) = installed.as_deref().filter(|v| version_parts(v) > version_parts(&bundled)) {
-        return Ok(Installed::NewerKept { installed: v.to_string() });
-    }
-    let staging = vortex.join("aetherial-dawn-extension.staging");
-    let _ = std::fs::remove_dir_all(&staging);
+
+    let staging = staging_dir(vortex);
+    let fresh = !dir.exists();
+    let ours = |n: &str| n == EXT_MARKER || files.iter().any(|(f, _)| *f == n);
     std::fs::create_dir_all(&staging)?;
+    if !fresh {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            if ours(&entry.file_name().to_string_lossy()) {
+                continue;
+            }
+            let target = staging.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                copy_tree(&entry.path(), &target)?;
+            } else {
+                std::fs::copy(entry.path(), &target)?;
+            }
+        }
+    }
     for (name, bytes) in files {
         std::fs::write(staging.join(name), bytes)?;
     }
-    std::fs::create_dir_all(&dir)?;
-    let fresh = !dir.join("info.json").exists();
-    let (last, rest): (Vec<_>, Vec<_>) = files.iter().partition(|(n, _)| *n == "info.json");
-    for (name, _) in rest.iter().chain(last.iter()) {
-        std::fs::rename(staging.join(name), dir.join(name))?;
+    after(UpdateStep::Staged)?;
+    let marker = Marker { version: bundled, files: files.iter().map(|(n, b)| (n.to_string(), sha256_hex(b))).collect() };
+    let body = serde_json::to_vec_pretty(&marker).map_err(|e| Error::Game(e.to_string()))?;
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(staging.join(EXT_MARKER))?;
+        f.write_all(&body)?;
+        f.sync_all()?;
     }
-    let _ = std::fs::remove_dir_all(&staging);
+    after(UpdateStep::Marked)?;
+
+    std::fs::create_dir_all(plugins)?;
+    let previous = previous_dir(vortex);
+    if !fresh {
+        std::fs::rename(&dir, &previous)?;
+    }
+    after(UpdateStep::LiveMovedAside)?;
+    if let Err(e) = std::fs::rename(&staging, &dir) {
+        if !fresh {
+            let _ = std::fs::rename(&previous, &dir);
+        }
+        return Err(e.into());
+    }
+    after(UpdateStep::Activated)?;
+    if previous.exists() {
+        std::fs::remove_dir_all(&previous)?;
+    }
     Ok(if fresh { Installed::Fresh } else { Installed::Updated { from: installed } })
 }
 
@@ -1061,14 +1217,123 @@ mod tests {
         assert_eq!(install_extension(&plugins, EXTENSION).unwrap(), Installed::Current);
     }
 
+    /// Writes a whole extension version into `dir`, marker included, the way
+    /// a launcher carrying `files` would have left it.
+    fn put_whole(dir: &Path, files: &[(&str, &[u8])]) {
+        std::fs::create_dir_all(dir).unwrap();
+        let mut sums = std::collections::BTreeMap::new();
+        for (n, b) in files {
+            std::fs::write(dir.join(n), b).unwrap();
+            sums.insert(n.to_string(), sha256_hex(b));
+        }
+        let info = files.iter().find(|(n, _)| *n == "info.json").unwrap().1;
+        let marker = Marker { version: info_version(info).unwrap(), files: sums };
+        std::fs::write(dir.join(EXT_MARKER), serde_json::to_vec(&marker).unwrap()).unwrap();
+    }
+
+    const OLD: &[(&str, &[u8])] = &[
+        ("index.js", b"old index"),
+        ("jobs.js", b"old jobs"),
+        ("info.json", br#"{"version":"0.1.0"}"#),
+    ];
+
     #[test]
     fn a_later_version_from_a_newer_launcher_is_kept() {
         let (_t, plugins) = fake_vortex();
         let dir = plugins.join(EXT_DIR);
+        put_whole(&dir, &[("index.js", b"new"), ("jobs.js", b"new"), ("info.json", br#"{"version":"0.10.0"}"#)]);
+        assert_eq!(install_extension(&plugins, EXTENSION).unwrap(), Installed::NewerKept { installed: "0.10.0".into() });
+        assert_eq!(std::fs::read(dir.join("index.js")).unwrap(), b"new");
+    }
+
+    #[test]
+    fn a_later_version_number_on_a_mixed_folder_is_not_kept() {
+        let (_t, plugins) = fake_vortex();
+        let dir = plugins.join(EXT_DIR);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("info.json"), r#"{"version":"0.10.0"}"#).unwrap();
-        assert_eq!(install_extension(&plugins, EXTENSION).unwrap(), Installed::NewerKept { installed: "0.10.0".into() });
-        assert!(!dir.join("index.js").exists());
+        assert_eq!(extension_state(&plugins, EXTENSION), ExtensionState::Mixed);
+        assert!(matches!(install_extension(&plugins, EXTENSION).unwrap(), Installed::Updated { .. }));
+        assert_eq!(extension_state(&plugins, EXTENSION), ExtensionState::Current);
+    }
+
+    #[test]
+    fn a_mixed_old_and_new_set_reads_as_mixed_never_current() {
+        let (_t, plugins) = fake_vortex();
+        let dir = plugins.join(EXT_DIR);
+        assert_eq!(extension_state(&plugins, EXTENSION), ExtensionState::Absent);
+        put_whole(&dir, OLD);
+        assert_eq!(extension_state(&plugins, EXTENSION), ExtensionState::Other { version: "0.1.0".into() });
+        // What the old per-file renames could leave: the new index.js beside
+        // the old jobs.js and info.json.
+        let new_index = EXTENSION.iter().find(|(n, _)| *n == "index.js").unwrap().1;
+        std::fs::write(dir.join("index.js"), new_index).unwrap();
+        assert_eq!(extension_state(&plugins, EXTENSION), ExtensionState::Mixed);
+    }
+
+    /// An update stopped after each of its steps (a crash or power cut),
+    /// with Vortex started before the next run: Vortex finds the old whole
+    /// version or nothing, never a mix, and the next run finishes the job
+    /// and keeps the player's own file.
+    #[test]
+    fn an_interrupted_update_never_leaves_a_mixed_extension() {
+        for stop in [UpdateStep::Staged, UpdateStep::Marked, UpdateStep::LiveMovedAside, UpdateStep::Activated] {
+            let (_t, plugins) = fake_vortex();
+            let dir = plugins.join(EXT_DIR);
+            put_whole(&dir, OLD);
+            std::fs::write(dir.join("notes.txt"), "mine").unwrap();
+            let crashed = install_extension_stopping(&plugins, EXTENSION, &mut |s| {
+                if s == stop { Err(Error::Game("power cut".into())) } else { Ok(()) }
+            });
+            assert!(crashed.is_err(), "{stop:?}");
+            let seen = extension_state(&plugins, EXTENSION);
+            assert!(
+                matches!(seen, ExtensionState::Absent | ExtensionState::Current | ExtensionState::Other { .. }),
+                "after {stop:?} Vortex would load {seen:?}"
+            );
+            if let ExtensionState::Other { version } = &seen {
+                assert_eq!(version, "0.1.0", "{stop:?}");
+            }
+            let again = install_extension(&plugins, EXTENSION).unwrap();
+            assert!(matches!(again, Installed::Updated { .. } | Installed::Current), "{stop:?}: {again:?}");
+            assert_eq!(extension_state(&plugins, EXTENSION), ExtensionState::Current, "{stop:?}");
+            assert_eq!(std::fs::read_to_string(dir.join("notes.txt")).unwrap(), "mine", "{stop:?}");
+            let vortex = plugins.parent().unwrap();
+            assert!(!staging_dir(vortex).exists() && !previous_dir(vortex).exists(), "{stop:?}");
+        }
+    }
+
+    #[test]
+    fn a_complete_staged_version_with_no_live_folder_is_activated() {
+        let (_t, plugins) = fake_vortex();
+        let vortex = plugins.parent().unwrap();
+        put_whole(&staging_dir(vortex), EXTENSION);
+        put_whole(&previous_dir(vortex), OLD);
+        assert_eq!(install_extension(&plugins, EXTENSION).unwrap(), Installed::Current);
+        assert!(!previous_dir(vortex).exists());
+    }
+
+    #[test]
+    fn a_partial_staged_version_is_dropped_and_the_old_one_put_back() {
+        let (_t, plugins) = fake_vortex();
+        let vortex = plugins.parent().unwrap();
+        std::fs::create_dir_all(staging_dir(vortex)).unwrap();
+        std::fs::write(staging_dir(vortex).join("index.js"), "half").unwrap();
+        put_whole(&previous_dir(vortex), OLD);
+        recover(vortex, &plugins.join(EXT_DIR)).unwrap();
+        assert_eq!(extension_state(&plugins, EXTENSION), ExtensionState::Other { version: "0.1.0".into() });
+        assert!(!staging_dir(vortex).exists());
+    }
+
+    #[test]
+    fn a_players_folders_inside_the_extension_are_kept_on_update() {
+        let (_t, plugins) = fake_vortex();
+        let dir = plugins.join(EXT_DIR);
+        put_whole(&dir, OLD);
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        std::fs::write(dir.join("logs").join("a.txt"), "kept").unwrap();
+        install_extension(&plugins, EXTENSION).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("logs").join("a.txt")).unwrap(), "kept");
     }
 
     #[test]

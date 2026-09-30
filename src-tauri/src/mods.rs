@@ -207,6 +207,10 @@ pub async fn vortex_connect(app: AppHandle, state: State<'_, AppState>, fresh: O
     let roaming = app.path().data_dir().map_err(|e| e.to_string())?;
     let done = vortex::install_extension(&vortex::plugins_dir(&roaming), vortex::EXTENSION).map_err(|e| e.to_string())?;
     log::line(&format!("vortex: extension {done:?}{}", if fresh.unwrap_or(false) { ", new pairing" } else { "" }));
+    if vortex::extension_state(&vortex::plugins_dir(&roaming), vortex::EXTENSION) == vortex::ExtensionState::Mixed {
+        log::line("vortex: extension folder is not one whole version; not pairing");
+        return Err("The Aetherial Dawn helper in Vortex is incomplete. Close Vortex, then press Connect Vortex again.".into());
+    }
     let answers = vortex::call(&state.http, &home, &token, "status", &serde_json::json!({}), "").await.is_ok();
     Ok(match (&done, answers) {
         (_, true) if !done.needs_restart() => "Vortex is connected.".into(),
