@@ -468,7 +468,9 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     let base_check = report.checks.iter().find(|c| c.id == "masters")
         .ok_or("Could not finish checking the base game files. Try Play again.")?;
     if base_check.status != health::Status::Ok {
-        return Err(health::masters_fix_message(&dir, &base_check.items));
+        let exe_is_servers = m.game.as_ref().and_then(|g| g.version.as_deref()).and_then(version::parse_version)
+            .is_some_and(|want| version::exe_version(&dir.join(game::GAME_EXE)) == Some(want));
+        return Err(health::masters_fix_message(&dir, &base_check.items, exe_is_servers));
     }
     // The game would stop with SkyMP's "LOAD ORDER ERROR"; say it here.
     if let Some(c) = report.checks.iter().find(|c| c.id == "serverorder" && c.status == health::Status::Fail) {
