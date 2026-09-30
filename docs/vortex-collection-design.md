@@ -103,7 +103,14 @@ The launcher shows one line per step, with exact counts and a per-item error lis
 
 - The launcher copies the extension into `%APPDATA%\Vortex\plugins\aetherial-dawn\` **(verify)**. The copy goes into a versioned temp folder and is renamed into place. Unknown files there are preserved.
   - Built (`vortex::install_extension`): only when the player presses **Connect Vortex** in the mods window, which shows when Vortex manages the game and the launcher isn't paired yet.
-  - The launcher carries the extension's files. Each file is written in full to `%APPDATA%\Vortex\aetherial-dawn-extension.staging`, then renamed over the old one. `info.json` goes last, so a stopped install is finished by the next one.
+  - The launcher carries the extension's files. It swaps whole versions, never single files (Codex 5880406786):
+    1. It builds the whole new version in `%APPDATA%\Vortex\aetherial-dawn-extension.staging`, including a copy of any other files in the extension folder.
+    2. It moves `plugins\aetherial-dawn` aside to `aetherial-dawn-extension.old`.
+    3. It moves the new version in.
+    4. It deletes the old one.
+  - A stop at any point leaves the whole old version, no extension folder (Vortex loads nothing), or the whole new version, never a mix. The next install finishes the switch.
+  - If step 3 fails, the old folder is moved back.
+  - Tests stop the install at each point and check what Vortex would load: `an_update_stopped_at_any_point_never_leaves_a_mixed_extension`.
   - If the files are identical, nothing is written. A later version (by `info.json`) left by a newer launcher is kept. With no `%APPDATA%\Vortex` folder, nothing is written.
   - Afterwards the player is told to restart Vortex once. The command `vortex_connect { fresh: true }` is the re-pair; it has no button yet.
   - Manual ZIP install stays documented as a recovery route.
