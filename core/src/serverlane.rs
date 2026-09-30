@@ -367,13 +367,11 @@ pub fn master_problems_with(lane: &ServerLane, data: &Path, game_data: Option<&P
     out
 }
 
-/// A file at the top of `dir`, matched without regard to case.
+/// A file at the top of `dir`, matched without regard to case, under its
+/// name as it's spelled on disk (Windows would also open the list's
+/// spelling, and the receipt should name the real file).
 fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
-    let exact = dir.join(name);
-    if exact.is_file() {
-        return Some(exact);
-    }
-    std::fs::read_dir(dir).ok()?.flatten().find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(name)).map(|e| e.path()).filter(|p| p.is_file())
+    std::fs::read_dir(dir).ok()?.flatten().filter(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(name)).map(|e| e.path()).find(|p| p.is_file())
 }
 
 /// What the export records for a master past the base five. The export
