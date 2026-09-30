@@ -2114,6 +2114,9 @@ fn main() {
                     .user_agent(concat!("AetherialDawnLauncher/", env!("CARGO_PKG_VERSION")))
                     .default_headers(headers.clone())
                     .connect_timeout(std::time::Duration::from_secs(10))
+                    // A server that goes silent mid-answer is an error, not
+                    // a wait for ever (sync, file list, sign-in, session).
+                    .read_timeout(launcher_core::fetch::STALL)
                     .gzip(gzip)
                     .build()
             };
