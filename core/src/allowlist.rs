@@ -210,8 +210,6 @@ pub fn keep_set(game_dir: &Path) -> HashSet<String> {
             keep.extend(rec.files.iter().chain(rec.skipped.iter()).map(|f| f.to_ascii_lowercase()));
         }
     }
-    // The launcher's dash-named copies of plugins go with their originals.
-    keep.extend(crate::aliases::links(game_dir).into_iter().map(|l| l.to.to_ascii_lowercase()));
     let ids = ids(&list);
     let files = vortex_files(game_dir);
     let mut sources = kept_sources(&files, &ids, &keep);
@@ -219,6 +217,14 @@ pub fn keep_set(game_dir: &Path) -> HashSet<String> {
     for f in files {
         if sources.contains(&f.source) || required_file(&f.rel) {
             keep.insert(f.rel.to_ascii_lowercase());
+        }
+    }
+    // An alias carries its original's approval; creating a runnable name
+    // must not approve an unrelated plugin. Resolve this after Vortex sources
+    // so checkless approved packages retain their plugins and BSA companions.
+    for link in crate::aliases::links(game_dir) {
+        if keep.contains(&link.from.replace('\\', "/").to_ascii_lowercase()) {
+            keep.insert(link.to.replace('\\', "/").to_ascii_lowercase());
         }
     }
     keep
@@ -499,6 +505,79 @@ mod tests {
             vortex_id: "opaque-required-folder".into(), nexus_mod_id: 99, nexus_file_id: Some(73),
         }]).unwrap();
         assert_eq!(unlisted_with(game, |_| false).len(), 2, "a package outside the current list remains unapproved");
+    }
+
+    #[test]
+    fn aliases_inherit_only_listed_or_approved_originals() {
+        let t = tempfile::tempdir().unwrap();
+        let game = t.path();
+        let data = game.join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        let plugin = crate::loadorder::tests::plugin(1.71, true);
+        let packages = [
+            ("Checked Mod", "opaque-checked"),
+            ("Approved Mod", "opaque-approved"),
+            ("Unlisted World", "opaque-unlisted"),
+        ];
+        let mut deployment = Vec::new();
+        for (name, source) in packages {
+            for (extension, bytes) in [("esp", plugin.as_slice()), ("bsa", b"fixture archive".as_slice())] {
+                let rel = format!("{name}.{extension}");
+                std::fs::write(data.join(&rel), bytes).unwrap();
+                deployment.push(serde_json::json!({ "relPath": rel, "source": source }));
+            }
+        }
+        std::fs::write(data.join("vortex.deployment.json"),
+            serde_json::to_vec(&serde_json::json!({ "files": deployment })).unwrap()).unwrap();
+        save_server_list(game, &ModList { mods: vec![
+            ModEntry { id: "checked".into(), name: "Checked".into(),
+                nexus: Some(modlist::NexusRef { mod_id: 99101, file: Some(81001), pick: None }),
+                check: vec!["Data/Checked Mod.esp".into()], ..Default::default() },
+            ModEntry { id: "approved".into(), name: "Approved".into(),
+                nexus: Some(modlist::NexusRef { mod_id: 99102, file: Some(81002), pick: None }),
+                ..Default::default() },
+        ], ..Default::default() });
+        save_approved(game, &[Approved { vortex_id: "opaque-approved".into(),
+            nexus_mod_id: 99102, nexus_file_id: Some(81002) }]).unwrap();
+        let txt = game.join("plugins.txt");
+        std::fs::write(&txt, "*Checked Mod.esp\n*Approved Mod.esp\n*Unlisted World.esp\n").unwrap();
+        crate::aliases::ensure(game, Some(&txt)).unwrap();
+
+        let keep = keep_set(game);
+        for name in ["checked mod", "approved mod"] {
+            for extension in ["esp", "bsa"] {
+                assert!(keep.contains(&format!("data/{name}.{extension}")));
+                assert!(keep.contains(&format!("data/{}.{extension}", name.replace(' ', "-"))),
+                    "the checked or exact approved source keeps its plugin and BSA aliases");
+            }
+        }
+        for extension in ["esp", "bsa"] {
+            assert!(!keep.contains(&format!("data/unlisted world.{extension}")));
+            assert!(!keep.contains(&format!("data/unlisted-world.{extension}")),
+                "giving an unrelated plugin a runnable alias must not approve it");
+        }
+        let manifest: Manifest = serde_json::from_value(serde_json::json!({
+            "schema": 1, "build": "fixture", "server": { "name": "fixture", "ip": "127.0.0.1", "port": 7777 }
+        })).unwrap();
+        let extras = crate::loadorder::extras(game, &txt, &manifest);
+        assert_eq!(extras.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["Unlisted-World.esp"]);
+        crate::loadorder::switch_off(&txt, &extras.into_iter().map(|e| e.name).collect::<Vec<_>>()).unwrap();
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(),
+            "*Checked-Mod.esp\n*Approved-Mod.esp\nUnlisted-World.esp\n");
+        assert!(unlisted_with(game, |_| false).is_empty(),
+            "plugin/archive packages are preserved on disk and disabled in the load order");
+        assert_eq!(std::fs::read(data.join("Unlisted World.esp")).unwrap(), plugin);
+        assert_eq!(std::fs::read(data.join("Unlisted-World.esp")).unwrap(), plugin);
+        assert_eq!(std::fs::read(data.join("Unlisted-World.bsa")).unwrap(), b"fixture archive");
+
+        // When a pin changes, its former approval cannot keep an opaque source
+        // or let that source's already-created aliases preserve themselves.
+        save_approved(game, &[Approved { vortex_id: "opaque-approved".into(),
+            nexus_mod_id: 99102, nexus_file_id: Some(99999) }]).unwrap();
+        let keep = keep_set(game);
+        assert!(!keep.contains("data/approved-mod.esp"));
+        assert!(!keep.contains("data/approved-mod.bsa"));
+        assert!(keep.contains("data/checked-mod.esp"));
     }
 
     /// Timothy's PC, 2026-09-26: Vortex folder names with spaces, a manual
