@@ -8,6 +8,10 @@
 //! - U5: the player's own plugins.txt and loadorder.txt come back.
 //! - U6: an emptied Skyrim.ccc comes back.
 //! - U7: left to the installer's own "delete app data" box.
+//! - U8: the game's remembered login and session are forgotten, as when
+//!   signing out (`settings::clear_login`); the server address stays.
+//! - U9-U11: nothing; the repaired Skyrim ini files (and their backups), the
+//!   Windows graphics-card preference and Skyrim Platform's folders stay.
 //!
 //! Every step runs on its own and only reports what went wrong, so one
 //! failure never stops the others or the uninstall.
@@ -26,10 +30,17 @@ pub fn cleanup(game_dir: Option<&Path>, saves_dir: Option<&Path>) -> Vec<String>
     match game_dir.filter(|d| d.is_dir()) {
         None => out.push("U1 U3 U6: no Skyrim folder in the settings; skipped".into()),
         Some(game) => {
-            out.push(match crate::version::release_updates(game, SKYRIM_APP) {
-                Ok(Some(_)) => "U1: Steam may update Skyrim again".into(),
-                Ok(None) => "U1: no Steam manifest found; nothing to do".into(),
-                Err(e) => format!("U1: couldn't change the Steam manifest ({e})"),
+            // Only a manifest the launcher itself held (after putting the
+            // server's build in place) is released; a player's own Steam
+            // setting is never changed.
+            out.push(if !crate::version::made_by_launcher(game) {
+                "U1: the launcher didn't hold Steam updates here; left as it is".into()
+            } else {
+                match crate::version::release_updates(game, SKYRIM_APP) {
+                    Ok(Some(_)) => "U1: Steam may update Skyrim again".into(),
+                    Ok(None) => "U1: no Steam manifest found; nothing to do".into(),
+                    Err(e) => format!("U1: couldn't change the Steam manifest ({e})"),
+                }
             });
             out.push(match crate::allowlist::restore_all(game) {
                 Ok(n) => {
@@ -38,6 +49,8 @@ pub fn cleanup(game_dir: Option<&Path>, saves_dir: Option<&Path>) -> Vec<String>
                 }
                 Err(e) => format!("U3: couldn't put the set-aside files back ({e})"),
             });
+            crate::settings::clear_login(game);
+            out.push("U8: the game's remembered login and session forgotten".into());
             out.push(match crate::serverorder::restore_ccc(game) {
                 Ok(true) => "U6: Skyrim.ccc put back".into(),
                 Ok(false) => "U6: nothing to put back".into(),
@@ -106,12 +119,14 @@ mod tests {
         perm.set_readonly(true);
         std::fs::set_permissions(&acf, perm).unwrap();
         w(game.join("SkyrimSE.exe"), "exe");
-        w(game.join(".aetherial-dawn/game.json"), "{}");
+        // The record the launcher writes after putting the server's build in place.
+        w(game.join(".aetherial-dawn/game.json"), r#"{"version":"1.6.1170.0","depots":[],"files":[],"manual":false}"#);
         w(game.join(".aetherial-dawn/mods/feed-mod.json"), "{}");
         w(game.join(".aetherial-dawn/disabled/1727000000-strays/Data/PlayersOwn.esp"), "own");
         w(game.join("Data/FeedMod.esp"), "feed");
         w(game.join("Data/VortexOwned.esp"), "vortex");
         w(game.join("Skyrim.ccc"), "");
+        w(game.join(crate::settings::AUTH_DATA_PATH), "//{}");
         w(game.join("Skyrim.ccc.aetherial-dawn-backup"), "ccBGSSSE001-Fish.esm");
         w(saves.join("plugins.txt"), "*FeedMod.esp");
         w(saves.join("plugins.txt.aetherial-dawn-backup"), "*PlayersOwn.esp");
@@ -148,6 +163,8 @@ mod tests {
         // U6
         assert_eq!(read(&game.join("Skyrim.ccc")), "ccBGSSSE001-Fish.esm");
         assert!(!game.join("Skyrim.ccc.aetherial-dawn-backup").exists());
+        // U8
+        assert!(!game.join(crate::settings::AUTH_DATA_PATH).exists());
     }
 
     #[test]
@@ -190,5 +207,24 @@ mod tests {
         assert_eq!(read(&saves.join("loadorder.txt")), "Skyrim.esm\nPlayersOwn.esp");
         assert_eq!(read(&game.join("Skyrim.ccc")), "ccBGSSSE001-Fish.esm");
         assert_eq!(read(&game.join("Data/PlayersOwn.esp")), "own");
+    }
+
+    #[test]
+    fn a_manifest_the_launcher_never_held_is_left_alone() {
+        for marker in [None, Some(r#"{"version":"1.6.1170.0","depots":[],"files":[],"manual":true}"#)] {
+            let (_t, game, saves) = fixture();
+            match marker {
+                None => std::fs::remove_file(game.join(".aetherial-dawn/game.json")).unwrap(),
+                Some(m) => std::fs::write(game.join(".aetherial-dawn/game.json"), m).unwrap(),
+            }
+            let acf = game.parent().unwrap().parent().unwrap().join("appmanifest_489830.acf");
+            let before = read(&acf);
+            let log = cleanup(Some(&game), Some(&saves));
+            assert!(log[0].contains("didn't hold"), "{log:?}");
+            assert_eq!(read(&acf), before);
+            assert!(std::fs::metadata(&acf).unwrap().permissions().readonly());
+            // The other steps still run.
+            assert_eq!(read(&saves.join("plugins.txt")), "*PlayersOwn.esp");
+        }
     }
 }
