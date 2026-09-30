@@ -244,7 +244,10 @@ fn load_order(i: &Inputs) -> Check {
 /// The game's plugins against the server's, position by position, as the
 /// SkyMP client checks them (serverorder.rs).
 fn server_order(i: &Inputs) -> Check {
-    let order = i.masters.map(crate::serverorder::server_order).unwrap_or_default();
+    let Some(masters) = i.masters else {
+        return check("serverorder", "Server plugin order", Status::Warn, "Couldn't load the server's plugin list, so the order wasn't checked.", vec![]);
+    };
+    let order = crate::serverorder::server_order(masters);
     if !crate::serverorder::beyond_base(&order) {
         return check("serverorder", "Server plugin order", Status::Ok, "The server loads only the five base masters.", vec![]);
     }
@@ -711,6 +714,17 @@ mod tests {
         assert!(cache.exists());
         assert_eq!(r.worst, Status::Fail);
         assert!(!r.text().contains(&tmp.path().display().to_string()));
+    }
+
+    #[test]
+    fn no_server_plugin_list_is_a_warning_not_ok() {
+        let tmp = tempfile::tempdir().unwrap();
+        let i = Inputs { game_dir: tmp.path(), manifest: None, masters: None, appdata: Some(tmp.path()), documents: None, hash_cache: None, home: None };
+        let c = server_order(&i);
+        assert_eq!(c.status, Status::Warn, "{}", c.detail);
+        let base = serde_json::json!({"masters":[{"name":"Skyrim.esm","size":1}]});
+        let c = server_order(&Inputs { masters: Some(&base), ..i });
+        assert_eq!(c.status, Status::Ok);
     }
 
     #[test]
