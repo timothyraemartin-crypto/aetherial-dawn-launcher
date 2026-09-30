@@ -35,6 +35,12 @@ pub struct ServerLane {
     /// copies. Any other light plugin stops the export, as check_masters.py.
     #[serde(default, rename = "lightCleared", skip_serializing_if = "Option::is_none")]
     pub light_cleared: Option<Vec<String>>,
+    /// A list-wide light rule. "convert-all" (the order file may add a
+    /// description after it) runs every ESL-flagged .esp/.esm lane plugin as
+    /// its flag-cleared copy, as if each were in lightCleared; an .esl lane
+    /// plugin is still refused. Same test as check_masters.py.
+    #[serde(default, rename = "lightPolicy", skip_serializing_if = "Option::is_none")]
+    pub light_policy: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -44,6 +50,9 @@ pub struct MasterSource {
     /// The game's file, "_ResourcePack.esl".
     pub from: String,
 }
+
+/// The lightPolicy that runs every ESL-flagged lane plugin as a full one.
+pub const CONVERT_ALL: &str = "convert-all";
 
 /// The most full plugins a PC can load (indexes 00-FD).
 pub const MAX_FULL: usize = 254;
@@ -70,8 +79,13 @@ impl ServerLane {
             .collect()
     }
 
+    /// True when the list's lightPolicy is convert-all.
+    pub fn convert_all(&self) -> bool {
+        self.light_policy.as_deref().is_some_and(|p| p.starts_with(CONVERT_ALL))
+    }
+
     fn cleared(&self, plugin: &str) -> bool {
-        self.light_cleared.iter().flatten().any(|p| p.eq_ignore_ascii_case(plugin))
+        self.convert_all() || self.light_cleared.iter().flatten().any(|p| p.eq_ignore_ascii_case(plugin))
     }
 }
 
@@ -99,6 +113,12 @@ pub struct LaneMod {
     /// `sha256` are the pins.
     #[serde(default)]
     pub archive: Option<ArchiveInfo>,
+    /// Plugins this download's install gives every PC that load after the
+    /// server's order and never on the server (OCW_AO_FEPatch.esp masters
+    /// a client-only mod). The export never collects them. Left out, the
+    /// list hash is unchanged.
+    #[serde(default, rename = "clientOnly", skip_serializing_if = "Vec::is_empty")]
+    pub client_only: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -519,6 +539,11 @@ pub fn check(lane: &ServerLane) -> Result<()> {
             return Err(Error::Game(format!("server lane: masterSources names {}, which isn't one of its masters", src.run)));
         }
     }
+    if let Some(p) = &lane.light_policy {
+        if !lane.convert_all() {
+            return Err(Error::Game(format!("server lane: lightPolicy {p:?} isn't one the launcher knows (\"{CONVERT_ALL}\")")));
+        }
+    }
     for p in lane.light_cleared.iter().flatten() {
         if p.to_ascii_lowercase().ends_with(".esl") || !lane.mods.iter().any(|m| m.plugins.iter().any(|x| x.eq_ignore_ascii_case(p))) {
             return Err(Error::Game(format!("server lane: lightCleared names {p}, which isn't an .esp or .esm the list takes")));
@@ -543,6 +568,14 @@ pub fn check(lane: &ServerLane) -> Result<()> {
             }
             if !names.insert(p.to_ascii_lowercase()) {
                 return Err(Error::Game(format!("server lane: {p} is taken from two mods")));
+            }
+        }
+        for c in &m.client_only {
+            if !is_plugin(c) || c.contains(['/', '\\']) {
+                return Err(Error::Game(format!("server lane: {} names client-only {c:?}, which isn't a plugin file name", e.id)));
+            }
+            if lane.mods.iter().any(|o| o.plugins.iter().any(|p| p.eq_ignore_ascii_case(c))) {
+                return Err(Error::Game(format!("server lane: {c} is both a server plugin and client-only")));
             }
         }
         for (name, path) in &m.paths {
@@ -594,7 +627,7 @@ pub fn pick(m: &LaneMod, unpacked: &Path) -> Result<Vec<(PathBuf, String)>> {
         .filter_map(|c| {
             let rel = c.to.to_string_lossy().replace('\\', "/");
             let name = rel.strip_prefix("Data/")?.to_string();
-            (!name.contains('/') && is_plugin(&name)).then(|| (c.from.clone(), name))
+            (!name.contains('/') && is_plugin(&name) && !m.client_only.iter().any(|x| x.eq_ignore_ascii_case(&name))).then(|| (c.from.clone(), name))
         })
         .collect();
     if m.plugins.is_empty() {
@@ -898,6 +931,61 @@ mod tests {
         m.paths.insert("Patch A.esp".into(), "Patches/COTN/Patch A.esp".into());
         m.plugins = vec!["Patch A.esp".into()];
         assert_eq!(std::fs::read(&pick(&m, &u).unwrap()[0].0).unwrap(), b"a");
+    }
+
+    #[test]
+    fn client_only_plugins_never_reach_the_server_zip_and_change_the_list_hash() {
+        // OCW_AO_FEPatch.esp masters Audio Overhaul, a client-only mod: every
+        // PC installs it, the server never loads it (world-1.6).
+        let t = tempfile::tempdir().unwrap();
+        let u = t.path().join("u");
+        for f in ["OCW.esp", "OCW_AO_FEPatch.esp"] {
+            std::fs::create_dir_all(&u).unwrap();
+            std::fs::write(u.join(f), f).unwrap();
+        }
+        let json = |extra: &str| format!(r#"{{"for_discord_id":"1","mods":[{{"id":"ocw","name":"OCW","nexus":{{"mod":1,"file":2}},"plugins":[]{extra}}}]}}"#);
+        let plain = lane(&json(""));
+        let with = lane(&json(r#","clientOnly":["OCW_AO_FEPatch.esp"]"#));
+        check(&with).unwrap();
+        let names = |l: &ServerLane| pick(&l.mods[0], &u).unwrap().into_iter().map(|p| p.1).collect::<Vec<_>>();
+        assert_eq!(names(&plain), ["OCW.esp", "OCW_AO_FEPatch.esp"]);
+        assert_eq!(names(&with), ["OCW.esp"]);
+        assert_ne!(list_hash(&plain), list_hash(&with));
+        // An old list without the field hashes as before.
+        assert!(!serde_json::to_string(&plain).unwrap().contains("clientOnly"));
+        let both = lane(&json(r#","clientOnly":["OCW.esp"]"#).replace(r#""plugins":[]"#, r#""plugins":["OCW.esp"]"#));
+        assert!(check(&both).unwrap_err().to_string().contains("both a server plugin and client-only"));
+    }
+
+    #[test]
+    fn convert_all_runs_every_esl_flagged_lane_plugin_as_full_but_not_an_esl() {
+        let t = tempfile::tempdir().unwrap();
+        let data = t.path().join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        let json = |policy: &str| {
+            format!(
+                r#"{{"for_discord_id":"1"{policy},"mods":[
+                {{"id":"k","name":"K","nexus":{{"mod":1,"file":1}},"plugins":["Kad_MoonMonkRobes.esp"]}},
+                {{"id":"s","name":"S","nexus":{{"mod":2,"file":2}},"plugins":["Sentinel.esp"]}}]}}"#
+            )
+        };
+        std::fs::write(data.join("Kad_MoonMonkRobes.esp"), esp(&["Skyrim.esm"], 0x200)).unwrap();
+        std::fs::write(data.join("Sentinel.esp"), esp(&["Skyrim.esm", "Kad_MoonMonkRobes.esp"], 0)).unwrap();
+        assert_eq!(master_problems(&lane(&json("")), &data), ["Kad_MoonMonkRobes.esp is ESL-flagged, and the list doesn't declare it lightCleared"]);
+        // The order file's description after "convert-all" is accepted, as check_masters.py does.
+        let l = lane(&json(r#","lightPolicy":"convert-all: every ESL-flagged .esp/.esm runs as a flag-cleared canonical copy""#));
+        check(&l).unwrap();
+        assert!(master_problems(&l, &data).is_empty(), "{:?}", master_problems(&l, &data));
+        let rec = finish(t.path(), &l, "h", [("Kad_MoonMonkRobes.esp", "k"), ("Sentinel.esp", "s")].into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect(), Source::served()).unwrap();
+        assert_eq!(rec.files["Kad_MoonMonkRobes.esp"].run_name, "Kad_MoonMonkRobes-AD.esp");
+        // A dependent runs with its MAST pointing at the run name.
+        let dep = &rec.files["Sentinel.esp"];
+        assert_ne!(dep.canonical_sha256, dep.sha256);
+        // An .esl lane plugin is still refused, and an unknown policy stops the list.
+        std::fs::write(data.join("Lite.esl"), esp(&["Skyrim.esm"], 0)).unwrap();
+        let l = lane(&json(r#","lightPolicy":"convert-all""#).replace(r#""Sentinel.esp"]"#, r#""Sentinel.esp","Lite.esl"]"#));
+        assert!(master_problems(&l, &data).iter().any(|p| p.contains("Lite.esl is a light plugin")));
+        assert!(check(&lane(&json(r#","lightPolicy":"keep""#))).unwrap_err().to_string().contains("lightPolicy"));
     }
 
     #[test]
