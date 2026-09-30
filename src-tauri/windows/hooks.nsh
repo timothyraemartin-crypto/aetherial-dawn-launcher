@@ -20,3 +20,13 @@ Function AdOneClickGuiInit
     ${EndIf}
   ${EndIf}
 FunctionEnd
+
+; Uninstall: put back what the launcher changed on the PC before its files go
+; (launcher_core::uninstall; docs/qa/PLAN-D18-UNINSTALL.md). A launcher update
+; also runs the old uninstaller, with /UPDATE, so $UpdateMode skips it then.
+; The cleanup never fails the uninstall; its log is %TEMP%\aetherial-dawn-uninstall.log.
+!macro NSIS_HOOK_PREUNINSTALL
+  ${If} $UpdateMode <> 1
+    ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --uninstall-cleanup'
+  ${EndIf}
+!macroend

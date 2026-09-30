@@ -2017,6 +2017,30 @@ async fn diagnostics(app: AppHandle, state: State<'_, AppState>) -> CmdResult<St
     Ok(o)
 }
 
+/// `--uninstall-cleanup`: run by the uninstaller (`NSIS_HOOK_PREUNINSTALL`
+/// in `windows/hooks.nsh`, never on a launcher update) to put back what the
+/// launcher changed on the PC (`launcher_core::uninstall`). It reads the Skyrim
+/// folder from the settings file, writes what it did to
+/// `%TEMP%\aetherial-dawn-uninstall.log`, and always exits 0 so the uninstall
+/// goes on.
+fn uninstall_cleanup_cli(args: &[String]) -> Option<i32> {
+    if !args.iter().any(|a| a == "--uninstall-cleanup") {
+        return None;
+    }
+    // The app config dir: %APPDATA%\<identifier> (tauri.conf.json).
+    let settings = std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("gg.aetherialdawn.launcher").join("config.json"));
+    let game = settings
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v.get("gameDir")?.as_str().map(PathBuf::from));
+    let saves = std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Skyrim Special Edition"));
+    let lines = launcher_core::uninstall::cleanup(game.as_deref(), saves.as_deref());
+    if let Some(t) = std::env::var_os("TEMP") {
+        let _ = std::fs::write(PathBuf::from(t).join("aetherial-dawn-uninstall.log"), lines.join("\r\n"));
+    }
+    Some(0)
+}
+
 /// `--make-patches <from> <to> <out> [version]`: builds game patches from
 /// the Skyrim folder `from` (newer Steam build) to `to` (the server's build)
 /// into `out`, then exits. Progress goes to `<out>/make-patches.log`.
@@ -2087,6 +2111,9 @@ fn window_ready(app: tauri::AppHandle) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if let Some(code) = make_patches_cli(&args) {
+        std::process::exit(code);
+    }
+    if let Some(code) = uninstall_cleanup_cli(&args) {
         std::process::exit(code);
     }
     tauri::Builder::default()
