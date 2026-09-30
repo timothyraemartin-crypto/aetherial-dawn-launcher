@@ -504,6 +504,11 @@ pub struct PackageStates {
 
 pub fn package_states(list: &[ModEntry], entry: &ModEntry, status: Option<&Status>, files: &[VortexFile], game_dir: &Path) -> PackageStates {
     let (Some(n), Some(status)) = (entry.nexus.as_ref(), status) else { return PackageStates::default() };
+    // Without exactly one Aetherial Dawn profile, active, Vortex's answers
+    // aren't about the server's mods: every step is unknown.
+    if status.aetherial_profiles != 1 || !status.profile.as_ref().is_some_and(|p| p.active) {
+        return PackageStates::default();
+    }
     let installed = |m: &&VortexMod| m.nexus_mod_id == Some(n.mod_id) && m.state.as_deref() == Some("installed")
         && n.file.is_none_or(|f| m.nexus_file_id == Some(f));
     let packages: Vec<&VortexMod> = status.mods.iter().filter(installed).collect();
@@ -1139,6 +1144,13 @@ mod tests {
         std::fs::write(t.path().join("Data/U.esp"), b"x").unwrap();
         let files = [VortexFile { rel: "Data/U.esp".into(), source: "USSEP-733846".into() }];
         assert_eq!(states(&status, &files), PackageStates { installed: Some(true), enabled: Some(true), deployed: Some(true) });
+        // No single active Aetherial Dawn profile: unknown, never yes or no.
+        for (count, active) in [(0, true), (2, true), (1, false)] {
+            let mut odd = status.clone();
+            odd.aetherial_profiles = count;
+            odd.profile.as_mut().unwrap().active = active;
+            assert_eq!(states(&odd, &files), PackageStates::default(), "{count} profiles, active {active}");
+        }
         // A launcher-only mod has no Vortex answers.
         let direct = ModEntry { id: "d".into(), name: "Direct".into(), ..Default::default() };
         assert_eq!(package_states(&list, &direct, Some(&status), &files, t.path()), PackageStates::default());
