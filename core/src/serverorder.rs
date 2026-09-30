@@ -38,15 +38,24 @@ pub fn server_order(masters: &serde_json::Value) -> Vec<ServerPlugin> {
     a.iter()
         .filter_map(|e| {
             let n = e.get("name").or_else(|| e.get("file")).or_else(|| e.get("path")).and_then(|n| n.as_str())?;
-            let crc32 = match e.get("crc32") {
+            // A master every PC runs as a converted copy is compared by the
+            // converted bytes (canonical_*); the plain fields are the game's
+            // own file then, which no PC loads under this name.
+            let get = |k: &str| {
+                let camel = k.split('_').enumerate().map(|(i, w)| if i == 0 { w.to_string() } else { w[..1].to_ascii_uppercase() + &w[1..] }).collect::<String>();
+                e.get(k).or_else(|| e.get(camel.as_str()))
+            };
+            let canon = get("canonical_sha256").and_then(|s| s.as_str()).filter(|s| !s.is_empty());
+            let pick = |k: &str| if canon.is_some() { get(&format!("canonical_{k}")) } else { e.get(k) };
+            let crc32 = match pick("crc32") {
                 Some(serde_json::Value::Number(n)) => n.as_u64().and_then(|v| u32::try_from(v).ok()),
                 Some(serde_json::Value::String(s)) => u32::from_str_radix(s.trim_start_matches("0x"), 16).ok(),
                 _ => None,
             };
             Some(ServerPlugin {
                 name: n.rsplit(['/', '\\']).next().unwrap_or(n).to_string(),
-                size: e.get("size").and_then(|s| s.as_u64()),
-                sha256: e.get("sha256").and_then(|s| s.as_str()).map(|s| s.to_ascii_lowercase()),
+                size: pick("size").and_then(|s| s.as_u64()),
+                sha256: canon.or_else(|| e.get("sha256").and_then(|s| s.as_str())).map(|s| s.to_ascii_lowercase()),
                 crc32,
             })
         })
@@ -295,6 +304,19 @@ pub fn set_exact(game_dir: &Path, plugins_txt: &Path, server: &[ServerPlugin]) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_converted_master_is_compared_by_its_canonical_bytes() {
+        let v = serde_json::json!({"masters": [
+            {"name": "_ResourcePack.esm", "size": 9, "crc32": "0000000a", "sha256": "AA", "canonical_sha256": "BB", "canonical_size": 8, "canonical_crc32": "0000000b"},
+            {"name": "ccBGSSSE001-Fish.esm", "size": 7, "crc32": 12, "sha256": "cc"},
+            {"name": "ccQDRSSE001-SurvivalMode.esm", "size": 9, "crc32": 1, "sha256": "dd", "canonicalSha256": "ee"}]});
+        let o = server_order(&v);
+        assert_eq!((o[0].size, o[0].crc32, o[0].sha256.as_deref()), (Some(8), Some(0xb), Some("bb")));
+        assert_eq!((o[1].size, o[1].crc32, o[1].sha256.as_deref()), (Some(7), Some(12), Some("cc")));
+        // Canonical hash without a canonical size or crc: those aren't checked.
+        assert_eq!((o[2].size, o[2].crc32, o[2].sha256.as_deref()), (None, None, Some("ee")));
+    }
 
     #[test]
     fn play_requires_ordered_fingerprinted_base_masters_but_allows_later_plugins() {
