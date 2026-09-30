@@ -159,7 +159,7 @@ async fn get_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Snap
 
 #[tauri::command]
 async fn set_game_dir(app: AppHandle, state: State<'_, AppState>, dir: PathBuf) -> CmdResult<game::GameInfo> {
-    let info = game::inspect(&dir).map_err(err)?;
+    let info = game::pick(&dir).map_err(err)?;
     let mut config = state.config.lock().await;
     config.game_dir = Some(info.dir.clone());
     save_config(&app, &config)?;
