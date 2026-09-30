@@ -16,11 +16,18 @@ real Skyrim, real Steam library or real Vortex profile.
 | U5 | `plugins.txt` / `loadorder.txt` changed to the server's order, with `plugins.txt.aetherial-dawn-backup` | `loadorder.rs` `switch_off`, `serverorder.rs`, `aliases.rs` | **Yes, if a backup exists:** put the player's own list back (PR #8 keeps the first backup). |
 | U6 | `Skyrim.ccc` renamed while playing | `serverorder::restore_ccc`, `main.rs` `CccGuard` | **Yes:** put it back if it is still renamed. |
 | U7 | `%LOCALAPPDATA%\gg.aetherialdawn.launcher\` (settings, logs, cache, encrypted sign-in) | Tauri app data | **Yes:** remove it (sign-out). The installer's own "delete app data" box may already do this; to be checked. |
+| U8 | The game's remembered login and session: `Data\Platform\PluginsNoLoad\auth-data-no-load.js`, and the `session` in `Data\Platform\Plugins\skymp5-client-settings.txt` (the server address, keys and the rest of that file stay) | `main.rs` `play` (`settings::write`, `settings::write_auth_data`) | **Yes:** forget them, as signing out does (`settings::clear_login`). |
+| U9 | `Skyrim.ini`, `SkyrimPrefs.ini`, `SkyrimCustom.ini` in `Documents\My Games\Skyrim Special Edition` cleaned of missing or repeated archive lines, with `<name>.aetherial-dawn-backup` kept on the first change | `gameini.rs` `repair`, called from `main.rs` before Play | **No:** the repaired files only lost lines naming archives that aren't there; the backups stay so the player can put the old ones back. |
+| U10 | Windows' graphics-card preference for `SkyrimSE.exe` (`HKCU\Software\Microsoft\DirectX\UserGpuPreferences`, set only when there was none) | `game.rs` `prefer_fast_gpu` | **No:** harmless, and the player may rely on it. |
+| U11 | Skyrim Platform's empty plugin folders | `game.rs` `ensure_platform_folders` | **No.** |
 
 **Default taken: "Settings only"** (2026-09-30, while Timothy is away; he can
 still change it): U1 clears read-only **and** puts Steam's auto-update back;
 U2 no; U3 set-aside files go back, then the folder goes; U4 **leave** the
-launcher's mods in Data; U5, U6, U7 yes.
+launcher's mods in Data; U5, U6, U7, U8 yes; U9, U10, U11 no. PR #39 does
+exactly this: it changes U1, U3, U5, U6 and U8, U7 is the installer's box, and
+it touches nothing else. U1 changes only a manifest the launcher itself held
+(`version::made_by_launcher`).
 
 ## 2. Disposable setup
 Run each script from PowerShell as `powershell -ExecutionPolicy Bypass -File <script> …`
@@ -60,10 +67,11 @@ Run each script from PowerShell as `powershell -ExecutionPolicy Bypass -File <sc
    box answer together as the D18 receipt.
 
 ## 3. Pass
-- Today (live 0.1.87 and 0.1.98): expected U1, U3, U5 and U6 **FAIL**; U2 and
-  U4 PASS because nothing touches them; U7 depends on the installer's box.
-  That result is the D18 evidence. (Checked on fixtures: `compare.ps1` gives
-  exactly this when nothing is reverted, and all PASS when every row is.)
+- Today (live 0.1.87 and 0.1.98): expected U1, U3, U5, U6 and U8 **fail**;
+  U2, U4 and U9-U11 are unchanged; U7 depends on the installer's box. That
+  result is the D18 evidence; `compare.ps1` prints it row by row.
+- A launcher update and a one-click reinstall over the same version must
+  change none of U1-U11 (PR #39 skips the cleanup for `/UPDATE` and `/P`).
 - After an uninstall-cleanup fix: each row Timothy marks "Yes" is reverted.
   Rows marked "No" are unchanged, and nothing outside section 1 changed.
 
