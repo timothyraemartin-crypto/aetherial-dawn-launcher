@@ -142,7 +142,18 @@ async fn get_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Snap
     let (game, game_error) = match &config.game_dir {
         Some(dir) => match game::inspect(dir) {
             Ok(g) => (Some(g), None),
-            Err(e) => (None, Some(err(e))),
+            // The saved folder stopped being Skyrim (a drive not plugged in
+            // yet, or the game moved). Another install Steam knows about is
+            // only suggested: the launcher changes and may downgrade the
+            // folder it uses, so it never switches to one the player didn't
+            // choose.
+            Err(e) => (None, Some(match game::detect().filter(|f| &f.dir != dir) {
+                Some(found) => {
+                    log::line(&format!("game folder {} isn't a Skyrim folder now ({e}); Steam has one at {}, left for the player to choose", dir.display(), found.dir.display()));
+                    format!("{} If Skyrim is now in {}, choose that folder.", err(e), found.dir.display())
+                }
+                None => err(e),
+            })),
         },
         None => (None, Some("Skyrim Special Edition wasn't found. Pick its folder.".into())),
     };
@@ -151,7 +162,7 @@ async fn get_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Snap
 
 #[tauri::command]
 async fn set_game_dir(app: AppHandle, state: State<'_, AppState>, dir: PathBuf) -> CmdResult<game::GameInfo> {
-    let info = game::inspect(&dir).map_err(err)?;
+    let info = game::pick(&dir).map_err(err)?;
     let mut config = state.config.lock().await;
     config.game_dir = Some(info.dir.clone());
     save_config(&app, &config)?;
