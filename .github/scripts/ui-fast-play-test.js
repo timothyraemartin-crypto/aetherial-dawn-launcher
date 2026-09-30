@@ -45,7 +45,8 @@ function fakeBackEnd() {
     plain_error: a => a.text,
     auth_begin: () => 'st',
     // S.signIn: when the launcher has the answer, and an error each poll gives.
-    auth_poll: () => at() - (S.signInAt || 0) >= S.signIn.doneAfter ? { status: 'done', account: { discordUsername: 'Player' } } : { status: 'pending' },
+    auth_poll: () => S.signIn.refuseFirst && !S.refused ? (S.refused = true, { status: 'refused', message: 'An old refusal.' })
+      : at() - (S.signInAt || 0) >= S.signIn.doneAfter ? { status: 'done', account: { discordUsername: 'Player' } } : { status: 'pending' },
   };
   const delay = Object.assign({ get_state: 20, auth_status: 300, check: 900, update: 600, server_status: 300, play: 50, default: 10 }, S.delay || {});
   window.__TAURI__ = {
@@ -77,6 +78,8 @@ function fakeBackEnd() {
     setInterval(box, 100);
     // The player presses Play as soon as it shows enabled (and once more later).
     if (S.signIn) setTimeout(() => { S.signInAt = at(); document.getElementById('si-go').click(); }, 1500);
+    // Cancel while the first answer is on its way, then sign in again.
+    if (S.signIn && S.signIn.restartAt) setTimeout(() => { document.getElementById('si-cancel').click(); document.getElementById('si-go').click(); }, S.signIn.restartAt);
     for (const t of S.clicks || []) setTimeout(() => { log.invokes.push([at(), 'click', label.textContent]); btn.click(); }, t);
     setTimeout(() => {
       try { log.lastReady = JSON.parse(localStorage.getItem('ad.lastReady')); } catch (_) {}
@@ -205,6 +208,10 @@ const scenarios = [
 const signedOut = { ...base, auth: { signedIn: false }, seed: null, clicks: [] };
 scenarios.push({ name: 'a sign-in the launcher finishes just after 5 minutes is kept', s: { ...signedOut, signIn: { doneAfter: 5 * 60 * 1000 + 4000 }, end: 5 * 60 * 1000 + 12000 }, expect: r => [
   ['the player ends up signed in', r.me === 'Player', JSON.stringify([r.me, r.signInError])],
+] });
+scenarios.push({ name: 'an answer to a cancelled sign-in is ignored', s: { ...signedOut, signIn: { doneAfter: 6000, refuseFirst: true, restartAt: 4000 }, delay: { auth_poll: 3000 }, end: 16000 }, expect: r => [
+  ['the new sign-in finishes', r.me === 'Player', JSON.stringify([r.me, r.signInError])],
+  ['the old refusal is never shown', r.signInError === null],
 ] });
 scenarios.push({ name: 'a sign-in that can never be saved says why', s: { ...signedOut, signIn: { doneAfter: 0, error: "Couldn't save your sign-in: Access is denied" }, end: 6 * 60 * 1000 + 10000 }, expect: r => [
   ['the sign-in window says the save failed', /Couldn't save your sign-in: Access is denied/.test(r.signInError || ''), JSON.stringify(r.signInError)],

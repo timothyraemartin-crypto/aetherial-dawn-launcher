@@ -411,6 +411,8 @@
       if (run !== signInRun) return;
       let r;
       try { r = await invoke('auth_poll', { st }); lastError = ''; } catch (e) { r = { status: 'offline' }; lastError = String(e); }
+      // Cancelled or started again while this answer was on its way.
+      if (run !== signInRun) return;
       if (r.status === 'pending' || r.status === 'offline') continue;
       if (r.status === 'done') {
         bringToFront();

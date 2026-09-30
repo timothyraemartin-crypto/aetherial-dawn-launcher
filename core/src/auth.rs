@@ -321,8 +321,21 @@ pub fn save_token(path: &std::path::Path, token: &str) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, protect(token.as_bytes(), true)?)?;
-    Ok(())
+    // Written beside it and moved over it, so a failed or cut-short save
+    // leaves the sign-in that was there before, never a half-written one.
+    let part = path.with_extension("part");
+    let written = (|| {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&part)?;
+        f.write_all(&protect(token.as_bytes(), true)?)?;
+        f.sync_all()?;
+        std::fs::rename(&part, path)?;
+        Ok(())
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    written
 }
 
 pub fn load_token(path: &std::path::Path) -> Option<String> {
@@ -337,6 +350,27 @@ pub fn forget_token(path: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_saved_sign_in_replaces_the_old_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth").join("token.bin");
+        save_token(&path, "first").unwrap();
+        save_token(&path, "second").unwrap();
+        assert_eq!(load_token(&path).as_deref(), Some("second"));
+        assert!(!path.with_extension("part").exists());
+    }
+
+    #[test]
+    fn a_failed_save_keeps_the_sign_in_that_was_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("token.bin");
+        save_token(&path, "kept").unwrap();
+        // Something in the way of the temporary file: the save fails.
+        std::fs::create_dir(path.with_extension("part")).unwrap();
+        assert!(save_token(&path, "new").is_err());
+        assert_eq!(load_token(&path).as_deref(), Some("kept"));
+    }
 
     #[test]
     fn state_is_64_hex() {
