@@ -392,6 +392,12 @@
     $('si-go').disabled = false;
     showSheet('signin');
   }
+  function signedInNow() {
+    bringToFront();
+    renderAccount();
+    showPage('home');
+    if (pending) ready(); else check();
+  }
   let signInRun = 0;
   async function beginSignIn() {
     const run = ++signInRun;
@@ -401,25 +407,40 @@
     catch (e) { showSignIn("Couldn't open your browser. " + e); return; }
     $('si-go').disabled = true;
     $('si-wait').hidden = false;
-    const until = Date.now() + 5 * 60 * 1000;
+    // The launcher gives up on the browser after 5 minutes and says so; this
+    // later limit only covers a launcher that stops answering, so a sign-in
+    // finished just before 5 minutes isn't dropped here.
+    const until = Date.now() + 6 * 60 * 1000;
+    let lastError = '';
     while (run === signInRun && Date.now() < until) {
       await new Promise(r => setTimeout(r, 2000));
       if (run !== signInRun) return;
       let r;
-      try { r = await invoke('auth_poll', { st }); } catch (e) { r = { status: 'offline', message: String(e) }; }
+      try { r = await invoke('auth_poll', { st }); lastError = ''; } catch (e) { r = { status: 'offline' }; lastError = String(e); }
+      // Cancelled or started again while this answer was on its way. A
+      // finished one is already saved by the launcher, so the page asks it
+      // who is signed in rather than showing signed out; a sign-in started
+      // since goes on and its answer wins.
+      if (run !== signInRun) {
+        if (r.status === 'done') {
+          await refreshAuth();
+          if (signedIn() && $('si-wait').hidden) signedInNow();
+        }
+        return;
+      }
+      // The launcher has the sign-in but couldn't save it yet; it tries again
+      // on the next ask.
+      if (r.status === 'save_failed') { lastError = r.message || "Couldn't save your sign-in"; continue; }
       if (r.status === 'pending' || r.status === 'offline') continue;
       if (r.status === 'done') {
-        bringToFront();
         auth = { signedIn: true, account: r.account };
-        renderAccount();
-        showPage('home');
-        if (pending) ready(); else check();
+        signedInNow();
         return;
       }
       showSignIn(r.message || 'Sign-in didn\'t finish. Try again.');
       return;
     }
-    if (run === signInRun) showSignIn('Sign-in timed out. Try again.');
+    if (run === signInRun) showSignIn(lastError ? lastError + '. Try again.' : 'Sign-in timed out. Try again.');
   }
 
   // ---------- game version ----------

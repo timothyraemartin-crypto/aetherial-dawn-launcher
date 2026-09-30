@@ -947,15 +947,17 @@ fn logins() -> &'static std::sync::Mutex<Logins> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PollResult {
-    /// pending | done | refused | expired | offline
+    /// pending | done | refused | expired | offline | save_failed
     status: &'static str,
     message: Option<String>,
     account: Option<auth::Profile>,
+    /// For save_failed: no_place | denied | full | io | protect | other.
+    kind: Option<&'static str>,
 }
 
 #[tauri::command]
 async fn auth_poll(app: AppHandle, state: State<'_, AppState>, st: String) -> CmdResult<PollResult> {
-    let r = |status, message: Option<String>| PollResult { status, message, account: None };
+    let r = |status, message: Option<String>| PollResult { status, message, account: None, kind: None };
     let answer = {
         let mut all = logins().lock().unwrap();
         match all.get_mut(&st) {
@@ -964,6 +966,22 @@ async fn auth_poll(app: AppHandle, state: State<'_, AppState>, st: String) -> Cm
         }
     };
     let answer = match answer {
+        // Removed only once it is used, so a failed save can be tried again.
+        Some(auth::Answer::Ok(done)) => {
+            let saved = match token_path(&app) {
+                None => Err(("no_place", "there's no folder to save it in".to_string())),
+                Some(path) => auth::save_token(&path, &done.token).map_err(|e| (auth::save_failure_kind(&e), err(e))),
+            };
+            if let Err((kind, e)) = saved {
+                log::line(&format!("sign-in: couldn't save it ({kind}), will try again: {e}"));
+                if let Some(slot) = logins().lock().unwrap().get_mut(&st) {
+                    *slot = Some(auth::Answer::Ok(done));
+                }
+                return Ok(PollResult { status: "save_failed", message: Some(format!("Couldn't save your sign-in: {e}")), account: None, kind: Some(kind) });
+            }
+            logins().lock().unwrap().remove(&st);
+            auth::Answer::Ok(done)
+        }
         Some(a) => {
             logins().lock().unwrap().remove(&st);
             a
@@ -976,10 +994,8 @@ async fn auth_poll(app: AppHandle, state: State<'_, AppState>, st: String) -> Cm
     Ok(match answer {
         auth::Answer::Pending => r("pending", None),
         auth::Answer::Ok(done) => {
-            let path = token_path(&app).ok_or("No place to save the sign-in.")?;
-            auth::save_token(&path, &done.token).map_err(err)?;
             signed_in(&app, &state, done.profile.clone()).await?;
-            PollResult { status: "done", message: None, account: Some(done.profile) }
+            PollResult { status: "done", message: None, account: Some(done.profile), kind: None }
         }
         auth::Answer::Refused { message, .. } => r("refused", Some(message)),
         auth::Answer::SignedOut(message) => r("expired", Some(message)),
