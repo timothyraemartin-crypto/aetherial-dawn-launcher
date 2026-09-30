@@ -22,6 +22,13 @@ if (-not $OutDir) { $OutDir = [Environment]::GetFolderPath("Desktop") }
 $out = Join-Path $OutDir "AD-evidence-$Label-$stamp.txt"
 $lines = New-Object System.Collections.Generic.List[string]
 function Say($text) { $lines.Add([string]$text) }
+# Log lines can carry a Steam account name (DepotDownloader's -username) or
+# other sign-in values; they are hidden before anything is written.
+function Redact([string]$line) {
+  $line = $line -replace '(?i)(-{1,2}(username|user|password|pass|passwd|token|apikey|key)[\s=]+)("[^"]*"|\S+)', '$1<hidden>'
+  $line -replace '(?i)((account|user(name)?|login)\s*[:=]\s*)("[^"]*"|\S+)', '$1<hidden>'
+}
+
 function Section($name) { Say ""; Say "== $name" }
 
 Say "Aetherial Dawn launcher QA evidence (read-only)"
@@ -89,11 +96,11 @@ foreach ($name in "steam", "SkyrimSE", "skse64_loader", "aetherial-dawn-launcher
 
 Section "Steam content log, lines about Skyrim SE (D13)"
 $clog = Join-Path $steam "logs\content_log.txt"
-if (Test-Path $clog) { Get-Content $clog -Tail 4000 | Select-String "489830" | Select-Object -Last 60 | ForEach-Object { Say $_.Line } } else { Say "no content_log.txt" }
+if (Test-Path $clog) { Get-Content $clog -Tail 4000 | Select-String "489830" | Select-Object -Last 60 | ForEach-Object { Say (Redact $_.Line) } } else { Say "no content_log.txt" }
 
 Section "Launcher log, patch and Steam lines (D13)"
 $llog = Join-Path $env:LOCALAPPDATA "gg.aetherialdawn.launcher\logs\launcher.log"
-if (Test-Path $llog) { Get-Content $llog -Tail 4000 | Select-String -Pattern "patch:|steam|version|verify" | Select-Object -Last 80 | ForEach-Object { Say $_.Line } } else { Say "no launcher.log" }
+if (Test-Path $llog) { Get-Content $llog -Tail 4000 | Select-String -Pattern "patch:|steam|version|verify" | Select-Object -Last 80 | ForEach-Object { Say (Redact $_.Line) } } else { Say "no launcher.log" }
 
 $lines | Set-Content -Path $out -Encoding UTF8
 Write-Host "Saved: $out"
