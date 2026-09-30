@@ -252,6 +252,12 @@ pub struct FileReceipt {
     /// what the server's copy and every PC's copy hold.
     #[serde(default)]
     pub canonical_sha256: String,
+    /// Size and CRC-32 of the canonical bytes, what SkyMP's load-order
+    /// check compares (name, size, crc32) on every PC.
+    #[serde(default)]
+    pub canonical_bytes: u64,
+    #[serde(default)]
+    pub canonical_crc32: u32,
 }
 
 /// One mod's outcome in an export run, kept in `report.json` whether the
@@ -410,6 +416,12 @@ pub struct MasterReceipt {
     pub sha256: String,
     /// sha256 of the converted bytes every PC's copy must match.
     pub canonical_sha256: String,
+    /// Size and CRC-32 of the canonical bytes, what SkyMP's load-order
+    /// check compares (name, size, crc32) on every PC.
+    #[serde(default)]
+    pub canonical_bytes: u64,
+    #[serde(default)]
+    pub canonical_crc32: u32,
 }
 
 /// The receipts for the masters past the base five, read from `game_data`
@@ -432,6 +444,8 @@ pub fn master_receipts(lane: &ServerLane, game_data: &Path) -> Result<Vec<Master
             index: crate::health::MASTERS.len() + k,
             sha256: format!("{:x}", Sha256::digest(&b)),
             canonical_sha256: format!("{:x}", Sha256::digest(canon.as_deref().unwrap_or(&b))),
+            canonical_bytes: canon.as_deref().unwrap_or(&b).len() as u64,
+            canonical_crc32: crate::serverorder::crc32_bytes(canon.as_deref().unwrap_or(&b)),
         });
     }
     Ok(out)
@@ -796,10 +810,11 @@ pub fn finish_with(root: &Path, lane: &ServerLane, hash: &str, plugins: BTreeMap
         let b = std::fs::read(&path)?;
         let light = b.len() >= 12 && u32::from_le_bytes([b[8], b[9], b[10], b[11]]) & 0x200 != 0;
         let (run_name, canon) = crate::aliases::canonical_full(&data, name, &b, &full);
-        let canonical_sha256 = format!("{:x}", Sha256::digest(canon.as_deref().unwrap_or(&b)));
+        let cb = canon.as_deref().unwrap_or(&b);
+        let (canonical_sha256, canonical_bytes, canonical_crc32) = (format!("{:x}", Sha256::digest(cb)), cb.len() as u64, crate::serverorder::crc32_bytes(cb));
         files.insert(
             name.clone(),
-            FileReceipt { sha256: format!("{:x}", Sha256::digest(&b)), bytes: b.len() as u64, index, masters: crate::loadorder::masters(&path).unwrap_or_default(), light, run_name, canonical_sha256 },
+            FileReceipt { sha256: format!("{:x}", Sha256::digest(&b)), bytes: b.len() as u64, index, masters: crate::loadorder::masters(&path).unwrap_or_default(), light, run_name, canonical_sha256, canonical_bytes, canonical_crc32 },
         );
     }
     let tmp = root.join(format!("{ZIP_NAME}.part"));
@@ -1182,6 +1197,9 @@ mod tests {
         use sha2::{Digest, Sha256};
         assert_eq!(format!("{:x}", Sha256::digest(std::fs::read(pc.join("Data").join("_ResourcePack.esm")).unwrap())), rec.masters[0].canonical_sha256);
         assert_ne!(rec.masters[0].canonical_sha256, rec.masters[0].sha256);
+        // Size and crc32 as SkyMP's load-order check reads the PC's copy.
+        let on_pc = pc.join("Data").join("_ResourcePack.esm");
+        assert_eq!((rec.masters[0].canonical_bytes, Some(rec.masters[0].canonical_crc32)), (std::fs::metadata(&on_pc).unwrap().len(), crate::serverorder::crc32(&on_pc)));
         let z = zip::ZipArchive::new(std::fs::File::open(t.path().join(ZIP_NAME)).unwrap()).unwrap();
         let mut in_zip: Vec<&str> = z.file_names().collect();
         in_zip.sort();
