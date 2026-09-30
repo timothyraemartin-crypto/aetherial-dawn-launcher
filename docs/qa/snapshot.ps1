@@ -4,11 +4,11 @@ D18: read-only snapshot of everything the uninstall test looks at
 never changes, moves or deletes a file.
 
 Roots, each printed by a short name so no user name or drive path appears:
-  FIXTURE  the fake library from sandbox-fixture.ps1   (U1-U6)
+  FIXTURE  the fake library from sandbox-fixture.ps1   (U1-U6, U8)
   SAVES    %LOCALAPPDATA%\Skyrim Special Edition       (U5)
   DOCS     Documents\My Games\Skyrim Special Edition   (U9, the game's ini files)
-  ROAMING  %APPDATA%\gg.aetherialdawn.launcher         (U7, config)
-  LOCAL    %LOCALAPPDATA%\gg.aetherialdawn.launcher    (U7, logs, cache, sign-in)
+  ROAMING  %APPDATA%\gg.aetherialdawn.launcher         (U7, config.json and the sign-in session.bin)
+  LOCAL    %LOCALAPPDATA%\gg.aetherialdawn.launcher    (U7, logs, cache, patch work files)
   INSTALL  %LOCALAPPDATA%\Aetherial Dawn               (the installed program)
 ROAMING, LOCAL and INSTALL are private: only each file's name and size are
 recorded, never its contents or hash, so the sign-in file is never opened.

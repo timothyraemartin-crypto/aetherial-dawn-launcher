@@ -69,6 +69,11 @@ Run each script from PowerShell as `powershell -ExecutionPolicy Bypass -File <sc
    under the fake library, `SAVES` or `DOCS`. It refuses (exit 2) an incomplete snapshot.
 7. Keep A.txt, B.txt, the compare output, the launcher build's commit and the
    box answer together as the D18 receipt.
+8. Reinstall check (PR #39 must not undo anything then). In a fresh Sandbox,
+   repeat steps 2-4, then run the same installer `.exe` again with a plain
+   double-click (the one-click, same-version reinstall). Take snapshot C
+   (`-Out C.txt -Label reinstall`) and run
+   `docs/qa/compare.ps1 -Before A.txt -After C.txt -Unchanged`: it must say PASS.
 
 ## 3. Pass
 - Today (live 0.1.87 and 0.1.98): expected U1, U3, U5, U6 and U8 **fail**;

@@ -3,10 +3,12 @@ D18: compares snapshot A (before uninstall) with snapshot B (after) and marks
 each row U1-U10 of PLAN-D18-UNINSTALL.md PASS or FAIL against the
 "Settings only" default. Read-only: it reads the two snapshot files only.
 Any change no row explains is listed as UNEXPECTED.
+With -Unchanged (the launcher-update and same-version one-click reinstall
+check) it passes only if nothing under FIXTURE, SAVES or DOCS changed.
 Exit 0: compared (PASS and FAIL are both evidence). Exit 2: a snapshot is
 missing, not snapshot/1, or incomplete, so nothing is judged.
 #>
-param([Parameter(Mandatory)][string]$Before, [Parameter(Mandatory)][string]$After)
+param([Parameter(Mandatory)][string]$Before, [Parameter(Mandatory)][string]$After, [switch]$Unchanged)
 $ErrorActionPreference = "Stop"
 
 function Load($path) {
@@ -27,6 +29,15 @@ function Load($path) {
 }
 $A = Load $Before
 $B = Load $After
+
+if ($Unchanged) {
+  $keys = @($A.Files.Keys) + @($B.Files.Keys) | Where-Object { $_ -match "^(FIXTURE|SAVES|DOCS)/" } | Sort-Object -Unique
+  $diff = @($keys | Where-Object { $A.Files[$_] -ne $B.Files[$_] })
+  $fields = @(@($A.Fields.Keys) + @($B.Fields.Keys) | Sort-Object -Unique | Where-Object { $A.Fields[$_] -ne $B.Fields[$_] })
+  foreach ($k in $diff + $fields) { "CHANGED`t$k" }
+  "{0}`t{1} file(s) and {2} setting(s) changed under the fake library, SAVES and DOCS" -f $(if ($diff.Count + $fields.Count -eq 0) { "PASS" } else { "FAIL" }), $diff.Count, $fields.Count
+  exit 0
+}
 
 $G = "FIXTURE/SteamLibrary/steamapps/common/Skyrim Special Edition"
 $ACF = "FIXTURE/SteamLibrary/steamapps/appmanifest_489830.acf"
