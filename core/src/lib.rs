@@ -34,6 +34,7 @@ pub mod tools;
 pub mod ussep;
 pub mod version;
 pub mod watch;
+pub mod window;
 
 #[cfg(test)]
 mod rehearsal;
