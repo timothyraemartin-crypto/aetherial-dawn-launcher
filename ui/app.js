@@ -335,6 +335,9 @@
     if (c && c.target && !c.skseOk) setStatus(`The launcher installs SKSE ${c.skseVersion || ''} for you when you press Play.`);
     else if (!(c && c.warning)) setStatus(null);
     if (helperWarning && !(c && c.warning)) setStatus(helperWarning, true);
+    // Signed in, but the login service didn't answer: Play needs it for the
+    // game session, so say so now rather than after Play's slow steps.
+    if (auth.offline && auth.message) setStatus(auth.message, true);
   }
 
   // ---------- discord sign-in ----------

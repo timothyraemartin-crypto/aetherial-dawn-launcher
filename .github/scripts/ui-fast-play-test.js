@@ -193,6 +193,9 @@ const scenarios = [
     ['the game starts', played(r)],
     ['the status line keeps the warning', /Crash Logger 1\.25\.0 isn't installed/.test(r.status), r.status],
   ] },
+  { name: 'login service unreachable, still signed in: told before Play', s: { ...base, auth: { ...ok, offline: true, message: "Couldn't reach the login service. You're still signed in, but Play needs it to start the game, so try again when it's back." }, clicks: [] }, expect: r => [
+    ['the status line says Play needs the login service', /Play needs it/.test(r.status), r.status],
+  ] },
   { name: 'launcher updated since last time: no early PLAY', s: { ...base, seed: { ...seed, version: '0.0.1' }, clicks: [] }, expect: r => [
     ['PLAY is not enabled before the checks', firstLabel(r, 'PLAY') === null || firstLabel(r, 'PLAY') >= answeredAt(r, 'check')],
   ] },
