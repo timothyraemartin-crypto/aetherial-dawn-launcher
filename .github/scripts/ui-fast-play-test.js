@@ -428,16 +428,29 @@ for (const sc of scenarios) {
     .replace('<head>', `<head><script>window.__S=${JSON.stringify(sc.s)};(${fakeBackEnd})();</script>`);
   fs.writeFileSync(path.join(dir, 'index.html'), html);
   const url = 'file:///' + path.join(dir, 'index.html').replace(/\\/g, '/').replace(/^\//, '');
-  let out = '';
-  try {
-    // Chrome refuses to run as root on Linux without this.
-    const root = process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : [];
-    out = execFileSync(chrome, [...root, '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-      `--user-data-dir=${path.join(dir, 'profile')}`, '--allow-file-access-from-files', '--window-size=1360,880',
-      `--virtual-time-budget=${Math.max(8000, (sc.s.end || 6000) + 2000)}`, '--dump-dom', url], { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] });
-  } catch (e) { out = String(e.stdout || ''); }
-  const m = out.match(/<pre id="ui-test-result">([\s\S]*?)<\/pre>/);
-  console.log(`== ${sc.name}`);
+  const run = () => {
+    try {
+      // Chrome refuses to run as root on Linux without this.
+      const root = process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : [];
+      return execFileSync(chrome, [...root, '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+        `--user-data-dir=${path.join(dir, 'profile')}`, '--allow-file-access-from-files', '--window-size=1360,880',
+        `--virtual-time-budget=${Math.max(8000, (sc.s.end || 6000) + 2000)}`, '--dump-dom', url], { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch (e) { return String(e.stdout || ''); }
+  };
+  const result = /<pre id="ui-test-result">([\s\S]*?)<\/pre>/;
+  let out = run();
+  // A cold Chrome on a fresh CI machine can take longer than the 60 s limit
+  // to open its first page, before the scenario runs at all: that one
+  // scenario gets a second, fresh start. A page that runs and fails a check
+  // is never retried.
+  let retried = false;
+  if (!result.test(out)) {
+    retried = true;
+    fs.rmSync(path.join(dir, 'profile'), { recursive: true, force: true });
+    out = run();
+  }
+  const m = out.match(result);
+  console.log(`== ${sc.name}${retried ? ' (Chrome gave no page on the first start; started again)' : ''}`);
   if (!m) { console.log('FAIL  the page gave no result'); failed++; continue; }
   const r = JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
   for (const [what, pass, shown] of sc.expect(r)) {
