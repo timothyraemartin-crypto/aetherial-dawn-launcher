@@ -30,6 +30,7 @@ function fakeBackEnd() {
   const S = window.__S;
   const t0 = performance.now();
   const log = window.__T = { invokes: [], labels: [], lastReady: null, newsHeights: [] };
+  if (S.pageSize) Object.assign(document.documentElement.style, { width: S.pageSize[0] + 'px', height: S.pageSize[1] + 'px' });
   const at = () => Math.round(performance.now() - t0);
   try { localStorage.clear(); if (S.seed) localStorage.setItem('ad.lastReady', JSON.stringify(S.seed)); } catch (_) {}
   const game = Object.assign({ needed: false, installed: '1.6.1170.0', target: '1.6.1170.0', skseOk: true, canDowngrade: true }, S.game || {});
@@ -92,6 +93,8 @@ function fakeBackEnd() {
       log.freeNote = free.hidden ? null : free.textContent;
       log.modsButton = document.getElementById('rq-all').textContent;
       log.modsShown = !document.getElementById('reqs').hidden;
+      const rect = sel => { const b = document.querySelector(sel).getBoundingClientRect(); return [Math.round(b.top), Math.round(b.bottom)]; };
+      log.layout = { height: document.querySelector('.app').offsetHeight, width: document.querySelector('.app').offsetWidth, titlebar: rect('.titlebar'), dock: rect('.dock'), play: rect('#play') };
       const pre = document.createElement('pre');
       pre.id = 'ui-test-result';
       pre.textContent = JSON.stringify(log);
@@ -208,6 +211,16 @@ const scenarios = [
     ['the news box never changes height once shown', new Set(r.newsHeights.filter(h => h[0] >= askedAt(r, 'window_ready')).map(h => h[1])).size === 1, JSON.stringify(r.newsHeights.slice(0, 8))],
   ] },
 ];
+
+// The smallest window the launcher allows (core/src/window.rs MIN), which is
+// what a 1080p screen at 150% or a 768p laptop at 125% opens at.
+// Chrome's window size includes its frame and, on Windows, a scroll bar, so
+// the page's size is set in the page itself.
+scenarios.push({ name: 'the smallest window: PLAY and the news fit under the title bar', s: { ...base, pageSize: [1024, 560] }, expect: r => [
+  ['the page is laid out at the minimum size', r.layout.width === 1024 && r.layout.height === 560, JSON.stringify(r.layout)],
+  ['PLAY is fully on screen', r.layout.play[0] >= 0 && r.layout.play[1] <= r.layout.height],
+  ['the dock starts below the title bar buttons', r.layout.dock[0] >= r.layout.titlebar[1]],
+] });
 
 const chrome = findChrome();
 let failed = 0;
