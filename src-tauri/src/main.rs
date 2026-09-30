@@ -303,6 +303,11 @@ async fn update(app: AppHandle, state: State<'_, AppState>, verify_all: bool) ->
 /// Returns warnings to show once the game is starting (a helper mod that
 /// couldn't be installed).
 async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<String>> {
+    // A second Play while the game runs would install into locked files,
+    // rewrite the load order under it and start a second copy.
+    if watch::find_process(watch::GAME_PROCESS).is_some() {
+        return Err("Skyrim is already running. Close it first, then press Play.".into());
+    }
     let config = state.config.lock().await.clone();
     let dir = config.game_dir.clone().ok_or("Pick your Skyrim folder first.")?;
     let m = state.manifest.lock().await.clone().ok_or("The server's file list hasn't loaded yet. The launcher is fetching it; try again in a moment.")?;
