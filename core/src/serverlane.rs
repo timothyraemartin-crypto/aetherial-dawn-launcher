@@ -20,12 +20,29 @@ pub struct ServerLane {
     pub for_discord_id: String,
     pub mods: Vec<LaneMod>,
     /// The server's masters before the lane's plugins, when the list widens
-    /// them past the five base masters (world-1.3 adds four Creation Club
-    /// masters). It must start with the five base masters in order, and an
-    /// `.esl` master is refused until the light-plugin handling exists. Left
-    /// out, it is the five base masters, and the list hash is unchanged.
+    /// them past the five base masters (world-1.5 adds five Creation Club
+    /// masters). It must start with the five base masters in order and names
+    /// only full plugins (run names). Left out, it is the five base masters,
+    /// and the list hash is unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub masters: Option<Vec<String>>,
+    /// Masters the game has only as light plugins, run as "<stem>.esm"
+    /// copies (desync/esl-on-server.md): `from` "_ResourcePack.esl", `run`
+    /// "_ResourcePack.esm". The same field as server-plugins-order.
+    #[serde(default, rename = "masterSources", skip_serializing_if = "Option::is_none")]
+    pub master_sources: Option<Vec<MasterSource>>,
+    /// ESL-flagged .esp/.esm lane plugins the list runs as flag-cleared
+    /// copies. Any other light plugin stops the export, as check_masters.py.
+    #[serde(default, rename = "lightCleared", skip_serializing_if = "Option::is_none")]
+    pub light_cleared: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct MasterSource {
+    /// The master's name in the server's masters, "_ResourcePack.esm".
+    pub run: String,
+    /// The game's file, "_ResourcePack.esl".
+    pub from: String,
 }
 
 /// The most full plugins a PC can load (indexes 00-FD).
@@ -37,23 +54,24 @@ impl ServerLane {
         self.masters.clone().unwrap_or_else(|| crate::health::MASTERS.iter().map(|m| m.to_string()).collect())
     }
 
-    /// The light plugins this list runs as full plugins
-    /// (desync/esl-on-server.md): "<stem>.esl" for each master past the base
-    /// five that the list names as "<stem>.esm" (the game's own file may be
-    /// either), and every .esl the lane takes.
+    /// The light plugins this list runs as full plugins: its masterSources'
+    /// `from` files.
     pub fn light_as_full(&self) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        for m in self.masters().iter().skip(crate::health::MASTERS.len()) {
-            if m.to_ascii_lowercase().ends_with(".esm") {
-                out.push(format!("{}.esl", &m[..m.len() - 4]));
-            }
-        }
-        for p in self.mods.iter().flat_map(|m| &m.plugins) {
-            if p.to_ascii_lowercase().ends_with(".esl") {
-                out.push(p.clone());
-            }
-        }
-        out
+        self.master_sources.iter().flatten().map(|s| s.from.clone()).collect()
+    }
+
+    /// The game file each master past the base five comes from: its
+    /// masterSources `from`, or the master itself. (file, master name)
+    pub fn master_files(&self) -> Vec<(String, String)> {
+        self.masters()
+            .into_iter()
+            .skip(crate::health::MASTERS.len())
+            .map(|m| (self.master_sources.iter().flatten().find(|s| s.run.eq_ignore_ascii_case(&m)).map(|s| s.from.clone()).unwrap_or_else(|| m.clone()), m))
+            .collect()
+    }
+
+    fn cleared(&self, plugin: &str) -> bool {
+        self.light_cleared.iter().flatten().any(|p| p.eq_ignore_ascii_case(plugin))
     }
 }
 
@@ -136,6 +154,10 @@ pub struct Record {
     /// `canonical-plugins --esl-as-esm` on the server.
     #[serde(default)]
     pub light_as_full: Vec<String>,
+    /// The masters past the base five: names and the hashes each PC's
+    /// converted copy must match. Their bytes are never in the zip.
+    #[serde(default)]
+    pub masters: Vec<MasterReceipt>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -265,56 +287,136 @@ fn order(lane: &ServerLane) -> Vec<(&str, &str)> {
     lane.mods.iter().flat_map(|m| m.plugins.iter().map(move |p| (m.entry.id.as_str(), p.as_str()))).collect()
 }
 
-/// Every collected plugin in `data` checked against what the server can
-/// load. Light plugins run as full ones on the server and every PC
-/// (desync/esl-on-server.md, 2026-09-30): a listed .esl as "<stem>.esm", an
-/// ESL-flagged .esp/.esm as its "-AD" copy with the flag cleared. One the
-/// rule doesn't cover, an ESL-flagged file with a Creation Club name, is
-/// refused (PR #7, Codex 5916972572 and #28 5916986323). The list must stay
-/// at MAX_FULL full plugins or fewer. Then the master contract: each master its TES4 header names must be one of the server's
-/// masters (`ServerLane::masters`) or a lane plugin that loads before it. A Creation Club master
-/// (Fish, Survival Mode, Curios...), a master nobody lists, or one listed
-/// later would stop the server at load, so each is named here, as is a file
-/// with no readable header (PR #7, Codex 5916681442). Plugins not collected
-/// are skipped: `reconcile` already names them.
+/// Every collected plugin in `data`, and each master past the base five,
+/// checked against what the server can load, the same rules as the Mods
+/// chat's check_masters.py (desync/esl-on-server.md, 2026-09-30):
+/// - a light plugin runs as a full one only where the list says so: a
+///   master's .esl through masterSources ("<stem>.esm"), an ESL-flagged
+///   .esp/.esm through lightCleared (its flag-cleared copy). Any other light
+///   plugin stops the export, as does lightCleared on a Creation Club name,
+///   which the "-AD" rule leaves light;
+/// - each master a header names must be one of the server's masters (a
+///   masterSources `from` counts as its `run`) or a lane plugin loaded
+///   earlier; a Creation Club master nobody lists, a master listed later,
+///   or a file with no readable header is named (PR #7, Codex 5916681442);
+/// - at most MAX_FULL full plugins.
+///
+/// Files not collected are skipped: `reconcile` and `master_receipts` name
+/// them.
 pub fn master_problems(lane: &ServerLane, data: &Path) -> Vec<String> {
+    master_problems_with(lane, data, None)
+}
+
+/// `master_problems`, with the masters past the base five read from
+/// `game_data` (the exporting PC's Data) when given.
+pub fn master_problems_with(lane: &ServerLane, data: &Path, game_data: Option<&Path>) -> Vec<String> {
     let all = order(lane);
     let contract = lane.masters();
-    let mut before: Vec<&str> = Vec::new();
     let mut out = Vec::new();
     if contract.len() + all.len() > MAX_FULL {
         out.push(format!("the list loads {} full plugins ({} masters and {} plugins), more than the {MAX_FULL} a PC can", contract.len() + all.len(), contract.len(), all.len()));
     }
-    // A header master "<stem>.esl" the contract runs as "<stem>.esm".
-    let in_contract = |m: &str| {
-        contract.iter().any(|b| b.eq_ignore_ascii_case(m))
-            || m.to_ascii_lowercase().strip_suffix(".esl").is_some_and(|s| contract.iter().any(|b| b.eq_ignore_ascii_case(&format!("{s}.esm"))))
+    let sources = lane.master_sources.clone().unwrap_or_default();
+    let base = crate::health::MASTERS.len();
+    let in_contract = |m: &str, upto: usize| {
+        contract[..upto].iter().any(|b| b.eq_ignore_ascii_case(m)) || sources.iter().any(|s| s.from.eq_ignore_ascii_case(m) && contract[..upto].iter().any(|b| b.eq_ignore_ascii_case(&s.run)))
     };
+    let headers = |name: &str, path: &Path, ok: &dyn Fn(&str) -> bool, later: &dyn Fn(&str) -> bool, out: &mut Vec<String>| match crate::loadorder::masters(path) {
+        None => out.push(format!("{name} has no readable plugin header")),
+        Some(ms) => {
+            for m in ms {
+                if ok(&m) {
+                    continue;
+                }
+                if later(&m) {
+                    out.push(format!("{name} needs {m}, which the list loads after it"));
+                } else {
+                    out.push(format!("{name} needs {m}, which isn't one of the server's masters or in the list"));
+                }
+            }
+        }
+    };
+    // The masters past the base five, from the game's files.
+    for (k, (file, master)) in lane.master_files().iter().enumerate() {
+        let Some(path) = game_data.and_then(|g| find_file(g, file)) else { continue };
+        let esl = file.to_ascii_lowercase().ends_with(".esl");
+        if esl != sources.iter().any(|s| s.from.eq_ignore_ascii_case(file)) || (!esl && light_flag(&path)) {
+            out.push(format!("{file} (the server's master {master}) is a light plugin no masterSources entry runs as a full one"));
+        }
+        let at = base + k;
+        headers(file, &path, &|m| in_contract(m, at), &|m| in_contract(m, contract.len()), &mut out);
+    }
+    let mut before: Vec<&str> = Vec::new();
     for (i, (_, name)) in all.iter().enumerate() {
         let path = data.join(name);
         if path.is_file() {
-            if !name.to_ascii_lowercase().ends_with(".esl") && light_flag(&path) && crate::aliases::shipped_with_game(name) {
-                out.push(format!("{name} is a light (ESL) plugin with a Creation Club name, which no rule runs as a full plugin"));
-            }
-            match crate::loadorder::masters(&path) {
-                None => out.push(format!("{name} has no readable plugin header")),
-                Some(ms) => {
-                    for m in ms {
-                        if in_contract(&m) || before.iter().any(|b| b.eq_ignore_ascii_case(&m)) {
-                            continue;
-                        }
-                        if all[i + 1..].iter().any(|(_, later)| later.eq_ignore_ascii_case(&m)) {
-                            out.push(format!("{name} needs {m}, which the list loads after it"));
-                        } else {
-                            out.push(format!("{name} needs {m}, which isn't one of the server's masters or in the list"));
-                        }
-                    }
+            let esl = name.to_ascii_lowercase().ends_with(".esl");
+            if esl {
+                out.push(format!("{name} is a light plugin (.esl); a lane plugin can't be one"));
+            } else if light_flag(&path) {
+                if !lane.cleared(name) {
+                    out.push(format!("{name} is ESL-flagged, and the list doesn't declare it lightCleared"));
+                } else if crate::aliases::shipped_with_game(name) {
+                    out.push(format!("{name} is a light (ESL) plugin with a Creation Club name, which no rule runs as a full plugin"));
                 }
             }
+            headers(name, &path, &|m| in_contract(m, contract.len()) || before.iter().any(|b| b.eq_ignore_ascii_case(m)), &|m| all[i + 1..].iter().any(|(_, l)| l.eq_ignore_ascii_case(m)), &mut out);
         }
         before.push(name);
     }
     out
+}
+
+/// A file at the top of `dir`, matched without regard to case.
+fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
+    let exact = dir.join(name);
+    if exact.is_file() {
+        return Some(exact);
+    }
+    std::fs::read_dir(dir).ok()?.flatten().find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(name)).map(|e| e.path()).filter(|p| p.is_file())
+}
+
+/// What the export records for a master past the base five. The export
+/// never carries its bytes (Creation Club content is Bethesda's): each PC
+/// converts its own copy by the rule, and these are the names and hashes it
+/// must arrive at (Quality checks, 2026-09-30).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct MasterReceipt {
+    /// The game's file, "_ResourcePack.esl".
+    pub file: String,
+    /// The name the server and every PC load it as, "_ResourcePack.esm".
+    pub run_name: String,
+    /// Its index in the server's load order.
+    pub index: usize,
+    /// sha256 of the game's file as read on the exporting PC.
+    pub sha256: String,
+    /// sha256 of the converted bytes every PC's copy must match.
+    pub canonical_sha256: String,
+}
+
+/// The receipts for the masters past the base five, read from `game_data`
+/// (the exporting PC's own Data). A missing file stops the export.
+pub fn master_receipts(lane: &ServerLane, game_data: &Path) -> Result<Vec<MasterReceipt>> {
+    use sha2::{Digest, Sha256};
+    let full = lane.light_as_full();
+    let mut out = Vec::new();
+    for (k, (file, master)) in lane.master_files().into_iter().enumerate() {
+        let path = find_file(game_data, &file).ok_or_else(|| Error::Game(format!("the game folder has no {file}, which the server's master {master} comes from")))?;
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(file);
+        let b = std::fs::read(&path)?;
+        let (run_name, canon) = crate::aliases::canonical_full(game_data, &name, &b, &full);
+        if !run_name.eq_ignore_ascii_case(&master) {
+            return Err(Error::Game(format!("{name} would load as {run_name}, not as the server's master {master}")));
+        }
+        out.push(MasterReceipt {
+            file: name,
+            run_name,
+            index: crate::health::MASTERS.len() + k,
+            sha256: format!("{:x}", Sha256::digest(&b)),
+            canonical_sha256: format!("{:x}", Sha256::digest(canon.as_deref().unwrap_or(&b))),
+        });
+    }
+    Ok(out)
 }
 
 /// Whether a plugin's TES4 header carries the light (ESL) flag.
@@ -326,6 +428,11 @@ fn light_flag(path: &Path) -> bool {
 
 /// Writes `report.json` for this run and returns it.
 pub fn report(root: &Path, lane: &ServerLane, hash: &str, plugins: &BTreeMap<String, String>, mods: Vec<ModOutcome>) -> Result<Report> {
+    report_with(root, lane, hash, plugins, mods, None)
+}
+
+/// `report`, with the masters past the base five read from `game_data`.
+pub fn report_with(root: &Path, lane: &ServerLane, hash: &str, plugins: &BTreeMap<String, String>, mods: Vec<ModOutcome>, game_data: Option<&Path>) -> Result<Report> {
     let (missing, extra) = reconcile(lane, plugins);
     let rep = Report {
         list: hash.to_string(),
@@ -335,7 +442,7 @@ pub fn report(root: &Path, lane: &ServerLane, hash: &str, plugins: &BTreeMap<Str
         extra,
         first_failure: mods.iter().find_map(|m| m.error.as_ref().map(|e| format!("{}: {e}", m.name))),
         mods,
-        master_problems: master_problems(lane, &root.join("Data")),
+        master_problems: master_problems_with(lane, &root.join("Data"), game_data),
     };
     std::fs::create_dir_all(root)?;
     std::fs::write(root.join(REPORT), serde_json::to_vec_pretty(&rep)?)?;
@@ -399,8 +506,24 @@ pub fn check(lane: &ServerLane) -> Result<()> {
                 return Err(Error::Game(format!("server lane: master {m:?} isn't a plugin file name")));
             }
             if m.to_ascii_lowercase().ends_with(".esl") {
-                return Err(Error::Game(format!("server lane: master {m} is a light plugin (.esl), which the server can't load yet")));
+                return Err(Error::Game(format!("server lane: master {m} is a light plugin (.esl); name its .esm run name and add it to masterSources")));
             }
+        }
+    }
+    for src in lane.master_sources.iter().flatten() {
+        let from = src.from.to_ascii_lowercase();
+        let want = from.strip_suffix(".esl").map(|s| format!("{s}.esm"));
+        if src.from.contains(['/', '\\']) || want.as_deref() != Some(src.run.to_ascii_lowercase().as_str()) {
+            return Err(Error::Game(format!("server lane: masterSources {} -> {} isn't an .esl run as the .esm of the same stem", src.from, src.run)));
+        }
+        let ms = lane.masters();
+        if !ms.iter().skip(crate::health::MASTERS.len()).any(|m| m.eq_ignore_ascii_case(&src.run)) {
+            return Err(Error::Game(format!("server lane: masterSources names {}, which isn't one of its masters", src.run)));
+        }
+    }
+    for p in lane.light_cleared.iter().flatten() {
+        if p.to_ascii_lowercase().ends_with(".esl") || !lane.mods.iter().any(|m| m.plugins.iter().any(|x| x.eq_ignore_ascii_case(p))) {
+            return Err(Error::Game(format!("server lane: lightCleared names {p}, which isn't an .esp or .esm the list takes")));
         }
     }
     let mut ids = std::collections::HashSet::new();
@@ -592,6 +715,13 @@ pub fn collect(root: &Path, mod_id: &str, picked: &[(PathBuf, String)], seen: &m
 /// stored: plugins barely compress and the VPS unzips quicker) and writes the
 /// record. Returns it.
 pub fn finish(root: &Path, lane: &ServerLane, hash: &str, plugins: BTreeMap<String, String>, source: Source) -> Result<Record> {
+    finish_with(root, lane, hash, plugins, source, None)
+}
+
+/// `finish`, reading the masters past the base five from `game_data` for
+/// their receipts. A list with such masters needs it; their bytes never go
+/// in the zip.
+pub fn finish_with(root: &Path, lane: &ServerLane, hash: &str, plugins: BTreeMap<String, String>, source: Source, game_data: Option<&Path>) -> Result<Record> {
     use sha2::{Digest, Sha256};
     use std::io::{Read, Write};
     // Never a zip short of what the list declares, or with more.
@@ -608,17 +738,24 @@ pub fn finish(root: &Path, lane: &ServerLane, hash: &str, plugins: BTreeMap<Stri
     let data = root.join("Data");
     // Never a zip the server couldn't load: every header master must be a
     // base master or come earlier in the list.
-    let bad = master_problems(lane, &data);
+    let bad = master_problems_with(lane, &data, game_data);
     if !bad.is_empty() {
         return Err(Error::Game(format!("the export's plugins name masters the server can't load ({}); no zip made", bad.join("; "))));
     }
     let at: Vec<(&str, &str)> = order(lane);
     let full = lane.light_as_full();
+    // The masters past the base five: names and hashes only, never bytes.
+    let masters = match (lane.master_files().is_empty(), game_data) {
+        (true, _) => Vec::new(),
+        (false, Some(g)) => master_receipts(lane, g)?,
+        (false, None) => return Err(Error::Game("the server's list has masters past the base five, and the export wasn't given the game folder to check them; no zip made".into())),
+    };
     let mut files = BTreeMap::new();
-    for name in plugins.keys() {
+    let names: Vec<(String, usize)> = plugins.keys().map(|n| (n.clone(), lane.masters().len() + at.iter().position(|(_, p)| p.eq_ignore_ascii_case(n)).unwrap_or_default())).collect();
+    for (name, index) in &names {
+        let (name, index) = (name, *index);
         let path = data.join(name);
         let b = std::fs::read(&path)?;
-        let index = lane.masters().len() + at.iter().position(|(_, p)| p.eq_ignore_ascii_case(name)).unwrap_or_default();
         let light = b.len() >= 12 && u32::from_le_bytes([b[8], b[9], b[10], b[11]]) & 0x200 != 0;
         let (run_name, canon) = crate::aliases::canonical_full(&data, name, &b, &full);
         let canonical_sha256 = format!("{:x}", Sha256::digest(canon.as_deref().unwrap_or(&b)));
@@ -632,7 +769,7 @@ pub fn finish(root: &Path, lane: &ServerLane, hash: &str, plugins: BTreeMap<Stri
         let f = std::fs::File::create(&tmp)?;
         let mut z = zip::ZipWriter::new(std::io::BufWriter::new(f));
         let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored).large_file(true);
-        for name in plugins.keys() {
+        for (name, _) in &names {
             z.start_file(format!("Data/{name}"), opts).map_err(|e| Error::Game(format!("zip: {e}")))?;
             let mut src = std::fs::File::open(data.join(name))?;
             std::io::copy(&mut src, &mut z)?;
@@ -653,7 +790,7 @@ pub fn finish(root: &Path, lane: &ServerLane, hash: &str, plugins: BTreeMap<Stri
         bytes += n as u64;
         h.update(&buf[..n]);
     }
-    let rec = Record { list: hash.to_string(), plugins, zip_sha256: format!("{:x}", h.finalize()), zip_bytes: bytes, files, source, light_as_full: full };
+    let rec = Record { list: hash.to_string(), plugins, zip_sha256: format!("{:x}", h.finalize()), zip_bytes: bytes, files, source, light_as_full: full, masters };
     std::fs::write(root.join(RECORD), serde_json::to_vec_pretty(&rec)?)?;
     let _ = std::fs::remove_file(root.join(FAILURES));
     // The sha256sum line the VPS checks the carried zip against.
@@ -872,6 +1009,7 @@ mod tests {
         std::fs::write(data.join("Late.esm"), esp(&["Dragonborn.esm"], 1)).unwrap();
         std::fs::write(data.join("Junk.esp"), b"not a plugin").unwrap();
         let want = vec![
+            "COTN Dawnstar.esp is ESL-flagged, and the list doesn't declare it lightCleared".to_string(),
             "COTN Dawnstar.esp needs ccBGSSSE001-Fish.esm, which isn't one of the server's masters or in the list".to_string(),
             "Patch.esp needs Late.esm, which the list loads after it".to_string(),
             "Junk.esp has no readable plugin header".to_string(),
@@ -907,57 +1045,110 @@ mod tests {
     }
 
     #[test]
-    fn light_plugins_the_rule_covers_export_and_others_stop_it() {
+    fn light_plugins_the_list_declares_export_and_their_masters_ship_as_hashes_only() {
         let t = tempfile::tempdir().unwrap();
         let data = t.path().join("Data");
+        let game = t.path().join("game").join("Data");
         std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&game).unwrap();
         let base = r#""Skyrim.esm","Update.esm","Dawnguard.esm","HearthFires.esm","Dragonborn.esm""#;
-        // desync/esl-on-server.md: USSEP masters _ResourcePack.esl, which the
-        // list runs as _ResourcePack.esm; COTN is ESL-flagged and runs as its
-        // flag-cleared copy; a lane .esl runs as "<stem>.esm".
+        // WORLD-1.5: USSEP masters _ResourcePack.esl, which the list runs as
+        // _ResourcePack.esm through masterSources; COTN is ESL-flagged and
+        // declared lightCleared, so it runs as its flag-cleared copy.
         let l = lane(&format!(
-            r#"{{"for_discord_id":"1","masters":[{base},"_ResourcePack.esm"],"mods":[
+            r#"{{"for_discord_id":"1","masters":[{base},"_ResourcePack.esm","ccBGSSSE001-Fish.esm"],
+            "masterSources":[{{"run":"_ResourcePack.esm","from":"_ResourcePack.esl"}}],
+            "lightCleared":["COTN Dawnstar.esp"],"mods":[
             {{"id":"ussep","name":"USSEP","nexus":{{"mod":1,"file":1}},"plugins":["Unofficial Skyrim Special Edition Patch.esp"]}},
-            {{"id":"cotn","name":"COTN","nexus":{{"mod":2,"file":2}},"plugins":["COTN Dawnstar.esp"]}},
-            {{"id":"lite","name":"Lite","nexus":{{"mod":3,"file":3}},"plugins":["Lite.esl"]}}]}}"#
+            {{"id":"cotn","name":"COTN","nexus":{{"mod":2,"file":2}},"plugins":["COTN Dawnstar.esp"]}}]}}"#
         ));
-        assert_eq!(l.light_as_full(), ["_ResourcePack.esl", "Lite.esl"]);
+        check(&l).unwrap();
+        assert_eq!(l.light_as_full(), ["_ResourcePack.esl"]);
+        assert_eq!(l.master_files(), [("_ResourcePack.esl".to_string(), "_ResourcePack.esm".to_string()), ("ccBGSSSE001-Fish.esm".to_string(), "ccBGSSSE001-Fish.esm".to_string())]);
+        let rp = esp(&["Skyrim.esm"], 0x201);
+        std::fs::write(game.join("_ResourcePack.esl"), &rp).unwrap();
+        std::fs::write(game.join("ccBGSSSE001-Fish.esm"), esp(&["Skyrim.esm", "Update.esm"], 1)).unwrap();
         std::fs::write(data.join("Unofficial Skyrim Special Edition Patch.esp"), esp(&["Skyrim.esm", "_ResourcePack.esl"], 1)).unwrap();
-        std::fs::write(data.join("COTN Dawnstar.esp"), esp(&["Skyrim.esm", "Dawnguard.esm"], 0x200)).unwrap();
-        std::fs::write(data.join("Lite.esl"), esp(&["Skyrim.esm"], 0x200)).unwrap();
-        assert!(master_problems(&l, &data).is_empty(), "{:?}", master_problems(&l, &data));
-        let plugins: BTreeMap<String, String> =
-            [("Unofficial Skyrim Special Edition Patch.esp", "ussep"), ("COTN Dawnstar.esp", "cotn"), ("Lite.esl", "lite")].into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
-        let rec = finish(t.path(), &l, "h", plugins, Source::served()).unwrap();
-        assert_eq!(rec.light_as_full, ["_ResourcePack.esl", "Lite.esl"]);
-        let run: Vec<(&str, &str)> = rec.files.iter().map(|(n, f)| (n.as_str(), f.run_name.as_str())).collect();
-        assert_eq!(run, [("COTN Dawnstar.esp", "COTN-Dawnstar.esp"), ("Lite.esl", "Lite.esm"), ("Unofficial Skyrim Special Edition Patch.esp", "Unofficial-Skyrim-Special-Edition-Patch.esp")]);
+        std::fs::write(data.join("COTN Dawnstar.esp"), esp(&["Skyrim.esm", "ccBGSSSE001-Fish.esm"], 0x200)).unwrap();
+        assert!(master_problems_with(&l, &data, Some(&game)).is_empty(), "{:?}", master_problems_with(&l, &data, Some(&game)));
+        let plugins: BTreeMap<String, String> = [("Unofficial Skyrim Special Edition Patch.esp", "ussep"), ("COTN Dawnstar.esp", "cotn")].into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        // Without the game folder there is nothing to check the masters by.
+        assert!(finish(t.path(), &l, "h", plugins.clone(), Source::served()).unwrap_err().to_string().contains("game folder"));
+        let rec = finish_with(t.path(), &l, "h", plugins, Source::served(), Some(&game)).unwrap();
+        assert_eq!(rec.light_as_full, ["_ResourcePack.esl"]);
+        let run: Vec<(&str, &str, usize)> = rec.files.iter().map(|(n, f)| (n.as_str(), f.run_name.as_str(), f.index)).collect();
+        assert_eq!(run, [("COTN Dawnstar.esp", "COTN-Dawnstar.esp", 8), ("Unofficial Skyrim Special Edition Patch.esp", "Unofficial-Skyrim-Special-Edition-Patch.esp", 7)]);
+        // The masters: names and hashes only; the converted copy is what a
+        // PC's launcher makes from its own file.
+        let m: Vec<(&str, &str, usize)> = rec.masters.iter().map(|m| (m.file.as_str(), m.run_name.as_str(), m.index)).collect();
+        assert_eq!(m, [("_ResourcePack.esl", "_ResourcePack.esm", 5), ("ccBGSSSE001-Fish.esm", "ccBGSSSE001-Fish.esm", 6)]);
+        let pc = t.path().join("pc");
+        std::fs::create_dir_all(pc.join("Data")).unwrap();
+        std::fs::write(pc.join("Data").join("_ResourcePack.esl"), &rp).unwrap();
+        crate::aliases::ensure_full(&pc, None, &rec.light_as_full).unwrap();
+        use sha2::{Digest, Sha256};
+        assert_eq!(format!("{:x}", Sha256::digest(std::fs::read(pc.join("Data").join("_ResourcePack.esm")).unwrap())), rec.masters[0].canonical_sha256);
+        assert_ne!(rec.masters[0].canonical_sha256, rec.masters[0].sha256);
+        let z = zip::ZipArchive::new(std::fs::File::open(t.path().join(ZIP_NAME)).unwrap()).unwrap();
+        let mut in_zip: Vec<&str> = z.file_names().collect();
+        in_zip.sort();
+        assert_eq!(in_zip, ["Data/COTN Dawnstar.esp", "Data/Unofficial Skyrim Special Edition Patch.esp"], "no Creation Club bytes in the zip");
         // The canonical bytes are what the server tool writes.
         let out = t.path().join("server");
-        let canon = crate::aliases::canonicalize_dir_full(&data, &out, &rec.light_as_full).unwrap();
-        for c in canon {
+        for c in crate::aliases::canonicalize_dir_full(&data, &out, &rec.light_as_full).unwrap() {
             let f = &rec.files[&c.original];
             assert_eq!((f.run_name.as_str(), f.canonical_sha256.as_str()), (c.name.as_str(), c.sha256.as_str()), "{}", c.original);
         }
-        assert_ne!(rec.files["COTN Dawnstar.esp"].canonical_sha256, rec.files["COTN Dawnstar.esp"].sha256);
-        // Without _ResourcePack.esm in the contract, USSEP's master isn't met.
-        let bare = lane(r#"{"for_discord_id":"1","mods":[{"id":"ussep","name":"USSEP","nexus":{"mod":1,"file":1},"plugins":["Unofficial Skyrim Special Edition Patch.esp"]}]}"#);
+        // Without masterSources, USSEP's master isn't met.
+        let bare = lane(&format!(r#"{{"for_discord_id":"1","masters":[{base},"_ResourcePack.esm"],"mods":[{{"id":"ussep","name":"USSEP","nexus":{{"mod":1,"file":1}},"plugins":["Unofficial Skyrim Special Edition Patch.esp"]}}]}}"#));
         assert_eq!(master_problems(&bare, &data), ["Unofficial Skyrim Special Edition Patch.esp needs _ResourcePack.esl, which isn't one of the server's masters or in the list"]);
     }
 
     #[test]
-    fn a_light_plugin_no_rule_covers_still_stops_the_export() {
+    fn a_light_plugin_the_list_doesnt_declare_stops_the_export() {
         let t = tempfile::tempdir().unwrap();
         let data = t.path().join("Data");
+        let game = t.path().join("game");
         std::fs::create_dir_all(&data).unwrap();
-        // An ESL-flagged file with a Creation Club name: the "-AD" rule
-        // leaves the game's own files alone, so it would still load light.
-        let l = lane(r#"{"for_discord_id":"1","mods":[{"id":"cc","name":"CC","nexus":{"mod":2,"file":2},"plugins":["ccBGSSSE099-Thing.esp"]}]}"#);
+        std::fs::create_dir_all(&game).unwrap();
+        let base = r#""Skyrim.esm","Update.esm","Dawnguard.esm","HearthFires.esm","Dragonborn.esm""#;
+        let l = lane(&format!(
+            r#"{{"for_discord_id":"1","masters":[{base},"ccBGSSSE037-Curios.esm"],"lightCleared":["ccBGSSSE099-Thing.esp"],"mods":[
+            {{"id":"cotn","name":"COTN","nexus":{{"mod":1,"file":1}},"plugins":["COTN Morthal.esp"]}},
+            {{"id":"cc","name":"CC","nexus":{{"mod":2,"file":2}},"plugins":["ccBGSSSE099-Thing.esp"]}},
+            {{"id":"lite","name":"Lite","nexus":{{"mod":3,"file":3}},"plugins":["Lite.esl"]}}]}}"#
+        ));
+        // Undeclared ESL flag; a Creation Club name the "-AD" rule leaves
+        // light even when declared; a lane .esl; a master the game has only
+        // as .esl with no masterSources entry.
+        std::fs::write(data.join("COTN Morthal.esp"), esp(&["Skyrim.esm"], 0x200)).unwrap();
         std::fs::write(data.join("ccBGSSSE099-Thing.esp"), esp(&["Skyrim.esm"], 0x200)).unwrap();
-        assert_eq!(master_problems(&l, &data), ["ccBGSSSE099-Thing.esp is a light (ESL) plugin with a Creation Club name, which no rule runs as a full plugin"]);
-        let e = finish(t.path(), &l, "h", [("ccBGSSSE099-Thing.esp".to_string(), "cc".to_string())].into(), Source::served()).unwrap_err().to_string();
-        assert!(e.contains("no rule runs") && e.contains("no zip made"), "{e}");
+        std::fs::write(data.join("Lite.esl"), esp(&["Skyrim.esm"], 0)).unwrap();
+        std::fs::write(game.join("ccBGSSSE037-Curios.esm"), esp(&["Skyrim.esm"], 0x201)).unwrap();
+        assert_eq!(
+            master_problems_with(&l, &data, Some(&game)),
+            [
+                "ccBGSSSE037-Curios.esm (the server's master ccBGSSSE037-Curios.esm) is a light plugin no masterSources entry runs as a full one",
+                "COTN Morthal.esp is ESL-flagged, and the list doesn't declare it lightCleared",
+                "ccBGSSSE099-Thing.esp is a light (ESL) plugin with a Creation Club name, which no rule runs as a full plugin",
+                "Lite.esl is a light plugin (.esl); a lane plugin can't be one",
+            ]
+        );
+        let plugins: BTreeMap<String, String> = [("COTN Morthal.esp", "cotn"), ("ccBGSSSE099-Thing.esp", "cc"), ("Lite.esl", "lite")].into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        let e = finish_with(t.path(), &l, "h", plugins, Source::served(), Some(&game)).unwrap_err().to_string();
+        assert!(e.contains("lightCleared") && e.contains("no zip made"), "{e}");
         assert!(!t.path().join(ZIP_NAME).exists());
+        // A master missing from the game folder stops it too.
+        assert!(master_receipts(&l, t.path()).unwrap_err().to_string().contains("the game folder has no ccBGSSSE037-Curios.esm"));
+        // A malformed masterSources or lightCleared fails the list check.
+        for bad in [
+            format!(r#""masters":[{base},"A.esm"],"masterSources":[{{"run":"A.esm","from":"B.esl"}}]"#),
+            format!(r#""masters":[{base},"A.esm"],"masterSources":[{{"run":"C.esm","from":"C.esl"}}]"#),
+            r#""lightCleared":["Nope.esp"]"#.to_string(),
+        ] {
+            let l = lane(&format!(r#"{{"for_discord_id":"1",{bad},"mods":[{{"id":"a","name":"A","nexus":{{"mod":1,"file":1}},"plugins":["A.esp"]}}]}}"#));
+            assert!(check(&l).is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -984,8 +1175,12 @@ mod tests {
         std::fs::write(data.join("COTN Dawnstar.esp"), esp(&["Skyrim.esm", "ccBGSSSE001-Fish.esm"], 0)).unwrap();
         assert_eq!(master_problems(&plain, &data).len(), 1);
         assert!(master_problems(&wide, &data).is_empty());
-        let rec = finish(t.path(), &wide, "h", [("COTN Dawnstar.esp".to_string(), "cotn".to_string())].into(), Source::served()).unwrap();
+        let game = t.path().join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        std::fs::write(game.join("ccbgssse001-fish.esm"), esp(&["Skyrim.esm"], 1)).unwrap();
+        let rec = finish_with(t.path(), &wide, "h", [("COTN Dawnstar.esp".to_string(), "cotn".to_string())].into(), Source::served(), Some(&game)).unwrap();
         assert_eq!(rec.files["COTN Dawnstar.esp"].index, 6);
+        assert_eq!((rec.masters[0].file.as_str(), rec.masters[0].run_name.as_str()), ("ccbgssse001-fish.esm", "ccbgssse001-fish.esm"));
         // A light master, a list not starting with the base five, a path.
         for bad in [format!(r#"[{base},"ccQDRSSE001-SurvivalMode.esl"]"#), r#"["Skyrim.esm","ccBGSSSE001-Fish.esm"]"#.to_string(), format!(r#"[{base},"x/Fish.esm"]"#)] {
             let l = lane(&format!(r#"{{"for_discord_id":"1","mods":{mods},"masters":{bad}}}"#));

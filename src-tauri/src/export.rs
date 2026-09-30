@@ -80,9 +80,9 @@ pub fn start(app: &AppHandle) {
 
 async fn run(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let (base, me) = {
+    let (base, me, game_dir) = {
         let c = state.config.lock().await;
-        (c.base_url.clone(), c.account.as_ref().and_then(|a| a.discord_id.clone()))
+        (c.base_url.clone(), c.account.as_ref().and_then(|a| a.discord_id.clone()), c.game_dir.clone())
     };
     let lane_root = serverlane::lane_dir(&app.path().app_local_data_dir().map_err(|e| e.to_string())?);
     // A local override (test runs only) replaces the served list and keeps
@@ -139,6 +139,13 @@ async fn run(app: &AppHandle) -> Result<(), String> {
         let root = root.clone();
         tokio::task::spawn_blocking(move || serverlane::start_over(&root)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
     }
+    // The server's masters past the base five (Creation Club content) are
+    // checked against this PC's own game files; their bytes never go in the
+    // zip, only their names and converted hashes.
+    let game_data = game_dir.as_ref().map(|d| d.join("Data"));
+    if lane.masters().len() > launcher_core::health::MASTERS.len() && game_data.is_none() {
+        return Err("the server's list has Creation Club masters to check, and no Skyrim folder is picked".into());
+    }
     let mut plugins = std::collections::BTreeMap::new();
     let mut failed = Vec::new();
     let mut outcomes = Vec::new();
@@ -175,7 +182,7 @@ async fn run(app: &AppHandle) -> Result<(), String> {
         outcomes.push(out);
     }
     // What each mod gave or why it didn't, whether or not the run finished.
-    match serverlane::report(&root, &lane, &hash, &plugins, outcomes) {
+    match serverlane::report_with(&root, &lane, &hash, &plugins, outcomes, game_data.as_deref()) {
         Ok(r) => {
             // Masters the server couldn't load, named before the zip is refused.
             for p in &r.master_problems {
@@ -202,7 +209,8 @@ async fn run(app: &AppHandle) -> Result<(), String> {
     let rec = {
         let root = root.clone();
         let lane = lane.clone();
-        tokio::task::spawn_blocking(move || serverlane::finish(&root, &lane, &hash, plugins, source)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?
+        let game_data = game_data.clone();
+        tokio::task::spawn_blocking(move || serverlane::finish_with(&root, &lane, &hash, plugins, source, game_data.as_deref())).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?
     };
     let _ = std::fs::remove_dir_all(root.join("downloads"));
     let _ = std::fs::remove_dir_all(root.join("unpacked"));
