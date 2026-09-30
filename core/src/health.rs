@@ -741,6 +741,9 @@ mod tests {
         std::fs::write(aside.join("ccBGSSSE001-Fish.esm"), b"newer").unwrap();
         let m = masters_fix_message(g, &["ccBGSSSE001-Fish.esm: missing".to_string()], false);
         assert!(m.starts_with("Steam updated ccBGSSSE001-Fish.esm for a newer Skyrim") && m.contains("Fix version"), "{m}");
+        // Set aside while the exe is already the server's: Verify first.
+        let m = masters_fix_message(g, &["ccBGSSSE001-Fish.esm: missing".to_string()], true);
+        assert!(m.starts_with("Steam updated ccBGSSSE001-Fish.esm") && m.contains("Verify integrity") && m.contains("then click Fix version"), "{m}");
     }
 
     #[test]
