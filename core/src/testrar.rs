@@ -69,6 +69,37 @@ fn rar5_with<'a>(files: impl Iterator<Item = (&'a str, &'a [u8], u64)>) -> Vec<u
     out
 }
 
+/// RAR v5 with one ordinary stored file, then an entry that redirects to it:
+/// `kind` 1-3 symlinks and junctions, 4 a hard link, 5 a file copy.
+pub fn rar5_redirect(target: &str, name: &str, kind: u64) -> Vec<u8> {
+    let mut out = rar5_with([(target, &b"real"[..], 4)].into_iter());
+    out.truncate(out.len() - 8); // drop the end-of-archive block
+    let mut extra = Vec::new();
+    let mut rec = Vec::new();
+    vint(5, &mut rec); // record type: file system redirection
+    vint(kind, &mut rec);
+    vint(0, &mut rec); // redirection flags
+    vint(target.len() as u64, &mut rec);
+    rec.extend_from_slice(target.as_bytes());
+    vint(rec.len() as u64, &mut extra);
+    extra.extend_from_slice(&rec);
+    let mut h = Vec::new();
+    vint(2, &mut h); // file header
+    vint(0x01, &mut h); // an extra area follows
+    vint(extra.len() as u64, &mut h);
+    vint(0, &mut h); // file flags
+    vint(0, &mut h); // unpacked size
+    vint(0x20, &mut h); // attributes
+    vint(0, &mut h); // stored
+    vint(0, &mut h); // host OS Windows
+    vint(name.len() as u64, &mut h);
+    h.extend_from_slice(name.as_bytes());
+    h.extend_from_slice(&extra);
+    block5(&h, &mut out);
+    block5(&[5, 0, 0], &mut out);
+    out
+}
+
 /// A RAR4 block: its header CRC is the low 16 bits of CRC32 from the type on.
 fn block4(kind: u8, flags: u16, rest: &[u8], out: &mut Vec<u8>) {
     let mut h = vec![kind];

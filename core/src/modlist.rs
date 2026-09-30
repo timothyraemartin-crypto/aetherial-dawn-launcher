@@ -757,6 +757,17 @@ fn extract_into(archive: &Path, dir: &Path) -> Result<()> {
 #[cfg(feature = "rar")]
 fn extract_rar(archive: &Path, dir: &Path) -> Result<()> {
     let damaged = |e: unrar::error::UnrarError| Error::Game(format!("couldn't unpack the download (RAR): {e}"));
+    // Hard links, file copies and symlinks point an entry at another path;
+    // unrar would make them, and a hard link lands as an ordinary file, so
+    // they're refused from the headers before anything is written.
+    if let Some((name, kind)) = rar5_redirect(archive)? {
+        let what = match kind {
+            4 => "a hard link",
+            5 => "a copy of another file",
+            _ => "a link",
+        };
+        return Err(Error::Game(format!("{name} in the download is {what}, not a file; the launcher won't unpack it")));
+    }
     let listed = unrar::Archive::new(archive).open_for_listing().map_err(damaged)?;
     if listed.is_locked() || listed.has_encrypted_headers() {
         return Err(Error::Game("the download is a locked or password RAR the launcher can't install".into()));
@@ -799,6 +810,91 @@ fn extract_rar(archive: &Path, dir: &Path) -> Result<()> {
         total += size;
     }
     Ok(())
+}
+
+/// The first RAR5 entry whose header carries a file system redirection
+/// record (extra record 5: 1-3 symlink or junction, 4 hard link, 5 file
+/// copy), as (its name, the redirection type). Reads headers only, seeking
+/// past each data area. Not a RAR5 archive (RAR4 has neither hard links nor
+/// file copies): None. A header that doesn't read is an error.
+#[cfg(feature = "rar")]
+fn rar5_redirect(archive: &Path) -> Result<Option<(String, u64)>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let bad = || Error::Game("couldn't unpack the download (RAR): a header doesn't read".into());
+    let mut f = std::io::BufReader::new(std::fs::File::open(archive)?);
+    let mut sig = [0u8; 8];
+    if f.read_exact(&mut sig).is_err() || &sig != b"Rar!\x1a\x07\x01\x00" {
+        return Ok(None);
+    }
+    fn vint(b: &[u8], at: &mut usize) -> Option<u64> {
+        let mut n = 0u64;
+        for shift in (0..70).step_by(7) {
+            let x = *b.get(*at)?;
+            *at += 1;
+            n |= u64::from(x & 0x7F).checked_shl(shift)?;
+            if x & 0x80 == 0 {
+                return Some(n);
+            }
+        }
+        None
+    }
+    loop {
+        // CRC32, then the header size as a vint of at most 3 bytes.
+        let mut crc = [0u8; 4];
+        if f.read_exact(&mut crc).is_err() {
+            return Ok(None);
+        }
+        let mut size_bytes = Vec::new();
+        let size = loop {
+            let mut b = [0u8; 1];
+            f.read_exact(&mut b).map_err(|_| bad())?;
+            size_bytes.push(b[0]);
+            if b[0] & 0x80 == 0 {
+                break vint(&size_bytes, &mut 0).ok_or_else(bad)?;
+            }
+            if size_bytes.len() >= 3 {
+                return Err(bad());
+            }
+        };
+        if size == 0 || size > 2 << 20 {
+            return Err(bad());
+        }
+        let mut h = vec![0u8; size as usize];
+        f.read_exact(&mut h).map_err(|_| bad())?;
+        let at = &mut 0usize;
+        let kind = vint(&h, at).ok_or_else(bad)?;
+        let flags = vint(&h, at).ok_or_else(bad)?;
+        let extra = if flags & 0x01 != 0 { vint(&h, at).ok_or_else(bad)? } else { 0 };
+        let data = if flags & 0x02 != 0 { vint(&h, at).ok_or_else(bad)? } else { 0 };
+        if kind == 5 {
+            return Ok(None);
+        }
+        if kind == 2 && extra > 0 {
+            // File header: its name, then the extra area at the end.
+            let file_flags = vint(&h, at).ok_or_else(bad)?;
+            vint(&h, at).ok_or_else(bad)?; // unpacked size
+            vint(&h, at).ok_or_else(bad)?; // attributes
+            *at += if file_flags & 0x02 != 0 { 4 } else { 0 } + if file_flags & 0x04 != 0 { 4 } else { 0 };
+            vint(&h, at).ok_or_else(bad)?; // compression
+            vint(&h, at).ok_or_else(bad)?; // host OS
+            let len = vint(&h, at).ok_or_else(bad)? as usize;
+            let name = String::from_utf8_lossy(h.get(*at..*at + len).ok_or_else(bad)?).into_owned();
+            let start = h.len().checked_sub(extra as usize).ok_or_else(bad)?;
+            let x = &h[start..];
+            let mut i = 0usize;
+            while i < x.len() {
+                let rec_size = vint(x, &mut i).ok_or_else(bad)? as usize;
+                let end = i.checked_add(rec_size).filter(|e| *e <= x.len()).ok_or_else(bad)?;
+                let mut j = i;
+                if vint(x, &mut j).ok_or_else(bad)? == 5 {
+                    let redir = vint(x, &mut j).ok_or_else(bad)?;
+                    return Ok(Some((name, redir)));
+                }
+                i = end;
+            }
+        }
+        f.seek(SeekFrom::Current(i64::try_from(data).map_err(|_| bad())?)).map_err(|_| bad())?;
+    }
 }
 
 /// Limits on what one download may unpack to (a crafted archive can claim
@@ -1841,6 +1937,29 @@ mod tests {
         let e = super::extract(&a, &out).unwrap_err().to_string();
         assert!(e.contains("more than the launcher allows"), "{e}");
         assert!(!out.exists() && !t.path().join("out.unpacking").exists());
+    }
+
+    #[cfg(feature = "rar")]
+    #[test]
+    fn rar5_hard_links_file_copies_and_symlinks_are_refused_from_the_headers() {
+        // Quality checks on PR #28: an entry pointing at another path must
+        // never be made, even when it would land as an ordinary file.
+        for (kind, what) in [(4, "a hard link"), (5, "a copy of another file"), (1, "a link"), (2, "a link"), (3, "a link")] {
+            let t = tempfile::tempdir().unwrap();
+            let a = t.path().join("x.rar");
+            std::fs::write(&a, crate::testrar::rar5_redirect("Real.esp", "Copy.esp", kind)).unwrap();
+            assert_eq!(super::rar5_redirect(&a).unwrap(), Some(("Copy.esp".to_string(), kind)));
+            let out = t.path().join("out");
+            let e = super::extract(&a, &out).unwrap_err().to_string();
+            assert!(e.contains(&format!("Copy.esp in the download is {what}")), "{kind}: {e}");
+            assert!(!out.exists() && !t.path().join("out.unpacking").exists());
+        }
+        // Ordinary RAR5 and RAR4 archives have no redirection.
+        let t = tempfile::tempdir().unwrap();
+        for (n, b) in [("5.rar", crate::testrar::rar5(&[("Main.esp", b"main")])), ("4.rar", crate::testrar::rar4(&[("Main.esp", b"main")]))] {
+            std::fs::write(t.path().join(n), b).unwrap();
+            assert_eq!(super::rar5_redirect(&t.path().join(n)).unwrap(), None);
+        }
     }
 
     #[test]
