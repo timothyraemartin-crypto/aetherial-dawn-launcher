@@ -126,22 +126,37 @@ pub fn plan(game_dir: &Path, index: &Index, mut hash: impl FnMut(&Path) -> Optio
     steps
 }
 
-/// Patches one file in place: the result goes next to it, is checked, and
-/// only then replaces the old file. `patch_file` is the downloaded patch.
-pub fn apply_step(game_dir: &Path, step: &Step, patch_file: &Path) -> Result<()> {
+/// Where the server's patches write their results: the downgrade work
+/// folder, on the game's drive, so putting them in is a rename.
+pub fn stage_dir(game_dir: &Path) -> PathBuf {
+    game_dir.join(crate::community::WORK_DIR).join("server-stage")
+}
+
+/// Makes one patched file in `stage` and checks it; the game isn't
+/// touched. `patch_file` is the downloaded patch. The result goes into the
+/// game with every other file in one journalled swap
+/// (`community::swap_in`), so a failure part way leaves the game as it was.
+pub fn make_patched(game_dir: &Path, stage: &Path, step: &Step, patch_file: &Path) -> Result<crate::community::Swap> {
     let live = game_dir.join(&step.file.path);
-    let tmp = live.with_extension("aetherial-dawn-patched");
-    apply_patch(&live, patch_file, &tmp)?;
-    let got = sha256_file(&tmp)?;
+    let out = stage.join(&step.file.path);
+    if let Some(p) = out.parent() {
+        std::fs::create_dir_all(p)?;
+    }
+    apply_patch(&live, patch_file, &out)?;
+    let got = sha256_file(&out)?;
     if !got.eq_ignore_ascii_case(&step.file.sha256) {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(&out);
         return Err(Error::HashMismatch { path: step.file.path.clone(), expected: step.file.sha256.clone(), actual: got });
     }
-    // A hard link (the kept copy) keeps the old build; replacing the name
-    // leaves it intact.
-    std::fs::remove_file(&live)?;
-    std::fs::rename(&tmp, &live)?;
-    Ok(())
+    Ok(crate::community::Swap { from: out, to: step.file.path.clone() })
+}
+
+/// Patches one file: made in the stage folder, checked, then swapped in.
+/// The old copy is moved, never deleted, so a hard link to it (the kept
+/// copy) keeps the old build.
+pub fn apply_step(game_dir: &Path, step: &Step, patch_file: &Path) -> Result<()> {
+    let swap = make_patched(game_dir, &stage_dir(game_dir), step, patch_file)?;
+    crate::community::swap_in(game_dir, &[swap], &mut |_: &str, _: &str, _: u64, _: u64| {})
 }
 
 /// The files patches are made for: Steam's own game files.
@@ -292,5 +307,17 @@ mod tests {
         let steps = plan(&player, &index, |p| sha256_file(p).ok());
         assert_eq!(steps.len(), 1);
         assert!(steps[0].patch.is_none());
+        // A failure making any file changes nothing in the game: every file
+        // is made in the stage first, then all go in in one swap.
+        game(&player, b"exe 1.7", &big_old);
+        let steps = plan(&player, &index, |p| sha256_file(p).ok());
+        let stage = stage_dir(&player);
+        let first = make_patched(&player, &stage, &steps[0], &out.join(&steps[0].patch.as_ref().unwrap().file)).unwrap();
+        let wrong_patch = out.join(&steps[0].patch.as_ref().unwrap().file);
+        assert!(make_patched(&player, &stage, &steps[1], &wrong_patch).is_err());
+        assert_eq!(std::fs::read(player.join("Data/Skyrim.esm")).unwrap(), big_old);
+        assert_eq!(std::fs::read(player.join("SkyrimSE.exe")).unwrap(), b"exe 1.7");
+        assert!(first.from.starts_with(&stage));
+        let _ = std::fs::remove_dir_all(&stage);
     }
 }
