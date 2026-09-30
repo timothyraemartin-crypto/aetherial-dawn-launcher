@@ -146,18 +146,38 @@
     const el = $(sid);
     el.setAttribute('role', 'dialog');
     el.setAttribute('aria-modal', 'true');
+    // Takes focus itself while none of its buttons can (Health while checking).
+    el.tabIndex = -1;
     const h = el.querySelector('h2');
     if (h) { h.id = h.id || `${sid}-title`; el.setAttribute('aria-labelledby', h.id); }
   }
+  // Behind an open sheet, the page and the PLAY dock are inert (not
+  // clickable, focusable or read). The side menu and the window buttons stay
+  // live: choosing a page leaves the sheet, and the window can always close.
+  const STAY_LIVE = ['nav', '.titlebar', '.plate'];
+  const behind = () => [...$('first').parentElement.children].filter(x => !SHEETS.includes(x.id) && !STAY_LIVE.some(q => x.matches(q)));
   let openSheet = null, focusBefore = null;
+  // Where focus was in each sheet when another opened over it (Settings,
+  // then Health, then back), so it comes back to the same button.
+  const focusIn = new Map();
   const focusables = el => [...el.querySelectorAll('button, input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])')]
     .filter(x => !x.disabled && !x.hidden && x.offsetParent !== null);
   function openDialog(el) {
     if (el === openSheet) return;
     if (!openSheet && el) focusBefore = document.activeElement;
+    if (openSheet && el && openSheet.contains(document.activeElement)) focusIn.set(openSheet, document.activeElement);
     openSheet = el;
-    if (el) { const f = focusables(el); (f[0] || el).focus(); }
-    else if (focusBefore && focusBefore.isConnected) { focusBefore.focus(); focusBefore = null; }
+    for (const x of behind()) x.inert = !!el;
+    if (el) {
+      const back = focusIn.get(el);
+      focusIn.delete(el);
+      if (back && el.contains(back) && focusables(el).includes(back)) back.focus();
+      else { const f = focusables(el); (f[0] || el).focus(); }
+    } else {
+      focusIn.clear();
+      if (focusBefore && focusBefore.isConnected) focusBefore.focus();
+      focusBefore = null;
+    }
   }
   document.addEventListener('keydown', e => {
     if (!openSheet || openSheet.hidden) return;
@@ -894,11 +914,13 @@ let autoMods = false;
   const HL_TAG = { ok: 'OK', info: 'INFO', warn: 'WARN', fail: 'FAIL' };
   let healthText = '';
   async function openHealth() {
-    showSheet('health');
+    // Set up before it opens, so focus doesn't land on a button that is
+    // about to be disabled.
     $('hl-title').textContent = 'Checking your game…';
     $('hl-list').innerHTML = '';
     $('hl-note').hidden = true;
     $('hl-again').disabled = true;
+    showSheet('health');
     try {
       const h = await invoke('health_check');
       healthText = h.text;
