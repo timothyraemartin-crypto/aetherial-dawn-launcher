@@ -210,14 +210,32 @@ pub fn hold_updates(game_dir: &Path, app: u32) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Undoes `hold_updates` when the launcher is uninstalled: the file is
+/// writable again and Steam keeps Skyrim updated ("AutoUpdateBehavior" 0).
+/// Returns the file, or None when there is no manifest to change.
+pub fn release_updates(game_dir: &Path, app: u32) -> Result<Option<PathBuf>> {
+    let Some(path) = acf_path(game_dir, app).filter(|p| p.is_file()) else { return Ok(None) };
+    let mut perm = std::fs::metadata(&path)?.permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perm.set_readonly(false);
+    std::fs::set_permissions(&path, perm)?;
+    let text = std::fs::read_to_string(&path)?;
+    std::fs::write(&path, set_auto_update_to(&text, "0"))?;
+    Ok(Some(path))
+}
+
 /// Sets "AutoUpdateBehavior" to "1" in the top-level AppState block.
 fn set_auto_update(acf: &str) -> String {
+    set_auto_update_to(acf, "1")
+}
+
+fn set_auto_update_to(acf: &str, value: &str) -> String {
     let mut out = Vec::new();
     let mut done = false;
     for line in acf.lines() {
         if !done && line.trim_start().starts_with("\"AutoUpdateBehavior\"") {
             let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
-            out.push(format!("{indent}\"AutoUpdateBehavior\"\t\t\"1\""));
+            out.push(format!("{indent}\"AutoUpdateBehavior\"\t\t\"{value}\""));
             done = true;
         } else {
             out.push(line.to_string());
@@ -226,7 +244,7 @@ fn set_auto_update(acf: &str) -> String {
     if !done {
         // Put it right after the opening brace of AppState.
         if let Some(i) = out.iter().position(|l| l.trim() == "{") {
-            out.insert(i + 1, "\t\"AutoUpdateBehavior\"\t\t\"1\"".into());
+            out.insert(i + 1, format!("\t\"AutoUpdateBehavior\"\t\t\"{value}\""));
         }
     }
     let mut s = out.join("\n");

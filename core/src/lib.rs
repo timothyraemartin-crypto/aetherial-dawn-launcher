@@ -33,6 +33,7 @@ pub mod sync;
 pub mod tools;
 pub mod ussep;
 pub mod version;
+pub mod uninstall;
 pub mod watch;
 
 #[cfg(test)]
