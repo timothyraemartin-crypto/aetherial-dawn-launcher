@@ -235,11 +235,23 @@ pub fn extras(game_dir: &Path, plugins_txt: &Path, manifest: &Manifest) -> Vec<E
         .collect()
 }
 
+/// Keeps `text`, the list as it was before the launcher first changed it,
+/// as `<name>.txt.aetherial-dawn-backup`. Only the first one is kept (as
+/// the ini backups are), so later changes never replace the player's own
+/// load order with one the launcher wrote.
+pub fn keep_backup(txt: &Path, text: &str) -> std::io::Result<()> {
+    let backup = txt.with_extension("txt.aetherial-dawn-backup");
+    if backup.exists() {
+        return Ok(());
+    }
+    std::fs::write(backup, text)
+}
+
 /// Switches plugins off in plugins.txt (drops the `*`), keeping the file and
 /// its place in the list. A copy of the old file is kept next to it.
 pub fn switch_off(plugins_txt: &Path, names: &[String]) -> Result<()> {
     let text = std::fs::read_to_string(plugins_txt)?;
-    std::fs::write(plugins_txt.with_extension("txt.aetherial-dawn-backup"), &text)?;
+    crate::loadorder::keep_backup(plugins_txt, &text)?;
     let lower: Vec<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
     let mut out: Vec<String> = text
         .lines()
@@ -360,7 +372,7 @@ pub fn force_on(plugins_txt: &Path, names: &[String]) -> Result<Vec<String>> {
         return Ok(changed);
     }
     if !text.is_empty() {
-        std::fs::write(plugins_txt.with_extension("txt.aetherial-dawn-backup"), &text)?;
+        crate::loadorder::keep_backup(plugins_txt, &text)?;
     } else if let Some(d) = plugins_txt.parent() {
         std::fs::create_dir_all(d)?;
     }
@@ -393,7 +405,7 @@ pub fn switch_on(plugins_txt: &Path, names: &[String]) -> Result<Vec<String>> {
         return Ok(changed);
     }
     if !text.is_empty() {
-        std::fs::write(plugins_txt.with_extension("txt.aetherial-dawn-backup"), &text)?;
+        crate::loadorder::keep_backup(plugins_txt, &text)?;
     } else if let Some(d) = plugins_txt.parent() {
         std::fs::create_dir_all(d)?;
     }
@@ -419,7 +431,7 @@ pub fn fix_order(loadorder_txt: &Path) -> Result<bool> {
     if want == entries {
         return Ok(false);
     }
-    std::fs::write(loadorder_txt.with_extension("txt.aetherial-dawn-backup"), &text)?;
+    crate::loadorder::keep_backup(loadorder_txt, &text)?;
     let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let mut out: Vec<&str> = comments;
     out.extend(want);
@@ -437,6 +449,18 @@ pub fn test_plugin(version: f32, records: bool) -> Vec<u8> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn the_backup_keeps_the_players_own_list() {
+        let t = tempfile::tempdir().unwrap();
+        let txt = t.path().join("plugins.txt");
+        std::fs::write(&txt, "*Mine.esp\n*Other.esp\n").unwrap();
+        switch_off(&txt, &["Mine.esp".into()]).unwrap();
+        switch_off(&txt, &["Other.esp".into()]).unwrap();
+        switch_on(&txt, &["Mine.esp".into()]).unwrap();
+        // Three changes later, the backup is still the list before the first.
+        assert_eq!(std::fs::read_to_string(t.path().join("plugins.txt.aetherial-dawn-backup")).unwrap(), "*Mine.esp\n*Other.esp\n");
+    }
 
     #[test]
     fn reads_masters_and_checks_they_are_here() {

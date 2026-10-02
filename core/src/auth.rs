@@ -321,8 +321,36 @@ pub fn save_token(path: &std::path::Path, token: &str) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, protect(token.as_bytes(), true)?)?;
-    Ok(())
+    // Written beside it and moved over it, so a failed or cut-short save
+    // leaves the sign-in that was there before, never a half-written one.
+    let part = path.with_extension("part");
+    let written = (|| {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&part)?;
+        f.write_all(&protect(token.as_bytes(), true)?)?;
+        f.sync_all()?;
+        std::fs::rename(&part, path)?;
+        Ok(())
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    written
+}
+
+/// What kind of failure stopped a sign-in being saved, as a fixed word the
+/// page can act on (it never reads the message to decide).
+pub fn save_failure_kind(e: &crate::Error) -> &'static str {
+    match e {
+        crate::Error::Io(io) => match io.kind() {
+            std::io::ErrorKind::PermissionDenied => "denied",
+            std::io::ErrorKind::StorageFull => "full",
+            _ => "io",
+        },
+        // Windows wouldn't encrypt it for this user.
+        crate::Error::Game(_) => "protect",
+        _ => "other",
+    }
 }
 
 pub fn load_token(path: &std::path::Path) -> Option<String> {
@@ -337,6 +365,41 @@ pub fn forget_token(path: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_saved_sign_in_replaces_the_old_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth").join("token.bin");
+        save_token(&path, "first").unwrap();
+        save_token(&path, "second").unwrap();
+        assert_eq!(load_token(&path).as_deref(), Some("second"));
+        assert!(!path.with_extension("part").exists());
+    }
+
+    #[test]
+    fn save_failures_have_fixed_kinds() {
+        use std::io::{Error as IoError, ErrorKind};
+        assert_eq!(save_failure_kind(&IoError::from(ErrorKind::PermissionDenied).into()), "denied");
+        assert_eq!(save_failure_kind(&IoError::from(ErrorKind::StorageFull).into()), "full");
+        assert_eq!(save_failure_kind(&IoError::from(ErrorKind::NotFound).into()), "io");
+        assert_eq!(save_failure_kind(&crate::Error::Game("no".into())), "protect");
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("token.bin");
+        std::fs::create_dir(path.with_extension("part")).unwrap();
+        let kind = save_failure_kind(&save_token(&path, "t").unwrap_err());
+        assert!(kind == "io" || kind == "denied", "{kind}");
+    }
+
+    #[test]
+    fn a_failed_save_keeps_the_sign_in_that_was_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("token.bin");
+        save_token(&path, "kept").unwrap();
+        // Something in the way of the temporary file: the save fails.
+        std::fs::create_dir(path.with_extension("part")).unwrap();
+        assert!(save_token(&path, "new").is_err());
+        assert_eq!(load_token(&path).as_deref(), Some("kept"));
+    }
 
     #[test]
     fn state_is_64_hex() {

@@ -31,6 +31,7 @@ function fakeBackEnd() {
   const t0 = performance.now();
   const log = window.__T = { invokes: [], labels: [], statuses: [], lastReady: null, newsHeights: [], actions: [] };
   const listeners = {};
+  if (S.pageSize) Object.assign(document.documentElement.style, { width: S.pageSize[0] + 'px', height: S.pageSize[1] + 'px' });
   const at = () => Math.round(performance.now() - t0);
   if (S.authIntervalMs) {
     const every = window.setInterval.bind(window);
@@ -39,14 +40,12 @@ function fakeBackEnd() {
   try { localStorage.clear(); if (S.seed) localStorage.setItem('ad.lastReady', JSON.stringify(S.seed)); } catch (_) {}
   const game = Object.assign({ needed: false, installed: '1.6.1170.0', target: '1.6.1170.0', skseOk: true, canDowngrade: true }, S.game || {});
   const answers = {
-    get_state: () => ({ launcherVersion: S.version, config: { gameDir: S.dir, closeOnLaunch: false, backgroundUpdates: !!S.backgroundUpdates, shareHealth: true, music: false, onlyServerMods: true }, game: { dir: S.dir, hasSkse: S.hasSkse !== false } }),
-    auth_status: () => (S.authSequence && S.authSequence.shift()) || S.auth,
-    auth_begin: () => 'test-login',
-    auth_poll: () => ({ status: 'done', account: { discordUsername: 'Player' } }),
+    get_state: () => ({ launcherVersion: S.version, config: { gameDir: S.dir, closeOnLaunch: false, backgroundUpdates: !!S.backgroundUpdates, shareHealth: true, music: false, onlyServerMods: true }, game: S.gameGone ? null : { dir: S.dir, hasSkse: S.hasSkse !== false }, gameError: S.gameGone || null }),
+    auth_status: () => (S.authSequence && S.authSequence.shift()) || ((S.authAfter && (S.authCalls = (S.authCalls || 0) + 1) > 1) ? S.authAfter : S.auth),
     check: () => Object.assign({ build: 'B2', server: { name: 'Aetherial Dawn', ip: '127.0.0.1', port: 7777 }, files: 0, remove: 0, bytes: 0, strays: [], game }, (S.checkSequence && S.checkSequence.shift()) || S.check || {}),
     update: () => null,
     server_status: () => ({ online: true, players: 1, maxPlayers: 50, discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
-    files: () => [], game_check: () => game, play: () => null,
+    files: () => [], game_check: () => game, play: () => S.playWarnings || null,
     patch_game: () => S.patchResult || { ...game, needed: false },
     game_running: () => !!S.outsideGame,
     self_update_begin: () => !S.updateReservationFails,
@@ -54,26 +53,35 @@ function fakeBackEnd() {
     mods_state: () => Object.assign({ mods: [], nexus: null, vortex: true, vortex_ready: true, vortex_paired: true, running: false, sso: false }, S.modsState || {}),
     download_all_mods: () => ({ installed: [], failed: [], cancelled: false }),
     plain_error: a => a.text,
+    auth_begin: () => 'st',
+    // S.signIn: when the launcher has the answer, and an error each poll gives.
+    auth_poll: () => !S.signIn ? { status: 'done', account: { discordUsername: 'Player' } } : S.signIn.error ? { status: 'save_failed', kind: 'denied', message: S.signIn.error } : S.signIn.refuseFirst && !S.refused ? (S.refused = true, { status: 'refused', message: 'An old refusal.' })
+      // A finished sign-in is saved by the launcher, so auth_status says so from then on.
+      : at() - (S.signInAt || 0) >= S.signIn.doneAfter ? (S.auth = { signedIn: true, account: { discordUsername: 'Player' } }, { status: 'done', account: { discordUsername: 'Player' } }) : { status: 'pending' },
   };
   const delay = Object.assign({ get_state: 20, auth_status: 300, check: 900, update: 600, server_status: 300, play: 50, default: 10 }, S.delay || {});
   window.__TAURI__ = {
     core: { invoke: (cmd, args) => new Promise((res, rej) => {
       log.invokes.push([at(), 'ask', cmd]);
+      const pickDelay = cmd === 'set_game_dir' && S.picks && (S.picks.find(p => p.dir === (args || {}).dir) || {}).delay;
       setTimeout(() => {
         log.invokes.push([at(), 'answer', cmd]);
         if (cmd === 'get_state' && S.stateFails) return rej('settings are not writable');
         if (cmd === 'auth_status' && S.authFails) return rej('network down');
         if (cmd === 'game_running' && (S.gameCheckFails || (S.gameCheckFailsFrom && (S.gameChecks = (S.gameChecks || 0) + 1) >= S.gameCheckFailsFrom))) return rej('process list unavailable');
+        if (cmd === 'set_game_dir' && S.setDirError) return rej(S.setDirError);
+        if (cmd === 'set_game_dir' && S.picks && S.picks.find(p => p.dir === args.dir && p.error)) return rej(S.picks.find(p => p.dir === args.dir).error);
         if (cmd === 'play' && S.playError && !S.played) { S.played = true; return rej(S.playError); }
         res(answers[cmd] ? answers[cmd](args || {}) : null);
-      }, delay[cmd] ?? delay.default);
+      }, pickDelay || (delay[cmd] ?? delay.default));
     }) },
     event: { listen: async (name, callback) => {
       (listeners[name] ||= []).push(callback);
       return () => { listeners[name] = listeners[name].filter(fn => fn !== callback); };
     } },
     window: { getCurrentWindow: () => ({ minimize: async () => {}, close: async () => {}, unminimize: async () => {}, setFocus: async () => {}, show: async () => {} }) },
-    dialog: { open: async () => null },
+    // S.picks: what each press of "Choose folder" returns in turn (dir null = cancelled).
+    dialog: { open: async () => S.picks ? (S.picks[(S.picked = (S.picked || 0) + 1) - 1] || {}).dir || null : S.pickDir || null },
     // The fake latest.json: this launcher is the newest, unless S.update names a newer one.
     updater: { check: () => new Promise(r => setTimeout(() => r(S.update ? {
       version: S.update,
@@ -97,6 +105,29 @@ function fakeBackEnd() {
     box();
     setInterval(box, 100);
     // Scenarios can press before or after current checks complete.
+    // The player presses Play as soon as it shows enabled (and once more later).
+    // The player picks a folder in the first-run sheet.
+    if (S.pickDir) setTimeout(() => document.getElementById('c-game-pick').click(), 3000);
+    for (const p of S.picks || []) setTimeout(() => document.getElementById('c-game-pick').click(), p.at);
+    // Keyboard use of a sheet: open Settings, check focus, press Escape.
+    if (S.dialogTest) {
+      const id = () => document.activeElement && document.activeElement.id;
+      const dock = () => document.querySelector('.dock').inert;
+      const press = b => { const el = document.getElementById(b); el.focus(); el.click(); };
+      setTimeout(() => press('nav-settings'), 3000);
+      setTimeout(() => {
+        const sheet = document.getElementById('settings');
+        log.dialog = { role: sheet.getAttribute('role'), modal: sheet.getAttribute('aria-modal'), label: sheet.getAttribute('aria-labelledby'), focusInside: sheet.contains(document.activeElement), dockInert: dock(), navLive: !document.querySelector('nav').inert };
+        press('set-health');
+      }, 3300);
+      setTimeout(() => { log.dialog.healthFocus = document.getElementById('health').contains(document.activeElement); press('hl-close'); }, 3600);
+      setTimeout(() => { log.dialog.backTo = id(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); }, 3900);
+      setTimeout(() => { log.dialog.closedByEscape = document.getElementById('settings').hidden; log.dialog.focusAfter = id(); log.dialog.dockAfter = dock(); }, 4200);
+    }
+    if (S.signIn) setTimeout(() => { S.signInAt = at(); document.getElementById('si-go').click(); }, 1500);
+    // Cancel while the first answer is on its way, then sign in again.
+    if (S.signIn && S.signIn.cancelAt) setTimeout(() => document.getElementById('si-cancel').click(), S.signIn.cancelAt);
+    if (S.signIn && S.signIn.restartAt) setTimeout(() => { document.getElementById('si-cancel').click(); document.getElementById('si-go').click(); }, S.signIn.restartAt);
     for (const t of S.clicks || []) setTimeout(() => { log.invokes.push([at(), 'click', label.textContent]); btn.click(); }, t);
     for (const action of S.actions || []) setTimeout(() => {
       if (action.kind === 'click') document.getElementById(action.id).click();
@@ -109,6 +140,12 @@ function fakeBackEnd() {
       try { log.lastReady = JSON.parse(localStorage.getItem('ad.lastReady')); } catch (_) {}
       log.signinShown = !document.getElementById('signin').hidden;
       log.status = document.getElementById('status').textContent;
+      const live = document.getElementById('status-live');
+      log.announced = live ? live.textContent : null;
+      const playBtn = document.getElementById('play');
+      playBtn.focus({ focusVisible: true });
+      log.playRing = playBtn.matches(':focus-visible') ? getComputedStyle(document.getElementById('play-wrap')).outlineStyle : 'not focus-visible';
+      log.gameRow = document.querySelector('#c-game small').textContent;
       const join = document.getElementById('si-join');
       log.join = join.hidden ? null : join.textContent;
       const errLink = document.querySelector('#si-error button');
@@ -133,6 +170,10 @@ function fakeBackEnd() {
       log.retryShown = !document.getElementById('f-retry').hidden;
       log.statusRole = document.getElementById('status').getAttribute('role');
       log.progressRole = document.getElementById('p-progress').getAttribute('role');
+      const rect = sel => { const b = document.querySelector(sel).getBoundingClientRect(); return [Math.round(b.top), Math.round(b.bottom)]; };
+      log.layout = { height: document.querySelector('.app').offsetHeight, width: document.querySelector('.app').offsetWidth, titlebar: rect('.titlebar'), dock: rect('.dock'), play: rect('#play') };
+      log.signInError = document.getElementById('si-error').hidden ? null : document.getElementById('si-error').textContent;
+      log.me = document.getElementById('me').hidden ? null : document.getElementById('me-name').textContent;
       const pre = document.createElement('pre');
       pre.id = 'ui-test-result';
       pre.textContent = JSON.stringify(log);
@@ -259,6 +300,16 @@ const scenarios = [
     ['the game version patch ran once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'patch_game').length === 1],
     ['Play resumed after Vortex answered', askedAt(r, 'play') !== null && askedAt(r, 'play') >= answeredAt(r, 'mods_state')],
   ] },
+  { name: 'a helper mod could not be installed: the game still starts and the reason stays shown', s: { ...base, playWarnings: ["Crash Logger 1.25.0 isn't installed: the download didn't get through. Skyrim starts without it; Play tries again next time."] }, expect: r => [
+    ['the game starts', played(r)],
+    ['the status line keeps the warning', /Crash Logger 1\.25\.0 isn't installed/.test(r.status), r.status],
+  ] },
+  { name: 'a message on the status line is announced to screen readers', s: { ...base, game: { needed: true, canDowngrade: false, reason: 'Skyrim is not the version the server needs.' } }, expect: r => [
+    ['screen readers get the message', /not the version the server needs/.test(r.announced || ''), r.announced],
+  ] },
+  { name: 'PLAY shows a keyboard focus ring', s: { ...base, clicks: [] }, expect: r => [
+    ['PLAY\'s focus ring is drawn on its frame', r.playRing === 'solid', r.playRing],
+  ] },
   { name: 'launcher updated since last time: no early PLAY', s: { ...base, seed: { ...seed, version: '0.0.1' }, clicks: [] }, expect: r => [
     ['PLAY is not enabled before the checks', firstLabel(r, 'PLAY') === null || firstLabel(r, 'PLAY') >= answeredAt(r, 'check')],
   ] },
@@ -288,6 +339,36 @@ const scenarios = [
   ] },
   { name: 'launcher update found with nothing running: it installs', s: { ...base, update: '9.9.10', clicks: [] }, expect: r => [
     ['the update installs', askedAt(r, 'updater_install') !== null],
+  ] },
+  { name: 'Skyrim running: PLAY does not come back, and a second press starts nothing', s: { ...base, clicks: [60, 9500], end: 10500 }, expect: r => [
+    ['the game starts once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
+    ['the button shows IN GAME once the launch settles', firstLabel(r, 'IN GAME [off]') !== null],
+    ['PLAY is never offered again while the game runs', !r.labels.some(l => l[0] > answeredAt(r, 'play') && l[1] === 'PLAY'), JSON.stringify(r.labels.slice(-4))],
+  ] },
+  { name: 'first start, a wrong folder, then a cancelled pick: the reason stays and nothing is saved', s: { ...base, seed: null, clicks: [], picks: [{ at: 3000, dir: 'D:\\Games', error: "SkyrimSE.exe isn't in D:\\Games." }, { at: 3500, dir: null }] }, expect: r => [
+    ['the folder was sent to the launcher once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'set_game_dir').length === 1],
+    ['the reason still shows', /isn't in D:/.test(r.gameRow), r.gameRow],
+  ] },
+  { name: 'first start, a second pick while the first is still checked: ignored, so answers never cross', s: { ...base, seed: null, clicks: [], picks: [{ at: 3000, dir: 'D:\\Games', error: "SkyrimSE.exe isn't in D:\\Games.", delay: 1500 }, { at: 3300, dir: 'C:\\Games\\Skyrim Special Edition' }] }, expect: r => [
+    ['the launcher checks one folder at a time', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'set_game_dir').length === 1],
+    ['the answer shown is the one for the folder checked', /isn't in D:/.test(r.gameRow), r.gameRow],
+  ] },
+  { name: 'the saved folder stopped being Skyrim: Steam\'s other copy is only suggested', s: { ...base, gameGone: "E:\\Skyrim Special Edition can't be opened. If Skyrim is now in C:\\Steam\\steamapps\\common\\Skyrim Special Edition, choose that folder." }, expect: r => [
+    ['the game never starts', !played(r)],
+    ['the launcher never switches folder by itself', askedAt(r, 'set_game_dir') === null],
+    ['the player is told where Steam has Skyrim', /choose that folder/.test(r.gameRow), r.gameRow],
+  ] },
+  { name: 'first start, a folder that is not Skyrim is picked: the first-run sheet says why', s: { ...base, seed: null, clicks: [], pickDir: 'D:\\Games', setDirError: "D:\\Games doesn't have SkyrimSE.exe in it." }, expect: r => [
+    ['the reason shows in the first-run sheet', /doesn't have SkyrimSE\.exe/.test(r.gameRow), r.gameRow],
+  ] },
+  { name: 'Settings works as a dialog from the keyboard', s: { ...base, clicks: [], dialogTest: true }, expect: r => [
+    ['it is a labelled modal dialog', !!r.dialog && r.dialog.role === 'dialog' && r.dialog.modal === 'true' && !!r.dialog.label, JSON.stringify(r.dialog)],
+    ['focus moves into it', !!r.dialog && r.dialog.focusInside],
+    ['Escape closes it', !!r.dialog && r.dialog.closedByEscape],
+    ['the PLAY dock behind it is inert, the side menu is not', !!r.dialog && r.dialog.dockInert === true && r.dialog.navLive],
+    ['Health opened from it takes focus', !!r.dialog && r.dialog.healthFocus],
+    ['closing Health returns focus to the Health button', !!r.dialog && r.dialog.backTo === 'set-health'],
+    ['closing Settings returns focus to the menu item and frees the dock', !!r.dialog && r.dialog.focusAfter === 'nav-settings' && r.dialog.dockAfter === false],
   ] },
   { name: 'first start on this PC: the news box keeps its size', s: { ...base, seed: null, clicks: [] }, expect: r => [
     ['PLAY is not enabled before the checks', firstLabel(r, 'PLAY') !== null && firstLabel(r, 'PLAY') >= answeredAt(r, 'check')],
@@ -412,6 +493,35 @@ const scenarios = [
     ['background navigation is active again', !r.navInert],
   ] },
 ];
+
+// The smallest window the launcher allows (core/src/window.rs MIN), which is
+// what a 1080p screen at 150% or a 768p laptop at 125% opens at.
+// Chrome's window size includes its frame and, on Windows, a scroll bar, so
+// the page's size is set in the page itself.
+scenarios.push({ name: 'the smallest window: PLAY and the news fit under the title bar', s: { ...base, pageSize: [1024, 560] }, expect: r => [
+  ['the page is laid out at the minimum size', r.layout.width === 1024 && r.layout.height === 560, JSON.stringify(r.layout)],
+  ['PLAY is fully on screen', r.layout.play[0] >= 0 && r.layout.play[1] <= r.layout.height],
+  ['the dock starts below the title bar buttons', r.layout.dock[0] >= r.layout.titlebar[1]],
+] });
+// Signing in: the launcher can take up to 5 minutes and a few seconds to
+// answer, and a sign-in it couldn't save is tried again, then told.
+const signedOut = { ...base, auth: { signedIn: false }, seed: null, clicks: [] };
+scenarios.push({ name: 'a sign-in the launcher finishes just after 5 minutes is kept', s: { ...signedOut, signIn: { doneAfter: 5 * 60 * 1000 + 4000 }, end: 5 * 60 * 1000 + 12000 }, expect: r => [
+  ['the player ends up signed in', r.me === 'Player', JSON.stringify([r.me, r.signInError])],
+] });
+scenarios.push({ name: 'an answer to a cancelled sign-in is ignored', s: { ...signedOut, signIn: { doneAfter: 6000, refuseFirst: true, restartAt: 4000 }, delay: { auth_poll: 3000 }, end: 16000 }, expect: r => [
+  ['the new sign-in finishes', r.me === 'Player', JSON.stringify([r.me, r.signInError])],
+  ['the old refusal is never shown', r.signInError === null],
+] });
+scenarios.push({ name: 'Cancel pressed while a finished sign-in is on its way: the page shows the saved sign-in', s: { ...signedOut, signIn: { doneAfter: 0, cancelAt: 4500 }, delay: { auth_poll: 3000 }, end: 12000 }, expect: r => [
+  ['the page asks the launcher who is signed in after that answer', r.invokes.some(i => i[1] === 'ask' && i[2] === 'auth_status' && i[0] >= answeredAt(r, 'auth_poll'))],
+  ['the page shows the player signed in, as the launcher saved', r.me === 'Player', JSON.stringify([r.me, r.signInError])],
+] });
+scenarios.push({ name: 'a sign-in that can never be saved says why', s: { ...signedOut, signIn: { doneAfter: 0, error: "Couldn't save your sign-in: Access is denied" }, end: 6 * 60 * 1000 + 10000 }, expect: r => [
+  ['the sign-in window says the save failed', /Couldn't save your sign-in: Access is denied/.test(r.signInError || ''), JSON.stringify(r.signInError)],
+  ['the player is not signed in', r.me === null],
+  ['the save is tried again until the wait ends', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'auth_poll').length > 100, String(r.invokes.filter(i => i[1] === 'ask' && i[2] === 'auth_poll').length)],
+] });
 
 const chrome = findChrome();
 let failed = 0;

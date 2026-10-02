@@ -64,7 +64,12 @@
     $('play-wrap').classList.toggle('off', mode === 'wait');
   }
   let statusMsg = null;
-  function setStatus(msg, isError) { statusMsg = msg ? { msg, isError } : null; renderStatus(); }
+  function setStatus(msg, isError) {
+    statusMsg = msg ? { msg, isError } : null;
+    renderStatus();
+    const live = $('status-live');
+    if (live && live.textContent !== (msg || '')) live.textContent = msg || '';
+  }
   let toolRunning = false;
   function renderStatus() {
     const parts = [];
@@ -175,7 +180,9 @@
   }
   function renderGame() {
     const g = state.game;
-    const gameRow = [!!g, g ? 'Skyrim Special Edition' : 'Skyrim not found', g ? g.dir : (state.gameError || 'Pick the folder that has SkyrimSE.exe in it.')];
+    // A folder just picked that wasn't Skyrim: said here too, since the
+    // first-run sheet has no Settings error line.
+    const gameRow = [!!g, g ? 'Skyrim Special Edition' : 'Skyrim not found', g ? (pickError ? `${pickError} Still using ${g.dir}.` : g.dir) : (pickError || state.gameError || 'Pick the folder that has SkyrimSE.exe in it.')];
     // SKSE is the launcher's job: nothing here asks the player to get it.
     const skseRow = g && g.hasSkse ? [true, 'SKSE installed', ''] : [null, 'SKSE', 'Installed for you when you press Play.'];
     renderRow($('g-game'), ...gameRow); renderRow($('g-skse'), ...skseRow);
@@ -219,15 +226,27 @@
     return state;
   }
 
+  let pickError = null;
+  // One folder pick at a time: a second press while the launcher is still
+  // checking the first folder is ignored, so an older answer can never land
+  // after a newer one (on screen or in the saved settings).
+  let picking = false;
   async function pickFolder() {
+    if (picking) return;
+    picking = true;
+    try { await pickFolderOnce(); } finally { picking = false; }
+  }
+  async function pickFolderOnce() {
     const dir = await T.dialog.open({ directory: true, title: 'Choose your Skyrim Special Edition folder' });
     if (!dir) return;
     try {
       await invoke('set_game_dir', { dir });
       $('set-error').hidden = true;
+      pickError = null;
     } catch (e) {
       $('set-error').textContent = e;
       $('set-error').hidden = false;
+      pickError = String(e);
     }
     await refreshState();
     pending = null;
@@ -340,6 +359,7 @@
     }
   }
 
+  let helperWarning = null;
   function ready() {
     // Only a current check or a completed update can claim file readiness.
     if (!pending || pending.files || pending.remove) {
@@ -392,6 +412,9 @@
       if (gameCheck && gameCheck.warning) setStatus(gameCheck.warning, true);
       else if (gameCheck && gameCheck.target && !gameCheck.skseOk) setStatus(`The launcher installs SKSE ${gameCheck.skseVersion || ''} for you when you press Play.`);
       else setStatus(null);
+      // A helper mod that couldn't be installed: Play still starts, and the
+      // reason stays on the status line.
+      if (helperWarning && !(gameCheck && gameCheck.warning)) setStatus(helperWarning, true);
       setChip('ok', 'Client and Vortex ready');
     } else {
       setPlay('mods', 'MODS NEEDED');
@@ -434,11 +457,17 @@
     $('acc-note').textContent = auth.offline ? 'Login service unavailable; saved sign-in kept' : 'Signed in with Discord';
     paintAvatar($('me-avatar'), a); paintAvatar($('acc-avatar'), a);
   }
-  async function refreshAuth() {
-    try { auth = await invoke('auth_status'); }
-    catch (e) { auth = { signedIn: false, message: String(e) }; }
-    renderAccount();
-    return auth;
+  // One question to the login service at a time: a Retry press, the
+  // minute retry and the 10-minute check share the answer in flight.
+  let authAsk = null;
+  function refreshAuth() {
+    authAsk = authAsk || (async () => {
+      try { auth = await invoke('auth_status'); }
+      catch (e) { auth = { signedIn: false, message: String(e) }; }
+      renderAccount();
+      return auth;
+    })().finally(() => { authAsk = null; });
+    return authAsk;
   }
   // Every 10 minutes, and sooner during an outage: a ban or leaving the
   // Discord signs the player out; a recovered service restores Play.
@@ -486,6 +515,15 @@
     $('si-go').disabled = false;
     showSheet('signin');
   }
+  async function signedInNow() {
+    bringToFront();
+    renderAccount();
+    showPage('home');
+    // A previous manifest may now require an update; never reuse it as
+    // readiness after the browser sign-in completes.
+    while (busy) await new Promise(r => setTimeout(r, 100));
+    await check();
+  }
   let signInRun = 0;
   async function beginSignIn() {
     const run = ++signInRun;
@@ -495,28 +533,40 @@
     catch (e) { showSignIn("Couldn't open your browser. " + e); return; }
     $('si-go').disabled = true;
     $('si-wait').hidden = false;
-    const until = Date.now() + 5 * 60 * 1000;
+    // The launcher gives up on the browser after 5 minutes and says so; this
+    // later limit only covers a launcher that stops answering, so a sign-in
+    // finished just before 5 minutes isn't dropped here.
+    const until = Date.now() + 6 * 60 * 1000;
+    let lastError = '';
     while (run === signInRun && Date.now() < until) {
       await new Promise(r => setTimeout(r, 2000));
       if (run !== signInRun) return;
       let r;
-      try { r = await invoke('auth_poll', { st }); } catch (e) { r = { status: 'offline', message: String(e) }; }
+      try { r = await invoke('auth_poll', { st }); lastError = ''; } catch (e) { r = { status: 'offline' }; lastError = String(e); }
+      // Cancelled or started again while this answer was on its way. A
+      // finished one is already saved by the launcher, so the page asks it
+      // who is signed in rather than showing signed out; a sign-in started
+      // since goes on and its answer wins.
+      if (run !== signInRun) {
+        if (r.status === 'done') {
+          await refreshAuth();
+          if (signedIn() && $('si-wait').hidden) signedInNow();
+        }
+        return;
+      }
+      // The launcher has the sign-in but couldn't save it yet; it tries again
+      // on the next ask.
+      if (r.status === 'save_failed') { lastError = r.message || "Couldn't save your sign-in"; continue; }
       if (r.status === 'pending' || r.status === 'offline') continue;
       if (r.status === 'done') {
-        bringToFront();
         auth = { signedIn: true, account: r.account };
-        renderAccount();
-        showPage('home');
-        // A previous manifest may now require an update; never reuse it as
-        // readiness after the browser sign-in completes.
-        while (busy) await new Promise(r => setTimeout(r, 100));
-        await check();
+        await signedInNow();
         return;
       }
       showSignIn(r.message || 'Sign-in didn\'t finish. Try again.');
       return;
     }
-    if (run === signInRun) showSignIn('Sign-in timed out. Try again.');
+    if (run === signInRun) showSignIn(lastError ? lastError + '. Try again.' : 'Sign-in timed out. Try again.');
   }
 
   // ---------- game version ----------
@@ -745,10 +795,13 @@
     setStatus('Starting Skyrim through SKSE…');
     playing = true;
     try {
-      await invokePlay();
+      // Helper mods that couldn't be installed: the game starts without
+      // them, and the reason stays on the status line.
+      const warns = await invokePlay();
+      helperWarning = Array.isArray(warns) && warns.length ? warns.join(' ') : null;
       gameRunning = true;
       setPlay('wait', 'IN GAME');
-      setStatus('Skyrim is running.');
+      setStatus(helperWarning || 'Skyrim is running.', !!helperWarning);
     } catch (e) {
       const msg = String(e);
       if (msg.startsWith('NEEDS_NEXUS_MODS:')) {
@@ -929,11 +982,13 @@
   const HL_TAG = { ok: 'OK', info: 'INFO', warn: 'WARN', fail: 'FAIL' };
   let healthText = '';
   async function openHealth() {
-    showSheet('health');
+    // Set up before it opens, so focus doesn't land on a button that is
+    // about to be disabled.
     $('hl-title').textContent = 'Checking your game…';
     $('hl-list').innerHTML = '';
     $('hl-note').hidden = true;
     $('hl-again').disabled = true;
+    showSheet('health');
     try {
       const h = await invoke('health_check');
       healthText = h.text;

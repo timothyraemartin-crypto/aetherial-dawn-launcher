@@ -286,7 +286,7 @@ pub fn set_exact(game_dir: &Path, plugins_txt: &Path, server: &[ServerPlugin]) -
         return Ok(false);
     }
     if !text.is_empty() {
-        std::fs::write(plugins_txt.with_extension("txt.aetherial-dawn-backup"), &text)?;
+        crate::loadorder::keep_backup(plugins_txt, &text)?;
     }
     std::fs::write(plugins_txt, new)?;
     Ok(true)

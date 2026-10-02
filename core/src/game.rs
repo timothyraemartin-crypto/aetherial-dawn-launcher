@@ -24,6 +24,29 @@ pub fn inspect(dir: &Path) -> Result<GameInfo> {
     Ok(GameInfo { dir: dir.to_path_buf(), has_skse: dir.join(SKSE_LOADER).is_file() })
 }
 
+/// The folder the player picked, or the Skyrim SE folder right next to it:
+/// its `Data` folder (or anything inside the game folder, one or two levels
+/// down), or a Steam library, `steamapps` or `common` folder holding it.
+/// When there is none, the message says what the folder is instead.
+pub fn pick(dir: &Path) -> Result<GameInfo> {
+    if let Ok(info) = inspect(dir) {
+        return Ok(info);
+    }
+    if !dir.is_dir() {
+        return Err(Error::Game(format!("{} can't be opened. Pick your Skyrim Special Edition folder.", dir.display())));
+    }
+    let up = dir.ancestors().skip(1).take(2);
+    let down = ["Skyrim Special Edition", "common/Skyrim Special Edition", STEAM_FOLDER].map(|sub| dir.join(sub));
+    if let Some(info) = up.map(Path::to_path_buf).chain(down).find_map(|d| inspect(&d).ok()) {
+        return Ok(info);
+    }
+    let other = [("SkyrimVR.exe", "Skyrim VR"), ("TESV.exe", "the original Skyrim (Legendary Edition)")];
+    if let Some((_, name)) = other.iter().find(|(exe, _)| dir.join(exe).is_file()) {
+        return Err(Error::Game(format!("This folder has {name}. The server needs Skyrim Special Edition (or Anniversary Edition): pick that folder.")));
+    }
+    Err(Error::Game(format!("{GAME_EXE} isn't in {}. Pick your Skyrim Special Edition folder.", dir.display())))
+}
+
 /// Looks in every Steam library for Skyrim SE. Returns the first folder that
 /// has the game in it.
 pub fn detect() -> Option<GameInfo> {
@@ -236,6 +259,37 @@ pub fn gpu_pref_path(game_dir: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    fn game_at(root: &std::path::Path) -> std::path::PathBuf {
+        let g = root.join("steamapps/common/Skyrim Special Edition");
+        std::fs::create_dir_all(g.join("Data")).unwrap();
+        std::fs::write(g.join(super::GAME_EXE), b"").unwrap();
+        g
+    }
+
+    #[test]
+    fn a_folder_next_to_the_game_is_taken_as_the_game_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let g = game_at(tmp.path());
+        for picked in [g.clone(), g.join("Data"), tmp.path().to_path_buf(), tmp.path().join("steamapps"), tmp.path().join("steamapps/common")] {
+            assert_eq!(super::pick(&picked).unwrap().dir, g, "{}", picked.display());
+        }
+    }
+
+    #[test]
+    fn a_wrong_folder_says_what_it_is() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vr = tmp.path().join("vr");
+        std::fs::create_dir_all(&vr).unwrap();
+        std::fs::write(vr.join("SkyrimVR.exe"), b"").unwrap();
+        assert!(super::pick(&vr).unwrap_err().to_string().contains("Skyrim VR"));
+        let le = tmp.path().join("le");
+        std::fs::create_dir_all(&le).unwrap();
+        std::fs::write(le.join("TESV.exe"), b"").unwrap();
+        assert!(super::pick(&le).unwrap_err().to_string().contains("Legendary"));
+        assert!(super::pick(&tmp.path().join("gone")).unwrap_err().to_string().contains("can't be opened"));
+        assert!(super::pick(tmp.path()).unwrap_err().to_string().contains("SkyrimSE.exe isn't in"));
+    }
+
     #[test]
     fn makes_missing_platform_folders() {
         let tmp = tempfile::tempdir().unwrap();

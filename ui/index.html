@@ -127,7 +127,9 @@
           </svg>
         </button>
       </div>
-      <div class="status" id="status" role="status" aria-live="polite" aria-atomic="true"><span>Checking for updates…</span></div>
+      <div class="status" id="status"><span>Checking for updates…</span></div>
+      <!-- What screen readers announce: only the launcher's own messages, not the player count refreshed every 30 s. -->
+      <div class="sr-only" id="status-live" role="status" aria-live="polite"></div>
     </div>
   </div>
 
