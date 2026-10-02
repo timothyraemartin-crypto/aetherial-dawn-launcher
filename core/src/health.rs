@@ -135,8 +135,15 @@ fn exe(i: &Inputs) -> Check {
 pub fn parse_masters(v: &serde_json::Value) -> Vec<(String, Option<u64>, Option<String>)> {
     let list = v.get("masters").or_else(|| v.get("files")).unwrap_or(v);
     let entry = |name: String, e: &serde_json::Value| {
-        let size = e.get("size").and_then(|s| s.as_u64());
-        let sha = e.get("sha256").and_then(|s| s.as_str()).map(|s| s.to_ascii_lowercase());
+        // A master the PC runs as a converted copy (a listed .esl as
+        // "<stem>.esm") is checked by its canonical bytes, what every PC's
+        // copy holds; `sha256` and `size` there are the game's own file.
+        let canon = ["canonical_sha256", "canonicalSha256"].iter().find_map(|k| e.get(*k)).and_then(|s| s.as_str()).filter(|s| !s.is_empty());
+        let size = match canon {
+            Some(_) => ["canonical_size", "canonicalSize"].iter().find_map(|k| e.get(*k)).and_then(|s| s.as_u64()),
+            None => e.get("size").and_then(|s| s.as_u64()),
+        };
+        let sha = canon.or_else(|| e.get("sha256").and_then(|s| s.as_str())).map(|s| s.to_ascii_lowercase());
         (name, size, sha)
     };
     match list {
@@ -760,6 +767,11 @@ mod tests {
         assert_eq!(parse_masters(&b)[0].0, "Update.esm");
         let c = serde_json::json!({"Dawnguard.esm":{"size":2}});
         assert_eq!(parse_masters(&c)[0], ("Dawnguard.esm".into(), Some(2), None));
+        // A converted master is checked by its canonical hash, and by the
+        // canonical size only when the list gives one.
+        let d = serde_json::json!({"masters": [{"name": "_ResourcePack.esm", "size": 9, "sha256": "AA", "canonical_sha256": "BB"},
+            {"name": "ccQDRSSE001-SurvivalMode.esm", "size": 9, "sha256": "aa", "canonicalSha256": "cc", "canonicalSize": 8}]});
+        assert_eq!(parse_masters(&d), vec![("_ResourcePack.esm".into(), None, Some("bb".into())), ("ccQDRSSE001-SurvivalMode.esm".into(), Some(8), Some("cc".into()))]);
     }
 
     #[test]
