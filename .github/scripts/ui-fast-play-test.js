@@ -417,6 +417,27 @@ const scenarios = [
     ['the status names the missing mod', /Test Mod/.test(r.status), r.status],
     ['the game never starts', !played(r)],
   ] },
+  { name: 'Vortex gate off: every mod present gives PLAY without Vortex', s: { ...base, clicks: [], modsState: {
+    mods: [{ name: 'SkyUI', from: 'nexus', in_vortex: false, installed: true }, { name: 'Helper', from: 'direct', installed: true }],
+    vortex_required: false, vortex_ready: null, vortex_paired: false, vortex_line: null,
+  } }, expect: r => [
+    ['the button ends on PLAY', lastLabel(r) === 'PLAY', lastLabel(r)],
+  ] },
+  { name: 'Vortex gate off: a missing mod stops Play and names it', s: { ...base, clicks: [3000], modsState: {
+    mods: [{ name: 'SkyUI', from: 'nexus', in_vortex: false, installed: false }],
+    vortex_required: false, vortex_ready: null, vortex_paired: false, vortex_line: null,
+  } }, expect: r => [
+    ['the button ends on MODS NEEDED', lastLabel(r) === 'MODS NEEDED', lastLabel(r)],
+    ['the status names the missing mod', /SkyUI/.test(r.status), r.status],
+    ['the game never starts', !played(r)],
+  ] },
+  { name: 'Vortex gate on: files present but Vortex not ready keeps PLAY off', s: { ...base, clicks: [3000], modsState: {
+    mods: [{ name: 'SkyUI', from: 'nexus', in_vortex: false, installed: true }],
+    vortex_required: true, vortex_ready: false, vortex_paired: true, vortex_line: 'Vortex: open Vortex (with the Aetherial Dawn extension) so the launcher can check your mods',
+  } }, expect: r => [
+    ['the button ends on MODS NEEDED', lastLabel(r) === 'MODS NEEDED', lastLabel(r)],
+    ['the game never starts', !played(r)],
+  ] },
   { name: 'hero summarizes a long missing Vortex list', s: { ...base, clicks: [], modsState: {
     mods: ['One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven'].map(name => ({ name, from: 'nexus', in_vortex: false, installed: false })),
     vortex_ready: false, vortex_paired: true,

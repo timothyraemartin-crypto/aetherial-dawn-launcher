@@ -214,7 +214,33 @@ pub struct Collection {
 pub struct ClientSet {
     #[serde(default)]
     pub collection: Option<CollectionRef>,
+    #[serde(default)]
     pub mods: Vec<ModEntry>,
+    /// The server's switch for the Vortex gate (`vortexRequired` in
+    /// aetherial-collection.json). Off when absent, or when the file is
+    /// missing or unreadable: Play then checks the game files only, as 0.1.87
+    /// did. It is switched on only after Connect Vortex has been proven on
+    /// Timothy's PC.
+    #[serde(default, alias = "vortexRequired")]
+    pub vortex_required: bool,
+}
+
+/// Whether Play requires the Vortex profile, from the served client set.
+pub fn gate_on(served: Option<&ClientSet>) -> bool {
+    served.is_some_and(|s| s.vortex_required)
+}
+
+/// The listed mods Play counts as missing. With the Vortex gate on, a Nexus
+/// entry is judged by its game files (a checkless one by the Vortex
+/// deployment gate that runs next); with it off, every entry by the
+/// launcher's own install check, as 0.1.87 did.
+pub fn play_missing<'a>(list: &'a [ModEntry], game_dir: &std::path::Path, vortex_required: bool) -> Vec<&'a ModEntry> {
+    if !vortex_required {
+        return crate::modlist::missing(list, game_dir);
+    }
+    list.iter()
+        .filter(|m| if m.nexus.is_some() { !m.check.is_empty() && !m.game_files_present(game_dir) } else { !m.installed(game_dir) })
+        .collect()
 }
 
 /// A collection by slug and revision. How Vortex 2.7.1 records these on an
@@ -914,8 +940,44 @@ mod tests {
     }
 
     #[test]
+    fn the_vortex_gate_is_off_unless_the_server_switches_it_on() {
+        // No served file, an unreadable one, or one without the switch: off.
+        assert!(!gate_on(None));
+        let parse = |j: &str| serde_json::from_str::<ClientSet>(j).ok();
+        assert!(!gate_on(parse(r#"{"mods":[]}"#).as_ref()));
+        assert!(!gate_on(parse(r#"{"collection":{"slug":"adcol","revision":2}}"#).as_ref()));
+        assert!(!gate_on(parse(r#"{"vortexRequired":false}"#).as_ref()));
+        assert!(!gate_on(parse("not json").as_ref()));
+        // Switched on, in either spelling.
+        assert!(gate_on(parse(r#"{"vortexRequired":true}"#).as_ref()));
+        assert!(gate_on(parse(r#"{"vortex_required":true,"mods":[]}"#).as_ref()));
+    }
+
+    #[test]
+    fn play_missing_follows_the_vortex_gate() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        std::fs::create_dir_all(g.join("Data")).unwrap();
+        // A Nexus mod whose checked file is in Data (Vortex deployed it, no
+        // launcher receipt), and a checkless Nexus mod with nothing here.
+        let mut checked = e("skyui", 12604, 35407);
+        checked.check = vec!["Data/interface/skyui_cfg.txt".into()];
+        std::fs::create_dir_all(g.join("Data/interface")).unwrap();
+        std::fs::write(g.join("Data/interface/skyui_cfg.txt"), b"x").unwrap();
+        let checkless = e("textures", 1, 2);
+        let list = vec![checked, checkless];
+        let ids = |v: Vec<&ModEntry>| v.into_iter().map(|m| m.id.clone()).collect::<Vec<_>>();
+        // Gate on: Nexus mods by their game files; the checkless one is left
+        // to the Vortex deployment gate.
+        assert_eq!(ids(play_missing(&list, g, true)), Vec::<String>::new());
+        // Gate off: the launcher's install check for every entry, as 0.1.87.
+        assert_eq!(ids(play_missing(&list, g, false)), ids(crate::modlist::missing(&list, g)));
+        assert_eq!(ids(play_missing(&list, g, false)), vec!["textures".to_string()]);
+    }
+
+    #[test]
     fn each_vortex_state_has_its_own_line() {
-        let set = ClientSet { collection: Some(CollectionRef { slug: "adcol".into(), revision: 2 }), mods: vec![e("ussep", 266, 733846), e("skyui", 12604, 35407)] };
+        let set = ClientSet { vortex_required: false, collection: Some(CollectionRef { slug: "adcol".into(), revision: 2 }), mods: vec![e("ussep", 266, 733846), e("skyui", 12604, 35407)] };
         let mut good = active(vec![vm("u", 266, 733846, true), vm("s", 12604, 35407, true)]);
         good.collections = vec![Collection { id: "c".into(), state: Some("installed".into()), enabled: true, slug: Some("adcol".into()), revision: Some(2) }];
         assert_eq!(step(&set, None), Step::VortexNotRunning);
@@ -959,7 +1021,7 @@ mod tests {
         // Stand-in ids: the real file ids come from the Mods chat's
         // read-only inventory of his profile.
         let his: Vec<VortexMod> = (0..10).map(|i| vm(&format!("m{i}"), 1000 + i, 5000 + i, true)).chain([vm("ussep439c", 266, 999999, true)]).collect();
-        let mut set = ClientSet { collection: None, mods: (0..10).map(|i| e(&format!("m{i}"), 1000 + i, 5000 + i)).collect() };
+        let mut set = ClientSet { vortex_required: false, collection: None, mods: (0..10).map(|i| e(&format!("m{i}"), 1000 + i, 5000 + i)).collect() };
         set.mods.push(e("ussep", 266, 733846));
         set.mods.push(e("address-library", 32444, 720756));
         set.mods.push(e("mcm-helper", 53000, 746161));
@@ -1027,7 +1089,7 @@ mod tests {
         std::fs::write(&path, b"present").unwrap();
         let entry = crate::modlist::builtin(Some("1.6.1170.0"))
             .into_iter().find(|m| m.id == "mcm-helper").unwrap();
-        let set = ClientSet { collection: None, mods: vec![entry] };
+        let set = ClientSet { vortex_required: false, collection: None, mods: vec![entry] };
         let files = [VortexFile { rel: "Data/SKSE/Plugins/MCMHelper.dll".into(), source: "mcm-folder".into() }];
         let mut status = active(vec![vm("mcm", 53000, 795510, true)]);
         assert!(step(&set, Some(&status)).ok());
@@ -1128,7 +1190,7 @@ mod tests {
         let face_checks = list.iter().find(|e| e.id == "community-overlays-1-male-face").unwrap().check.clone();
         assert_eq!(face_checks.len(), 25);
         for rel in &face_checks { put(rel); }
-        let set = ClientSet { collection: None, mods: list.clone() };
+        let set = ClientSet { vortex_required: false, collection: None, mods: list.clone() };
         let mut status = active(vec![vm("main", 22487, 77988, true), vm("fix", 22487, 79615, true),
             vm("female", 22487, 104828, true), vm("male", 22487, 104868, true)]);
         let mut files = vec![VortexFile { rel: esp.into(), source: "main-folder".into() },
@@ -1205,7 +1267,7 @@ mod tests {
     #[test]
     fn unpinned_nexus_mod_needs_one_installed_package_switched_on() {
         let list = vec![unpinned("skyui", 12604)];
-        let set = ClientSet { collection: None, mods: list.clone() };
+        let set = ClientSet { vortex_required: false, collection: None, mods: list.clone() };
         let mut status = active(vec![vm("skyui-a", 12604, 101, true)]);
         assert_eq!(step(&set, Some(&status)), Step::Ready);
         assert!(membership(&list, &status).ready());

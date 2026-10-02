@@ -534,7 +534,7 @@ pub fn check(lane: &ServerLane) -> Result<()> {
             return Err(Error::Game(format!("server lane: masters must start with {}", base.join(", "))));
         }
         for m in ms {
-            if !is_plugin(m) || m.contains(['/', '\\']) {
+            if !crate::serverorder::plain_plugin_name(m) {
                 return Err(Error::Game(format!("server lane: master {m:?} isn't a plugin file name")));
             }
             if m.to_ascii_lowercase().ends_with(".esl") {
@@ -577,7 +577,7 @@ pub fn check(lane: &ServerLane) -> Result<()> {
             return Err(Error::Game(format!("server lane: {} isn't pinned to one Nexus file", e.id)));
         }
         for p in &m.plugins {
-            if !is_plugin(p) || p.contains(['/', '\\']) {
+            if !crate::serverorder::plain_plugin_name(p) {
                 return Err(Error::Game(format!("server lane: {} names {p:?}, which isn't a plugin file name", e.id)));
             }
             if !names.insert(p.to_ascii_lowercase()) {
@@ -585,7 +585,7 @@ pub fn check(lane: &ServerLane) -> Result<()> {
             }
         }
         for c in &m.client_only {
-            if !is_plugin(c) || c.contains(['/', '\\']) {
+            if !crate::serverorder::plain_plugin_name(c) {
                 return Err(Error::Game(format!("server lane: {} names client-only {c:?}, which isn't a plugin file name", e.id)));
             }
             if lane.mods.iter().any(|o| o.plugins.iter().any(|p| p.eq_ignore_ascii_case(c))) {

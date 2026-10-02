@@ -79,7 +79,7 @@
       const st = status;
       const known = st && typeof st.online === 'boolean';
       const on = known && st.online;
-      const who = on && typeof st.players === 'number' ? ` · ${st.maxPlayers ? `${st.players} of ${plural(st.maxPlayers, 'player')}` : plural(st.players, 'player')}` : '';
+      const who = on && typeof st.players === 'number' ? ` · ${typeof st.maxPlayers === 'number' && st.maxPlayers > 0 ? `${st.players} of ${plural(st.maxPlayers, 'player')}` : plural(st.players, 'player')}` : '';
       parts.push(`<span><i class="dot${on ? '' : ' off'}"></i>${!known ? (statusAsked ? 'Server status unavailable' : 'Connecting to the server') : on ? 'Server online' : 'Server offline'}${who}</span>`);
       const build = pending && pending.build;
       if (build) parts.push(`<span>Build ${esc(build)}</span>`);
@@ -410,7 +410,13 @@
       const rest = names.length > 3 ? `, +${names.length - 3} more` : '';
       return `${plural(names.length, 'required mod')} ${label}: ${shown}${rest}. Open Requirements for the full list.`;
     };
-    if (view.vortex_ready === true && missingDirect.length === 0) {
+    // With the server's Vortex gate off (vortex_required false), PLAY needs
+    // only every listed mod present, as Play itself then checks.
+    const missingAny = Array.isArray(view.mods) ? view.mods.filter(m => !m.installed).map(m => m.name) : [];
+    const ready = view.vortex_required === false
+      ? Array.isArray(view.mods) && missingAny.length === 0
+      : view.vortex_ready === true && missingDirect.length === 0;
+    if (ready) {
       setPlay('play', 'PLAY');
       if (gameCheck && gameCheck.warning) setStatus(gameCheck.warning, true);
       else if (gameCheck && gameCheck.target && !gameCheck.skseOk) setStatus(`The launcher installs SKSE ${gameCheck.skseVersion || ''} for you when you press Play.`);
@@ -422,8 +428,9 @@
     } else {
       setPlay('mods', 'MODS NEEDED');
       setChip('warn', 'Mods need attention');
-      setStatus(missingDirect.length
-        ? shortList(missingDirect, missingDirect.length === 1 ? 'still needs game files' : 'still need game files')
+      const missingFiles = view.vortex_required === false ? missingAny : missingDirect;
+      setStatus(missingFiles.length
+        ? shortList(missingFiles, missingFiles.length === 1 ? 'still needs game files' : 'still need game files')
         : missingVortex.length && /^(Aetherial Dawn profile:|Vortex: \d+ required mods?)/.test(view.vortex_line || '')
           ? shortList(missingVortex, missingVortex.length === 1 ? 'needs attention in Vortex' : 'need attention in Vortex')
           : view.vortex_line || 'Connect Vortex and check the required mods before Play.', true);

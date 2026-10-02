@@ -312,6 +312,9 @@ pub struct ModsView {
     /// launcher is paired with the extension.
     vortex_line: Option<String>,
     vortex_ready: Option<bool>,
+    /// The server has switched the Vortex gate on (vortexRequired). Off,
+    /// PLAY needs only every listed mod present.
+    vortex_required: bool,
     /// The launcher has a Vortex pairing token.
     vortex_paired: bool,
     /// Mods the launcher put in the game folder, by who else holds their
@@ -399,8 +402,10 @@ pub async fn mods_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult
     let feed = state.mods.receipt.lock().await.as_ref().map(|r| r.describe());
     // The served collection can add a collection pin, but its own mod array
     // never replaces the current merged mods.json list used by Play.
-    let collection = served_client_set(&state).await.and_then(|s| s.collection);
-    let set = launcher_core::vortex::ClientSet { collection, mods: list.clone() };
+    let served = served_client_set(&state).await;
+    let vortex_required = launcher_core::vortex::gate_on(served.as_ref());
+    let collection = served.and_then(|s| s.collection);
+    let set = launcher_core::vortex::ClientSet { collection, mods: list.clone(), vortex_required };
     let home = app.path().app_local_data_dir().ok().map(|d| launcher_core::vortex::home(&d));
     let paired = home.as_ref().is_some_and(|h| launcher_core::vortex::token(h).is_ok());
     let status = if paired { vortex_status(&app, &state).await } else { None };
@@ -411,8 +416,13 @@ pub async fn mods_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult
         Some("Vortex: the server's current mod list is unavailable. Try Check again when the server responds.")
     } else { None };
     let readout = vortex_readout(&set, status.as_ref(), &deployed, &dir, current_issue);
+    // Each row's "present" answer matches what Play will check
+    // (launcher_core::vortex::play_missing): with the Vortex gate off, the
+    // launcher's install check for every entry.
     for ((m, standing), exact) in list.iter().zip(&mut st).zip(&readout.exact) {
-        if m.nexus.is_some() {
+        if !vortex_required {
+            standing.game_files = m.installed(&dir);
+        } else if m.nexus.is_some() {
             standing.game_files = if m.check.is_empty() { *exact == Some(true) } else { m.game_files_present(&dir) };
         }
     }
@@ -460,6 +470,7 @@ pub async fn mods_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult
         feed,
         vortex_line: paired.then_some(readout.line),
         vortex_ready: paired.then_some(readout.ready),
+        vortex_required,
         vortex_paired: paired,
         ownership_text,
     })
@@ -1264,7 +1275,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ad-mods-readout-{}-{}", std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(dir.join("Data")).unwrap();
-        let set = ClientSet { collection: None, mods: vec![ModEntry {
+        let set = ClientSet { vortex_required: false, collection: None, mods: vec![ModEntry {
             id: "test-mod".into(), name: "Test Mod".into(),
             nexus: Some(NexusRef { mod_id: 42, file: Some(73), pick: None }),
             check: vec!["Data/Test.txt".into(), "test-loader.exe".into()],
@@ -1315,7 +1326,7 @@ mod tests {
             nexus: Some(NexusRef { mod_id: 22487, file: Some(file), pick: None }), ..Default::default() };
         let required = modlist::play_required(vec![face("community-overlays-1-female-face", 104828),
             face("community-overlays-1-male-face", 104868)]);
-        let set = ClientSet { collection: None, mods: required };
+        let set = ClientSet { vortex_required: false, collection: None, mods: required };
         let checks = &set.mods[0].check;
         assert_eq!(checks.len(), 25);
         for rel in checks {

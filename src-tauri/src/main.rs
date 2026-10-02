@@ -382,14 +382,25 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<Strin
     if !mods::refresh_server_list(&state).await {
         return Err("The server's current mod list is unavailable. Try Play again when it responds.".into());
     }
-    require_vortex_profile(&app, &state, &dir).await?;
+    // The Vortex gate runs only when the server switches it on
+    // (vortexRequired in aetherial-collection.json); off, Play checks the
+    // game files as 0.1.87 did.
+    let vortex_required = launcher_core::vortex::gate_on(mods::served_client_set(&state).await.as_ref());
+    log::line(&format!("play: Vortex gate {}", if vortex_required { "on" } else { "off" }));
+    if vortex_required {
+        require_vortex_profile(&app, &state, &dir).await?;
+    }
     // One masters.json per Play, fetched before anything changes on the PC:
     // its plugin names decide which light plugins run as full "<stem>.esm"
     // copies (desync/esl-on-server.md), and the load-order and health steps
     // below use the same copy. Without it Play stops here.
     let masters = fetch_masters(&state.http, &config.base_url).await
         .ok_or("Could not verify the server's current game master list. Try Play again when the server responds.")?;
-    let server_names: Vec<String> = serverorder::server_order(&masters).into_iter().map(|p| p.name).collect();
+    let order = serverorder::server_order(&masters);
+    if !serverorder::valid_base(&order) {
+        return Err("The server's game master list is incomplete or invalid. Play needs its five ordered base masters and fingerprints.".into());
+    }
+    let server_names: Vec<String> = order.iter().map(|p| p.name.clone()).collect();
     tidy_game(&app, &dir, &m, config.only_server_mods, &server_names)?;
     let half = launcher_core::modlist::half_installed(&dir);
     if !half.is_empty() {
@@ -399,7 +410,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<Strin
     // this PC doesn't have yet, and the order check would refuse Play
     // before the downloads were ever offered.
     // Helpers still missing after this pass are shown once the game starts.
-    let warnings = ensure_requirements(&app, &state, &dir).await?;
+    let warnings = ensure_requirements(&app, &state, &dir, vortex_required).await?;
     // Each listed mod's settings as the server sets them, once; the
     // player's later changes stay.
     let list = mods::full_list(&state).await;
@@ -459,10 +470,6 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<Strin
     // exactly its plugins in its order: no Creation Club masters for the
     // session, and plugins.txt in the server's order (serverorder.rs).
     play_step(&app, "Setting the server's load order…");
-    let order = serverorder::server_order(&masters);
-    if !serverorder::valid_base(&order) {
-        return Err("The server's game master list is incomplete or invalid. Play needs its five ordered base masters and fingerprints.".into());
-    }
     let mut ccc_guard = CccGuard { dir: dir.clone(), armed: false };
     if serverorder::beyond_base(&order) {
         match serverorder::hide_ccc(&dir) {
@@ -1581,20 +1588,17 @@ fn play_step(app: &AppHandle, text: &str) {
     let _ = app.emit("play-step", text);
 }
 
-async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path::Path) -> CmdResult<Vec<String>> {
+async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path::Path, vortex_required: bool) -> CmdResult<Vec<String>> {
     let got = install_missing_mods(&state.http, dir).await;
     // Sent whether or not the installs worked: a failed one is the case
     // staff most want to see.
     send_client_status(app, dir);
     let warnings = got?;
     let list = mods::full_list(state).await;
-    // Vortex's profile and exact deployment are checked separately. An old
-    // direct-install receipt may describe a different file, even when the
-    // current Vortex package has put valid files in Data. For Nexus entries,
-    // check the actual game files here; checkless entries rely on the Vortex
-    // deployment gate. Other sources still use their installation receipt.
-    let missing: Vec<mods::Row> = list.iter()
-        .filter(|m| if m.nexus.is_some() { !m.check.is_empty() && !m.game_files_present(dir) } else { !m.installed(dir) })
+    // With the Vortex gate on, its profile and exact deployment are checked
+    // separately, so Nexus entries are judged by their game files here
+    // (launcher_core::vortex::play_missing); off, by the install check.
+    let missing: Vec<mods::Row> = launcher_core::vortex::play_missing(&list, dir, vortex_required).into_iter()
         .map(|m| mods::row(m, dir))
         .collect();
     if !missing.is_empty() {
@@ -1604,7 +1608,9 @@ async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path:
     // Tidying and helper installs ran since the first profile check. Confirm
     // that the Vortex package files are still deployed immediately before the
     // load-order and launch steps.
-    require_vortex_profile(app, state, dir).await?;
+    if vortex_required {
+        require_vortex_profile(app, state, dir).await?;
+    }
     Ok(warnings)
 }
 
@@ -1616,7 +1622,7 @@ async fn require_vortex_profile(app: &AppHandle, state: &AppState, dir: &std::pa
     }
     let list = mods::full_list(state).await;
     let collection = mods::served_client_set(state).await.and_then(|s| s.collection);
-    let set = launcher_core::vortex::ClientSet { collection, mods: list };
+    let set = launcher_core::vortex::ClientSet { collection, mods: list, vortex_required: true };
     let status = mods::vortex_status(app, state).await;
     let step = launcher_core::vortex::step(&set, status.as_ref());
     log::line(&format!("play: {}", step.describe()));

@@ -40,8 +40,11 @@ class Jobs {
 
   // The request as the launcher sent it: raw body and its signature.
   async handle(raw, sig) {
-    const want = sign(this.token, raw);
-    if (typeof sig !== 'string' || sig.length !== want.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(want))) {
+    const want = Buffer.from(sign(this.token, raw));
+    // Byte lengths, not string lengths: timingSafeEqual throws on buffers of
+    // different sizes, and a multi-byte signature can match in characters.
+    const got = typeof sig === 'string' ? Buffer.from(sig) : null;
+    if (!got || got.length !== want.length || !crypto.timingSafeEqual(got, want)) {
       return { ok: false, code: 'unsigned', error: 'The request is not signed by the launcher.' };
     }
     let req;
