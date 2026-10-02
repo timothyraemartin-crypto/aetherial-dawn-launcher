@@ -410,7 +410,7 @@ const scenarios = [
     ['there is no direct installer control', !r.installerControl],
   ] },
   { name: 'Requirements shows exact Vortex deployment failure', s: { ...base, clicks: [], modsState: {
-    mods: [{ id: 'a', name: 'Test Mod', installed: true, in_vortex: false, from: 'nexus', looks_for: 'Data/Test.esp' }],
+    mods: [{ id: 'a', name: 'Test Mod', installed: true, in_vortex: false, from: 'nexus', looks_for: 'Data/Test.esp', vortex_installed: true, vortex_enabled: false, vortex_deployed: false }],
     counts_text: 'Vortex: 0 of 1 required Nexus mods confirmed · Game files: 1 of 1 present',
     vortex_line: 'Vortex: 1 required mod needs deployment or game files in Skyrim: Test Mod. Deploy in Vortex, then Check again.',
     vortex_ready: false, vortex_paired: true,
@@ -420,6 +420,7 @@ const scenarios = [
     ['the missing count and name are visible', /1 required mod.*Test Mod/.test(r.vortexLine || ''), r.vortexLine],
     ['the summary does not report Vortex ready', /0 of 1 required Nexus mods confirmed/.test(r.modSummary), r.modSummary],
     ['the mod row identifies deployment as missing', /Vortex deployment or game files need attention/.test(r.modRow), r.modRow],
+    ['the row says which Vortex step is missing', /In Vortex: installed, not switched on, not deployed$/.test(r.modRow || ''), r.modRow],
     ['the player is not offered a direct installer', !r.installerControl],
   ] },
   { name: 'Requirements refresh cannot enable Play ahead of hero Vortex check', s: { ...base, clicks: [],
