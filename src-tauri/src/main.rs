@@ -1187,7 +1187,7 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
         log::line("patch: an earlier version fix was cut short, putting the game's files back");
         community::recover(&dir).map_err(|e| {
             log::line(&format!("patch: putting back failed: {e}"));
-            format!("Couldn't patch the game: {e}")
+            format!("Couldn't change Skyrim to the server's version ({e}). Close Skyrim, Steam and Vortex, then press Fix version again.")
         })?;
     }
     // Steam's current build: MulderLoad's public patches, no Steam sign-in.
@@ -1213,7 +1213,7 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
             let e = e.to_string();
             match e.strip_prefix(community::MISSING_FILE) {
                 Some(rest) => format!("{}{rest}", community::MISSING_FILE),
-                None => format!("Couldn't patch the game: {e}"),
+                None => format!("Couldn't change Skyrim to the server's version ({e}). Close Skyrim, Steam and Vortex, then press Fix version again."),
             }
         })?;
         log::line(&format!("patch: {} file(s) changed: {}", changed.len(), changed.join(", ")));
@@ -1302,7 +1302,7 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
     .await
     .map_err(|e| e.to_string())?;
     let _ = std::fs::remove_dir_all(&stage);
-    swapped.map_err(|e| format!("Couldn't patch the game: {e}"))?;
+    swapped.map_err(|e| format!("Couldn't change Skyrim to the server's version ({e}). Close Skyrim, Steam and Vortex, then press Fix version again."))?;
     log::line(&format!("patch: swapped in {total} patched file(s)"));
     let _ = app.emit("patch-progress", PatchProgress { stage: "verify", file: String::new(), done: total, total });
     let gc = finish_downgrade(&dir, &spec, false)?;
@@ -1646,7 +1646,7 @@ async fn require_vortex_profile(app: &AppHandle, state: &AppState, dir: &std::pa
         return Err("VORTEX_NOT_READY:Couldn't tell which Vortex mod some required files came from. Press Deploy in Vortex, then Check again.".into());
     }
     launcher_core::allowlist::save_approved(dir, &approved)
-        .map_err(|e| format!("VORTEX_NOT_READY:Could not save the verified Vortex package list ({e}). Check the Skyrim folder permissions, then try again."))?;
+        .map_err(|e| format!("VORTEX_NOT_READY:Couldn't save the list of checked Vortex mods ({e}). Close Skyrim and Vortex, then press Check again."))?;
     Ok(())
 }
 
