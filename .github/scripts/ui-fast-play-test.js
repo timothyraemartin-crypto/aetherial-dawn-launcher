@@ -463,7 +463,7 @@ const scenarios = [
     ['Settings dialog stays open', r.modal === 'settings'],
     ['Tab wraps from the last action to the first', r.actions.some(a => a[1] === 'key' && a[3] === 'acc-signout'), JSON.stringify(r.actions)],
     ['background navigation is inert', r.navInert],
-    ['titlebar controls are inert behind the dialog', r.titlebarInert],
+    ['titlebar controls stay live behind the dialog (the window is frameless)', r.titlebarInert === false],
     ['status and update progress have semantic roles', r.statusRole === 'status' && r.progressRole === 'progressbar'],
   ] },
   { name: 'closing Settings restores the previous keyboard focus', s: { ...base, clicks: [], actions: [

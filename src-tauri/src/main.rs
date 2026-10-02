@@ -383,10 +383,13 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<Strin
         return Err("The server's current mod list is unavailable. Try Play again when it responds.".into());
     }
     require_vortex_profile(&app, &state, &dir).await?;
-    // The server's plugin names decide which light plugins run as full
-    // "<stem>.esm" copies (desync/esl-on-server.md); an unanswered fetch
-    // leaves none, and the order step below refuses Play anyway.
-    let server_names: Vec<String> = fetch_masters(&state.http, &config.base_url).await.map(|v| serverorder::server_order(&v).into_iter().map(|p| p.name).collect()).unwrap_or_default();
+    // One masters.json per Play, fetched before anything changes on the PC:
+    // its plugin names decide which light plugins run as full "<stem>.esm"
+    // copies (desync/esl-on-server.md), and the load-order and health steps
+    // below use the same copy. Without it Play stops here.
+    let masters = fetch_masters(&state.http, &config.base_url).await
+        .ok_or("Could not verify the server's current game master list. Try Play again when the server responds.")?;
+    let server_names: Vec<String> = serverorder::server_order(&masters).into_iter().map(|p| p.name).collect();
     tidy_game(&app, &dir, &m, config.only_server_mods, &server_names)?;
     let half = launcher_core::modlist::half_installed(&dir);
     if !half.is_empty() {
@@ -456,8 +459,6 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<Strin
     // exactly its plugins in its order: no Creation Club masters for the
     // session, and plugins.txt in the server's order (serverorder.rs).
     play_step(&app, "Setting the server's load order…");
-    let masters = fetch_masters(&state.http, &config.base_url).await
-        .ok_or("Could not verify the server's current game master list. Try Play again when the server responds.")?;
     let order = serverorder::server_order(&masters);
     if !serverorder::valid_base(&order) {
         return Err("The server's game master list is incomplete or invalid. Play needs its five ordered base masters and fingerprints.".into());

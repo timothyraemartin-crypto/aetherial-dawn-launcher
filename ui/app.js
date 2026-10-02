@@ -129,9 +129,12 @@
     for (const name of SHEETS) $(name).hidden = name !== id;
     activeSheet = id;
     // Keep background controls out of the keyboard and screen-reader path
-    // until the dialog closes.
+    // until the dialog closes. The window is frameless, so the title bar
+    // (minimise, close, dragging), the logo plate (also a drag region) and
+    // the restart-to-update banner stay live behind every sheet.
+    const STAY_LIVE = ['sheet', 'titlebar', 'plate', 'banner'];
     for (const child of document.querySelector('.app').children) {
-      if (!child.classList.contains('sheet')) child.inert = !!id;
+      if (!STAY_LIVE.some(c => child.classList.contains(c))) child.inert = !!id;
     }
     if (id === 'settings') {
       for (const nav of Object.values(PAGES)) $(nav).removeAttribute('aria-current');
