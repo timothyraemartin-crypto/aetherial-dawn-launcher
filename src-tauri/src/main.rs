@@ -383,7 +383,11 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<Strin
         return Err("The server's current mod list is unavailable. Try Play again when it responds.".into());
     }
     require_vortex_profile(&app, &state, &dir).await?;
-    tidy_game(&app, &dir, &m, config.only_server_mods)?;
+    // The server's plugin names decide which light plugins run as full
+    // "<stem>.esm" copies (desync/esl-on-server.md); an unanswered fetch
+    // leaves none, and the order step below refuses Play anyway.
+    let server_names: Vec<String> = fetch_masters(&state.http, &config.base_url).await.map(|v| serverorder::server_order(&v).into_iter().map(|p| p.name).collect()).unwrap_or_default();
+    tidy_game(&app, &dir, &m, config.only_server_mods, &server_names)?;
     let half = launcher_core::modlist::half_installed(&dir);
     if !half.is_empty() {
         log::line(&format!("play: install stopped part way for {}; installed again before Play", half.join(", ")));
@@ -1370,7 +1374,7 @@ async fn game_spec(state: &AppState) -> CmdResult<launcher_core::manifest::GameS
 /// extra plugins are switched off in plugins.txt, and archives Skyrim.ini
 /// names but that no longer exist are dropped (the ini is backed up first).
 /// Nothing is deleted.
-fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_mods: bool) -> CmdResult<()> {
+fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_mods: bool, server_names: &[String]) -> CmdResult<()> {
     // The Unofficial Patch made for Skyrim 1.7.99 (4.3.9+) crashes 1.6.1170
     // while drawing land; it's set aside and 4.3.8a installed in its place.
     match launcher_core::ussep::set_aside_if_too_new(dir) {
@@ -1393,9 +1397,18 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_m
     }
     // Plugins whose names the SkyMP client can't load run under a
     // dash-named copy (Timothy 2026-09-26: correct it, don't switch it off).
-    match launcher_core::aliases::ensure(dir, plugins_txt(app).as_deref()) {
+    // Light plugins the server's list runs as full plugins get a "<stem>.esm"
+    // copy with the light flag cleared, the same bytes as the server's.
+    let full = launcher_core::aliases::light_as_full(dir, server_names);
+    if !full.is_empty() {
+        log::line(&format!("play: light plugins the server runs as full plugins: {}", full.join(", ")));
+    }
+    match launcher_core::aliases::ensure_full(dir, plugins_txt(app).as_deref(), &full) {
         Ok(v) if !v.is_empty() => log::line(&format!("play: plugins loading under a name the game accepts: {}", v.iter().map(|(a, b)| format!("{a} as {b}")).collect::<Vec<_>>().join(", "))),
         Ok(_) => {}
+        // A light plugin left light would shift every record after it
+        // against the server's, so that one stops Play.
+        Err(e) if !full.is_empty() => return Err(format!("Couldn't prepare the server's plugins ({e}). Close Skyrim and Vortex, then try again.")),
         Err(e) => log::line(&format!("play: couldn't give plugins a name the game accepts: {e}")),
     }
     let list = strays::find(dir, m);
