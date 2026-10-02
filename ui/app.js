@@ -286,7 +286,7 @@
         busy = false;
         pending = null;
         setPlay('signin', 'SIGN IN');
-        setChip('busy', 'Client files ready · Vortex unchecked');
+        setChip('busy', 'Client files ready · mods not checked yet');
         setStatus('Sign in with Discord to play');
         return;
       }
@@ -371,7 +371,7 @@
       setStatus('Check the current game files before Play.', true);
       return;
     }
-    setChip('busy', 'Client files ready · Vortex unchecked');
+    setChip('busy', 'Client files ready · mods not checked yet');
     loadFiles();
     renderGame();
     if (gameRunning || playInFlight) {
@@ -392,8 +392,8 @@
       return;
     }
     setPlay('wait', 'CHECKING MODS');
-    setStatus('Checking required mods in Vortex…');
-    setChip('busy', 'Client files ready · checking Vortex');
+    setStatus('Checking your mods…');
+    setChip('busy', 'Client files ready · checking mods');
     return checkModReadiness();
   }
 
@@ -424,7 +424,7 @@
       // A helper mod that couldn't be installed: Play still starts, and the
       // reason stays on the status line.
       if (helperWarning && !(gameCheck && gameCheck.warning)) setStatus(helperWarning, true);
-      setChip('ok', 'Client and Vortex ready');
+      setChip('ok', view.vortex_required === false ? 'Ready to play' : 'Client and Vortex ready');
     } else {
       setPlay('mods', 'MODS NEEDED');
       setChip('warn', 'Mods need attention');
@@ -608,7 +608,7 @@
     dgBusy(false);
     showPage(page);
     await ready();
-    if (!gameCheck.needed && !statusMsg) setStatus(`Skyrim ${shortVer(gameCheck.installed)} matches the server version. Check required mods in Vortex before Play.`);
+    if (!gameCheck.needed && !statusMsg) setStatus(`Skyrim ${shortVer(gameCheck.installed)} matches the server version.`);
     const resume = playAfterPatch;
     playAfterPatch = false;
     if (resume && playMode === 'play') await onPlay();
@@ -837,7 +837,7 @@
         catch (_) { missing = null; }
         await showRequiredMods(missing);
         if (!Array.isArray(missing)) rqError('Could not read the missing-mod list. Press Play again or send launcher.log to staff.');
-        setStatus('Install, enable and deploy the required mods in Vortex, then press Play again.', true);
+        setStatus('Some required mods are missing. Install them in Vortex (switch them on and deploy), then press Play again.', true);
         return;
       }
       if (msg.startsWith('VORTEX_NOT_READY:')) {

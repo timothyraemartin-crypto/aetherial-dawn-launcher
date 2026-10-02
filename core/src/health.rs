@@ -465,7 +465,7 @@ pub fn masters_fix_message(game_dir: &Path, items: &[String], exe_is_servers: bo
         return format!("Steam updated {} for a newer Skyrim, so the launcher set it aside. {fix}, then try Play: {which}", join(newer));
     }
     if all.is_empty() || !all.iter().all(|(n, _)| steam(n)) {
-        return format!("Your game files do not match the server's master list. Use Fix version for a game file or install the listed server mod, then try Play: {which}");
+        return format!("Some files the server needs don't match yours. For a mod's file, install or update that mod in Vortex; for one of Skyrim's own files, click Fix version. Then try Play: {which}");
     }
     let gone: Vec<&String> = all.iter().filter(|(_, missing)| *missing).map(|(n, _)| n).collect();
     // With SkyrimSE.exe already the server's build, Fix version has nothing
@@ -748,7 +748,7 @@ mod tests {
         let m = masters_fix_message(g, &changed, true);
         assert!(m.contains("Verify integrity") && m.contains("then click Fix version"), "{m}");
         let modded = vec!["ccBGSSSE001-Fish.esm: missing".to_string(), "JKs-Skyrim.esp: missing".to_string()];
-        assert!(masters_fix_message(g, &modded, false).contains("install the listed server mod"));
+        assert!(masters_fix_message(g, &modded, false).contains("install or update that mod in Vortex"));
         let aside = g.join(strays::DISABLED_DIR).join("2026-09-30-19-40-00-plugins/Data");
         std::fs::create_dir_all(&aside).unwrap();
         std::fs::write(aside.join("ccBGSSSE001-Fish.esm"), b"newer").unwrap();

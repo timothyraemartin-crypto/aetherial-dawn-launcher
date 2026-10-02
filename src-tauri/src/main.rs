@@ -380,7 +380,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<Strin
     // launcher was open, as on cutover day); the last one when it doesn't
     // answer.
     if !mods::refresh_server_list(&state).await {
-        return Err("The server's current mod list is unavailable. Try Play again when it responds.".into());
+        return Err("Couldn't get the server's mod list. Check your internet connection, then press Play again.".into());
     }
     // The Vortex gate runs only when the server switches it on
     // (vortexRequired in aetherial-collection.json); off, Play checks the
@@ -395,10 +395,10 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<Strin
     // copies (desync/esl-on-server.md), and the load-order and health steps
     // below use the same copy. Without it Play stops here.
     let masters = fetch_masters(&state.http, &config.base_url).await
-        .ok_or("Could not verify the server's current game master list. Try Play again when the server responds.")?;
+        .ok_or("Couldn't get the server's list of game files. Check your internet connection, then press Play again.")?;
     let order = serverorder::server_order(&masters);
     if !serverorder::valid_base(&order) {
-        return Err("The server's game master list is incomplete or invalid. Play needs its five ordered base masters and fingerprints.".into());
+        return Err("The server's list of game files is broken, so Play can't check your Skyrim against it. Staff need to fix it on the server; try again later.".into());
     }
     let server_names: Vec<String> = order.iter().map(|p| p.name.clone()).collect();
     tidy_game(&app, &dir, &m, config.only_server_mods, &server_names)?;
@@ -1635,7 +1635,7 @@ async fn require_vortex_profile(app: &AppHandle, state: &AppState, dir: &std::pa
     let deployed = launcher_core::allowlist::vortex_files(dir);
     let not_deployed = launcher_core::vortex::missing_deployment(&set.mods, &status, &deployed, dir);
     if !not_deployed.is_empty() {
-        return Err(format!("VORTEX_NOT_READY:Vortex has these packages switched on, but their files are not confirmed deployed in Skyrim: {}. Deploy in Vortex, then Check again.", not_deployed.join(", ")));
+        return Err(format!("VORTEX_NOT_READY:Vortex has these mods switched on, but their files aren't in Skyrim yet: {}. Press Deploy in Vortex, then Check again.", not_deployed.join(", ")));
     }
     // The "server mods only" sweep runs next. Record the exact live Vortex
     // deployment sources, including checkless and unpinned Nexus packages,
@@ -1643,7 +1643,7 @@ async fn require_vortex_profile(app: &AppHandle, state: &AppState, dir: &std::pa
     let approved = launcher_core::vortex::approved(&set.mods, &status, &deployed, dir);
     let required = set.mods.iter().filter(|m| m.nexus.is_some()).count();
     if approved.len() != required {
-        return Err("VORTEX_NOT_READY:Could not confirm the deployment source of every required Vortex package. Deploy in Vortex, then Check again.".into());
+        return Err("VORTEX_NOT_READY:Couldn't tell which Vortex mod some required files came from. Press Deploy in Vortex, then Check again.".into());
     }
     launcher_core::allowlist::save_approved(dir, &approved)
         .map_err(|e| format!("VORTEX_NOT_READY:Could not save the verified Vortex package list ({e}). Check the Skyrim folder permissions, then try again."))?;
