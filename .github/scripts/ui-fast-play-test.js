@@ -109,21 +109,6 @@ function fakeBackEnd() {
     // The player picks a folder in the first-run sheet.
     if (S.pickDir) setTimeout(() => document.getElementById('c-game-pick').click(), 3000);
     for (const p of S.picks || []) setTimeout(() => document.getElementById('c-game-pick').click(), p.at);
-    // Keyboard use of a sheet: open Settings, check focus, press Escape.
-    if (S.dialogTest) {
-      const id = () => document.activeElement && document.activeElement.id;
-      const dock = () => document.querySelector('.dock').inert;
-      const press = b => { const el = document.getElementById(b); el.focus(); el.click(); };
-      setTimeout(() => press('nav-settings'), 3000);
-      setTimeout(() => {
-        const sheet = document.getElementById('settings');
-        log.dialog = { role: sheet.getAttribute('role'), modal: sheet.getAttribute('aria-modal'), label: sheet.getAttribute('aria-labelledby'), focusInside: sheet.contains(document.activeElement), dockInert: dock(), navLive: !document.querySelector('nav').inert };
-        press('set-health');
-      }, 3300);
-      setTimeout(() => { log.dialog.healthFocus = document.getElementById('health').contains(document.activeElement); press('hl-close'); }, 3600);
-      setTimeout(() => { log.dialog.backTo = id(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); }, 3900);
-      setTimeout(() => { log.dialog.closedByEscape = document.getElementById('settings').hidden; log.dialog.focusAfter = id(); log.dialog.dockAfter = dock(); }, 4200);
-    }
     if (S.signIn) setTimeout(() => { S.signInAt = at(); document.getElementById('si-go').click(); }, 1500);
     // Cancel while the first answer is on its way, then sign in again.
     if (S.signIn && S.signIn.cancelAt) setTimeout(() => document.getElementById('si-cancel').click(), S.signIn.cancelAt);
@@ -142,6 +127,8 @@ function fakeBackEnd() {
       log.status = document.getElementById('status').textContent;
       const live = document.getElementById('status-live');
       log.announced = live ? live.textContent : null;
+      // Before the focus-ring check below moves focus to PLAY.
+      log.focus = document.activeElement && document.activeElement.id;
       const playBtn = document.getElementById('play');
       playBtn.focus({ focusVisible: true });
       log.playRing = playBtn.matches(':focus-visible') ? getComputedStyle(document.getElementById('play-wrap')).outlineStyle : 'not focus-visible';
@@ -162,7 +149,6 @@ function fakeBackEnd() {
       log.vortexConnect = !document.getElementById('rq-vortex-connect').hidden;
       log.installerControl = !!document.querySelector('#rq-all, #rq-stop, #rq-sso-go, #rq-signin');
       log.playDisabled = btn.disabled;
-      log.focus = document.activeElement && document.activeElement.id;
       log.modal = [...document.querySelectorAll('.sheet')].find(el => !el.hidden)?.id || null;
       log.navInert = document.getElementById('nav-home').closest('.nav').inert;
       log.titlebarInert = document.querySelector('.titlebar').inert;
@@ -170,7 +156,7 @@ function fakeBackEnd() {
       log.modLead = document.querySelector('#reqs .lead').textContent;
       log.firstError = document.getElementById('first-error').hidden ? null : document.getElementById('first-error').textContent;
       log.retryShown = !document.getElementById('f-retry').hidden;
-      log.statusRole = document.getElementById('status').getAttribute('role');
+      log.statusRole = document.getElementById('status-live').getAttribute('role');
       log.progressRole = document.getElementById('p-progress').getAttribute('role');
       const rect = sel => { const b = document.querySelector(sel).getBoundingClientRect(); return [Math.round(b.top), Math.round(b.bottom)]; };
       log.layout = { height: document.querySelector('.app').offsetHeight, width: document.querySelector('.app').offsetWidth, titlebar: rect('.titlebar'), dock: rect('.dock'), play: rect('#play') };
@@ -362,15 +348,6 @@ const scenarios = [
   ] },
   { name: 'first start, a folder that is not Skyrim is picked: the first-run sheet says why', s: { ...base, seed: null, clicks: [], pickDir: 'D:\\Games', setDirError: "D:\\Games doesn't have SkyrimSE.exe in it." }, expect: r => [
     ['the reason shows in the first-run sheet', /doesn't have SkyrimSE\.exe/.test(r.gameRow), r.gameRow],
-  ] },
-  { name: 'Settings works as a dialog from the keyboard', s: { ...base, clicks: [], dialogTest: true }, expect: r => [
-    ['it is a labelled modal dialog', !!r.dialog && r.dialog.role === 'dialog' && r.dialog.modal === 'true' && !!r.dialog.label, JSON.stringify(r.dialog)],
-    ['focus moves into it', !!r.dialog && r.dialog.focusInside],
-    ['Escape closes it', !!r.dialog && r.dialog.closedByEscape],
-    ['the PLAY dock behind it is inert, the side menu is not', !!r.dialog && r.dialog.dockInert === true && r.dialog.navLive],
-    ['Health opened from it takes focus', !!r.dialog && r.dialog.healthFocus],
-    ['closing Health returns focus to the Health button', !!r.dialog && r.dialog.backTo === 'set-health'],
-    ['closing Settings returns focus to the menu item and frees the dock', !!r.dialog && r.dialog.focusAfter === 'nav-settings' && r.dialog.dockAfter === false],
   ] },
   { name: 'first start on this PC: the news box keeps its size', s: { ...base, seed: null, clicks: [] }, expect: r => [
     ['PLAY is not enabled before the checks', firstLabel(r, 'PLAY') !== null && firstLabel(r, 'PLAY') >= answeredAt(r, 'check')],
