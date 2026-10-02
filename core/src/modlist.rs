@@ -221,6 +221,17 @@ impl ModEntry {
             .any(|f| f.rel.eq_ignore_ascii_case(rel) && f.source.split(|c: char| !c.is_ascii_digit()).any(|t| t == id))
     }
 
+    /// Whether Vortex has deployed files from a mod folder carrying this
+    /// entry's Nexus id (Vortex names folders "<name>-<nexus id>-<version>-
+    /// <time>"), with at least one of them in the game folder now.
+    pub fn vortex_deployed(&self, game_dir: &Path) -> bool {
+        let Some(n) = &self.nexus else { return false };
+        let id = n.mod_id.to_string();
+        crate::allowlist::vortex_files(game_dir)
+            .iter()
+            .any(|f| f.source.split(|c: char| !c.is_ascii_digit()).any(|t| t == id) && game_dir.join(&f.rel).is_file())
+    }
+
     /// A copy that checks for one file only.
     /// (download, unpacked) bytes: the list's numbers, else a safe guess.
     /// Unpacked is 3 times the download when unknown (the Curator's median
