@@ -307,6 +307,9 @@ pub struct ModsView {
     vortex_ready: Option<bool>,
     /// The launcher has a Vortex pairing token.
     vortex_paired: bool,
+    /// Mods the launcher put in the game folder, by who else holds their
+    /// files (read-only; Codex 5910357069).
+    ownership_text: String,
 }
 
 /// Use the same profile, exact Vortex deployment source, and physical file
@@ -422,6 +425,18 @@ pub async fn mods_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult
         format!("Vortex: {} of {} required Nexus mods confirmed · Game files: {} of {} present",
             readout.confirmed, readout.required, counts.game_files_present, counts.listed)
     };
+    let ownership = launcher_core::inventory::ownership(&dir);
+    let ownership_text = launcher_core::inventory::describe_ownership(&ownership, launcher_core::inventory::has_vortex_record(&dir));
+    static LOGGED: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    if let Ok(mut last) = LOGGED.lock() {
+        if *last != ownership_text {
+            log::line(&format!("mods: {ownership_text}"));
+            for o in ownership.iter().filter(|o| o.both > 0) {
+                log::line(&format!("mods: {} ({}): {} files also deployed by Vortex from {}", o.name, o.id, o.both, o.vortex_sources.join(", ")));
+            }
+            *last = ownership_text.clone();
+        }
+    }
     Ok(ModsView {
         mods: rows,
         nexus: user,
@@ -434,6 +449,7 @@ pub async fn mods_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult
         vortex_line: paired.then_some(readout.line),
         vortex_ready: paired.then_some(readout.ready),
         vortex_paired: paired,
+        ownership_text,
     })
 }
 

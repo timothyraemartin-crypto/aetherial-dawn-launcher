@@ -707,6 +707,9 @@
       : (view.counts_text || `Showing ${plural(view.mods.length, 'required mod')}. Check each one in Vortex before Play.`);
     $('rq-vortex-step').hidden = !view.vortex_line;
     $('rq-vortex-step').textContent = view.vortex_line || '';
+    // Mods the launcher placed itself, and whether Vortex also lists their files.
+    $('rq-ownership').hidden = !view.ownership_text;
+    $('rq-ownership').textContent = view.ownership_text || '';
     $('rq-vortex-connect').hidden = fromPlay || !!view.vortex_paired;
     const list = $('rq-list');
     list.replaceChildren();
