@@ -1595,9 +1595,9 @@ async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path:
     send_client_status(app, dir);
     let warnings = got?;
     let list = mods::full_list(state).await;
-    // With the Vortex gate on, its profile and exact deployment are checked
-    // separately, so Nexus entries are judged by their game files here
-    // (launcher_core::vortex::play_missing); off, by the install check.
+    // Which listed mods count as present follows the Vortex gate
+    // (launcher_core::vortex::present_for_play); with it on, the profile and
+    // exact deployment are checked separately afterwards.
     let missing: Vec<mods::Row> = launcher_core::vortex::play_missing(&list, dir, vortex_required).into_iter()
         .map(|m| mods::row(m, dir))
         .collect();

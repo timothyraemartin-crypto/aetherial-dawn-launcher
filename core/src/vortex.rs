@@ -230,17 +230,26 @@ pub fn gate_on(served: Option<&ClientSet>) -> bool {
     served.is_some_and(|s| s.vortex_required)
 }
 
-/// The listed mods Play counts as missing. With the Vortex gate on, a Nexus
-/// entry is judged by its game files (a checkless one by the Vortex
-/// deployment gate that runs next); with it off, every entry by the
-/// launcher's own install check, as 0.1.87 did.
-pub fn play_missing<'a>(list: &'a [ModEntry], game_dir: &std::path::Path, vortex_required: bool) -> Vec<&'a ModEntry> {
-    if !vortex_required {
-        return crate::modlist::missing(list, game_dir);
+/// Whether Play counts a listed mod as present. With the Vortex gate on, a
+/// Nexus entry is judged by its game files (a checkless one by the Vortex
+/// deployment gate that runs next). With it off, a Nexus entry is present
+/// when the launcher installed it, when its checked files are in the game
+/// folder, or (checkless) when Vortex deployed it: a mod installed through
+/// Vortex has no launcher receipt, and must not leave Play stuck on MODS
+/// NEEDED. Other entries always use the launcher's install check.
+pub fn present_for_play(m: &ModEntry, game_dir: &std::path::Path, vortex_required: bool) -> bool {
+    if m.nexus.is_none() {
+        return m.installed(game_dir);
     }
-    list.iter()
-        .filter(|m| if m.nexus.is_some() { !m.check.is_empty() && !m.game_files_present(game_dir) } else { !m.installed(game_dir) })
-        .collect()
+    if vortex_required {
+        return m.check.is_empty() || m.game_files_present(game_dir);
+    }
+    m.installed(game_dir) || if m.check.is_empty() { m.vortex_deployed(game_dir) } else { m.game_files_present(game_dir) }
+}
+
+/// The listed mods Play counts as missing (see `present_for_play`).
+pub fn play_missing<'a>(list: &'a [ModEntry], game_dir: &std::path::Path, vortex_required: bool) -> Vec<&'a ModEntry> {
+    list.iter().filter(|m| !present_for_play(m, game_dir, vortex_required)).collect()
 }
 
 /// A collection by slug and revision. How Vortex 2.7.1 records these on an
@@ -970,8 +979,26 @@ mod tests {
         // Gate on: Nexus mods by their game files; the checkless one is left
         // to the Vortex deployment gate.
         assert_eq!(ids(play_missing(&list, g, true)), Vec::<String>::new());
-        // Gate off: the launcher's install check for every entry, as 0.1.87.
-        assert_eq!(ids(play_missing(&list, g, false)), ids(crate::modlist::missing(&list, g)));
+        // Gate off: the checked mod counts by its files (Vortex put them
+        // there); the checkless one, with nothing deployed, is missing.
+        assert_eq!(ids(play_missing(&list, g, false)), vec!["textures".to_string()]);
+        // Vortex deploys the checkless mod from its folder (Nexus id 1):
+        // present with the gate off, with no launcher receipt.
+        std::fs::create_dir_all(g.join("Data/textures")).unwrap();
+        std::fs::write(g.join("Data/textures/rock.dds"), b"x").unwrap();
+        let dep = serde_json::json!({ "files": [{ "relPath": "textures\\rock.dds", "source": "Rock Textures-1-1-0-1790000000" }] });
+        std::fs::write(g.join("Data/vortex.deployment.json"), serde_json::to_vec(&dep).unwrap()).unwrap();
+        assert_eq!(ids(play_missing(&list, g, false)), Vec::<String>::new());
+        // The launcher's own install check alone (0.1.87) still calls it
+        // missing: it has no receipt for a Vortex install.
+        assert_eq!(ids(crate::modlist::missing(&list, g)), vec!["textures".to_string()]);
+        // A deployment record whose file is gone doesn't count.
+        std::fs::remove_file(g.join("Data/textures/rock.dds")).unwrap();
+        assert_eq!(ids(play_missing(&list, g, false)), vec!["textures".to_string()]);
+        // Another mod's folder (id 12) is not this one's (id 1).
+        std::fs::write(g.join("Data/textures/rock.dds"), b"x").unwrap();
+        let dep = serde_json::json!({ "files": [{ "relPath": "textures\\rock.dds", "source": "Other-12-2-0-1790000000" }] });
+        std::fs::write(g.join("Data/vortex.deployment.json"), serde_json::to_vec(&dep).unwrap()).unwrap();
         assert_eq!(ids(play_missing(&list, g, false)), vec!["textures".to_string()]);
     }
 

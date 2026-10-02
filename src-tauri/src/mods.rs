@@ -417,11 +417,11 @@ pub async fn mods_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult
     } else { None };
     let readout = vortex_readout(&set, status.as_ref(), &deployed, &dir, current_issue);
     // Each row's "present" answer matches what Play will check
-    // (launcher_core::vortex::play_missing): with the Vortex gate off, the
-    // launcher's install check for every entry.
+    // (launcher_core::vortex::present_for_play). With the gate on, a
+    // checkless Nexus mod is present once Vortex's exact deployment is.
     for ((m, standing), exact) in list.iter().zip(&mut st).zip(&readout.exact) {
         if !vortex_required {
-            standing.game_files = m.installed(&dir);
+            standing.game_files = launcher_core::vortex::present_for_play(m, &dir, false);
         } else if m.nexus.is_some() {
             standing.game_files = if m.check.is_empty() { *exact == Some(true) } else { m.game_files_present(&dir) };
         }
