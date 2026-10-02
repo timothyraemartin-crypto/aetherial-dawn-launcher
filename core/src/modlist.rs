@@ -106,6 +106,17 @@ pub struct ModEntry {
     pub archive_bytes: Option<u64>,
     #[serde(default, alias = "unpackedBytes", skip_serializing_if = "Option::is_none")]
     pub unpacked_bytes: Option<u64>,
+    /// The download is this one file, not an archive, and goes to this path
+    /// relative to the game folder (a pinned settings file such as RaceMenu's
+    /// skee64_custom.ini). It needs `sha256`: the copy in the game folder
+    /// counts as installed only while it still has that hash, so a changed
+    /// or missing copy is put back by the next mod check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// Paths relative to the game folder this mod installs everything but
+    /// (Alternate High Poly Head without its facegenmorphs morphs.ini).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip: Vec<String>,
 }
 
 /// CPU levels a `cpu` map can name, best first.
@@ -149,6 +160,9 @@ impl ModEntry {
         if installing_path(game_dir, &self.id).exists() {
             return false;
         }
+        if let Some(f) = &self.file {
+            return self.single_file_matches(game_dir, f);
+        }
         // The list now pins another file, or picks other installer options,
         // than the launcher installed: install it again.
         if let Some(r) = load_installed(game_dir).mods.get(&self.id) {
@@ -170,6 +184,12 @@ impl ModEntry {
             }) && self.owns.iter().all(|o| self.owns_now(game_dir, o));
         }
         self.game_files_present(game_dir)
+    }
+
+    /// A one-file download: the file is in place with the pinned hash.
+    fn single_file_matches(&self, game_dir: &Path, rel: &str) -> bool {
+        let (Some(p), Some(want)) = (safe_rel(rel), &self.sha256) else { return false };
+        crate::patcher::sha256_file(&game_dir.join(p)).is_ok_and(|h| h.eq_ignore_ascii_case(want))
     }
 
     /// Checks the listed files in Skyrim without trusting the launcher's old
@@ -440,7 +460,13 @@ pub fn merged(game_version: Option<&str>, server: Option<&ModList>) -> Vec<ModEn
     let mut out = builtin(game_version);
     if let Some(s) = server {
         for m in &s.mods {
-            if m.id.is_empty() || (m.nexus.is_none() && m.url.is_none()) || m.check.iter().chain(&m.owns).any(|c| safe_rel(c).is_none()) {
+            if m.id.is_empty() || (m.nexus.is_none() && m.url.is_none()) || m.check.iter().chain(&m.owns).chain(&m.skip).chain(&m.file).any(|c| safe_rel(c).is_none()) {
+                continue;
+            }
+            // A one-file download is pinned or it isn't used, and it's never
+            // one of the game's own files (base masters, Creation Club,
+            // _ResourcePack): those only come from the player's own Skyrim.
+            if m.file.iter().chain(&m.skip).any(|f| game_owned(f)) || (m.file.is_some() && m.sha256.as_ref().is_none_or(|h| h.len() != 64)) {
                 continue;
             }
             if let Some(url) = &m.url {
@@ -560,6 +586,44 @@ pub fn fix_wrong_builds(copies: &mut [Copy], unpacked: &Path) -> Vec<(String, St
 fn is_plugin(p: &Path) -> bool {
     let l = p.to_string_lossy().to_ascii_lowercase();
     l.ends_with(".esp") || l.ends_with(".esm") || l.ends_with(".esl")
+}
+
+/// Skyrim's own files, which only ever come from the player's own Steam
+/// copy: the game's programs next to SkyrimSE.exe (any .exe but SKSE's
+/// loader), Skyrim.ccc, and in Data the base and Creation Club plugins,
+/// _ResourcePack, and their archives ("Skyrim - *.bsa", "cc*.bsa").
+pub fn game_owned(rel: &str) -> bool {
+    let l = rel.replace('\\', "/").to_ascii_lowercase();
+    match l.strip_prefix("data/") {
+        None => !l.contains('/') && (matches!(l.as_str(), "skyrim.ccc" | "steam_api64.dll" | "bink2w64.dll") || (l.ends_with(".exe") && l != "skse64_loader.exe")),
+        Some(n) => {
+            let stem = n.rsplit_once('.').map(|(s, _)| s).unwrap_or(n);
+            !n.contains('/')
+                && (n == "skyrim.ccc"
+                    || n.starts_with("_resourcepack.")
+                    || n.starts_with("marketplacetextures.")
+                    || (n.starts_with("skyrim - ") && n.ends_with(".bsa"))
+                    || crate::aliases::shipped_with_game(n)
+                    || (n.ends_with(".bsa") && crate::aliases::shipped_with_game(&format!("{stem}.esm"))))
+        }
+    }
+}
+
+/// Files a listed mod must go without that are in the game folder anyway
+/// (Vortex deploys a package whole): Play sets them aside each time.
+pub fn skipped_present(list: &[ModEntry], game_dir: &Path) -> Vec<String> {
+    let mut out: Vec<String> = list
+        .iter()
+        .flat_map(|m| m.skip.iter().map(move |s| (m, s)))
+        // Only a file this mod put there (Vortex deployed it from this
+        // mod's folder, or the launcher installed it), never one of the
+        // game's own.
+        .filter(|(m, s)| safe_rel(s).is_some() && !game_owned(s) && m.owns_now(game_dir, s))
+        .map(|(_, s)| s.replace('\\', "/"))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 pub fn missing<'a>(list: &'a [ModEntry], game_dir: &Path) -> Vec<&'a ModEntry> {
@@ -1039,7 +1103,32 @@ pub fn plan(entry: &ModEntry, unpacked: &Path) -> Result<Vec<Copy>> {
 
 /// `plan` on a CPU with these instruction sets.
 pub fn plan_for(entry: &ModEntry, unpacked: &Path, supports: &[&str]) -> Result<Vec<Copy>> {
+    let mut out = plan_unskipped(entry, unpacked, supports)?;
+    // Skyrim's own files only ever come from the player's own Steam copy,
+    // never from a download.
+    out.retain(|c| !game_owned(&c.to.to_string_lossy()));
+    if !entry.skip.is_empty() {
+        let norm = |p: &Path| p.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+        let skip: Vec<String> = entry.skip.iter().map(|s| s.replace('\\', "/").to_ascii_lowercase()).collect();
+        out.retain(|c| !skip.contains(&norm(&c.to)));
+        if out.is_empty() {
+            return Err(Error::Game(format!("the download for {} had nothing to install", entry.name)));
+        }
+    }
+    Ok(out)
+}
+
+fn plan_unskipped(entry: &ModEntry, unpacked: &Path, supports: &[&str]) -> Result<Vec<Copy>> {
     let mut out = Vec::new();
+    if let Some(rel) = &entry.file {
+        let to = safe_rel(rel).ok_or_else(|| Error::Game(format!("{} lists an unsafe path: {rel}", entry.name)))?;
+        let name = to.file_name().ok_or_else(|| Error::Game(format!("{} lists no file name: {rel}", entry.name)))?;
+        let from = unpacked.join(name);
+        if !from.is_file() {
+            return Err(Error::Game(format!("the download for {} is missing", entry.name)));
+        }
+        return Ok(vec![Copy { from, to }]);
+    }
     if entry.target == Target::Game {
         let want: Vec<String> = entry.include.iter().map(|s| s.to_ascii_lowercase()).collect();
         let mut seen = HashSet::new();
@@ -1461,7 +1550,8 @@ pub fn apply(entry: &ModEntry, copies: &[Copy], game_dir: &Path, file_id: Option
     for c in copies {
         let dest = game_dir.join(&c.to);
         let rel = c.to.to_string_lossy().replace('\\', "/");
-        let owned = entry.owns.iter().any(|o| o.eq_ignore_ascii_case(&rel));
+        // A one-file download is the pinned copy: it replaces the file there.
+        let owned = entry.owns.iter().chain(&entry.file).any(|o| o.replace('\\', "/").eq_ignore_ascii_case(&rel));
         // Vortex's own copy of a file wins, unless it's a broken plugin or
         // a file this mod owns (backed up first).
         if dest.exists() && (vortex || is_settings(&c.to)) && present(&dest) && !owned {
@@ -1542,7 +1632,14 @@ pub fn install_archive(m: &ModEntry, archive: &Path, game_dir: &Path, file_id: O
     verify(m, archive)?;
     let work = game_dir.join(MODS_DIR).join("unpacked").join(&m.id);
     let _ = std::fs::remove_dir_all(&work);
-    extract(archive, &work)?;
+    // A one-file download goes in as it is, under its own name.
+    match m.file.as_deref().and_then(|f| Path::new(f).file_name().map(|n| n.to_owned())) {
+        Some(name) => {
+            std::fs::create_dir_all(&work)?;
+            std::fs::copy(archive, work.join(name))?;
+        }
+        None => extract(archive, &work)?,
+    }
     if let Some(r) = fomod_report(m, &work) {
         log(&format!("mods: {} installer options (picks {:?}): {}", m.name, m.fomod, r.join(" || ")));
     }
@@ -1813,6 +1910,92 @@ mod tests {
         let only_avx = ModEntry { cpu: [("avx2".to_string(), "raw-vs2022-windows-avx2".to_string())].into_iter().collect(), ..e.clone() };
         assert!(plan_for(&only_avx, &u, &["avx", "plain"]).is_err(), "never a build the CPU can't run");
         assert!(cpu_supports().contains(&"plain"));
+    }
+
+    #[test]
+    fn a_pinned_single_file_is_put_back_whenever_its_copy_changes() {
+        let t = tempfile::tempdir().unwrap();
+        let game = t.path().join("game");
+        std::fs::create_dir_all(game.join("Data")).unwrap();
+        let body = b"[Sliders]\r\nbEnableHeadSculpt=0\r\n";
+        let rel = "Data/SKSE/Plugins/skee64_custom.ini";
+        let e: ModEntry = serde_json::from_value(serde_json::json!({"id": "racemenu-patch", "name": "RaceMenu patch",
+            "url": "https://example.invalid/skee64_custom.ini", "file": rel, "sha256": crate::patcher::sha256_bytes(body)})).unwrap();
+        let got = |name: &str, bytes: &[u8]| {
+            let a = t.path().join(name);
+            std::fs::write(&a, bytes).unwrap();
+            install_archive(&e, &a, &game, None, None, false, None, &|_| {})
+        };
+        assert!(!e.installed(&game));
+        assert!(got("a.ini", b"changed on the way").is_err(), "the pin is checked before anything goes in");
+        assert!(!game.join(rel).exists());
+        assert!(matches!(got("b.ini", body).unwrap(), Outcome::Installed));
+        assert_eq!(std::fs::read(game.join(rel)).unwrap(), body);
+        assert!(e.installed(&game));
+        // Edited by hand or by another mod: not installed, and the next
+        // install replaces it (an .ini the player has is otherwise kept).
+        std::fs::write(game.join(rel), b"[Sliders]\r\nbEnableHeadSculpt=1\r\n").unwrap();
+        assert!(!e.installed(&game));
+        assert!(matches!(got("c.ini", body).unwrap(), Outcome::Installed));
+        assert_eq!(std::fs::read(game.join(rel)).unwrap(), body);
+        assert!(e.installed(&game));
+        // Only pinned one-file entries, at safe paths, are taken from a list.
+        let list = |v: serde_json::Value| merged(None, Some(&serde_json::from_value(serde_json::json!({"mods": [v]})).unwrap()));
+        let has = |l: Vec<ModEntry>| l.iter().any(|m| m.id == "racemenu-patch");
+        assert!(has(list(serde_json::to_value(&e).unwrap())));
+        assert!(!has(list(serde_json::json!({"id": "racemenu-patch", "name": "P", "url": "https://example.invalid/x.ini", "file": rel}))));
+        assert!(!has(list(serde_json::json!({"id": "racemenu-patch", "name": "P", "url": "https://example.invalid/x.ini", "file": "../x.ini", "sha256": crate::patcher::sha256_bytes(body)}))));
+        assert!(!has(list(serde_json::json!({"id": "racemenu-patch", "name": "P", "nexus": {"mod": 1}, "skip": ["../x"]}))));
+        // The game's own files are never downloaded or skipped, pinned or not.
+        for game_file in ["Data/ccBGSSSE001-Fish.esm", "Data/_ResourcePack.esl", "Data/Skyrim.esm", "Data/ccQDRSSE001-SurvivalMode.esm", "Data/ccBGSSSE001-Fish.bsa", "Data/Skyrim - Textures0.bsa", "SkyrimSE.exe"] {
+            assert!(!has(list(serde_json::json!({"id": "racemenu-patch", "name": "P", "nexus": {"mod": 1}, "skip": [game_file]}))), "skip {game_file}");
+            assert!(!has(list(serde_json::json!({"id": "racemenu-patch", "name": "P", "url": "https://example.invalid/x", "file": game_file, "sha256": crate::patcher::sha256_bytes(body)}))), "{game_file}");
+        }
+    }
+
+    #[test]
+    fn the_racemenu_guard_entries_are_taken_and_a_deployed_skip_is_found() {
+        let list: ModList = serde_json::from_str(include_str!("../../docs/examples/racemenu-sync-guard.json")).unwrap();
+        let all = merged(None, Some(&list));
+        let guard = all.iter().find(|m| m.id == "racemenu-sync-guard").expect("pinned one-file entry kept");
+        assert_eq!(guard.file.as_deref(), Some("Data/SKSE/Plugins/skee64_custom.ini"));
+        let ahph = all.iter().find(|m| m.id == "alternate-high-poly-head").unwrap();
+        let t = tempfile::tempdir().unwrap();
+        assert!(skipped_present(&all, t.path()).is_empty());
+        // Vortex deployed the whole package, morphs.ini included.
+        let ini = t.path().join(&ahph.skip[0]);
+        std::fs::create_dir_all(ini.parent().unwrap()).unwrap();
+        std::fs::write(&ini, "[x]").unwrap();
+        // Not this mod's copy (no Vortex record, not the launcher's): left alone.
+        assert!(skipped_present(&all, t.path()).is_empty());
+        // Vortex deployed it from this mod's folder.
+        std::fs::write(t.path().join("Data/vortex.deployment.json"), serde_json::json!({"files": [
+            {"relPath": "meshes/actors/character/facegenmorphs/AlternateHighPolyHead_SE.esp/morphs.ini", "source": "Alternate High Poly Head-148541-2-0-1"}]}).to_string()).unwrap();
+        assert_eq!(skipped_present(&all, t.path()), ahph.skip);
+    }
+
+    #[test]
+    fn a_skipped_file_is_left_out_of_an_install() {
+        let t = tempfile::tempdir().unwrap();
+        let u = t.path().join("u");
+        for f in ["meshes/actors/character/FaceGenMorphs/morphs.ini", "meshes/actors/character/FaceGenMorphs/other.tri", "textures/head.dds"] {
+            std::fs::create_dir_all(u.join(f).parent().unwrap()).unwrap();
+            std::fs::write(u.join(f), f).unwrap();
+        }
+        let e: ModEntry = serde_json::from_value(serde_json::json!({"id": "ahph", "name": "Alternate High Poly Head",
+            "skip": ["Data\\meshes\\actors\\character\\facegenmorphs\\morphs.ini"]})).unwrap();
+        let mut to: Vec<String> = plan(&e, &u).unwrap().iter().map(|c| c.to.to_string_lossy().replace('\\', "/")).collect();
+        to.sort();
+        assert_eq!(to, ["Data/meshes/actors/character/FaceGenMorphs/other.tri", "Data/textures/head.dds"]);
+        let all = ModEntry { skip: vec![], ..e.clone() };
+        assert_eq!(plan(&all, &u).unwrap().len(), 3);
+        // A download that carries a game file never installs it.
+        for f in ["ccBGSSSE001-Fish.esm", "ccBGSSSE001-Fish.bsa", "_ResourcePack.esl", "_ResourcePack.bsa", "Skyrim - Textures0.bsa"] {
+            std::fs::write(u.join(f), "game").unwrap();
+        }
+        assert_eq!(plan(&all, &u).unwrap().len(), 3);
+        assert!(game_owned("SkyrimSE.exe") && game_owned("SkyrimSELauncher.exe") && !game_owned("skse64_loader.exe") && !game_owned("d3dx9_42.dll"));
+        assert!(!game_owned("Data/meshes/actors/character/facegenmorphs/AlternateHighPolyHead_SE.esp/morphs.ini") && !game_owned("Data/SkyUI_SE.bsa"));
     }
     use super::*;
 

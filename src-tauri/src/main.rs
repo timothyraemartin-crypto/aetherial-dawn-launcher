@@ -1396,6 +1396,14 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, only_server_m
             Err(e) => return Err(format!("Couldn't move a mod the server no longer uses out of the way ({e}). Close Skyrim and Vortex, then try again.")),
         }
     }
+    // A file a listed mod must go without (Alternate High Poly Head's
+    // morphs.ini) is set aside when Vortex deployed it anyway.
+    let skipped = launcher_core::modlist::skipped_present(&launcher_core::allowlist::listed(dir), dir);
+    if !skipped.is_empty() {
+        let stamp = format!("{}-skipped", log::timestamp().replace([':', ' '], "-"));
+        let dest = strays::move_aside(dir, &skipped, &stamp).map_err(|e| format!("Couldn't move a file the server leaves out of the way ({e}). Close Skyrim and Vortex, then try again."))?;
+        log::line(&format!("play: set aside {} file(s) the server's list leaves out to {}: {}", skipped.len(), dest.display(), skipped.join(", ")));
+    }
     // Plugins whose names the SkyMP client can't load run under a
     // dash-named copy (Timothy 2026-09-26: correct it, don't switch it off).
     // Light plugins the server's list runs as full plugins get a "<stem>.esm"
