@@ -335,6 +335,9 @@ pub mod tests {
         assert_eq!(ae, Build::Fits);
         assert!(matches!(se, Build::Wrong(_)), "{se:?}");
         assert_eq!(build_of(&dir.join("SKSE/Plugins/SkyrimSoulsRE.dll")), Build::Fits);
+        // Required on every PC, so never set aside (Crash Logger 1.25.0).
+        assert_eq!(build_of(&dir.join("SKSE/Plugins/CrashLogger.dll")), Build::Fits);
+        assert_eq!(build_of(&dir.join("SKSE/Plugins/msdia140.dll")), Build::Unknown);
     }
 
     /// The skee64.dll (RaceMenu) the launcher refused on Timothy's PC, when
