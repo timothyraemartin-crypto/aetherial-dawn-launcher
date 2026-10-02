@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["rar"]
+rar = ["dep:unrar"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -16,6 +20,9 @@ tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi
 rand = "0.9"
 zip = { version = "2", default-features = false, features = ["deflate", "deflate64", "bzip2", "zstd"] }
 sevenz-rust2 = { version = "0.23", default-features = false }
+# RAR downloads, through rarlab's unrar library (C++). Off for the static
+# musl canonical-plugins tool, which never unpacks archives.
+unrar = { version = "0.5.8", optional = true }
 zstd = "0.13"
 # LZMA entries in zips (FSMP 4.0.1): the zip crate's own LZMA reader fails
 # on them; this is the decoder sevenz-rust2 already brings.
@@ -29,7 +36,8 @@ futures-util = { version = "0.3", features = ["sink"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 tempfile = "3"

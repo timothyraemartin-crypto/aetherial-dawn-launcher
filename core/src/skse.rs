@@ -6,6 +6,22 @@
 
 use std::path::Path;
 
+// Nexus RaceMenu 19080/file 743640, Anniversary Edition v0.4.20.0, for
+// Skyrim 1.6.1170 and SKSE 2.2.6. This DLL uses the legacy Query/Load exports
+// that our general SKSE version-data test treats as an old build. Limit the
+// exception to the exact DLL bytes observed in that pinned package.
+const RACEMENU_1170_SKEE64_SHA256: &str = "5225e4e3b185e6fc57c8d31b0cedbe5a030a951d9a744d33071b64c45a38c208";
+
+fn known_racemenu_hash(path: &Path, sha256: &str) -> bool {
+    path.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("skee64.dll"))
+        && sha256 == RACEMENU_1170_SKEE64_SHA256
+}
+
+fn known_racemenu_build(path: &Path, bytes: &[u8]) -> bool {
+    use sha2::Digest;
+    known_racemenu_hash(path, &hex::encode(sha2::Sha256::digest(bytes)))
+}
+
 /// Skyrim 1.6.1170 as SKSE packs it: (major << 24) | (minor << 16) | (build << 4).
 pub const RUNTIME_1_6_1170: u32 = (1 << 24) | (6 << 16) | (1170 << 4);
 /// SKSE 2.2.6, packed the same way.
@@ -112,10 +128,19 @@ pub fn build_of_bytes(b: &[u8]) -> Build {
     let flags = u32_at(v, 776).unwrap_or(0);
     let compatible: Vec<u32> = (0..16).filter_map(|i| u32_at(v, 780 + i * 4)).take_while(|&x| x != 0).collect();
     let se_required = u32_at(v, 844).unwrap_or(0);
-    if flags & STRUCTS_POST_629 == 0 && ex_flags & NO_STRUCT_USE == 0 {
+    // The same order as SKSE 2.2.6's CheckPluginCompatibility
+    // (skse64/PluginManager.cpp at tag v2.2.6).
+    if flags & !(ADDRESS_LIBRARY_POST_AE | SIGNATURES | STRUCTS_POST_629) != 0 {
+        return Build::Wrong("it uses a version check SKSE 2.2.6 doesn't know".into());
+    }
+    let independent = flags & (ADDRESS_LIBRARY_POST_AE | SIGNATURES) != 0;
+    // SKSE asks for the 1.6.629 struct flag only from a version-independent
+    // plugin: one built for exact versions (RaceMenu 0.4.20 lists 1.6.1170)
+    // is judged by its list alone.
+    if independent && flags & STRUCTS_POST_629 == 0 && ex_flags & NO_STRUCT_USE == 0 {
         return Build::Wrong("it's the build for Skyrim before 1.6.629".into());
     }
-    if flags & (ADDRESS_LIBRARY_POST_AE | SIGNATURES) == 0 && !compatible.contains(&RUNTIME_1_6_1170) {
+    if !independent && !compatible.contains(&RUNTIME_1_6_1170) {
         return Build::Wrong("it's built for a different Skyrim version than 1.6.1170".into());
     }
     if se_required > SKSE_2_2_6 {
@@ -149,6 +174,7 @@ pub fn describe(p: &Path) -> String {
 /// What SKSE would make of the DLL at `p` (Unknown when it can't be read).
 pub fn build_of(p: &Path) -> Build {
     match std::fs::read(p) {
+        Ok(b) if known_racemenu_build(p, &b) => Build::Fits,
         Ok(b) => build_of_bytes(&b),
         Err(_) => Build::Unknown,
     }
@@ -187,6 +213,19 @@ pub fn wrong_builds(game_dir: &Path) -> Vec<(String, String)> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_pinned_racemenu_dll_hash_uses_the_legacy_export_exception() {
+        let known = RACEMENU_1170_SKEE64_SHA256;
+        assert!(known_racemenu_hash(Path::new("skee64.dll"), known));
+        assert!(known_racemenu_hash(Path::new("SKEE64.DLL"), known));
+        assert!(!known_racemenu_hash(Path::new("Other.dll"), known));
+        assert!(!known_racemenu_hash(Path::new("skee64.dll"), &"0".repeat(64)));
+        let t = tempfile::tempdir().unwrap();
+        let other = t.path().join("skee64.dll");
+        std::fs::write(&other, dll(&["SKSEPlugin_Query", "SKSEPlugin_Load"], &[0u8; 4])).unwrap();
+        assert!(matches!(build_of(&other), Build::Wrong(_)), "another old-export DLL remains blocked");
+    }
 
     #[test]
     fn describes_what_it_read() {
@@ -272,6 +311,12 @@ pub mod tests {
         assert_eq!(build_of_bytes(&dll(&["SKSEPlugin_Version"], &version_data(0, NO_STRUCT_USE, &[RUNTIME_1_6_1170]))), Build::Fits);
         let v640 = (1 << 24) | (6 << 16) | (640 << 4);
         assert!(matches!(build_of_bytes(&dll(&["SKSEPlugin_Version"], &version_data(STRUCTS_POST_629, 0, &[v640]))), Build::Wrong(w) if w.contains("different")));
+        // Built for exact Skyrim versions with no flags, like RaceMenu 0.4.20:
+        // SKSE loads it when 1.6.1170 is listed, whatever the struct flag.
+        assert_eq!(build_of_bytes(&dll(&["SKSEPlugin_Version"], &version_data(0, 0, &[RUNTIME_1_6_1170]))), Build::Fits);
+        assert!(matches!(build_of_bytes(&dll(&["SKSEPlugin_Version"], &version_data(0, 0, &[v640]))), Build::Wrong(w) if w.contains("different")));
+        // A flag SKSE 2.2.6 doesn't know is refused, as SKSE does.
+        assert!(matches!(build_of_bytes(&dll(&["SKSEPlugin_Version"], &version_data(STRUCTS_POST_629 | 1 << 3, 0, &[RUNTIME_1_6_1170]))), Build::Wrong(w) if w.contains("doesn't know")));
         // Not an SKSE plugin, or not a DLL: left alone.
         assert_eq!(build_of_bytes(&dll(&["Helper"], &[0; 8])), Build::Unknown);
         assert_eq!(build_of_bytes(b"not a dll"), Build::Unknown);
@@ -290,5 +335,32 @@ pub mod tests {
         assert_eq!(ae, Build::Fits);
         assert!(matches!(se, Build::Wrong(_)), "{se:?}");
         assert_eq!(build_of(&dir.join("SKSE/Plugins/SkyrimSoulsRE.dll")), Build::Fits);
+        // Required on every PC, so never set aside (Crash Logger 1.25.0).
+        assert_eq!(build_of(&dir.join("SKSE/Plugins/CrashLogger.dll")), Build::Fits);
+        assert_eq!(build_of(&dir.join("SKSE/Plugins/msdia140.dll")), Build::Unknown);
+    }
+
+    /// The skee64.dll (RaceMenu) the launcher refused on Timothy's PC, when
+    /// AD_SKEE64_DLL points at it: flags 0, ex flags 0, games [1.6.1170]
+    /// (read by Codex, PR #1). The old check called it the pre-1.6.629 build;
+    /// SKSE 2.2.6 loads it.
+    #[test]
+    fn describes_an_exact_version_plugin_as_the_skee64_check_expects() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("skee64.dll");
+        std::fs::write(&p, dll(&["SKSEPlugin_Version"], &version_data(0, 0, &[RUNTIME_1_6_1170]))).unwrap();
+        assert!(describe(&p).contains("flags 0x0, ex flags 0x0, games [1.6.1170]"), "{}", describe(&p));
+    }
+
+    #[test]
+    fn real_racemenu_skee64_loads() {
+        let Ok(p) = std::env::var("AD_SKEE64_DLL") else { return };
+        let b = std::fs::read(&p).unwrap();
+        use sha2::{Digest, Sha256};
+        assert_eq!(hex::encode(Sha256::digest(&b)), "5225e4e3b185e6fc57c8d31b0cedbe5a030a951d9a744d33071b64c45a38c208", "not the file from the report");
+        let d = describe(std::path::Path::new(&p));
+        eprintln!("skee64.dll: {d}");
+        assert!(d.contains("flags 0x0, ex flags 0x0, games [1.6.1170]"), "{d}");
+        assert_eq!(build_of_bytes(&b), Build::Fits);
     }
 }

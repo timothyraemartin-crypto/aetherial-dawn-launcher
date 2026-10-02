@@ -4,7 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Aetherial Dawn</title>
+<link rel="preload" href="fonts/cinzel.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/hanken-grotesk.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="style.css">
+<style>html, body { background: #05080C; }</style>
 </head>
 <body>
 <div class="app">
@@ -63,7 +66,7 @@
         <div><b id="srv-players">–</b><span>players online</span></div>
         <div><b id="srv-addr">–</b><span>address</span></div>
         <div><b id="srv-reset">–</b><span>since the last reset</span></div>
-        <div><b id="srv-build">–</b><span>client build</span></div>
+        <div><b id="srv-build">–</b><span>game files version</span></div>
       </div>
     </div>
     <div class="section">
@@ -89,12 +92,12 @@
   <section class="page" id="page-mods" hidden>
     <div class="srv-head">
       <div><h2>Mods</h2><p class="note" id="mods-summary" style="margin:6px 0 0">The server decides which mods and files every player needs.</p></div>
-      <span class="chip busy" id="mods-chip"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg><span>Checking</span></span>
+      <span class="chip busy" id="mods-chip" role="status" aria-live="polite"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/></svg><span>Checking</span></span>
     </div>
     <div class="ftable-wrap">
       <table class="ftable"><thead><tr><th>FILE</th><th>SIZE</th></tr></thead><tbody id="files-body"></tbody></table>
     </div>
-    <div class="page-foot"><span class="note">Installed into your Skyrim folder. Your saves and other mods are left alone.</span><span class="line"><button class="btn primary" id="files-mods">Download all mods</button><button class="btn" id="files-verify">Verify all files</button></span></div>
+    <div class="page-foot"><span class="note">Check Vortex to confirm required mods are enabled and deployed before Play.</span><span class="line"><button class="btn primary" id="files-mods">Required mods</button><button class="btn" id="files-verify">Verify all files</button></span></div>
   </section>
 
   <!-- ===== news ===== -->
@@ -112,7 +115,7 @@
     <div class="dock-panel play-box">
       <div class="progress" id="progress" hidden>
         <div class="prow"><span id="p-label">Updating client files</span><span id="p-num"></span></div>
-        <div class="bar"><i id="p-bar"></i></div>
+        <div class="bar" id="p-progress" role="progressbar" aria-label="Game file update progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="p-bar"></i></div>
         <div class="prow"><span class="file" id="p-file"></span><span id="p-speed"></span></div>
       </div>
       <div class="play-wrap off" id="play-wrap">
@@ -125,41 +128,45 @@
         </button>
       </div>
       <div class="status" id="status"><span>Checking for updates…</span></div>
+      <!-- What screen readers announce: only the launcher's own messages, not the player count refreshed every 30 s. -->
+      <div class="sr-only" id="status-live" role="status" aria-live="polite"></div>
     </div>
   </div>
 
   <!-- ===== first run ===== -->
-  <div class="sheet" id="first" hidden>
+  <div class="sheet" id="first" role="dialog" aria-modal="true" aria-label="Let's get Skyrim ready" tabindex="-1" hidden>
     <div class="panel">
       <div class="eyebrow">WELCOME</div>
       <h2>Let's get Skyrim ready</h2>
       <p class="lead">The launcher checks your game, installs the multiplayer files, and connects you to Aetherial Dawn. Your saves and other mods are left alone.</p>
       <div class="checks">
         <div class="check" id="c-game"><svg viewBox="0 0 24 24"></svg><div><b></b><small></small></div><button class="btn" id="c-game-pick">Choose folder</button></div>
-        <div class="check" id="c-skse"><svg viewBox="0 0 24 24"></svg><div><b></b><small></small></div><button class="btn" id="c-skse-recheck">Check again</button></div>
+        <div class="check" id="c-skse"><svg viewBox="0 0 24 24"></svg><div><b></b><small></small></div><button class="btn" id="c-skse-recheck" hidden>Check again</button></div>
       </div>
+      <span class="error" id="first-error" role="alert" hidden></span>
       <div class="actions">
         <button class="btn primary" id="f-go" disabled>CONTINUE</button>
-        <span class="note">SKSE comes from skse.silverlock.org. Install the build that matches your Skyrim version.</span>
+        <button class="btn" id="f-retry" hidden>TRY AGAIN</button>
       </div>
     </div>
   </div>
 
   <!-- ===== discord sign-in ===== -->
-  <div class="sheet" id="signin" hidden>
+  <div class="sheet" id="signin" role="dialog" aria-modal="true" aria-label="Sign in with Discord" tabindex="-1" hidden>
     <div class="panel signin">
       <img class="signin-emblem" src="art/emblem.png" alt="">
       <div class="eyebrow">MEMBERS OF THE REALM</div>
       <h2>Sign in with Discord</h2>
       <p class="lead">Aetherial Dawn is for members of our Discord community. Sign in so the server knows it's you. Discord asks for your password in your browser, never here.</p>
-      <span class="error" id="si-error" hidden></span>
+      <p class="si-join" id="si-join" hidden>Not a member yet? Join here: <button class="linkish" id="si-join-go"></button></p>
+      <span class="error" id="si-error" role="alert" hidden></span>
       <button class="btn discord" id="si-go"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z"/></svg>SIGN IN WITH DISCORD</button>
       <div class="dg-progress" id="si-wait" hidden><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg><span>Finish signing in in your browser. The launcher comes back by itself.</span><button class="linkish" id="si-cancel">Cancel</button></div>
     </div>
   </div>
 
   <!-- ===== game version ===== -->
-  <div class="sheet" id="downgrade" hidden>
+  <div class="sheet" id="downgrade" role="dialog" aria-modal="true" aria-label="Match the server's Skyrim" tabindex="-1" hidden>
     <div class="panel">
       <div class="eyebrow">GAME VERSION</div>
       <h2>Match the server's Skyrim</h2>
@@ -174,9 +181,9 @@
       </ul>
       <div class="dg-progress" id="dg-progress" hidden><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg><span id="dg-stage"></span></div>
       <div class="bar" id="dg-bar" hidden><i id="dg-bar-i"></i></div>
-      <span class="error" id="dg-error" hidden></span>
+      <span class="error" id="dg-error" role="alert" hidden></span>
       <div class="actions">
-        <button class="btn primary" id="dg-go">DOWNGRADE</button>
+        <button class="btn primary" id="dg-go">FIX VERSION</button>
         <button class="btn" id="dg-cancel">Not now</button>
         <button class="linkish" id="dg-skip">My game is already on this version</button>
       </div>
@@ -184,13 +191,13 @@
   </div>
 
   <!-- ===== stray plugins ===== -->
-  <div class="sheet" id="strays" hidden>
+  <div class="sheet" id="strays" role="dialog" aria-modal="true" aria-label="Other mods found" tabindex="-1" hidden>
     <div class="panel">
       <div class="eyebrow">OTHER MODS FOUND</div>
       <h2>These plugins can crash the game</h2>
-      <p class="lead">Your Skyrim folder has plugins that aren't part of Aetherial Dawn. They load together with the multiplayer files and often crash Skyrim before the main menu. The launcher moves SKSE and Platform plugins to a backup folder and switches extra game plugins off in your load order. Nothing is deleted.</p>
+      <p class="lead">Your Skyrim folder has plugins that aren't part of Aetherial Dawn. They load together with the multiplayer files and often crash Skyrim before the main menu. The launcher moves them to a backup folder or switches them off. Nothing is deleted, and you can put them back in Settings.</p>
       <ul class="notes files-list" id="st-list"></ul>
-      <span class="error" id="st-error" hidden></span>
+      <span class="error" id="st-error" role="alert" hidden></span>
       <div class="actions">
         <button class="btn primary" id="st-move">FIX IT</button>
         <button class="btn" id="st-cancel">Not now</button>
@@ -200,45 +207,32 @@
   </div>
 
   <!-- ===== required mods ===== -->
-  <div class="sheet" id="reqs" hidden>
+  <div class="sheet" id="reqs" role="dialog" aria-modal="true" aria-label="Required mods" tabindex="-1" hidden>
     <div class="panel">
       <div class="eyebrow">MODS</div>
       <h2>The server's mods</h2>
-      <p class="lead">Aetherial Dawn needs these mods. <b>Download all</b> fetches and installs every missing one for you.</p>
-      <div class="rq-nexus" id="rq-nexus">
-        <div id="rq-nx-out">
-          <div id="rq-sso" hidden>
-            <p class="note" id="rq-sso-note">Most mods come from Nexus Mods, so sign in with your free Nexus account first. Click <b>Sign in with Nexus</b>: your browser opens Nexus, where you log in if you aren't already.</p>
-            <div class="line"><button class="btn primary" id="rq-sso-go">Sign in with Nexus</button><button class="btn" id="rq-sso-stop" hidden>Cancel</button><button class="linkish" id="rq-usekey">Use an API key instead</button></div>
-          </div>
-          <div id="rq-keybox">
-          <p class="note">Most mods come from Nexus Mods, so sign in with your free Nexus account first. Click <b>Get my key</b>, copy your <i>Personal API Key</i> from the bottom of that page, paste it here and click <b>Sign in</b>. It stays on this PC.</p>
-          <div class="line"><input id="rq-key" type="password" placeholder="Nexus API key" autocomplete="off" spellcheck="false"><button class="btn" id="rq-getkey">Get my key</button><button class="btn" id="rq-signin">Sign in</button></div>
-          </div>
-        </div>
-        <div id="rq-nx-in" hidden><span id="rq-nx-who"></span> <button class="linkish" id="rq-signout">Sign out</button></div>
-        <p class="note" id="rq-nx-free" hidden>Nexus only lets Premium members download without visiting the site. After you click <b>Download all</b>, the launcher opens each mod's page in turn: press <b>Mod manager download</b> there (then <b>Slow download</b>) and the launcher does the rest.</p>
-        <p class="note" id="rq-vortex" hidden>Vortex manages your mods too. The launcher adds what's missing next to Vortex's files and never changes or removes Vortex's own.</p>
-      </div>
+      <p class="lead">Install, enable and deploy these mods in Vortex. For linked Nexus mods, use Mod Manager Download for the required file. The file list does not confirm deployment.</p>
+      <p class="note" id="rq-summary" role="status"></p>
+      <p class="note" id="rq-vortex-step" role="status" hidden></p>
+      <p class="note" id="rq-ownership" hidden></p>
+      <div class="line" id="rq-vortex-connect" hidden><button class="btn" id="rq-vortex-go">Connect Vortex</button></div>
+      <p class="note" id="rq-vortex-said" role="status" hidden></p>
       <div class="rq-list" id="rq-list"></div>
-      <span class="error" id="rq-error" hidden></span>
+      <span class="error" id="rq-error" role="alert" hidden></span>
       <div class="actions">
-        <button class="btn primary" id="rq-all">DOWNLOAD ALL</button>
-        <button class="btn" id="rq-stop" hidden>Stop</button>
-        <button class="btn" id="rq-again">Check again</button>
-        <button class="btn" id="rq-close">Not now</button>
+        <button class="btn primary" id="rq-close">Close</button>
       </div>
     </div>
   </div>
 
   <!-- ===== game crashed ===== -->
-  <div class="sheet" id="crash" hidden>
+  <div class="sheet" id="crash" role="dialog" aria-modal="true" aria-label="Skyrim closed unexpectedly" tabindex="-1" hidden>
     <div class="panel">
       <div class="eyebrow">GAME CLOSED</div>
       <h2>Skyrim closed unexpectedly</h2>
       <p class="lead" id="cr-summary"></p>
       <p class="note staff" id="cr-staff" hidden></p>
-      <p class="note">The launcher saved a report with the game's logs. Click <b>Copy report</b> and paste it to staff (or in the launcher thread) so we can see what went wrong.</p>
+      <p class="note" id="cr-ask">The launcher saved a report with the game's logs. Click <b>Copy report</b> and paste it to staff on Discord so they can see what went wrong.</p>
       <pre class="report" id="cr-report"></pre>
       <span class="note" id="cr-note" hidden></span>
       <div class="actions">
@@ -249,11 +243,11 @@
     </div>
   </div>
 
-  <div class="sheet" id="health" hidden>
+  <div class="sheet" id="health" role="dialog" aria-modal="true" aria-labelledby="hl-title" tabindex="-1" hidden>
     <div class="panel">
       <div class="eyebrow">GAME HEALTH</div>
       <h2 id="hl-title">Checking your game…</h2>
-      <p class="lead" id="hl-lead">The launcher checks your Skyrim folder for the problems that most often crash SkyMP before the main menu.</p>
+      <p class="lead" id="hl-lead">The launcher checks your Skyrim folder for the problems that most often crash the game before the main menu.</p>
       <ul class="health-list" id="hl-list"></ul>
       <details class="hl-sent"><summary id="hl-sent-sum">What gets sent to staff</summary><pre class="report" id="hl-payload"></pre></details>
       <span class="note" id="hl-note" hidden></span>
@@ -266,14 +260,14 @@
   </div>
 
   <!-- ===== settings ===== -->
-  <div class="sheet" id="settings" hidden>
+  <div class="sheet" id="settings" role="dialog" aria-modal="true" aria-label="Settings" tabindex="-1" hidden>
     <div class="panel">
       <h2>Settings</h2>
       <div class="account" id="set-account" hidden><span class="avatar" id="acc-avatar"></span><div><b id="acc-name"></b><small id="acc-note">Signed in with Discord</small></div><button class="btn" id="acc-signout">Sign out</button></div>
       <div class="field">
         <label for="set-path">Skyrim folder</label>
         <div class="line"><input id="set-path" readonly><button class="btn" id="set-browse">Browse</button></div>
-        <span class="error" id="set-error" hidden></span>
+        <span class="error" id="set-error" role="alert" hidden></span>
       </div>
       <div>
         <div class="toggle"><div>Close launcher when the game starts<small>Keeps the launcher out of the way while you play.</small></div><button class="switch" id="set-close" role="switch" aria-checked="true" aria-label="Close launcher when the game starts"></button></div>

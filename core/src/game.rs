@@ -24,6 +24,29 @@ pub fn inspect(dir: &Path) -> Result<GameInfo> {
     Ok(GameInfo { dir: dir.to_path_buf(), has_skse: dir.join(SKSE_LOADER).is_file() })
 }
 
+/// The folder the player picked, or the Skyrim SE folder right next to it:
+/// its `Data` folder (or anything inside the game folder, one or two levels
+/// down), or a Steam library, `steamapps` or `common` folder holding it.
+/// When there is none, the message says what the folder is instead.
+pub fn pick(dir: &Path) -> Result<GameInfo> {
+    if let Ok(info) = inspect(dir) {
+        return Ok(info);
+    }
+    if !dir.is_dir() {
+        return Err(Error::Game(format!("{} can't be opened. Pick your Skyrim Special Edition folder.", dir.display())));
+    }
+    let up = dir.ancestors().skip(1).take(2);
+    let down = ["Skyrim Special Edition", "common/Skyrim Special Edition", STEAM_FOLDER].map(|sub| dir.join(sub));
+    if let Some(info) = up.map(Path::to_path_buf).chain(down).find_map(|d| inspect(&d).ok()) {
+        return Ok(info);
+    }
+    let other = [("SkyrimVR.exe", "Skyrim VR"), ("TESV.exe", "the original Skyrim (Legendary Edition)")];
+    if let Some((_, name)) = other.iter().find(|(exe, _)| dir.join(exe).is_file()) {
+        return Err(Error::Game(format!("This folder has {name}. The server needs Skyrim Special Edition (or Anniversary Edition): pick that folder.")));
+    }
+    Err(Error::Game(format!("{GAME_EXE} isn't in {}. Pick your Skyrim Special Edition folder.", dir.display())))
+}
+
 /// Looks in every Steam library for Skyrim SE. Returns the first folder that
 /// has the game in it.
 pub fn detect() -> Option<GameInfo> {
@@ -86,14 +109,61 @@ pub fn steam_roots() -> Vec<PathBuf> {
 pub fn launch(dir: &Path) -> Result<std::process::Child> {
     let info = inspect(dir)?;
     if !info.has_skse {
-        return Err(Error::Game("SKSE isn't installed. Install it from skse.silverlock.org, then try again.".into()));
+        return Err(Error::Game("SKSE didn't install. Press Play to try again.".into()));
     }
+    clear_run_as_admin(dir);
     let mut cmd = std::process::Command::new(dir.join(SKSE_LOADER));
     cmd.current_dir(dir);
     for name in GOOGLE_ENV {
         cmd.env_remove(name);
     }
     Ok(cmd.spawn()?)
+}
+
+/// Windows' compatibility flags for a program ("~ RUNASADMIN WIN7RTM")
+/// without "run as administrator": the rest to keep, or None when nothing
+/// else was set (the value then goes).
+pub fn without_run_as_admin(flags: &str) -> Option<String> {
+    let kept: Vec<&str> = flags.split_whitespace().filter(|f| !f.eq_ignore_ascii_case("RUNASADMIN")).collect();
+    if kept.iter().all(|f| *f == "~") {
+        None
+    } else {
+        Some(kept.join(" "))
+    }
+}
+
+/// Turns off "run as administrator" on the game and the SKSE loader for this
+/// Windows account: the launcher can't start a program that asks for it
+/// (os error 740). Returns the programs changed. (Text audit A8.)
+#[cfg(windows)]
+pub fn clear_run_as_admin(dir: &Path) -> Vec<String> {
+    use winreg::{enums::*, RegKey};
+    let mut changed = Vec::new();
+    let Ok(layers) = RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(r"Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers", KEY_READ | KEY_WRITE) else {
+        return changed;
+    };
+    for exe in [GAME_EXE, SKSE_LOADER] {
+        let want = dir.join(exe).to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+        let names: Vec<(String, String)> = layers.enum_values().flatten().filter(|(n, _)| n.to_ascii_lowercase() == want).map(|(n, v)| (n, v.to_string())).collect();
+        for (name, flags) in names {
+            if !flags.split_whitespace().any(|f| f.eq_ignore_ascii_case("RUNASADMIN")) {
+                continue;
+            }
+            let ok = match without_run_as_admin(&flags) {
+                Some(rest) => layers.set_value(&name, &rest).is_ok(),
+                None => layers.delete_value(&name).is_ok(),
+            };
+            if ok {
+                changed.push(exe.to_string());
+            }
+        }
+    }
+    changed
+}
+
+#[cfg(not(windows))]
+pub fn clear_run_as_admin(_dir: &Path) -> Vec<String> {
+    Vec::new()
 }
 
 /// Skyrim Platform watches every folder named by PluginFolders in
@@ -189,6 +259,37 @@ pub fn gpu_pref_path(game_dir: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    fn game_at(root: &std::path::Path) -> std::path::PathBuf {
+        let g = root.join("steamapps/common/Skyrim Special Edition");
+        std::fs::create_dir_all(g.join("Data")).unwrap();
+        std::fs::write(g.join(super::GAME_EXE), b"").unwrap();
+        g
+    }
+
+    #[test]
+    fn a_folder_next_to_the_game_is_taken_as_the_game_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let g = game_at(tmp.path());
+        for picked in [g.clone(), g.join("Data"), tmp.path().to_path_buf(), tmp.path().join("steamapps"), tmp.path().join("steamapps/common")] {
+            assert_eq!(super::pick(&picked).unwrap().dir, g, "{}", picked.display());
+        }
+    }
+
+    #[test]
+    fn a_wrong_folder_says_what_it_is() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vr = tmp.path().join("vr");
+        std::fs::create_dir_all(&vr).unwrap();
+        std::fs::write(vr.join("SkyrimVR.exe"), b"").unwrap();
+        assert!(super::pick(&vr).unwrap_err().to_string().contains("Skyrim VR"));
+        let le = tmp.path().join("le");
+        std::fs::create_dir_all(&le).unwrap();
+        std::fs::write(le.join("TESV.exe"), b"").unwrap();
+        assert!(super::pick(&le).unwrap_err().to_string().contains("Legendary"));
+        assert!(super::pick(&tmp.path().join("gone")).unwrap_err().to_string().contains("can't be opened"));
+        assert!(super::pick(tmp.path()).unwrap_err().to_string().contains("SkyrimSE.exe isn't in"));
+    }
+
     #[test]
     fn makes_missing_platform_folders() {
         let tmp = tempfile::tempdir().unwrap();
@@ -243,5 +344,13 @@ mod tests {
             assert!(p.starts_with("A:\\steam\\steamapps\\common\\Skyrim Special Edition"));
             assert!(p.ends_with("SkyrimSE.exe"));
         }
+    }
+
+    #[test]
+    fn run_as_administrator_is_taken_off_and_the_rest_kept() {
+        assert_eq!(super::without_run_as_admin("~ RUNASADMIN"), None);
+        assert_eq!(super::without_run_as_admin("RUNASADMIN"), None);
+        assert_eq!(super::without_run_as_admin("~ RUNASADMIN WIN7RTM"), Some("~ WIN7RTM".into()));
+        assert_eq!(super::without_run_as_admin("~ HIGHDPIAWARE runasadmin"), Some("~ HIGHDPIAWARE".into()));
     }
 }

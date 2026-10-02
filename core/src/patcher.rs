@@ -113,7 +113,7 @@ pub struct Step {
 /// (callers can cache it by size and date).
 pub fn plan(game_dir: &Path, index: &Index, mut hash: impl FnMut(&Path) -> Option<String>) -> Vec<Step> {
     let mut steps = Vec::new();
-    for f in &index.files {
+    for f in index.files.iter().filter(|f| patchable(&f.path)) {
         let p = game_dir.join(&f.path);
         let size = std::fs::metadata(&p).map(|m| m.len()).ok();
         if size == Some(f.size) && hash(&p).is_some_and(|h| h.eq_ignore_ascii_case(&f.sha256)) {
@@ -126,25 +126,43 @@ pub fn plan(game_dir: &Path, index: &Index, mut hash: impl FnMut(&Path) -> Optio
     steps
 }
 
-/// Patches one file in place: the result goes next to it, is checked, and
-/// only then replaces the old file. `patch_file` is the downloaded patch.
-pub fn apply_step(game_dir: &Path, step: &Step, patch_file: &Path) -> Result<()> {
-    let live = game_dir.join(&step.file.path);
-    let tmp = live.with_extension("aetherial-dawn-patched");
-    apply_patch(&live, patch_file, &tmp)?;
-    let got = sha256_file(&tmp)?;
-    if !got.eq_ignore_ascii_case(&step.file.sha256) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(Error::HashMismatch { path: step.file.path.clone(), expected: step.file.sha256.clone(), actual: got });
-    }
-    // A hard link (the kept copy) keeps the old build; replacing the name
-    // leaves it intact.
-    std::fs::remove_file(&live)?;
-    std::fs::rename(&tmp, &live)?;
-    Ok(())
+/// Where the server's patches write their results: the downgrade work
+/// folder, on the game's drive, so putting them in is a rename.
+pub fn stage_dir(game_dir: &Path) -> PathBuf {
+    game_dir.join(crate::community::WORK_DIR).join("server-stage")
 }
 
-/// The files patches are made for: Steam's own game files.
+/// Makes one patched file in `stage` and checks it; the game isn't
+/// touched. `patch_file` is the downloaded patch. The result goes into the
+/// game with every other file in one journalled swap
+/// (`community::swap_in`), so a failure part way leaves the game as it was.
+pub fn make_patched(game_dir: &Path, stage: &Path, step: &Step, patch_file: &Path) -> Result<crate::community::Swap> {
+    let live = game_dir.join(&step.file.path);
+    let out = stage.join(&step.file.path);
+    if let Some(p) = out.parent() {
+        std::fs::create_dir_all(p)?;
+    }
+    apply_patch(&live, patch_file, &out)?;
+    let got = sha256_file(&out)?;
+    if !got.eq_ignore_ascii_case(&step.file.sha256) {
+        let _ = std::fs::remove_file(&out);
+        return Err(Error::HashMismatch { path: step.file.path.clone(), expected: step.file.sha256.clone(), actual: got });
+    }
+    Ok(crate::community::Swap { from: out, to: step.file.path.clone() })
+}
+
+/// Patches one file: made in the stage folder, checked, then swapped in.
+/// The old copy is moved, never deleted, so a hard link to it (the kept
+/// copy) keeps the old build.
+pub fn apply_step(game_dir: &Path, step: &Step, patch_file: &Path) -> Result<()> {
+    let swap = make_patched(game_dir, &stage_dir(game_dir), step, patch_file)?;
+    crate::community::swap_in(game_dir, &[swap], &mut |_: &str, _: &str, _: u64, _: u64| {})
+}
+
+/// The files patches are made for: Steam's own game files. Never the
+/// Creation Club files or _ResourcePack (QA 2026-09-30: no bytes of them,
+/// not even as a diff, are ever served), so `--make-patches` leaves them
+/// out and a served index that lists them is ignored.
 pub fn patchable(rel: &str) -> bool {
     let l = rel.to_ascii_lowercase();
     match l.strip_prefix("data/") {
@@ -152,9 +170,7 @@ pub fn patchable(rel: &str) -> bool {
         Some(n) => {
             matches!(n, "skyrim.esm" | "update.esm" | "dawnguard.esm" | "hearthfires.esm" | "dragonborn.esm" | "skyrim.ccc")
                 || (n.starts_with("skyrim - ") && n.ends_with(".bsa"))
-                || n.starts_with("_resourcepack.")
                 || n.starts_with("marketplacetextures.")
-                || ["ccbgssse001-fish.", "ccbgssse025-advdsgs.", "ccbgssse037-curios.", "ccqdrsse001-survivalmode."].iter().any(|c| n.starts_with(c))
         }
     }
 }
@@ -256,6 +272,8 @@ mod tests {
         std::fs::write(dir.join("Data/Skyrim.esm"), esm).unwrap();
         std::fs::write(dir.join("Data/Skyrim - Textures0.bsa"), b"same textures").unwrap();
         std::fs::write(dir.join("Data/SomeMod.esp"), b"not ours").unwrap();
+        std::fs::write(dir.join("Data/ccBGSSSE001-Fish.esm"), [esm, b"cc"].concat()).unwrap();
+        std::fs::write(dir.join("Data/_ResourcePack.esl"), [esm, b"rp"].concat()).unwrap();
     }
 
     #[test]
@@ -287,10 +305,28 @@ mod tests {
         assert_eq!(std::fs::read(player.join("Data/Skyrim.esm")).unwrap(), big_new);
         assert_eq!(std::fs::read(player.join("SkyrimSE.exe")).unwrap(), b"exe 1.6.1170");
         assert!(plan(&player, &index, |p| sha256_file(p).ok()).is_empty());
+        // Creation Club and _ResourcePack: never a patch, and a served list
+        // that names one is ignored.
+        assert!(index.files.iter().all(|f| !f.path.to_ascii_lowercase().contains("ccbgssse") && !f.path.to_ascii_lowercase().contains("_resourcepack")));
+        let mut sneaky = index.clone();
+        sneaky.files.push(PFile { path: "Data/ccBGSSSE001-Fish.esm".into(), size: 1, sha256: "00".repeat(32), patches: vec![] });
+        assert!(plan(&player, &sneaky, |p| sha256_file(p).ok()).is_empty());
         // A copy no patch was made from can't be patched.
         std::fs::write(player.join("Data/Skyrim.esm"), b"some other build").unwrap();
         let steps = plan(&player, &index, |p| sha256_file(p).ok());
         assert_eq!(steps.len(), 1);
         assert!(steps[0].patch.is_none());
+        // A failure making any file changes nothing in the game: every file
+        // is made in the stage first, then all go in in one swap.
+        game(&player, b"exe 1.7", &big_old);
+        let steps = plan(&player, &index, |p| sha256_file(p).ok());
+        let stage = stage_dir(&player);
+        let first = make_patched(&player, &stage, &steps[0], &out.join(&steps[0].patch.as_ref().unwrap().file)).unwrap();
+        let wrong_patch = out.join(&steps[0].patch.as_ref().unwrap().file);
+        assert!(make_patched(&player, &stage, &steps[1], &wrong_patch).is_err());
+        assert_eq!(std::fs::read(player.join("Data/Skyrim.esm")).unwrap(), big_old);
+        assert_eq!(std::fs::read(player.join("SkyrimSE.exe")).unwrap(), b"exe 1.7");
+        assert!(first.from.starts_with(&stage));
+        let _ = std::fs::remove_dir_all(&stage);
     }
 }

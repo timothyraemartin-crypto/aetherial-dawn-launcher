@@ -15,6 +15,13 @@ use crate::manifest::GameSpec;
 use crate::Result;
 
 const MARKER: &str = ".aetherial-dawn/game.json";
+const BASE_MASTERS: [&str; 5] = [
+    "Skyrim.esm",
+    "Update.esm",
+    "Dawnguard.esm",
+    "HearthFires.esm",
+    "Dragonborn.esm",
+];
 
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -73,6 +80,39 @@ pub fn short(v: [u16; 4]) -> String {
 /// Steam's record of the game: `steamapps/appmanifest_<app>.acf` next to `common/`.
 pub fn acf_path(game_dir: &Path, app: u32) -> Option<PathBuf> {
     Some(game_dir.parent()?.parent()?.join(format!("appmanifest_{app}.acf")))
+}
+
+/// A selected folder outside Steam's library layout may be a manually managed
+/// copy. Steam's appmanifest cannot verify that copy's files.
+fn in_steam_library(game_dir: &Path) -> bool {
+    let named = |path: Option<&Path>, name: &str| {
+        path.and_then(Path::file_name)
+            .is_some_and(|part| part.to_string_lossy().eq_ignore_ascii_case(name))
+    };
+    let has_layout = |dir: &Path| {
+        named(dir.parent(), "common")
+            && named(dir.parent().and_then(Path::parent), "steamapps")
+    };
+    has_layout(game_dir)
+        || std::fs::canonicalize(game_dir)
+            .ok()
+            .is_some_and(|resolved| has_layout(&resolved))
+}
+
+/// These are necessary for a runnable Skyrim install regardless of depot
+/// provenance. Their presence alone does not prove an exact game build.
+fn missing_base_files(game_dir: &Path) -> Vec<&'static str> {
+    std::iter::once(GAME_EXE)
+        .chain(BASE_MASTERS.iter().copied())
+        .filter(|name| {
+            let path = if *name == GAME_EXE {
+                game_dir.join(name)
+            } else {
+                game_dir.join("Data").join(name)
+            };
+            !std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() > 0)
+        })
+        .collect()
 }
 
 /// Depot → manifest id from the `InstalledDepots` block of an .acf file.
@@ -164,6 +204,13 @@ fn spec_depots(spec: &GameSpec) -> Vec<(u32, String)> {
 /// Notes that the game folder now holds the build the server wants, so later
 /// checks can trust it even though Steam's own record says otherwise.
 pub fn record(game_dir: &Path, spec: &GameSpec, manual: bool) -> Result<()> {
+    let missing = missing_base_files(game_dir);
+    if !missing.is_empty() {
+        return Err(crate::Error::Game(format!(
+            "Skyrim is missing required base game files: {}. Repair the game before marking its version.",
+            missing.join(", ")
+        )));
+    }
     let m = Marker {
         version: spec.version.clone().unwrap_or_default(),
         depots: spec_depots(spec),
@@ -266,6 +313,21 @@ pub fn check(game_dir: &Path, spec: Option<&GameSpec>) -> GameCheck {
     c.skse_ok = game_dir.join(&dll).is_file();
     c.skse_dll = Some(dll);
 
+    let missing = missing_base_files(game_dir);
+    if !missing.is_empty() {
+        c.needed = true;
+        // A target-version executable with missing game files needs a Steam
+        // repair, not another attempt to patch that same executable.
+        if installed == Some(target) {
+            c.can_downgrade = false;
+        }
+        c.reason = Some(format!(
+            "Skyrim is missing required base game files: {}. Verify Skyrim's files in Steam, then check for updates in the launcher.",
+            missing.join(", ")
+        ));
+        return c;
+    }
+
     match installed {
         None => {
             c.needed = true;
@@ -277,9 +339,28 @@ pub fn check(game_dir: &Path, spec: Option<&GameSpec>) -> GameCheck {
         }
         Some(_) if spec.depots.is_empty() => {}
         Some(_) => {
+            if !in_steam_library(game_dir) {
+                c.warning = Some("This Skyrim folder is outside a Steam library. The launcher can't verify its exact game build from Steam's depot record.".into());
+                return c;
+            }
             // Same executable; make sure Steam hasn't swapped the game data underneath it.
-            let acf = acf_path(game_dir, spec.app).and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+            let Some(acf) = acf_path(game_dir, spec.app).and_then(|p| std::fs::read_to_string(p).ok()) else {
+                c.needed = true;
+                c.can_downgrade = false;
+                c.reason = Some("The launcher couldn't read Steam's record for Skyrim. Verify Skyrim's files in Steam, then check for updates in the launcher.".into());
+                return c;
+            };
             let have = installed_depots(&acf);
+            let missing_depots: Vec<_> = spec.depots.iter().filter(|d| !have.contains_key(&d.depot)).map(|d| d.depot.to_string()).collect();
+            if !missing_depots.is_empty() {
+                c.needed = true;
+                c.can_downgrade = false;
+                c.reason = Some(format!(
+                    "Steam's record for Skyrim is missing depot {}. Verify Skyrim's files in Steam, then check for updates in the launcher.",
+                    missing_depots.join(", ")
+                ));
+                return c;
+            }
             let stale = spec.depots.iter().any(|d| matches!(have.get(&d.depot), Some(m) if m.to_string() != d.manifest));
             if marker_holds(game_dir, spec) {
                 // Steam's record never changes after a downgrade, so only a
@@ -374,11 +455,17 @@ mod tests {
     fn game(v: [u16; 4], acf: &str) -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("steamapps/common/Skyrim Special Edition");
-        std::fs::create_dir_all(dir.join("Data")).unwrap();
+        write_base_masters(&dir);
         std::fs::write(dir.join(GAME_EXE), fake_exe(v)).unwrap();
-        std::fs::write(dir.join("Data/Skyrim.esm"), b"esm").unwrap();
         std::fs::write(root.path().join("steamapps/appmanifest_489830.acf"), acf).unwrap();
         root
+    }
+
+    fn write_base_masters(dir: &Path) {
+        std::fs::create_dir_all(dir.join("Data")).unwrap();
+        for name in BASE_MASTERS {
+            std::fs::write(dir.join("Data").join(name), b"esm").unwrap();
+        }
     }
     fn dir(root: &tempfile::TempDir) -> PathBuf {
         root.path().join("steamapps/common/Skyrim Special Edition")
@@ -401,6 +488,61 @@ mod tests {
         assert_eq!(c.installed.as_deref(), Some("1.6.1170.0"));
         assert!(!c.skse_ok);
         assert_eq!(c.skse_dll.as_deref(), Some("skse64_1_6_1170.dll"));
+    }
+
+    #[test]
+    fn steam_install_needs_a_readable_complete_depot_record() {
+        let g = game([1, 6, 1170, 0], ACF);
+        let d = dir(&g);
+        let acf = acf_path(&d, 489830).unwrap();
+        // A marker from the launcher's own downgrade must not hide missing
+        // Steam evidence either.
+        record(&d, &spec(), false).unwrap();
+        std::fs::remove_file(&acf).unwrap();
+        let c = check(&d, Some(&spec()));
+        assert!(c.needed, "missing appmanifest: {c:?}");
+        assert!(!c.can_downgrade);
+        assert!(c.reason.unwrap().contains("couldn't read Steam's record"));
+
+        std::fs::create_dir(&acf).unwrap();
+        let c = check(&d, Some(&spec()));
+        assert!(c.needed, "unreadable appmanifest: {c:?}");
+        std::fs::remove_dir(&acf).unwrap();
+
+        std::fs::write(&acf, ACF.replace("\"489833\"", "\"499999\"")).unwrap();
+        let c = check(&d, Some(&spec()));
+        assert!(c.needed, "missing expected depot: {c:?}");
+        assert!(!c.can_downgrade);
+        assert!(c.reason.unwrap().contains("489833"));
+    }
+
+    #[test]
+    fn missing_or_empty_base_master_cannot_be_marked_ready() {
+        let g = game([1, 6, 1170, 0], ACF);
+        let d = dir(&g);
+        let master = d.join("Data/Update.esm");
+        std::fs::remove_file(&master).unwrap();
+        assert!(record(&d, &spec(), true).is_err());
+        assert!(!d.join(MARKER).exists());
+        let c = check(&d, Some(&spec()));
+        assert!(c.needed, "missing base master: {c:?}");
+        assert!(!c.can_downgrade);
+        assert!(c.reason.unwrap().contains("Update.esm"));
+
+        std::fs::write(&master, b"").unwrap();
+        assert!(record(&d, &spec(), true).is_err());
+        assert!(check(&d, Some(&spec())).needed);
+    }
+
+    #[test]
+    fn non_steam_copy_keeps_exe_version_compatibility_with_warning() {
+        let root = tempfile::tempdir().unwrap();
+        let d = root.path().join("managed/Skyrim Special Edition");
+        write_base_masters(&d);
+        std::fs::write(d.join(GAME_EXE), fake_exe([1, 6, 1170, 0])).unwrap();
+        let c = check(&d, Some(&spec()));
+        assert!(!c.needed, "manually managed game folder: {c:?}");
+        assert!(c.warning.unwrap().contains("outside a Steam library"));
     }
 
     #[test]

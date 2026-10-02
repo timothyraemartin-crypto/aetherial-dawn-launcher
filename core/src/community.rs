@@ -245,6 +245,9 @@ pub struct Swap {
     pub to: String,
 }
 
+/// Starts the error for a game file the patches need that isn't there.
+pub const MISSING_FILE: &str = "NO_PATCH_FILES:";
+
 /// Makes every new file in `stage`: applies each `<file>.xdelta` to the
 /// game's `<file>` (the result goes to `<stage>/<file>`), and takes any other
 /// file as a whole file shipped with the patches. Nothing in the game changes.
@@ -256,7 +259,9 @@ pub fn build_swaps(tool: &Path, game_dir: &Path, stage: &Path, files: &[String],
         report("patch", target, i as u64, deltas.len() as u64);
         let old = game_dir.join(target);
         if !old.is_file() {
-            return Err(Error::Game(format!("{target} is missing from the game folder. Let Steam verify the game files, then try again.")));
+            // The launcher has Steam repair it (text audit A9: NO_PATCH_FILES
+            // runs the UI's Steam repair, then patching carries on).
+            return Err(Error::Game(format!("{MISSING_FILE}{target} is missing from the game folder.")));
         }
         let out = stage.join(format!("{target}.new"));
         apply_xdelta(tool, &old, &stage.join(rel), &out).map_err(|e| Error::Game(format!("couldn't patch {target}: {e}")))?;
@@ -270,20 +275,179 @@ pub fn build_swaps(tool: &Path, game_dir: &Path, stage: &Path, files: &[String],
 }
 
 /// Puts the new files into the game. The work folder is on the game's drive,
-/// so each one is a rename.
+/// so each one is a rename. Each game file is first moved to the work
+/// folder's `old` folder, never deleted, and every step is written to a
+/// journal (`WORK_DIR/swap-journal.txt`) before it happens. If any file can't
+/// be replaced, every file already swapped is put back and each of those
+/// moves is checked. If one of them fails, or the launcher is closed half way,
+/// the journal and the old copies stay, and [`recover`] finishes putting the
+/// game back the next time Fix version runs.
 pub fn swap_in(game_dir: &Path, swaps: &[Swap], report: Report<'_>) -> Result<()> {
+    recover(game_dir)?;
+    let old_dir = game_dir.join(WORK_DIR).join("old");
+    // With no journal, an `old` folder can only be left from a run that had
+    // already finished (the journal goes first), so nothing in it is needed.
+    remove_all(&old_dir).map_err(|e| Error::Game(format!("couldn't clear {} ({e}). Close Skyrim, Steam and Vortex, then try again.", old_dir.display())))?;
+    let journal = journal_path(game_dir);
+    let mut done: Vec<Entry> = Vec::new();
     for (i, s) in swaps.iter().enumerate() {
         report("swap", &s.to, i as u64, swaps.len() as u64);
         let dest = game_dir.join(&s.to);
-        if let Some(p) = dest.parent() {
-            std::fs::create_dir_all(p)?;
+        let entry = Entry { to: s.to.clone(), from: s.from.clone(), had_old: dest.is_file() };
+        let step = (|| -> std::io::Result<()> {
+            append_journal(&journal, &entry)?;
+            if let Some(p) = dest.parent() {
+                std::fs::create_dir_all(p)?;
+            }
+            if entry.had_old {
+                let kept = old_dir.join(&s.to);
+                if let Some(p) = kept.parent() {
+                    std::fs::create_dir_all(p)?;
+                }
+                mv(&dest, &kept)?;
+            }
+            mv(&s.from, &dest).or_else(|_| std::fs::copy(&s.from, &dest).map(|_| ()))
+        })();
+        done.push(entry);
+        if let Err(e) = step {
+            let failed = undo(game_dir, &done);
+            if failed.is_empty() {
+                finish(game_dir);
+                return Err(Error::Game(format!("couldn't replace {} ({e}). Nothing in the game was changed. Close Skyrim, Steam and Vortex, then try again.", s.to)));
+            }
+            return Err(Error::Game(format!(
+                "couldn't replace {} ({e}), and couldn't put back {}. The game's own files are kept in {}; Fix version will put them back when you run it again. Close Skyrim, Steam and Vortex first.",
+                s.to,
+                failed.join(", "),
+                old_dir.display()
+            )));
         }
-        let _ = std::fs::remove_file(&dest);
-        std::fs::rename(&s.from, &dest)
-            .or_else(|_| std::fs::copy(&s.from, &dest).map(|_| ()))
-            .map_err(|e| Error::Game(format!("couldn't replace {} ({e}). Close Skyrim, Steam and Vortex, then try again.", s.to)))?;
     }
+    finish(game_dir);
     Ok(())
+}
+
+/// Finishes putting the game back if a swap was cut short (the launcher
+/// closed, the PC lost power) or its undo failed. Does nothing when there is
+/// no journal. Every move is checked; if any still fails, the journal and the
+/// old copies are kept and the error names what couldn't be put back.
+pub fn recover(game_dir: &Path) -> Result<()> {
+    let journal = journal_path(game_dir);
+    let Ok(text) = std::fs::read_to_string(&journal) else {
+        return Ok(());
+    };
+    let entries: Vec<Entry> = text.lines().filter_map(Entry::parse).collect();
+    let failed = undo(game_dir, &entries);
+    if !failed.is_empty() {
+        return Err(Error::Game(format!(
+            "an earlier Fix version was cut short and the launcher couldn't put back {}. The game's own files are kept in {}. Close Skyrim, Steam and Vortex, then try again.",
+            failed.join(", "),
+            game_dir.join(WORK_DIR).join("old").display()
+        )));
+    }
+    finish(game_dir);
+    Ok(())
+}
+
+/// True when a cut-short swap is waiting for [`recover`].
+pub fn needs_recovery(game_dir: &Path) -> bool {
+    journal_path(game_dir).is_file()
+}
+
+fn journal_path(game_dir: &Path) -> PathBuf {
+    game_dir.join(WORK_DIR).join("swap-journal.txt")
+}
+
+/// One line of the journal: the game file, the new file it gets, and whether
+/// the game had a file there that was moved to `old`.
+struct Entry {
+    to: String,
+    from: PathBuf,
+    had_old: bool,
+}
+
+impl Entry {
+    fn line(&self) -> String {
+        format!("{}\t{}\t{}\n", u8::from(self.had_old), self.to, self.from.display())
+    }
+    fn parse(l: &str) -> Option<Entry> {
+        let mut it = l.splitn(3, '\t');
+        let had_old = match it.next()? {
+            "1" => true,
+            "0" => false,
+            _ => return None,
+        };
+        Some(Entry { had_old, to: it.next()?.to_string(), from: PathBuf::from(it.next()?) })
+    }
+}
+
+fn append_journal(journal: &Path, e: &Entry) -> std::io::Result<()> {
+    if let Some(p) = journal.parent() {
+        std::fs::create_dir_all(p)?;
+    }
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(journal)?;
+    f.write_all(e.line().as_bytes())?;
+    f.sync_all()
+}
+
+/// Puts back each journalled file, newest first. Works from whatever state a
+/// step was left in: the old copy not moved yet, moved with nothing placed, or
+/// moved with the new file placed. Returns the game files it couldn't put back.
+fn undo(game_dir: &Path, entries: &[Entry]) -> Vec<String> {
+    let old_dir = game_dir.join(WORK_DIR).join("old");
+    let mut failed = Vec::new();
+    for e in entries.iter().rev() {
+        let dest = game_dir.join(&e.to);
+        let kept = old_dir.join(&e.to);
+        let ok = (|| -> std::io::Result<()> {
+            // The new file is in the game when the step had no old file, or
+            // when the old copy has been moved away.
+            let new_in_place = dest.exists() && (!e.had_old || kept.exists());
+            if new_in_place {
+                // Back to the work folder; removed if that can't be done (it's
+                // made again from the patches).
+                if mv(&dest, &e.from).is_err() {
+                    std::fs::remove_file(&dest)?;
+                }
+            }
+            if e.had_old && kept.exists() {
+                mv(&kept, &dest)?;
+            }
+            Ok(())
+        })();
+        if ok.is_err() {
+            failed.push(e.to.clone());
+        }
+    }
+    failed
+}
+
+/// The swap is settled either way: the journal goes first (so an `old` folder
+/// without one is known to be spare), then the old copies.
+fn finish(game_dir: &Path) {
+    let _ = std::fs::remove_file(journal_path(game_dir));
+    let _ = std::fs::remove_dir_all(game_dir.join(WORK_DIR).join("old"));
+}
+
+fn remove_all(dir: &Path) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests make a move onto this path fail, as a locked file would.
+    static FAIL_MOVE_TO: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+fn mv(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if FAIL_MOVE_TO.with(|f| f.borrow().as_deref() == Some(to)) {
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "locked (test)"));
+    }
+    std::fs::rename(from, to)
 }
 
 /// The newer game writes a ContentCatalog.txt the old one can crash on, and
@@ -300,6 +464,8 @@ pub fn after_downgrade(game_dir: &Path) {
 
 /// The whole job, from Steam's 1.7.104 to 1.6.1170. Returns the files changed.
 pub async fn downgrade(client: &reqwest::Client, game_dir: &Path, report: Report<'_>) -> Result<Vec<String>> {
+    // A swap cut short can leave SkyrimSE.exe changed, so this comes first.
+    recover(game_dir)?;
     if !supported(game_dir) {
         return Err(Error::Game(format!("NOT_SUPPORTED:This Skyrim isn't Steam's {FROM_VERSION}.")));
     }
@@ -379,6 +545,127 @@ mod tests {
         assert_eq!(std::fs::read(game.join("steam_api64.dll")).unwrap(), b"whole file");
         // A missing source file stops before anything is written.
         let files = vec!["Data/Gone.esm.xdelta".to_string()];
-        assert!(build_swaps(Path::new("xdelta3"), &game, &stage, &files, &mut log).is_err());
+        let e = build_swaps(Path::new("xdelta3"), &game, &stage, &files, &mut log).unwrap_err().to_string();
+        // With the prefix that has Steam repair the game (text audit A9).
+        assert!(e.starts_with(MISSING_FILE), "{e}");
+    }
+
+    #[test]
+    fn a_failed_swap_puts_back_every_file_already_swapped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let game = tmp.path().join("game");
+        let stage = tmp.path().join("stage");
+        std::fs::create_dir_all(game.join("Data")).unwrap();
+        std::fs::create_dir_all(&stage).unwrap();
+        std::fs::write(game.join("Data/Skyrim.esm"), b"old esm").unwrap();
+        std::fs::write(game.join("SkyrimSE.exe"), b"old exe").unwrap();
+        std::fs::write(stage.join("Skyrim.esm.new"), b"new esm").unwrap();
+        // The second new file is missing (antivirus took it, say).
+        let swaps = vec![
+            Swap { from: stage.join("Skyrim.esm.new"), to: "Data/Skyrim.esm".into() },
+            Swap { from: stage.join("SkyrimSE.exe.new"), to: "SkyrimSE.exe".into() },
+        ];
+        let mut log = |_: &str, _: &str, _: u64, _: u64| {};
+        let e = swap_in(&game, &swaps, &mut log).unwrap_err().to_string();
+        assert!(e.contains("SkyrimSE.exe") && e.contains("Nothing in the game was changed"), "{e}");
+        assert_eq!(std::fs::read(game.join("Data/Skyrim.esm")).unwrap(), b"old esm");
+        assert_eq!(std::fs::read(game.join("SkyrimSE.exe")).unwrap(), b"old exe");
+        // A new file for a path the game didn't have is taken out again.
+        std::fs::write(stage.join("extra.dll"), b"new dll").unwrap();
+        let swaps = vec![
+            Swap { from: stage.join("extra.dll"), to: "extra.dll".into() },
+            Swap { from: stage.join("missing.new"), to: "SkyrimSE.exe".into() },
+        ];
+        assert!(swap_in(&game, &swaps, &mut log).is_err());
+        assert!(!game.join("extra.dll").exists());
+        assert_eq!(std::fs::read(game.join("SkyrimSE.exe")).unwrap(), b"old exe");
+        // And when every file is there, all are swapped and no old copy is left.
+        std::fs::write(stage.join("SkyrimSE.exe.new"), b"new exe").unwrap();
+        let swaps = vec![
+            Swap { from: stage.join("Skyrim.esm.new"), to: "Data/Skyrim.esm".into() },
+            Swap { from: stage.join("SkyrimSE.exe.new"), to: "SkyrimSE.exe".into() },
+        ];
+        swap_in(&game, &swaps, &mut log).unwrap();
+        assert_eq!(std::fs::read(game.join("Data/Skyrim.esm")).unwrap(), b"new esm");
+        assert_eq!(std::fs::read(game.join("SkyrimSE.exe")).unwrap(), b"new exe");
+        assert!(!game.join(WORK_DIR).join("old").exists());
+    }
+
+    #[test]
+    fn a_failed_undo_keeps_the_old_copies_and_the_next_run_puts_them_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let game = tmp.path().join("game");
+        let stage = tmp.path().join("stage");
+        std::fs::create_dir_all(game.join("Data")).unwrap();
+        std::fs::create_dir_all(&stage).unwrap();
+        std::fs::write(game.join("Data/Skyrim.esm"), b"old esm").unwrap();
+        std::fs::write(game.join("SkyrimSE.exe"), b"old exe").unwrap();
+        std::fs::write(stage.join("Skyrim.esm.new"), b"new esm").unwrap();
+        let swaps = vec![
+            Swap { from: stage.join("Skyrim.esm.new"), to: "Data/Skyrim.esm".into() },
+            Swap { from: stage.join("SkyrimSE.exe.new"), to: "SkyrimSE.exe".into() },
+        ];
+        let mut log = |_: &str, _: &str, _: u64, _: u64| {};
+        // Putting the old Skyrim.esm back fails, as a file held open would.
+        FAIL_MOVE_TO.with(|f| *f.borrow_mut() = Some(game.join("Data/Skyrim.esm")));
+        let e = swap_in(&game, &swaps, &mut log).unwrap_err().to_string();
+        assert!(!e.contains("Nothing in the game was changed"), "{e}");
+        assert!(e.contains("couldn't put back Data/Skyrim.esm") && e.contains("SkyrimSE.exe"), "{e}");
+        // The old copy and the journal are kept; the other file is back.
+        assert_eq!(std::fs::read(game.join(WORK_DIR).join("old/Data/Skyrim.esm")).unwrap(), b"old esm");
+        assert!(needs_recovery(&game));
+        assert_eq!(std::fs::read(game.join("SkyrimSE.exe")).unwrap(), b"old exe");
+        // Still locked: recovery reports it again and keeps everything.
+        assert!(recover(&game).unwrap_err().to_string().contains("Data/Skyrim.esm"));
+        assert!(needs_recovery(&game));
+        assert!(game.join(WORK_DIR).join("old/Data/Skyrim.esm").is_file());
+        // Unlocked: the next run puts it back before doing anything else.
+        FAIL_MOVE_TO.with(|f| *f.borrow_mut() = None);
+        assert!(swap_in(&game, &swaps, &mut log).is_err());
+        assert_eq!(std::fs::read(game.join("Data/Skyrim.esm")).unwrap(), b"old esm");
+        assert_eq!(std::fs::read(game.join("SkyrimSE.exe")).unwrap(), b"old exe");
+        assert!(!needs_recovery(&game));
+        assert!(!game.join(WORK_DIR).join("old").exists());
+    }
+
+    #[test]
+    fn a_swap_cut_short_is_put_back_on_the_next_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let game = tmp.path().join("game");
+        let stage = tmp.path().join("stage");
+        let old = game.join(WORK_DIR).join("old");
+        std::fs::create_dir_all(game.join("Data")).unwrap();
+        std::fs::create_dir_all(old.join("Data")).unwrap();
+        std::fs::create_dir_all(&stage).unwrap();
+        // The launcher closed during the third file: Skyrim.esm was swapped,
+        // extra.dll (new to the game) was placed, and SkyrimSE.exe had been
+        // moved aside with nothing put in its place yet.
+        let entries = [
+            Entry { to: "Data/Skyrim.esm".into(), from: stage.join("Skyrim.esm.new"), had_old: true },
+            Entry { to: "extra.dll".into(), from: stage.join("extra.dll"), had_old: false },
+            Entry { to: "SkyrimSE.exe".into(), from: stage.join("SkyrimSE.exe.new"), had_old: true },
+        ];
+        for e in &entries {
+            append_journal(&journal_path(&game), e).unwrap();
+        }
+        std::fs::write(old.join("Data/Skyrim.esm"), b"old esm").unwrap();
+        std::fs::write(game.join("Data/Skyrim.esm"), b"new esm").unwrap();
+        std::fs::write(game.join("extra.dll"), b"new dll").unwrap();
+        std::fs::write(old.join("SkyrimSE.exe"), b"old exe").unwrap();
+        std::fs::write(stage.join("SkyrimSE.exe.new"), b"new exe").unwrap();
+        assert!(needs_recovery(&game));
+        recover(&game).unwrap();
+        assert_eq!(std::fs::read(game.join("Data/Skyrim.esm")).unwrap(), b"old esm");
+        assert_eq!(std::fs::read(game.join("SkyrimSE.exe")).unwrap(), b"old exe");
+        assert!(!game.join("extra.dll").exists());
+        // New files go back to the work folder.
+        assert_eq!(std::fs::read(stage.join("Skyrim.esm.new")).unwrap(), b"new esm");
+        assert_eq!(std::fs::read(stage.join("SkyrimSE.exe.new")).unwrap(), b"new exe");
+        assert!(!needs_recovery(&game) && !old.exists());
+        // A game file whose old copy was never moved stays as it is.
+        append_journal(&journal_path(&game), &entries[2]).unwrap();
+        recover(&game).unwrap();
+        assert_eq!(std::fs::read(game.join("SkyrimSE.exe")).unwrap(), b"old exe");
+        assert_eq!(std::fs::read(stage.join("SkyrimSE.exe.new")).unwrap(), b"new exe");
     }
 }

@@ -135,8 +135,15 @@ fn exe(i: &Inputs) -> Check {
 pub fn parse_masters(v: &serde_json::Value) -> Vec<(String, Option<u64>, Option<String>)> {
     let list = v.get("masters").or_else(|| v.get("files")).unwrap_or(v);
     let entry = |name: String, e: &serde_json::Value| {
-        let size = e.get("size").and_then(|s| s.as_u64());
-        let sha = e.get("sha256").and_then(|s| s.as_str()).map(|s| s.to_ascii_lowercase());
+        // A master the PC runs as a converted copy (a listed .esl as
+        // "<stem>.esm") is checked by its canonical bytes, what every PC's
+        // copy holds; `sha256` and `size` there are the game's own file.
+        let canon = ["canonical_sha256", "canonicalSha256"].iter().find_map(|k| e.get(*k)).and_then(|s| s.as_str()).filter(|s| !s.is_empty());
+        let size = match canon {
+            Some(_) => ["canonical_size", "canonicalSize"].iter().find_map(|k| e.get(*k)).and_then(|s| s.as_u64()),
+            None => e.get("size").and_then(|s| s.as_u64()),
+        };
+        let sha = canon.or_else(|| e.get("sha256").and_then(|s| s.as_str())).map(|s| s.to_ascii_lowercase());
         (name, size, sha)
     };
     match list {
@@ -185,9 +192,9 @@ fn masters(i: &Inputs) -> Check {
     let Some(want) = i.masters.map(parse_masters).filter(|w| !w.is_empty()) else {
         let missing: Vec<String> = MASTERS.iter().filter(|m| !data.join(m).is_file()).map(|m| m.to_string()).collect();
         return if missing.is_empty() {
-            check("masters", "Game masters", Status::Info, "Present. The server's list of masters couldn't be loaded, so they weren't compared.", vec![])
+            check("masters", "Base game files", Status::Info, "Present. The server's list of masters couldn't be loaded, so they weren't compared.", vec![])
         } else {
-            check("masters", "Game masters", Status::Fail, "Missing from Data. Verify Skyrim in Steam, then click Fix version.", missing)
+            check("masters", "Base game files", Status::Fail, "Missing from Data. Verify Skyrim in Steam, then click Fix version.", missing)
         };
     };
     let mut cache: HashCache = i.hash_cache.and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
@@ -218,9 +225,9 @@ fn masters(i: &Inputs) -> Check {
         }
     }
     if bad.is_empty() {
-        check("masters", "Game masters", Status::Ok, format!("All {} match the server.", want.len()), vec![])
+        check("masters", "Base game files", Status::Ok, format!("All {} match the server.", want.len()), vec![])
     } else {
-        check("masters", "Game masters", Status::Fail, "Don't match the server's. Click Fix version to download the right build.", bad)
+        check("masters", "Base game files", Status::Fail, "Don't match the server's. Press Play and the launcher puts the right ones in place.", bad)
     }
 }
 
@@ -244,7 +251,10 @@ fn load_order(i: &Inputs) -> Check {
 /// The game's plugins against the server's, position by position, as the
 /// SkyMP client checks them (serverorder.rs).
 fn server_order(i: &Inputs) -> Check {
-    let order = i.masters.map(crate::serverorder::server_order).unwrap_or_default();
+    let Some(masters) = i.masters else {
+        return check("serverorder", "Server plugin order", Status::Warn, "Couldn't load the server's plugin list, so the order wasn't checked.", vec![]);
+    };
+    let order = crate::serverorder::server_order(masters);
     if !crate::serverorder::beyond_base(&order) {
         return check("serverorder", "Server plugin order", Status::Ok, "The server loads only the five base masters.", vec![]);
     }
@@ -255,7 +265,7 @@ fn server_order(i: &Inputs) -> Check {
     if bad.is_empty() {
         check("serverorder", "Server plugin order", Status::Ok, format!("The game loads the server's {} plugins in the same order.", order.len()), vec![])
     } else {
-        check("serverorder", "Server plugin order", Status::Fail, "The game's plugins don't match the server's order; SkyMP would stop with a load order error.", bad)
+        check("serverorder", "Server plugin order", Status::Fail, "The game's plugins don't match the server's order, so the game would refuse to connect. The launcher sets the order before Play.", bad)
     }
 }
 
@@ -276,7 +286,7 @@ fn plugin_names(i: &Inputs) -> Check {
     if items.is_empty() {
         check("pluginnames", "Plugin names", Status::Ok, "Every plugin's name is one the game client accepts.", vec![])
     } else {
-        check("pluginnames", "Plugin names", Status::Info, "The SkyMP client can't load plugin names with spaces, so before Play the launcher gives these a copy under a name it accepts. Nothing is renamed.", items)
+        check("pluginnames", "Plugin names", Status::Info, "The game can't load these plugin names as they are, so before Play the launcher loads a copy under a name it accepts. Nothing is renamed.", items)
     }
 }
 
@@ -302,9 +312,9 @@ fn load_order_file(i: &Inputs) -> Check {
         }
     }
     if items.is_empty() {
-        check("loadorderfile", "Load order file", Status::Ok, "loadorder.txt starts with the five base masters.", vec![])
+        check("loadorderfile", "Load order file", Status::Ok, "Your load order starts with the five base game files.", vec![])
     } else {
-        check("loadorderfile", "Load order file", Status::Info, "loadorder.txt is out of date. The launcher puts the five base masters first before Play; this doesn't crash the game.", items)
+        check("loadorderfile", "Load order file", Status::Info, "Your load order is out of date. The launcher fixes it before Play; this doesn't crash the game.", items)
     }
 }
 
@@ -364,7 +374,7 @@ fn required_files(i: &Inputs) -> Check {
     if items.is_empty() {
         check("requiredfiles", "Required mods' files", Status::Ok, "Every required mod has its support files.", vec![])
     } else {
-        check("requiredfiles", "Required mods' files", Status::Fail, "A required mod is missing files it needs to start, which crashes the game a few seconds in. The launcher puts files it set aside back before Play; otherwise reinstall the mod.", items)
+        check("requiredfiles", "Required mods' files", Status::Fail, "A required mod is missing files it needs to start, which crashes the game a few seconds in. Before Play the launcher puts back files it set aside and reinstalls the mod if anything is still missing.", items)
     }
 }
 
@@ -427,6 +437,49 @@ pub fn crash_cause(crash: &str) -> Option<String> {
 
 /// The launcher's own best guess at a crash's cause, from the checks, most
 /// specific first. None when nothing points anywhere.
+/// What Play says when the server's masters don't match. Steam's own files
+/// (the base masters, the free Creation Club masters, _ResourcePack) never
+/// come from a mod: one that's missing comes back through Steam's Verify,
+/// then Fix version; one that's there but a different build (or that the
+/// launcher set aside as made for a newer Skyrim) needs Fix version only.
+pub fn masters_fix_message(game_dir: &Path, items: &[String], exe_is_servers: bool) -> String {
+    let split = |i: &String| {
+        let (n, why) = i.split_once(": ").unwrap_or((i.as_str(), ""));
+        (n.to_string(), why == "missing")
+    };
+    let steam = |n: &str| crate::patcher::patchable(&format!("Data/{n}")) || crate::aliases::shipped_with_game(n) || n.to_ascii_lowercase().starts_with("_resourcepack.");
+    let set_aside = |n: &str| {
+        std::fs::read_dir(game_dir.join(strays::DISABLED_DIR)).into_iter().flatten().flatten()
+            .any(|e| e.file_name().to_string_lossy().ends_with("-plugins") && e.path().join("Data").join(n).is_file())
+    };
+    let which = items.iter().take(3).cloned().collect::<Vec<_>>().join("; ");
+    let all: Vec<(String, bool)> = items.iter().map(split).collect();
+    let join = |v: Vec<&String>| v.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", ");
+    let newer: Vec<&String> = all.iter().filter(|(n, missing)| *missing && steam(n) && set_aside(n)).map(|(n, _)| n).collect();
+    if !newer.is_empty() {
+        let fix = if exe_is_servers {
+            "In Steam, right-click Skyrim Special Edition, Properties, Installed Files, Verify integrity of game files; then click Fix version"
+        } else {
+            "Click Fix version to change your game to the server's version"
+        };
+        return format!("Steam updated {} for a newer Skyrim, so the launcher set it aside. {fix}, then try Play: {which}", join(newer));
+    }
+    if all.is_empty() || !all.iter().all(|(n, _)| steam(n)) {
+        return format!("Your game files do not match the server's master list. Use Fix version for a game file or install the listed server mod, then try Play: {which}");
+    }
+    let gone: Vec<&String> = all.iter().filter(|(_, missing)| *missing).map(|(n, _)| n).collect();
+    // With SkyrimSE.exe already the server's build, Fix version has nothing
+    // to change ("already the server's version"): only Steam's Verify puts
+    // the other files back, and then Fix version brings them all down.
+    if gone.is_empty() && exe_is_servers {
+        return format!("Some of your game files are a different Skyrim version from the server's. In Steam, right-click Skyrim Special Edition, Properties, Installed Files, Verify integrity of game files; then click Fix version and try Play: {which}");
+    }
+    if gone.is_empty() {
+        return format!("Your game files are a different Skyrim version from the server's. Click Fix version, then try Play: {which}");
+    }
+    format!("{} is missing from your Skyrim. In Steam, right-click Skyrim Special Edition, Properties, Installed Files, Verify integrity of game files; then click Fix version and try Play: {which}", join(gone))
+}
+
 pub fn likely_cause(r: &Report) -> Option<String> {
     let failed = |id: &str, st: Status| r.checks.iter().find(|c| c.id == id && c.status >= st);
     if let Some(c) = failed("requiredfiles", Status::Fail) {
@@ -440,7 +493,7 @@ pub fn likely_cause(r: &Report) -> Option<String> {
     }
     for (id, why) in [
         ("exe", "Wrong Skyrim version"),
-        ("masters", "Game masters don't match the server"),
+        ("masters", "Base game files don't match the server"),
         ("newer", "Plugins made for a newer Skyrim"),
         ("strays", "SKSE plugins or loose menus from other mods"),
     ] {
@@ -469,9 +522,9 @@ fn stub_plugins(i: &Inputs) -> Check {
     }
     items.sort();
     if items.is_empty() {
-        check("stubs", "Plugin files", Status::Ok, "No broken plugin files in Data.", vec![])
+        check("stubs", "Plugin files", Status::Ok, "No broken plugin files.", vec![])
     } else {
-        check("stubs", "Plugin files", Status::Warn, "Broken plugin files in Data. Switched off, they're harmless.", items)
+        check("stubs", "Plugin files", Status::Warn, "Some plugin files are broken. They're switched off, so they can't hurt.", items)
     }
 }
 
@@ -486,7 +539,7 @@ fn newer_plugins(i: &Inputs) -> Check {
 
 fn ini_archives(i: &Inputs) -> Check {
     let Some(docs) = i.documents else {
-        return check("ini", "Skyrim.ini archives", Status::Info, "Couldn't find the Documents folder.", vec![]);
+        return check("ini", "Game settings file", Status::Info, "Couldn't find the Documents folder.", vec![]);
     };
     let mut items = Vec::new();
     for ini in gameini::ini_paths(docs) {
@@ -501,9 +554,9 @@ fn ini_archives(i: &Inputs) -> Check {
         }
     }
     if items.is_empty() {
-        check("ini", "Skyrim.ini archives", Status::Ok, "Every archive the ini names is in Data.", vec![])
+        check("ini", "Game settings file", Status::Ok, "Every file Skyrim's settings file lists is there.", vec![])
     } else {
-        check("ini", "Skyrim.ini archives", Status::Warn, "The ini names archives that aren't there. The launcher cleans this before Play.", items)
+        check("ini", "Game settings file", Status::Warn, "Skyrim's settings file lists files that aren't there. The launcher cleans this before Play.", items)
     }
 }
 
@@ -519,9 +572,10 @@ fn stray_plugins(i: &Inputs) -> Check {
     }
 }
 
-fn injectors(i: &Inputs) -> Check {
+/// ENB, ReShade and other injector files next to SkyrimSE.exe.
+pub fn injector_files(game_dir: &Path) -> Vec<String> {
     let mut items = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(i.game_dir) {
+    if let Ok(rd) = std::fs::read_dir(game_dir) {
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
             let l = n.to_ascii_lowercase();
@@ -531,10 +585,15 @@ fn injectors(i: &Inputs) -> Check {
         }
     }
     items.sort();
+    items
+}
+
+fn injectors(i: &Inputs) -> Check {
+    let items = injector_files(i.game_dir);
     if items.is_empty() {
         check("injectors", "Injectors next to Skyrim", Status::Ok, "No ENB, ReShade or other injector files.", vec![])
     } else {
-        check("injectors", "Injectors next to Skyrim", Status::Warn, "These load into Skyrim and can crash SkyrimPlatform's browser. Move them out if the game crashes.", items)
+        check("injectors", "Injectors next to Skyrim", Status::Warn, "These load into Skyrim and can crash the game's menus. If the game crashes, the launcher sets them aside before the next Play.", items)
     }
 }
 
@@ -580,7 +639,7 @@ fn steam_updates(i: &Inputs) -> Check {
     if behavior == "1" && readonly {
         check("steam", "Steam updates", Status::Ok, detail, vec![])
     } else {
-        check("steam", "Steam updates", Status::Warn, format!("{detail}. Steam can update Skyrim past the server's version. Fix version holds it."), vec![])
+        check("steam", "Steam updates", Status::Warn, format!("{detail}. If Steam updates Skyrim, the launcher puts the right files back before you play."), vec![])
     }
 }
 
@@ -598,8 +657,11 @@ fn crash_logger(i: &Inputs) -> Check {
         Some(_) => have.push("Address Library"),
         None => {}
     }
-    if strays::CRASH_LOGGERS.iter().any(|n| dir.join(n).is_file()) {
+    // The same test Play uses: a copy SKSE wouldn't load doesn't count.
+    if requirements::crash_logger_ok(i.game_dir) {
         have.push("Crash Logger");
+    } else if dir.join("CrashLogger.dll").is_file() {
+        missing.push("Crash Logger: the copy there won't load on this Skyrim (the launcher replaces it before Play)".to_string());
     } else {
         missing.push("Crash Logger: not installed (the launcher installs it before Play)".to_string());
     }
@@ -671,6 +733,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_steam_master_mismatch_points_to_verify_and_fix_version_not_a_mod() {
+        let tmp = tempfile::tempdir().unwrap();
+        let g = tmp.path();
+        let cc = vec!["ccBGSSSE037-Curios.esl: missing".to_string(), "_ResourcePack.esl: same size, different contents".to_string()];
+        let m = masters_fix_message(g, &cc, false);
+        assert!(m.starts_with("ccBGSSSE037-Curios.esl is missing") && m.contains("Verify integrity") && m.contains("Fix version") && !m.contains("server mod"), "{m}");
+        // Present but another build: Fix version only, no Steam Verify.
+        let changed = ["_ResourcePack.esl: same size, different contents".to_string(), "Skyrim.esm: 10 bytes, server has 12".to_string()];
+        let m = masters_fix_message(g, &changed, false);
+        assert!(m.contains("Click Fix version") && !m.contains("Verify"), "{m}");
+        // The exe is already the server's: Fix version would say so and stop,
+        // so Steam's Verify comes first.
+        let m = masters_fix_message(g, &changed, true);
+        assert!(m.contains("Verify integrity") && m.contains("then click Fix version"), "{m}");
+        let modded = vec!["ccBGSSSE001-Fish.esm: missing".to_string(), "JKs-Skyrim.esp: missing".to_string()];
+        assert!(masters_fix_message(g, &modded, false).contains("install the listed server mod"));
+        let aside = g.join(strays::DISABLED_DIR).join("2026-09-30-19-40-00-plugins/Data");
+        std::fs::create_dir_all(&aside).unwrap();
+        std::fs::write(aside.join("ccBGSSSE001-Fish.esm"), b"newer").unwrap();
+        let m = masters_fix_message(g, &["ccBGSSSE001-Fish.esm: missing".to_string()], false);
+        assert!(m.starts_with("Steam updated ccBGSSSE001-Fish.esm for a newer Skyrim") && m.contains("Fix version"), "{m}");
+        // Set aside while the exe is already the server's: Verify first.
+        let m = masters_fix_message(g, &["ccBGSSSE001-Fish.esm: missing".to_string()], true);
+        assert!(m.starts_with("Steam updated ccBGSSSE001-Fish.esm") && m.contains("Verify integrity") && m.contains("then click Fix version"), "{m}");
+    }
+
+    #[test]
     fn parses_master_list_shapes() {
         let a = serde_json::json!({"masters":[{"name":"Skyrim.esm","size":3,"sha256":"AB"}]});
         assert_eq!(parse_masters(&a), vec![("Skyrim.esm".into(), Some(3), Some("ab".into()))]);
@@ -678,6 +767,11 @@ mod tests {
         assert_eq!(parse_masters(&b)[0].0, "Update.esm");
         let c = serde_json::json!({"Dawnguard.esm":{"size":2}});
         assert_eq!(parse_masters(&c)[0], ("Dawnguard.esm".into(), Some(2), None));
+        // A converted master is checked by its canonical hash, and by the
+        // canonical size only when the list gives one.
+        let d = serde_json::json!({"masters": [{"name": "_ResourcePack.esm", "size": 9, "sha256": "AA", "canonical_sha256": "BB"},
+            {"name": "ccQDRSSE001-SurvivalMode.esm", "size": 9, "sha256": "aa", "canonicalSha256": "cc", "canonicalSize": 8}]});
+        assert_eq!(parse_masters(&d), vec![("_ResourcePack.esm".into(), None, Some("bb".into())), ("ccQDRSSE001-SurvivalMode.esm".into(), Some(8), Some("cc".into()))]);
     }
 
     #[test]
@@ -702,6 +796,17 @@ mod tests {
         assert!(cache.exists());
         assert_eq!(r.worst, Status::Fail);
         assert!(!r.text().contains(&tmp.path().display().to_string()));
+    }
+
+    #[test]
+    fn no_server_plugin_list_is_a_warning_not_ok() {
+        let tmp = tempfile::tempdir().unwrap();
+        let i = Inputs { game_dir: tmp.path(), manifest: None, masters: None, appdata: Some(tmp.path()), documents: None, hash_cache: None, home: None };
+        let c = server_order(&i);
+        assert_eq!(c.status, Status::Warn, "{}", c.detail);
+        let base = serde_json::json!({"masters":[{"name":"Skyrim.esm","size":1}]});
+        let c = server_order(&Inputs { masters: Some(&base), ..i });
+        assert_eq!(c.status, Status::Ok);
     }
 
     #[test]

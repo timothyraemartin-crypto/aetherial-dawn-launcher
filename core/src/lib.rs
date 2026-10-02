@@ -11,9 +11,12 @@ pub mod clientstatus;
 pub mod community;
 pub mod downgrade;
 pub mod faces;
+pub mod fetch;
 pub mod game;
 pub mod gameini;
 pub mod health;
+pub mod inventory;
+pub mod vortex;
 pub mod loadorder;
 pub mod manifest;
 pub mod modlist;
@@ -33,6 +36,10 @@ pub mod tools;
 pub mod ussep;
 pub mod version;
 pub mod watch;
+pub mod window;
+
+#[cfg(test)]
+mod rehearsal;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -72,7 +79,7 @@ pub fn plain(raw: &str) -> String {
         return "The drive with Skyrim is full. Free some space, then try again.".into();
     }
     if has(&["os error 740)", "requires elevation"]) {
-        return "Windows wouldn't start it without administrator rights. Make sure SkyrimSE.exe and skse64_loader.exe aren't set to run as administrator, then try again.".into();
+        return "Windows wouldn't start Skyrim. The launcher turned off \"run as administrator\" on the game; press Play again.".into();
     }
     if has(&["os error 2)", "os error 3)", "cannot find the path", "cannot find the file", "no such file or directory"]) {
         return "A file or folder the launcher needs is missing. Check your Skyrim folder in Settings, then try again.".into();
@@ -88,16 +95,16 @@ pub fn plain(raw: &str) -> String {
         return "The server refused the download just now. The launcher tries again the next time you press Play.".into();
     }
     if has(&["timed out", "deadline has elapsed"]) {
-        return "The connection was too slow. The launcher tries again on the next try.".into();
+        return "The connection was too slow. The launcher tries again the next time you press Play.".into();
     }
     if has(&["websocket", "nexus sign-in:"]) {
         return "Couldn't reach Nexus to sign in. Check your internet and try again.".into();
     }
     if has(&["error sending request", "dns error", "connection refused", "connection reset", "network error", "error decoding response", "tcp connect", "couldn't reach"]) {
-        return "The launcher couldn't reach the internet just now. Check your connection; it tries again on the next try.".into();
+        return "The launcher couldn't reach the internet just now. Check your connection; it tries again the next time you press Play.".into();
     }
     if has(&["invalid data:", "expected value at line", "eof while parsing", "missing field", "sent something unexpected"]) {
-        return "The server sent something the launcher couldn't read. It tries again on the next try.".into();
+        return "The server sent something the launcher couldn't read. It tries again the next time you press Play.".into();
     }
     if has(&["failed to open url", "failed to open path", "program not found"]) {
         return "Couldn't open that in Windows. Set a default web browser in Windows Settings, then try again.".into();
@@ -109,6 +116,15 @@ pub fn plain(raw: &str) -> String {
         return "A game file couldn't be changed. Close Skyrim and Vortex, then try again.".into();
     }
     scrub(raw)
+}
+
+/// A Discord invite link the launcher may show and open: https only, on
+/// discord.gg or discord.com/invite, with a plain invite code.
+pub fn discord_invite(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    let code = t.strip_prefix("https://discord.gg/").or_else(|| t.strip_prefix("https://discord.com/invite/"))?;
+    let ok = (2..=32).contains(&code.len()) && code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    ok.then(|| format!("https://discord.gg/{code}"))
 }
 
 /// Removes web addresses and "(os error N)" leftovers from otherwise plain
@@ -149,6 +165,15 @@ pub fn plain_ui(raw: &str) -> String {
 #[cfg(test)]
 mod plain_tests {
     #[test]
+    fn only_plain_discord_invites_are_shown() {
+        assert_eq!(super::discord_invite("https://discord.gg/AbC-12"), Some("https://discord.gg/AbC-12".into()));
+        assert_eq!(super::discord_invite(" https://discord.com/invite/xyz "), Some("https://discord.gg/xyz".into()));
+        for bad in ["http://discord.gg/abc", "https://discord.gg/", "https://discord.gg/a/b", "https://discord.gg/abc?x=1", "https://evil.example/discord.gg/abc", "javascript:alert(1)", "https://discord.gg/a"] {
+            assert_eq!(super::discord_invite(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
     fn words_errors_plainly() {
         assert!(super::plain("file error: Access is denied. (os error 5)").starts_with("Windows wouldn't let"));
         assert!(super::plain("network error: error sending request for url (https://x/y)").contains("couldn't reach"));
@@ -164,8 +189,10 @@ mod plain_tests {
         let e = super::scrub("export: failed JK: error sending request for url (https://cf-files.nexusmods.com/cdn/1704/x.7z?md5=abc&expires=17&user_id=42)");
         assert!(!e.contains("md5") && !e.contains("user_id") && e.contains("(link hidden)"), "{e}");
         assert_eq!(super::plain("appeal at https://discord.gg/abc now"), "appeal at https://discord.gg/abc now");
-        assert_eq!(super::plain_ui("NO_PATCH:network error: error sending request"), "NO_PATCH:The launcher couldn't reach the internet just now. Check your connection; it tries again on the next try.");
+        assert_eq!(super::plain_ui("NO_PATCH:network error: error sending request"), "NO_PATCH:The launcher couldn't reach the internet just now. Check your connection; it tries again the next time you press Play.");
         assert_eq!(super::plain_ui("NEEDS_NEXUS_MODS:[{\"a\":1}]"), "NEEDS_NEXUS_MODS:[{\"a\":1}]");
         assert!(super::plain_ui("SIGNED_OUT:Please sign in again.").starts_with("SIGNED_OUT:Please"));
     }
 }
+#[cfg(all(test, feature = "rar"))]
+mod testrar;

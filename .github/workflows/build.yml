@@ -1,8 +1,7 @@
 name: Build launcher
 
-# Builds the Windows installer on every push. Every push to main also publishes
-# it as the GitHub release for the version in Cargo.toml (v0.1.5 and so on),
-# so players get a normal download link. Bump the version to make a new release.
+# Build and test on main and pull requests. Only an explicit vX.Y.Z tag can
+# publish a signed release, after both platform artifacts have passed.
 
 on:
   push:
@@ -12,7 +11,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   windows:
@@ -22,73 +21,116 @@ jobs:
       # Override with repository variables if the server moves.
       AD_BASE_URL: ${{ vars.AD_BASE_URL || 'https://vps-d38c928e.vps.ovh.us/launcher' }}
       AD_AUTH_URL: ${{ vars.AD_AUTH_URL || 'https://vps-d38c928e.vps.ovh.us/ad' }}
-      # Private key for signed launcher updates. Without it the build still
-      # works but produces no update signature.
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Check version and release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Cargo.toml needs a stable X.Y.Z version"; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/v* ]]; then
+            [[ "$GITHUB_REF_NAME" == "v$version" ]] || { echo "Tag $GITHUB_REF_NAME does not match Cargo.toml $version"; exit 1; }
+            git fetch origin main:refs/remotes/origin/main
+            git merge-base --is-ancestor HEAD origin/main || { echo "Release tag must point to a commit on main"; exit 1; }
+          fi
       - name: Test
-        run: cargo test -p launcher-core
+        run: cargo test -p launcher-core -- --skip rehearsal
+      # Cutover day from a player's side with stand-in archives made by the
+      # test (no Nexus files): a returning and a new player go from today's
+      # list to one shaped like 3.4.6 and then an append, through the
+      # launcher's own download and install code, with dropped connections
+      # and a closed launcher. Prints the numbers (core/src/rehearsal.rs).
+      - name: Cutover rehearsal
+        run: cargo test -p launcher-core rehearsal -- --nocapture
+      # The launcher's page in headless Chrome with a fake back end: PLAY from
+      # the last session never starts the game for a banned account, an update
+      # or a wrong game version, and the news box never jumps.
+      - name: Fast Play checks
+        run: node .github/scripts/ui-fast-play-test.js
+      # The Vortex extension's job rules with a stand-in for Vortex (signed
+      # requests, listed mods only, the Aetherial Dawn profile only, USSEP
+      # version swap, rollback). Real Vortex proof is on Timothy's PC.
+      - name: Vortex extension checks
+        run: node --test "vortex-extension/test/*.test.js"
       - name: Install Tauri CLI
         uses: taiki-e/install-action@v2
         with:
-          tool: tauri-cli@2
-      - name: Build installer
+          tool: tauri-cli@2.12.0
+      # PRs, main and manual runs never receive the update-signing key.
+      - name: Build unsigned installer for checks
+        if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
-          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            echo "::warning title=Unsigned build::The TAURI_SIGNING_PRIVATE_KEY repository secret is empty, so this installer has no update signature and no latest.json. Add it under Settings, Secrets and variables, Actions, Repository secrets."
-            cargo tauri build --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
-          else
-            cargo tauri build --bundles nsis
-          fi
+          cargo tauri build --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - name: Build signed release installer
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [[ -n "$TAURI_SIGNING_PRIVATE_KEY" ]] || { echo "Release signing key is missing"; exit 1; }
+          cargo tauri build --bundles nsis
       - name: Name the installer
         shell: bash
         run: |
+          set -euo pipefail
+          shopt -s nullglob
+          setups=(target/release/bundle/nsis/*_"$VERSION"_x64-setup.exe)
+          [[ ${#setups[@]} -eq 1 ]] || { echo "Expected exactly one x64 NSIS installer for $VERSION"; exit 1; }
+          f="${setups[0]}"
+          out="AetherialDawn-Launcher-$VERSION-setup.exe"
           mkdir dist
-          for f in target/release/bundle/nsis/*.exe; do
-            v=$(basename "$f" | sed -E 's/.*_([0-9][^_]*)_x64-setup\.exe/\1/')
-            out="AetherialDawn-Launcher-$v-setup.exe"
-            cp "$f" "dist/$out"
-            echo "VERSION=$v" >> "$GITHUB_ENV"
-            # Signed builds also get the self-update feed, latest.json. The launcher
-            # reads it from this repo's latest release (the repo is public for this),
-            # or from <server>/launcher/app/latest.json if it's copied there.
-            if [ -f "$f.sig" ]; then
-              cp "$f.sig" "dist/$out.sig"
-              sig=$(cat "$f.sig")
-              printf '{\n  "version": "%s",\n  "notes": "Aetherial Dawn launcher %s",\n  "pub_date": "%s",\n  "platforms": {\n    "windows-x86_64": {\n      "signature": "%s",\n      "url": "%s/%s"\n    }\n  }\n}\n' \
-                "$v" "$v" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$sig" "https://github.com/$GITHUB_REPOSITORY/releases/download/v$v" "$out" > dist/latest.json
-            fi
-          done
+          cp "$f" "dist/$out"
+          cp "$f" dist/AetherialDawn-Setup.exe
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/v* ]]; then
+            [[ -s "$f.sig" ]] || { echo "Signed release is missing its updater signature"; exit 1; }
+            cp "$f.sig" "dist/$out.sig"
+            SETUP_NAME="$out" SIGNATURE_FILE="$f.sig" node <<'NODE'
+          const fs = require('node:fs');
+          const version = process.env.VERSION;
+          const signature = fs.readFileSync(process.env.SIGNATURE_FILE, 'utf8').trim();
+          if (!signature) throw new Error('Empty updater signature');
+          const feed = {
+            version,
+            notes: `Aetherial Dawn launcher ${version}`,
+            pub_date: new Date().toISOString(),
+            platforms: {
+              'windows-x86_64': {
+                signature,
+                url: `https://github.com/${process.env.GITHUB_REPOSITORY}/releases/download/v${version}/${process.env.SETUP_NAME}`
+              }
+            }
+          };
+          fs.writeFileSync('dist/latest.json', JSON.stringify(feed, null, 2) + '\n');
+          NODE
+            [[ -s dist/latest.json ]] || exit 1
+          fi
           ls -la dist
+      # Runs the installer the way a new player does (no flags) and checks the
+      # whole one-click install, then the update and silent runs. A failure
+      # here stops the release.
+      - name: Install like a new player
+        shell: pwsh
+        run: ./.github/scripts/one-click-test.ps1 -Setup "dist/AetherialDawn-Launcher-$env:VERSION-setup.exe" -Version $env:VERSION
       - uses: actions/upload-artifact@v4
         with:
           name: aetherial-dawn-launcher-windows
           path: dist/*
-      - name: Publish release
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ env.VERSION }}
-          target_commitish: ${{ github.sha }}
-          name: Aetherial Dawn Launcher ${{ env.VERSION }}
-          make_latest: true
-          overwrite_files: true
-          files: dist/*
-          body: |
-            Windows installer for the Aetherial Dawn launcher.
-            Download **AetherialDawn-Launcher-…-setup.exe** below and run it. Windows may warn that the app is unrecognised because it isn't code-signed yet; choose **More info → Run anyway**.
+          if-no-files-found: error
 
   # The canonical-plugins tool for the server (staging runbook C): the VPS has
   # no Rust, so it downloads this build from the release instead. Static
-  # (musl), so it runs on any Linux x86_64. It runs after the Windows job so
-  # both add to the one release.
+  # (musl), so it runs on any Linux x86_64. Both artifacts are checked before
+  # the single release job publishes either.
   canonical-plugins-linux:
-    needs: windows
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -101,21 +143,145 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          cargo build --locked --release -p launcher-core --bin canonical-plugins --target x86_64-unknown-linux-musl
+          cargo build --locked --release -p launcher-core --no-default-features --bin canonical-plugins --target x86_64-unknown-linux-musl
           mkdir dist
           cp target/x86_64-unknown-linux-musl/release/canonical-plugins dist/canonical-plugins-linux-x86_64
           (cd dist && sha256sum canonical-plugins-linux-x86_64 | tee canonical-plugins-linux-x86_64.sha256)
-          echo "VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:
           name: canonical-plugins-linux-x86_64
           path: dist/*
-      - name: Add to the release
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-        uses: softprops/action-gh-release@v2
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, canonical-plugins-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: aetherial-dawn-launcher-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
         with:
-          tag_name: v${{ env.VERSION }}
-          target_commitish: ${{ github.sha }}
-          make_latest: true
-          overwrite_files: true
-          files: dist/*
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          name: aetherial-dawn-launcher-windows
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: canonical-plugins-linux-x86_64
+          path: dist
+      - name: Verify release target and artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          [[ "$version" == "$cargo_version" ]] || { echo "Tag and Cargo version differ"; exit 1; }
+          git fetch origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD origin/main || { echo "Release tag is not on main"; exit 1; }
+          current=$(git ls-remote origin "refs/tags/$tag^{}" | awk 'NR == 1 { print $1 }')
+          if [[ -z "$current" ]]; then
+            current=$(git ls-remote origin "refs/tags/$tag" | awk 'NR == 1 { print $1 }')
+          fi
+          [[ "$current" == "$(git rev-parse HEAD)" ]] || { echo "Release tag moved or points to another commit"; exit 1; }
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" >/dev/null 2>release-error.txt; then
+            echo "Release $tag already exists; published releases are never replaced"
+            exit 1
+          elif ! grep -q 'HTTP 404' release-error.txt; then
+            cat release-error.txt
+            exit 1
+          fi
+          if latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>latest-error.txt); then
+            [[ "$latest" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Latest release has an unexpected version: $latest"; exit 1; }
+            newest=$(printf '%s\n%s\n' "$latest" "$tag" | sort -V | tail -n 1)
+            [[ "$newest" == "$tag" && "$latest" != "$tag" ]] || { echo "$tag is not newer than $latest"; exit 1; }
+          elif ! grep -q 'HTTP 404' latest-error.txt; then
+            cat latest-error.txt
+            exit 1
+          fi
+          test -s "dist/AetherialDawn-Launcher-$version-setup.exe"
+          test -s "dist/AetherialDawn-Launcher-$version-setup.exe.sig"
+          test -s dist/AetherialDawn-Setup.exe
+          test -s dist/latest.json
+          test -s dist/canonical-plugins-linux-x86_64
+          (cd dist && sha256sum -c canonical-plugins-linux-x86_64.sha256)
+          cmp "dist/AetherialDawn-Launcher-$version-setup.exe" dist/AetherialDawn-Setup.exe
+          VERSION="$version" node <<'NODE'
+          const fs = require('node:fs');
+          const version = process.env.VERSION;
+          const feed = JSON.parse(fs.readFileSync('dist/latest.json', 'utf8'));
+          const entry = feed.platforms?.['windows-x86_64'];
+          const signature = fs.readFileSync(`dist/AetherialDawn-Launcher-${version}-setup.exe.sig`, 'utf8').trim();
+          const url = `https://github.com/${process.env.GITHUB_REPOSITORY}/releases/download/v${version}/AetherialDawn-Launcher-${version}-setup.exe`;
+          if (feed.version !== version || entry?.signature !== signature || entry?.url !== url) {
+            throw new Error('Updater feed does not match the signed installer');
+          }
+          NODE
+      # Use the same Minisign verifier as tauri-plugin-updater. A valid .sig
+      # from the wrong private key must never become the latest release.
+      - name: Verify updater signature with the embedded public key
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          installer="dist/AetherialDawn-Launcher-$version-setup.exe"
+          verifier="$(mktemp -d)"
+          trap 'rm -rf "$verifier"' EXIT
+          mkdir "$verifier/src"
+          node -e 'process.stdout.write(require("./src-tauri/tauri.conf.json").plugins.updater.pubkey)' | base64 --decode > "$verifier/public.key"
+          base64 --decode "$installer.sig" > "$verifier/installer.sig"
+          cat > "$verifier/Cargo.toml" <<'TOML'
+          [package]
+          name = "verify-updater"
+          version = "0.1.0"
+          edition = "2021"
+
+          [dependencies]
+          minisign-verify = "=0.2.5"
+          TOML
+          cat > "$verifier/src/main.rs" <<'RUST'
+          use minisign_verify::{PublicKey, Signature};
+          use std::{env, fs};
+
+          fn main() {
+              let args: Vec<_> = env::args().collect();
+              assert_eq!(args.len(), 4, "expected public key, signature, installer");
+              let key = PublicKey::decode(&fs::read_to_string(&args[1]).expect("read public key"))
+                  .expect("decode embedded updater public key");
+              let signature = Signature::decode(&fs::read_to_string(&args[2]).expect("read signature"))
+                  .expect("decode updater signature");
+              let bytes = fs::read(&args[3]).expect("read installer");
+              key.verify(&bytes, &signature, true)
+                  .expect("installer signature does not match the embedded updater public key");
+          }
+          RUST
+          cargo run --quiet --release --manifest-path "$verifier/Cargo.toml" -- "$verifier/public.key" "$verifier/installer.sig" "$installer"
+          cp "$installer" "$verifier/tampered.exe"
+          printf '\0' >> "$verifier/tampered.exe"
+          if "$verifier/target/release/verify-updater" "$verifier/public.key" "$verifier/installer.sig" "$verifier/tampered.exe"; then
+            echo "The updater verifier accepted modified installer bytes"
+            exit 1
+          fi
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'NOTES'
+          Windows installer for the Aetherial Dawn launcher.
+
+          Download **AetherialDawn-Setup.exe** below and run it. It installs with no pages to click through and opens the launcher when it is done. Windows may warn that the app is unrecognised because it is not code-signed yet; choose **More info → Run anyway**.
+          Running the installer again by hand closes a running launcher and quietly reinstalls; your settings and downloads are kept.
+          NOTES
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --latest \
+            --title "Aetherial Dawn Launcher ${GITHUB_REF_NAME#v}" \
+            --notes-file release-notes.md

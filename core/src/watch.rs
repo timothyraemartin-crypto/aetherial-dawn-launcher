@@ -7,43 +7,93 @@ use std::time::{Duration, SystemTime};
 
 pub const GAME_PROCESS: &str = "SkyrimSE.exe";
 
+/// SKSE's loader, which starts SkyrimSE.exe and then exits.
+pub const LOADER_PROCESS: &str = "skse64_loader.exe";
+/// How long Play waits for SkyrimSE.exe once the loader has gone.
+pub const START_WAIT: Duration = Duration::from_secs(90);
+/// The most Play waits while the loader is still running (Steam starting or
+/// updating first can hold it for minutes).
+pub const START_WAIT_MAX: Duration = Duration::from_secs(10 * 60);
+
+/// Waits for the game to appear after Play and returns its process id, or
+/// None when it never did. The 90 seconds count from when SKSE's loader was
+/// last seen, not from Play, so a slow start (Steam signing in or updating)
+/// isn't taken for a crash; `max` bounds the whole wait. `find` looks up a
+/// process by name (`find_process`); one check per `tick`.
+pub async fn wait_for_game(find: impl Fn(&str) -> Option<u32>, tick: Duration, wait: Duration, max: Duration) -> Option<u32> {
+    let start = tokio::time::Instant::now();
+    let mut quiet_since = start;
+    loop {
+        if let Some(pid) = find(GAME_PROCESS) {
+            return Some(pid);
+        }
+        let now = tokio::time::Instant::now();
+        if find(LOADER_PROCESS).is_some() {
+            quiet_since = now;
+        }
+        if now.duration_since(quiet_since) >= wait || now.duration_since(start) >= max {
+            return None;
+        }
+        tokio::time::sleep(tick).await;
+    }
+}
+
 /// Process id of a running process with this file name.
-#[cfg(windows)]
 pub fn find_process(name: &str) -> Option<u32> {
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    find_process_checked(name).ok().flatten()
+}
+
+/// Process id of a running process, or an error if the process list could not
+/// be read. Callers that must prove a game is absent before changing the
+/// launcher should use this rather than treating an enumeration error as None.
+#[cfg(windows)]
+pub fn find_process_checked(name: &str) -> std::io::Result<Option<u32>> {
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
     };
     unsafe {
         let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if snap == INVALID_HANDLE_VALUE {
-            return None;
+            return Err(std::io::Error::last_os_error());
         }
-        let mut e: PROCESSENTRY32W = std::mem::zeroed();
-        e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-        let mut found = None;
-        let mut ok = Process32FirstW(snap, &mut e) != 0;
-        while ok {
-            let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
-            if String::from_utf16_lossy(&e.szExeFile[..len]).eq_ignore_ascii_case(name) {
-                found = Some(e.th32ProcessID);
-                break;
+        let result = (|| {
+            let mut e: PROCESSENTRY32W = std::mem::zeroed();
+            e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            if Process32FirstW(snap, &mut e) == 0 {
+                let error = std::io::Error::last_os_error();
+                return if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) { Ok(None) } else { Err(error) };
             }
-            ok = Process32NextW(snap, &mut e) != 0;
-        }
+            loop {
+                let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
+                if String::from_utf16_lossy(&e.szExeFile[..len]).eq_ignore_ascii_case(name) {
+                    return Ok(Some(e.th32ProcessID));
+                }
+                if Process32NextW(snap, &mut e) == 0 {
+                    let error = std::io::Error::last_os_error();
+                    return if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) { Ok(None) } else { Err(error) };
+                }
+            }
+        })();
         CloseHandle(snap);
-        found
+        result
     }
 }
 
 #[cfg(not(windows))]
-pub fn find_process(name: &str) -> Option<u32> {
+pub fn find_process_checked(name: &str) -> std::io::Result<Option<u32>> {
     let want = name.trim_end_matches(".exe");
-    std::fs::read_dir("/proc").ok()?.flatten().find_map(|e| {
-        let pid: u32 = e.file_name().to_str()?.parse().ok()?;
-        let comm = std::fs::read_to_string(e.path().join("comm")).ok()?;
-        (comm.trim() == want || comm.trim() == name).then_some(pid)
-    })
+    let entries = std::fs::read_dir("/proc")?;
+    for entry in entries {
+        let e = entry?;
+        let file_name = e.file_name();
+        let Some(pid) = file_name.to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
+        let Ok(comm) = std::fs::read_to_string(e.path().join("comm")) else { continue };
+        if comm.trim() == want || comm.trim() == name {
+            return Ok(Some(pid));
+        }
+    }
+    Ok(None)
 }
 
 /// File names of every running process.
@@ -507,5 +557,54 @@ mod tests {
             let me = std::fs::read_to_string("/proc/self/comm").unwrap();
             assert!(find_process(me.trim()).is_some());
         }
+    }
+
+    #[test]
+    #[cfg(any(windows, target_os = "linux"))]
+    fn checked_lookup_distinguishes_present_and_absent() {
+        #[cfg(windows)]
+        let name = std::env::current_exe().unwrap().file_name().unwrap().to_string_lossy().into_owned();
+        #[cfg(target_os = "linux")]
+        let name = std::fs::read_to_string("/proc/self/comm").unwrap().trim().to_owned();
+
+        assert!(find_process_checked(&name).unwrap().is_some());
+        // Longer than any process image name in the Windows snapshot or Linux comm.
+        assert_eq!(find_process_checked(&"a".repeat(300)).unwrap(), None);
+    }
+
+    /// A fake process list: `loader_until` and `game_from` are in ticks.
+    fn fake(loader_until: u32, game_from: Option<u32>) -> (impl Fn(&str) -> Option<u32>, std::rc::Rc<std::cell::Cell<u32>>) {
+        let t = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let t2 = t.clone();
+        let f = move |name: &str| {
+            let now = t2.get();
+            if name == GAME_PROCESS {
+                // Each game lookup is one tick of time.
+                t2.set(now + 1);
+                return game_from.filter(|&g| now >= g).map(|_| 42);
+            }
+            (name == LOADER_PROCESS && now < loader_until).then_some(7)
+        };
+        (f, t)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_start_is_waited_for_while_the_loader_runs() {
+        let tick = Duration::from_secs(1);
+        // Old rule: 90 s from Play. Here the loader holds for 200 s (Steam
+        // updating) and the game appears at 250 s: found, not a crash.
+        let (f, _) = fake(200, Some(250));
+        assert_eq!(wait_for_game(f, tick, START_WAIT, START_WAIT_MAX).await, Some(42));
+        // Loader gone at 5 s and no game: gives up 90 s later.
+        let (f, t) = fake(5, None);
+        assert_eq!(wait_for_game(f, tick, START_WAIT, START_WAIT_MAX).await, None);
+        assert!((94..=97).contains(&t.get()), "{}", t.get());
+        // A loader that never exits doesn't hold Play's watch forever.
+        let (f, t) = fake(u32::MAX, None);
+        assert_eq!(wait_for_game(f, tick, START_WAIT, START_WAIT_MAX).await, None);
+        assert!((600..=602).contains(&t.get()), "{}", t.get());
+        // A normal start is found at once.
+        let (f, _) = fake(3, Some(2));
+        assert_eq!(wait_for_game(f, tick, START_WAIT, START_WAIT_MAX).await, Some(42));
     }
 }

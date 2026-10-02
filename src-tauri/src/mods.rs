@@ -9,14 +9,22 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use launcher_core::{auth, modlist, modlist::ModEntry, nexus, Error};
+use launcher_core::{auth, fetch, modlist, modlist::ModEntry, nexus, Error};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{log, AppState, CmdResult};
 
-/// How long to wait for a free member to press a mod's download button.
-const WAIT_FOR_CLICK: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+/// How long a free member's page waits for a press before it's opened again
+/// as a reminder. The wait itself only ends with a press or Stop: a
+/// player who steps away finds the queue where they left it (free-account
+/// check, 2026-09-28).
+const REMIND_AFTER: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// How many times a reminder opens the page again.
+const REOPEN_MAX: u32 = 3;
+/// A free member is asked to press again this many times for a download
+/// that keeps breaking off before that mod is shown as not installed.
+const FREE_TRIES: u32 = 3;
 /// How long a Premium member's own file page gets to hand over its nxm:// link.
 const WAIT_FOR_PAGE: std::time::Duration = std::time::Duration::from_secs(90);
 
@@ -29,6 +37,9 @@ struct Catcher {
     /// Mods whose Nexus page was already opened in this run: one browser tab
     /// per mod per Play, retries included (quality check P3).
     paged: std::collections::HashSet<u64>,
+    /// A link came back in this run: the browser's "open this app?" question
+    /// is only explained until then.
+    got_a_link: bool,
 }
 
 impl Catcher {
@@ -60,6 +71,8 @@ pub struct ModsState {
     sso_stop: std::sync::Mutex<Option<Arc<AtomicBool>>>,
     /// The server's mods.json, once fetched.
     server_list: tokio::sync::Mutex<Option<modlist::ModList>>,
+    /// Exactly which mods.json that was (sha256 of the bytes, revision).
+    receipt: tokio::sync::Mutex<Option<launcher_core::inventory::FeedReceipt>>,
 }
 
 fn key_path(app: &AppHandle) -> Option<PathBuf> {
@@ -115,16 +128,121 @@ pub async fn server_list(state: &AppState) -> Option<modlist::ModList> {
     if let Some(l) = state.mods.server_list.lock().await.clone() {
         return Some(l);
     }
+    fetch_server_list(state).await
+}
+
+async fn fetch_server_list(state: &AppState) -> Option<modlist::ModList> {
     let base = state.config.lock().await.base_url.clone();
     let url = format!("{}/mods.json", base.trim_end_matches('/'));
-    let got = match state.http.get(&url).send().await {
-        Ok(r) if r.status().is_success() => r.json::<modlist::ModList>().await.ok(),
+    let bytes = match state.http.get(&url).timeout(std::time::Duration::from_secs(8)).send().await {
+        Ok(r) if r.status().is_success() => r.bytes().await.ok(),
         _ => None,
     };
-    if let Some(l) = &got {
-        *state.mods.server_list.lock().await = Some(l.clone());
+    let got = bytes.as_ref().and_then(|b| serde_json::from_slice::<modlist::ModList>(b).ok().map(|l| (l, b)));
+    let (l, b) = got?;
+    let receipt = launcher_core::inventory::FeedReceipt::of(b, &l);
+    if state.mods.receipt.lock().await.as_ref() != Some(&receipt) {
+        log::line(&format!("mods: fetched {url}: {}", receipt.describe()));
     }
-    got
+    *state.mods.receipt.lock().await = Some(receipt);
+    *state.mods.server_list.lock().await = Some(l.clone());
+    Some(l)
+}
+
+/// Play fetches mods.json again, so a list changed while the launcher was
+/// open is the one used. Returns false when the current feed cannot be
+/// confirmed; Play then stops rather than trusting the old cache.
+pub async fn refresh_server_list(state: &AppState) -> bool {
+    let before = state.mods.server_list.lock().await.as_ref().map(|l| l.mods.len());
+    let got = fetch_server_list(state).await;
+    // Saved now, so Play's tidying (removed mods) goes by this list.
+    if let (Some(l), Some(dir)) = (&got, state.config.lock().await.game_dir.clone()) {
+        launcher_core::allowlist::save_server_list(&dir, l);
+    }
+    let current = got.is_some();
+    match got {
+        Some(l) if before.is_some_and(|b| b != l.mods.len()) => log::line(&format!("mods: the server's list changed while the launcher was open ({} entries, was {})", l.mods.len(), before.unwrap_or(0))),
+        Some(_) => {}
+        None => log::line("mods: couldn't fetch the server's list again; Play waits for a current list"),
+    }
+    current
+}
+
+/// The served client set (`aetherial-collection.json`, design 6.1), when the
+/// server publishes one. During manual Vortex setup Play always checks the
+/// current mods.json pins, with this optional record adding collection pinning.
+pub async fn served_client_set(state: &AppState) -> Option<launcher_core::vortex::ClientSet> {
+    let base = state.config.lock().await.base_url.clone();
+    let url = format!("{}/aetherial-collection.json", base.trim_end_matches('/'));
+    match state.http.get(&url).timeout(std::time::Duration::from_secs(8)).send().await {
+        Ok(r) if r.status().is_success() => r.json().await.ok(),
+        _ => None,
+    }
+}
+
+/// Read the active profile from the signed, read-only Vortex extension.
+pub async fn vortex_status(app: &AppHandle, state: &AppState) -> Option<launcher_core::vortex::Status> {
+    use launcher_core::vortex;
+    let home = vortex::home(&app.path().app_local_data_dir().ok()?);
+    let token = vortex::token(&home).ok()?;
+    match vortex::call(&state.http, &home, &token, "status", &serde_json::json!({}), "").await {
+        Ok(v) => {
+            let status = serde_json::from_value::<vortex::Status>(v).ok()?;
+            if !vortex::loaded_is_current(&status, vortex::EXTENSION) {
+                // Vortex is still running an older helper: nothing it says
+                // counts until Vortex is restarted with this one.
+                log::line(&format!("mods: Vortex runs helper {:?}, not {:?}; restart Vortex", status.extension_version, vortex::bundled_version(vortex::EXTENSION)));
+                return None;
+            }
+            Some(status)
+        }
+        Err(e) => {
+            if !matches!(e, vortex::JobError::NotRunning) {
+                log::line(&format!("mods: the Vortex extension didn't answer: {e}"));
+            }
+            None
+        }
+    }
+}
+
+/// "Connect Vortex": keeps (or, with `fresh`, replaces) the pairing token
+/// and puts the read-only Aetherial Dawn extension into Vortex's plugins
+/// folder. Changes nothing else in Vortex. Says what the player does next.
+#[tauri::command]
+pub async fn vortex_connect(app: AppHandle, state: State<'_, AppState>, fresh: Option<bool>) -> CmdResult<String> {
+    use launcher_core::vortex;
+    let home = vortex::home(&app.path().app_local_data_dir().map_err(|e| e.to_string())?);
+    let token = if fresh.unwrap_or(false) { vortex::rotate(&home) } else { vortex::pair(&home) }.map_err(|e| e.to_string())?;
+    let roaming = app.path().data_dir().map_err(|e| e.to_string())?;
+    let plugins = vortex::plugins_dir(&roaming);
+    if vortex::needs_write(&plugins, vortex::EXTENSION) {
+        // The helper's folder is swapped only while Vortex is closed, so
+        // Vortex never holds it open or loads it mid-swap. If Windows can't
+        // list processes, it is treated as running.
+        match launcher_core::watch::find_process_checked("Vortex.exe") {
+            Ok(None) => {}
+            Ok(Some(_)) => return Err("Close Vortex first, then press Connect Vortex again. The helper is only put in while Vortex is closed.".into()),
+            Err(e) => {
+                log::line(&format!("vortex: couldn't check whether Vortex is running: {e}"));
+                return Err("The launcher couldn't check whether Vortex is running. Close Vortex, then press Connect Vortex again.".into());
+            }
+        }
+    }
+    let done = vortex::install_extension(&plugins, vortex::EXTENSION).map_err(|e| e.to_string())?;
+    log::line(&format!("vortex: extension {done:?}{}", if fresh.unwrap_or(false) { ", new pairing" } else { "" }));
+    if vortex::extension_state(&plugins, vortex::EXTENSION) == vortex::ExtensionState::Mixed {
+        log::line("vortex: extension folder is not one whole version; not pairing");
+        return Err("The Aetherial Dawn helper in Vortex is incomplete. Close Vortex, then press Connect Vortex again.".into());
+    }
+    let answers = vortex::call(&state.http, &home, &token, "status", &serde_json::json!({}), "").await.ok()
+        .and_then(|v| serde_json::from_value::<vortex::Status>(v).ok())
+        .is_some_and(|s| vortex::loaded_is_current(&s, vortex::EXTENSION));
+    Ok(match (&done, answers) {
+        (_, true) if !done.needs_restart() => "Vortex is connected.".into(),
+        (vortex::Installed::NewerKept { installed }, false) => format!("A newer Aetherial Dawn helper ({installed}) is already in Vortex. Start or restart Vortex and it connects."),
+        (d, _) if d.needs_restart() => "The Aetherial Dawn helper is now in Vortex. Close Vortex and open it again once, then press Check again.".into(),
+        _ => "The Aetherial Dawn helper is in Vortex. Start or restart Vortex, then press Check again.".into(),
+    })
 }
 
 pub async fn full_list(state: &AppState) -> Vec<ModEntry> {
@@ -133,7 +251,7 @@ pub async fn full_list(state: &AppState) -> Vec<ModEntry> {
     if let (Some(l), Some(dir)) = (&server, state.config.lock().await.game_dir.clone()) {
         launcher_core::allowlist::save_server_list(&dir, l);
     }
-    modlist::merged(version.as_deref(), server.as_ref())
+    modlist::play_required(modlist::merged(version.as_deref(), server.as_ref()))
 }
 
 #[derive(Serialize)]
@@ -143,18 +261,34 @@ pub struct Row {
     page: Option<String>,
     hint: Option<String>,
     looks_for: String,
+    /// Its files are in the game folder (the game-files inventory).
     installed: bool,
+    /// Vortex deployed it (Vortex's deployment record); None without one.
+    in_vortex: Option<bool>,
+    /// Vortex's three answers, each on its own; None is unknown.
+    vortex_installed: Option<bool>,
+    vortex_enabled: Option<bool>,
+    vortex_deployed: Option<bool>,
     from: &'static str,
 }
 
 pub fn row(m: &ModEntry, game_dir: &Path) -> Row {
+    let files = launcher_core::allowlist::vortex_files(game_dir);
+    row_with(m, game_dir, launcher_core::inventory::standing(m, game_dir, &files, launcher_core::inventory::has_vortex_record(game_dir)))
+}
+
+fn row_with(m: &ModEntry, _game_dir: &Path, st: launcher_core::inventory::Standing) -> Row {
     Row {
         id: m.id.clone(),
         name: m.name.clone(),
-        page: m.page(),
+        page: m.download_page(),
         hint: m.hint.clone(),
         looks_for: m.check.join(", "),
-        installed: m.installed(game_dir),
+        installed: st.game_files,
+        in_vortex: st.vortex_deployed,
+        vortex_installed: None,
+        vortex_enabled: None,
+        vortex_deployed: None,
         from: if m.nexus.is_some() { "nexus" } else { "direct" },
     }
 }
@@ -167,21 +301,178 @@ pub struct ModsView {
     running: bool,
     /// "Sign in with Nexus" works (Nexus has registered the launcher).
     sso: bool,
+    /// Both inventories, each naming what it measures.
+    counts: launcher_core::inventory::Counts,
+    /// "Game files: 36 of 37 present · Vortex: 0 of 37 deployed · …"
+    counts_text: String,
+    /// Which mods.json the counts are for; None when the server's list
+    /// couldn't be fetched (the launcher's own list only).
+    feed: Option<String>,
+    /// The Aetherial Dawn profile line from Vortex's own state, when the
+    /// launcher is paired with the extension.
+    vortex_line: Option<String>,
+    vortex_ready: Option<bool>,
+    /// The server has switched the Vortex gate on (vortexRequired). Off,
+    /// PLAY needs only every listed mod present.
+    vortex_required: bool,
+    /// The launcher has a Vortex pairing token.
+    vortex_paired: bool,
+    /// Mods the launcher put in the game folder, by who else holds their
+    /// files (read-only; Codex 5910357069).
+    ownership_text: String,
+}
+
+/// Use the same profile, exact Vortex deployment source, and physical file
+/// checks that Play requires. The per-mod answers also drive the Requirements
+/// rows, so an old deployment record cannot make a wrong package look ready.
+struct VortexReadout {
+    line: String,
+    ready: bool,
+    exact: Vec<Option<bool>>,
+    confirmed: usize,
+    required: usize,
+}
+
+fn vortex_readout(
+    set: &launcher_core::vortex::ClientSet,
+    status: Option<&launcher_core::vortex::Status>,
+    files: &[launcher_core::allowlist::VortexFile],
+    dir: &Path,
+    current_issue: Option<&str>,
+) -> VortexReadout {
+    use launcher_core::vortex;
+
+    let required = set.mods.iter().filter(|m| m.nexus.is_some()).count();
+    if let Some(issue) = current_issue {
+        return VortexReadout {
+            line: issue.into(),
+            ready: false,
+            exact: vec![None; set.mods.len()],
+            confirmed: 0,
+            required,
+        };
+    }
+    let exact: Vec<Option<bool>> = set.mods.iter().map(|m| {
+        m.nexus.as_ref()?;
+        let status = status?;
+        Some(vortex::deployment_ready_for(&set.mods, m, status, files, dir)
+            && (m.check.is_empty() || m.game_files_present(dir)))
+    }).collect();
+    let confirmed = exact.iter().filter(|v| **v == Some(true)).count();
+    let step = vortex::step(set, status);
+    let (line, ready) = if !step.ok() {
+        (step.describe(), false)
+    } else {
+        let missing: Vec<&str> = set.mods.iter().zip(&exact)
+            .filter_map(|(m, ok)| (ok == &Some(false)).then_some(m.name.as_str()))
+            .collect();
+        if missing.is_empty() {
+            (format!("{} · deployment and game files confirmed", step.describe()), true)
+        } else {
+            (format!("Vortex: {} required mod{} need deployment or game files in Skyrim: {}. Deploy in Vortex, then Check again.",
+                missing.len(), if missing.len() == 1 { "" } else { "s" }, missing.join(", ")), false)
+        }
+    };
+    let line = if status.is_some_and(|s| vortex::female_face_alternative_installed(&set.mods, s)) {
+        format!("{line} · Male Face Overlays selected; Female Face Overlays installed as an alternative")
+    } else { line };
+    VortexReadout { line, ready, exact, confirmed, required }
 }
 
 #[tauri::command]
 pub async fn mods_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ModsView> {
     let dir = state.config.lock().await.game_dir.clone().ok_or("Pick your Skyrim folder first.")?;
-    let list = full_list(&state).await;
+    let base = state.config.lock().await.base_url.clone();
+    let (feed_current, current_manifest) = tokio::join!(
+        refresh_server_list(&state),
+        launcher_core::manifest::Manifest::fetch(&state.http, &base),
+    );
+    let manifest_current = current_manifest.is_ok();
+    let version = match current_manifest {
+        Ok(m) => m.game.and_then(|g| g.version),
+        Err(_) => state.manifest.lock().await.as_ref()
+            .and_then(|m| m.game.as_ref()).and_then(|g| g.version.clone()),
+    };
+    let server = fetched_server_list(&state).await;
+    let list = modlist::play_required(modlist::merged(version.as_deref(), server.as_ref()));
     let user = if nexus_key(&app).is_some() { state.config.lock().await.nexus_user.clone() } else { None };
     let sso = nexus_app(&state).await.is_some();
     let running = state.mods.cancel.lock().unwrap().is_some();
+    let (mut st, mut counts) = launcher_core::inventory::count(&list, &dir);
+    let feed = state.mods.receipt.lock().await.as_ref().map(|r| r.describe());
+    // The served collection can add a collection pin, but its own mod array
+    // never replaces the current merged mods.json list used by Play.
+    let served = served_client_set(&state).await;
+    let vortex_required = launcher_core::vortex::gate_on(served.as_ref());
+    let collection = served.and_then(|s| s.collection);
+    let set = launcher_core::vortex::ClientSet { collection, mods: list.clone(), vortex_required };
+    let home = app.path().app_local_data_dir().ok().map(|d| launcher_core::vortex::home(&d));
+    let paired = home.as_ref().is_some_and(|h| launcher_core::vortex::token(h).is_ok());
+    let status = if paired { vortex_status(&app, &state).await } else { None };
+    let deployed = launcher_core::allowlist::vortex_files(&dir);
+    let current_issue = if !manifest_current {
+        Some("Vortex: the server's current game requirements are unavailable. Try Check again when the server responds.")
+    } else if !feed_current {
+        Some("Vortex: the server's current mod list is unavailable. Try Check again when the server responds.")
+    } else { None };
+    let readout = vortex_readout(&set, status.as_ref(), &deployed, &dir, current_issue);
+    // Each row's "present" answer matches what Play will check
+    // (launcher_core::vortex::play_missing): with the Vortex gate off, the
+    // launcher's install check for every entry.
+    for ((m, standing), exact) in list.iter().zip(&mut st).zip(&readout.exact) {
+        if !vortex_required {
+            standing.game_files = m.installed(&dir);
+        } else if m.nexus.is_some() {
+            standing.game_files = if m.check.is_empty() { *exact == Some(true) } else { m.game_files_present(&dir) };
+        }
+    }
+    counts.game_files_present = st.iter().filter(|s| s.game_files).count();
+    let rows = list.iter().zip(st).zip(&readout.exact).map(|((m, s), exact)| {
+        let mut row = row_with(m, &dir, s);
+        row.in_vortex = *exact;
+        // Unknown while the server's current lists can't be read, like the gate.
+        if current_issue.is_none() {
+            let v = launcher_core::vortex::package_states(&set.mods, m, status.as_ref(), &deployed, &dir);
+            (row.vortex_installed, row.vortex_enabled, row.vortex_deployed) = (v.installed, v.enabled, v.deployed);
+        }
+        row
+    }).collect();
+    let counts_text = if current_issue.is_some() {
+        format!("Vortex requirements: current server data unavailable · Game files: {} of {} present",
+            counts.game_files_present, counts.listed)
+    } else if status.is_none() {
+        format!("Vortex profile: not checked yet · Game files: {} of {} present",
+            counts.game_files_present, counts.listed)
+    } else {
+        format!("Vortex: {} of {} required Nexus mods confirmed · Game files: {} of {} present",
+            readout.confirmed, readout.required, counts.game_files_present, counts.listed)
+    };
+    let ownership = launcher_core::inventory::ownership(&dir);
+    let ownership_text = launcher_core::inventory::describe_ownership(&ownership, launcher_core::inventory::has_vortex_record(&dir));
+    static LOGGED: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    if let Ok(mut last) = LOGGED.lock() {
+        if *last != ownership_text {
+            log::line(&format!("mods: {ownership_text}"));
+            for o in ownership.iter().filter(|o| o.both > 0) {
+                log::line(&format!("mods: {} ({}): {} files also deployed by Vortex from {}", o.name, o.id, o.both, o.vortex_sources.join(", ")));
+            }
+            *last = ownership_text.clone();
+        }
+    }
     Ok(ModsView {
-        mods: list.iter().map(|m| row(m, &dir)).collect(),
+        mods: rows,
         nexus: user,
         vortex: modlist::vortex_manages(&dir),
         running,
         sso,
+        counts_text,
+        counts,
+        feed,
+        vortex_line: paired.then_some(readout.line),
+        vortex_ready: paired.then_some(readout.ready),
+        vortex_required,
+        vortex_paired: paired,
+        ownership_text,
     })
 }
 
@@ -192,9 +483,14 @@ async fn nexus_app(state: &AppState) -> Option<String> {
     from_server.or_else(|| option_env!("AD_NEXUS_APP").map(str::to_string))
 }
 
-async fn keep_key(app: &AppHandle, state: &AppState, key: &str) -> CmdResult<nexus::User> {
+/// `stop`: a sign-in the player left while Nexus was checking the key; the
+/// key is then not kept.
+async fn keep_key(app: &AppHandle, state: &AppState, key: &str, stop: Option<&AtomicBool>) -> CmdResult<nexus::User> {
     let version = app.package_info().version.to_string();
     let user = nexus::Client { http: &state.http, key, app_version: &version }.validate().await.map_err(|e| e.to_string())?;
+    if stop.is_some_and(|s| s.load(Ordering::SeqCst)) {
+        return Err("sign-in cancelled".to_string());
+    }
     let path = key_path(app).ok_or("Couldn't find the launcher's settings folder.")?;
     auth::save_token(&path, key).map_err(|e| e.to_string())?;
     let mut c = state.config.lock().await;
@@ -219,7 +515,7 @@ pub async fn nexus_sso(app: AppHandle, state: State<'_, AppState>) -> CmdResult<
         log::line(&format!("mods: Nexus sign-in didn't finish: {e}"));
         e.to_string()
     })?;
-    keep_key(&app, &state, &key).await
+    keep_key(&app, &state, &key, None).await
 }
 
 /// A Nexus personal API key: one long token of base64-style characters.
@@ -252,13 +548,17 @@ pub async fn nexus_copy_sign_in(app: AppHandle, state: State<'_, AppState>) -> C
                 return Err("No key was copied. Click Sign in with Nexus to try again.".to_string());
             }
             tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            // Left during the wait: the clipboard is not read again.
+            if stop.load(Ordering::SeqCst) {
+                return Err("sign-in cancelled".to_string());
+            }
             let text = app.clipboard().read_text().unwrap_or_default();
             let key = text.trim().to_string();
             if tried.contains(&text) || !looks_like_key(&key) {
                 continue;
             }
             tried.push(text);
-            match keep_key(&app, &state, &key).await {
+            match keep_key(&app, &state, &key, Some(&stop)).await {
                 Ok(user) => {
                     let _ = app.clipboard().write_text(String::new());
                     if let Some(w) = app.get_webview_window("main") {
@@ -289,7 +589,7 @@ pub async fn nexus_sign_in(app: AppHandle, state: State<'_, AppState>, key: Stri
     if key.len() < 20 || key.chars().any(char::is_whitespace) {
         return Err("That doesn't look like a Nexus API key. Copy the whole key from the Nexus page.".into());
     }
-    keep_key(&app, &state, &key).await
+    keep_key(&app, &state, &key, None).await
 }
 
 #[tauri::command]
@@ -352,144 +652,123 @@ pub struct RunResult {
     cancelled: bool,
 }
 
-/// Downloads to `path`, reporting progress. Only https addresses.
-async fn download(app: &AppHandle, http: &reqwest::Client, m: &ModEntry, url: &str, path: &Path, cancel: &AtomicBool) -> Result<(), String> {
-    use futures_util::StreamExt;
-    use tokio::io::AsyncWriteExt;
-    if !url.starts_with("https://") {
-        return Err("the download address isn't secure".into());
+/// Downloads to `path`, reporting progress. Only https addresses. `key`
+/// names the exact file, so a download that broke off (a dropped
+/// connection, Stop, a closed launcher) carries on from where it stopped.
+async fn download(app: &AppHandle, http: &reqwest::Client, m: &ModEntry, url: &str, path: &Path, key: &str, cancel: &AtomicBool) -> Result<(), String> {
+    let got = fetch::fetch(http, url, path, key, cancel, |done, total| {
+        emit(app, m, "download", done, total, "");
+        overall(app, &m.id, done, Some(total), false);
+    })
+    .await?;
+    if got.reused > 0 || got.resumed > 0 {
+        log::line(&format!(
+            "mods: {} download {}: {} MB already here, {} MB fetched, {} dropped connection(s) picked up",
+            m.name,
+            if got.fetched == 0 { "was already complete" } else { "carried on" },
+            got.reused >> 20,
+            got.fetched >> 20,
+            got.resumed
+        ));
     }
-    let resp = http.get(url).send().await.and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
-    let total = resp.content_length().unwrap_or(0);
-    if let Some(p) = path.parent() {
-        tokio::fs::create_dir_all(p).await.map_err(|e| e.to_string())?;
-    }
-    let tmp = path.with_extension("part");
-    let mut f = tokio::fs::File::create(&tmp).await.map_err(|e| e.to_string())?;
-    let mut got = 0u64;
-    let mut last = std::time::Instant::now();
-    let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        if cancel.load(Ordering::SeqCst) {
-            drop(f);
-            let _ = tokio::fs::remove_file(&tmp).await;
-            return Err("cancelled".into());
-        }
-        let chunk = chunk.map_err(|e| e.to_string())?;
-        f.write_all(&chunk).await.map_err(|e| e.to_string())?;
-        got += chunk.len() as u64;
-        if last.elapsed().as_millis() > 250 {
-            emit(app, m, "download", got, total, "");
-            last = std::time::Instant::now();
-        }
-    }
-    f.flush().await.map_err(|e| e.to_string())?;
-    drop(f);
-    tokio::fs::rename(&tmp, path).await.map_err(|e| e.to_string())?;
-    emit(app, m, "download", got, got.max(total), "");
     Ok(())
 }
 
-enum Outcome {
-    Installed,
-    /// Made for a newer Skyrim than the game's masters.
-    TooNew(Vec<String>),
-    /// Has an SKSE DLL built for another Skyrim.
-    WrongBuild(Vec<String>),
+/// The whole run's progress, for "3.2 of 27.4 GB, about 1 h 40 min left".
+/// Each mod counts with the list's size until its download says its real one.
+struct Overall {
+    start: std::time::Instant,
+    mods: std::collections::HashMap<String, (u64, u64)>,
+    pace: fetch::Pace,
+    shown: Option<std::time::Instant>,
+    count: usize,
+    finished: usize,
 }
 
-/// Unpacks, checks and installs one downloaded archive.
+static OVERALL: std::sync::Mutex<Option<Overall>> = std::sync::Mutex::new(None);
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct OverallView {
+    done: u64,
+    total: u64,
+    /// None until the pace is known (the first 10 s of downloading).
+    secs_left: Option<u64>,
+    finished: usize,
+    count: usize,
+}
+
+/// Records `done` bytes of `total` for one mod (`total` None keeps the one
+/// it has) and tells the page at most every half second, or at once with `force`.
+fn overall(app: &AppHandle, id: &str, done: u64, total: Option<u64>, force: bool) {
+    let view = {
+        let mut g = OVERALL.lock().unwrap();
+        let Some(o) = g.as_mut() else { return };
+        let e = o.mods.entry(id.to_string()).or_insert((0, 0));
+        if let Some(t) = total.filter(|t| *t > 0) {
+            e.0 = t;
+        }
+        if done != u64::MAX {
+            e.1 = done;
+        }
+        let (sum_total, sum_done) = o.mods.values().fold((0, 0), |a, v| (a.0 + v.0, a.1 + v.1.min(v.0)));
+        o.pace.add(o.start.elapsed().as_secs_f64(), sum_done);
+        if !force && o.shown.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(500)) {
+            return;
+        }
+        o.shown = Some(std::time::Instant::now());
+        OverallView { done: sum_done, total: sum_total, secs_left: o.pace.eta(sum_total.saturating_sub(sum_done)), finished: o.finished, count: o.count }
+    };
+    let _ = app.emit("mods-overall", view);
+}
+
+/// One mod is over: installed (all its bytes count) or not (its bytes leave
+/// the total, so the time left isn't waiting for it).
+fn overall_finish(app: &AppHandle, id: &str, installed: bool) {
+    {
+        let mut g = OVERALL.lock().unwrap();
+        let Some(o) = g.as_mut() else { return };
+        o.finished += 1;
+        if let Some(e) = o.mods.get_mut(id) {
+            if installed {
+                e.1 = e.0;
+            } else {
+                e.0 = e.1;
+            }
+        }
+    }
+    overall(app, id, u64::MAX, None, true);
+}
+
+/// Bytes of a mod's download already in the downloads folder (a finished
+/// archive or a part), whatever file name Nexus gave it.
+fn already_here(game_dir: &Path, m: &ModEntry) -> u64 {
+    let dir = game_dir.join(modlist::MODS_DIR).join("downloads");
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    rd.flatten()
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().to_string();
+            n.strip_prefix(&format!("{}.", m.id)).is_some_and(|rest| !rest.ends_with(".json"))
+        })
+        .filter_map(|e| e.metadata().ok().map(|md| md.len()))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Where to say how much space is on the drive, in GB with one decimal.
+fn gb(n: u64) -> String {
+    format!("{:.1} GB", n as f64 / 1e9)
+}
+
+use launcher_core::modlist::Outcome;
+
+/// Unpacks, checks and installs one downloaded archive (modlist::install_archive).
 async fn install(m: &ModEntry, archive: &Path, game_dir: &Path, file_id: Option<u64>, version: Option<String>, allow_too_new: bool) -> Result<Outcome, String> {
     let (m, archive, game_dir) = (m.clone(), archive.to_path_buf(), game_dir.to_path_buf());
-    tokio::task::spawn_blocking(move || -> Result<Outcome, Error> {
-        modlist::verify(&m, &archive)?;
-        let work = game_dir.join(modlist::MODS_DIR).join("unpacked").join(&m.id);
-        let _ = std::fs::remove_dir_all(&work);
-        modlist::extract(&archive, &work)?;
-        if let Some(r) = modlist::fomod_report(&m, &work) {
-            log::line(&format!("mods: {} installer options (picks {:?}): {}", m.name, m.fomod, r.join(" || ")));
-        }
-        let mut copies = modlist::plan(&m, &work)?;
-        if let Some((level, folder)) = m.cpu_pick().filter(|_| !m.cpu.is_empty()) {
-            log::line(&format!("mods: {} takes the {level} build ({folder}) for this processor", m.name));
-        }
-        // An SKSE DLL for another Skyrim never goes in; the next file is tried.
-        let mut wrong = modlist::fix_wrong_builds(&mut copies, &work);
-        // The Unofficial Patch for Skyrim 1.7.99 crashes 1.6.1170.
-        for c in &copies {
-            if c.to.file_name().map(|n| n.to_string_lossy().eq_ignore_ascii_case(launcher_core::requirements::USSEP_PLUGIN)).unwrap_or(false) {
-                if let Some(v) = launcher_core::ussep::plugin_too_new(&c.from) {
-                    wrong.push((format!("Unofficial Patch {v}"), "made for Skyrim 1.7.99".into()));
-                }
-            }
-        }
-        if !wrong.is_empty() {
-            // What was read from each refused DLL, and a copy kept aside, so
-            // a wrong call can be checked (RaceMenu 0.4.20, 2026-09-27).
-            // One folder per mod, replaced each time, so retries don't pile up.
-            let keep = game_dir.join(launcher_core::strays::DISABLED_DIR).join("refused-download").join(&m.id);
-            for c in copies.iter().filter(|c| wrong.iter().any(|(n, _)| c.to.file_name().is_some_and(|f| f.to_string_lossy().eq_ignore_ascii_case(n)))) {
-                log::line(&format!("mods: {} {} read as: {}", m.name, c.to.display(), launcher_core::skse::describe(&c.from)));
-                if std::fs::create_dir_all(&keep).is_ok() {
-                    let _ = std::fs::copy(&c.from, keep.join(c.to.file_name().unwrap()));
-                }
-            }
-            let _ = std::fs::remove_dir_all(&work);
-            log::line(&format!("mods: {} download has the wrong build: {}", m.name, wrong.iter().map(|(n, w)| format!("{n} ({w})")).collect::<Vec<_>>().join(", ")));
-            return Ok(Outcome::WrongBuild(wrong.into_iter().map(|(n, _)| n).collect()));
-        }
-        let newer = modlist::too_new_plugins(&copies, &game_dir);
-        if !newer.is_empty() && !allow_too_new {
-            let _ = std::fs::remove_dir_all(&work);
-            return Ok(Outcome::TooNew(newer));
-        }
-        let rec = modlist::apply(&m, &copies, &game_dir, file_id, version)?;
-        // The keys a preset can set, named exactly as the mod defines them.
-        for k in launcher_core::presets::mcm_keys(&game_dir, &rec.files) {
-            log::line(&format!("mods: {} MCM keys in {k}", m.name));
-        }
-        let _ = std::fs::remove_dir_all(&work);
-        // Only call it installed when the files really are in Data.
-        if !m.installed(&game_dir) {
-            let gone: Vec<&str> = m.check.iter().map(String::as_str).filter(|c| !m.clone_with_check(c).installed(&game_dir)).collect();
-            log::line(&format!("mods: {} unpacked but {} isn't in the game folder (copied {}, left {})", m.name, gone.join(", "), rec.files.join(", "), rec.skipped.join(", ")));
-            return Err(Error::Game(format!("{} downloaded, but {} didn't end up in your Skyrim folder", m.name, gone.join(" and "))));
-        }
-        let _ = std::fs::remove_file(&archive);
-        // And switch its plugins on, as Vortex would.
-        if let Some(txt) = plugins_txt() {
-            let mut names: Vec<String> = m.check.iter().filter_map(|c| c.strip_prefix("Data/")).filter(|n| !n.contains('/') && [".esp", ".esm", ".esl"].iter().any(|x| n.to_ascii_lowercase().ends_with(x))).map(str::to_string).collect();
-            names.retain(|n| {
-                let ok = launcher_core::loadorder::masters_present(&game_dir, n);
-                if !ok {
-                    log::line(&format!("mods: {} left {n} off: a master it needs isn't installed", m.name));
-                }
-                ok
-            });
-            // And the plugins it installed whose masters are all here (a
-            // patch for a mod the player doesn't have stays off).
-            for n in modlist::top_plugins(&rec.files) {
-                if names.iter().any(|x| x.eq_ignore_ascii_case(&n)) {
-                    continue;
-                }
-                if launcher_core::loadorder::masters_present(&game_dir, &n) {
-                    names.push(n);
-                } else {
-                    log::line(&format!("mods: {} left {n} off: a master it needs isn't installed", m.name));
-                }
-            }
-            match launcher_core::loadorder::switch_on(&txt, &names) {
-                Ok(on) if !on.is_empty() => log::line(&format!("mods: switched on in plugins.txt: {}", on.join(", "))),
-                Ok(_) => {}
-                Err(e) => log::line(&format!("mods: couldn't switch {} on in plugins.txt: {e}", names.join(", "))),
-            }
-        }
-        log::line(&format!("mods: installed {} ({} files, {} left to Vortex or kept)", m.name, rec.files.len(), rec.skipped.len()));
-        Ok(Outcome::Installed)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())
+    tokio::task::spawn_blocking(move || modlist::install_archive(&m, &archive, &game_dir, file_id, version, allow_too_new, plugins_txt().as_deref(), &|l: &str| log::line(l)))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 /// Skyrim's load order, %LOCALAPPDATA%\\Skyrim Special Edition\\plugins.txt.
@@ -586,9 +865,13 @@ async fn premium_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, gam
         // A pinned file has no name from the list: the address ends in it.
         let name = if f.file_name.is_empty() { url.split('?').next().unwrap_or("") } else { &f.file_name };
         let path = archive_path(game_dir, m, name);
-        download(app, api.http, m, &url, &path, cancel).await?;
+        download(app, api.http, m, &url, &path, &format!("nexus-{}-{}", n.mod_id, f.file_id), cancel).await?;
         emit(app, m, "install", 0, 0, "");
-        match install(m, &path, game_dir, Some(f.file_id), f.version.clone(), n.file.is_some()).await? {
+        let done = install(m, &path, game_dir, Some(f.file_id), f.version.clone(), n.file.is_some()).await;
+        // Installed or refused, this archive is finished with; a broken one
+        // is fetched again next time rather than tried again as it is.
+        fetch::forget(&path);
+        match done? {
             Outcome::Installed => return Ok(()),
             Outcome::TooNew(p) => {
                 log::line(&format!("mods: {} file {} is for a newer Skyrim ({}); trying an older one", m.name, f.name, p.join(", ")));
@@ -630,8 +913,11 @@ async fn via_page(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, file_i
             return Err("cancelled".into());
         }
         match tokio::time::timeout(std::time::Duration::from_millis(500), catcher.rx.recv()).await {
-            Ok(Some(l)) if l.mod_id == n.mod_id && l.game == modlist::NEXUS_GAME => break l,
-            Ok(Some(l)) => log::line(&format!("mods: ignored a link for mod {} while waiting for {}", l.mod_id, m.name)),
+            Ok(Some(l)) => match modlist::link_fits(n, &l.game, l.mod_id, l.file_id) {
+                modlist::LinkFits::Take => break l,
+                modlist::LinkFits::OtherFile { pinned } => log::line(&format!("mods: refused file {} for {}: the list pins {pinned}", l.file_id, m.name)),
+                modlist::LinkFits::OtherMod => log::line(&format!("mods: ignored a link for mod {} while waiting for {}", l.mod_id, m.name)),
+            },
             Ok(None) => return Err("stopped waiting".into()),
             Err(_) if tokio::time::Instant::now() > deadline => return Err("the Nexus page sent no download link".into()),
             Err(_) => {}
@@ -645,41 +931,139 @@ async fn via_page(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, file_i
     Ok(url)
 }
 
-/// Free: open the mod's page and wait for the player to press "Mod manager
-/// download"; Nexus then hands the launcher an nxm:// link for that file.
-async fn free_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, game_dir: &Path, cancel: &AtomicBool, rx: &mut tokio::sync::mpsc::UnboundedReceiver<nexus::Nxm>) -> Result<(), String> {
+/// Free: open the file's page and wait for the player to press its download
+/// button; Nexus then hands the launcher an nxm:// link for that file. The
+/// text is the Systems Designer's guided-download text (2026-09-28).
+/// - A pinned file is the only one taken: any other is refused before it's
+///   downloaded and the right page opens again; a second wrong file skips
+///   the mod for this run (it's tried again next time).
+/// - The wait never gives up by itself: the page is opened again every
+///   `REMIND_AFTER` (a few times), and the player can Stop and carry on.
+/// - A download that breaks off, or a busy Nexus, is tried again with the
+///   same link before the player is asked to press again.
+///
+/// `n_of` is "Mod 12 of 50".
+async fn free_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, game_dir: &Path, cancel: &AtomicBool, catcher: &mut Catcher, n_of: &str) -> Result<(), String> {
+    let Catcher { rx, got_a_link, .. } = catcher;
     let n = m.nexus.as_ref().unwrap();
+    let page = m.download_page().unwrap();
+    let name = &m.name;
+    let press = if n.file.is_some() {
+        format!("Nexus is open on {name}. Press Slow download there.")
+    } else {
+        format!("Nexus is open on {name}'s files. Press Mod manager download for {}, then Slow download.", m.hint.as_deref().unwrap_or("the main file"))
+    };
+    let browser = " Your browser may ask to open Aetherial Dawn Launcher. Tick Always allow and press Open, so it doesn't ask again.";
+    let say = |note: &str, seen: bool| emit(app, m, "waiting", 0, 0, format!("{n_of}: {note}{}", if seen { "" } else { browser }));
     while rx.try_recv().is_ok() {}
-    open_url(app, &m.page().unwrap())?;
-    let mut note = format!("On the Nexus page, press Mod manager download{}.", m.hint.as_ref().map(|h| format!(" for {h}")).unwrap_or_default());
+    open_url(app, &page)?;
+    let mut note = press.clone();
+    let mut reopened = 0u32;
+    let mut wrong = 0u32;
+    let mut broke = 0u32;
     loop {
-        emit(app, m, "waiting", 0, 0, note.clone());
-        let deadline = tokio::time::Instant::now() + WAIT_FOR_CLICK;
+        say(&note, *got_a_link);
+        let mut remind_at = tokio::time::Instant::now() + REMIND_AFTER;
         let link = loop {
             if cancel.load(Ordering::SeqCst) {
                 return Err("cancelled".into());
             }
             match tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await {
-                Ok(Some(l)) if l.mod_id == n.mod_id && l.game == modlist::NEXUS_GAME => break l,
-                Ok(Some(l)) => log::line(&format!("mods: ignored a link for mod {} while waiting for {}", l.mod_id, m.name)),
+                Ok(Some(l)) => match modlist::link_fits(n, &l.game, l.mod_id, l.file_id) {
+                    modlist::LinkFits::Take => break l,
+                    modlist::LinkFits::OtherFile { pinned } => {
+                        *got_a_link = true;
+                        wrong += 1;
+                        log::line(&format!("mods: refused file {} for {name}: the list pins {pinned} (wrong file {wrong})", l.file_id));
+                        if wrong >= 2 {
+                            return Err("skipped for now: Nexus sent a different file twice. The launcher tries it again next time".into());
+                        }
+                        note = "That was a different file from the one Aetherial Dawn needs, so the launcher didn't use it. It has opened the right page again. Press Slow download there.".into();
+                        open_url(app, &page)?;
+                        say(&note, true);
+                        remind_at = tokio::time::Instant::now() + REMIND_AFTER;
+                    }
+                    modlist::LinkFits::OtherMod => log::line(&format!("mods: ignored a link for mod {} while waiting for {name}", l.mod_id)),
+                },
                 Ok(None) => return Err("stopped waiting".into()),
-                Err(_) if tokio::time::Instant::now() > deadline => return Err("no download was pressed on Nexus".into()),
+                Err(_) if tokio::time::Instant::now() > remind_at => {
+                    remind_at = tokio::time::Instant::now() + REMIND_AFTER;
+                    // A few times, so a player who stepped away doesn't come
+                    // back to a pile of tabs; the row's Open button is there too.
+                    if reopened < REOPEN_MAX {
+                        reopened += 1;
+                        log::line(&format!("mods: no press for {name} yet; opened its page again"));
+                        open_url(app, &page)?;
+                        note = format!("Nexus didn't send the download for {name}. The launcher opened the page again. Press Slow download there.");
+                    } else {
+                        note = format!("Still waiting for {name}. Press Open to show its Nexus page again, or Stop to carry on later.");
+                    }
+                    say(&note, *got_a_link);
+                }
                 Err(_) => {}
             }
         };
-        let url = api.download_link(modlist::NEXUS_GAME, n.mod_id, link.file_id, Some(&link)).await.map_err(|e| e.to_string())?;
-        let path = archive_path(game_dir, m, url.split('?').next().unwrap_or(""));
-        download(app, api.http, m, &url, &path, cancel).await?;
-        emit(app, m, "install", 0, 0, "");
-        match install(m, &path, game_dir, Some(link.file_id), None, n.file.is_some()).await? {
+        *got_a_link = true;
+        emit(app, m, "download", 0, 0, format!("Got it. Downloading {name}…"));
+        // The same link is tried again for a busy Nexus or a download that
+        // broke off, before the player is asked to press again.
+        let mut last = String::new();
+        let mut path = None;
+        for attempt in 0..3u64 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_secs(5 * attempt)).await;
+                if cancel.load(Ordering::SeqCst) {
+                    return Err("cancelled".into());
+                }
+            }
+            let url = match api.download_link(modlist::NEXUS_GAME, n.mod_id, link.file_id, Some(&link)).await {
+                Ok(u) => u,
+                Err(e) => {
+                    last = e.to_string();
+                    log::line(&format!("mods: Nexus gave no link for {name} ({last}), try {}", attempt + 1));
+                    emit(app, m, "waiting", 0, 0, format!("{n_of}: Nexus is busy right now. The launcher waits a moment and tries {name} again."));
+                    continue;
+                }
+            };
+            let p = archive_path(game_dir, m, url.split('?').next().unwrap_or(""));
+            match download(app, api.http, m, &url, &p, &format!("nexus-{}-{}", n.mod_id, link.file_id), cancel).await {
+                Ok(()) => {
+                    path = Some(p);
+                    break;
+                }
+                Err(e) if e == "cancelled" => return Err(e),
+                Err(e) => {
+                    last = e;
+                    log::line(&format!("mods: {name} download broke off ({last}), try {}", attempt + 1));
+                    emit(app, m, "waiting", 0, 0, format!("{n_of}: The download of {name} stopped. The launcher starts it again."));
+                }
+            }
+        }
+        let Some(path) = path else {
+            broke += 1;
+            if broke >= FREE_TRIES {
+                return Err(format!("the download from Nexus kept stopping ({last}). The launcher tries it again next time"));
+            }
+            open_url(app, &page)?;
+            note = format!("Nexus didn't send the download for {name}. The launcher opened the page again. Press Slow download there.");
+            continue;
+        };
+        emit(app, m, "install", 0, 0, format!("Installing {name}…"));
+        let done = install(m, &path, game_dir, Some(link.file_id), None, n.file.is_some()).await;
+        fetch::forget(&path);
+        match done? {
             Outcome::Installed => return Ok(()),
+            // Only an unpinned mod gets here (a pinned file is the server's
+            // own); its page is opened again for another file.
             Outcome::TooNew(p) => {
                 let _ = std::fs::remove_file(&path);
-                note = format!("That file is for a newer Skyrim ({}). Open Files, pick an older version for Skyrim 1.6.1170 and press Mod manager download.", p.join(", "));
+                open_url(app, &page)?;
+                note = format!("That file is for a newer Skyrim ({}), so the launcher didn't use it. On the page, press Mod manager download on an older file for Skyrim 1.6.1170, then Slow download.", p.join(", "));
             }
             Outcome::WrongBuild(p) => {
                 let _ = std::fs::remove_file(&path);
-                note = format!("That file has the old-Skyrim build of {}. Open Files, pick the one for Anniversary Edition (1.6.640 or newer) and press Mod manager download.", p.join(", "));
+                open_url(app, &page)?;
+                note = format!("That file has the old-Skyrim build of {}, so the launcher didn't use it. On the page, press Mod manager download on the Anniversary Edition file (1.6.640 or newer), then Slow download.", p.join(", "));
             }
         }
     }
@@ -688,9 +1072,11 @@ async fn free_one(app: &AppHandle, api: &nexus::Client<'_>, m: &ModEntry, game_d
 async fn direct_one(app: &AppHandle, http: &reqwest::Client, m: &ModEntry, game_dir: &Path, cancel: &AtomicBool) -> Result<(), String> {
     let url = m.url.as_deref().unwrap();
     let path = archive_path(game_dir, m, url.split('?').next().unwrap_or(""));
-    download(app, http, m, url, &path, cancel).await?;
+    download(app, http, m, url, &path, &format!("url-{}-{}", url.split('?').next().unwrap_or(""), m.sha256.as_deref().unwrap_or("")), cancel).await?;
     emit(app, m, "install", 0, 0, "");
-    match install(m, &path, game_dir, None, None, true).await? {
+    let done = install(m, &path, game_dir, None, None, true).await;
+    fetch::forget(&path);
+    match done? {
         Outcome::Installed => Ok(()),
         Outcome::TooNew(_) => unreachable!(),
         Outcome::WrongBuild(p) => Err(format!("the download has a build of {} that SKSE won't load on Skyrim 1.6.1170", p.join(", "))),
@@ -702,7 +1088,9 @@ async fn direct_one(app: &AppHandle, http: &reqwest::Client, m: &ModEntry, game_
 pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> CmdResult<RunResult> {
     let dir = state.config.lock().await.game_dir.clone().ok_or("Pick your Skyrim folder first.")?;
     let list = full_list(&state).await;
-    let mut todo: Vec<ModEntry> = modlist::missing(&list, &dir).into_iter().cloned().collect();
+    // Each pinned file once: the built-in Unofficial Patch and the server
+    // lane's copy of it are one download.
+    let mut todo: Vec<ModEntry> = modlist::to_fetch(&list, &dir).into_iter().cloned().collect();
     // The Black Screen Fix preset that fits the game's resolution.
     let height = app.path().document_dir().ok().and_then(|d| launcher_core::gameini::screen_height(&d));
     for m in todo.iter_mut().filter(|m| m.id == "black-screen-fix") {
@@ -718,6 +1106,26 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
     let needs_nexus = todo.iter().any(|m| m.nexus.is_some());
     if needs_nexus && key.is_none() {
         return Err("NEEDS_NEXUS_SIGN_IN".into());
+    }
+    // Room on the Skyrim drive for everything still to install, plus the
+    // biggest mod in flight (files are moved into Data, so its archive).
+    let sizes: Vec<(u64, u64, u64)> = todo.iter().map(|m| {
+        let (a, u) = m.sizes();
+        (a, u, already_here(&dir, m).min(a))
+    }).collect();
+    let need = fetch::space_needed(&sizes, true);
+    let no_sizes = todo.iter().filter(|m| m.archive_bytes.is_none() || m.unpacked_bytes.is_none()).count();
+    if no_sizes > 0 {
+        log::line(&format!("mods: {no_sizes} of {} mod(s) have no sizes in the list; counted as {} each", todo.len(), gb(modlist::UNKNOWN_ARCHIVE * 4)));
+    }
+    let download: u64 = sizes.iter().map(|s| s.0.saturating_sub(s.2)).sum();
+    match fetch::free_space(&dir) {
+        Some(free) if free < need => {
+            log::line(&format!("mods: not enough space on the Skyrim drive: {} mod(s) need {} free, {} is free", todo.len(), gb(need), gb(free)));
+            return Err(format!("NO_SPACE:{need}:{free}"));
+        }
+        Some(free) => log::line(&format!("mods: {} to download, {} free space needed at most, {} free", gb(download), gb(need), gb(free))),
+        None => log::line(&format!("mods: {} to download, {} free space needed at most (free space unknown)", gb(download), gb(need))),
     }
     let cancel = Arc::new(AtomicBool::new(false));
     {
@@ -756,17 +1164,36 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
     // API won't hand a file over. Held while waiting, then given back.
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     *state.mods.nxm_tx.lock().unwrap() = Some(tx);
-    let mut catcher = Catcher { rx, claimed: false, paged: Default::default() };
+    let mut catcher = Catcher { rx, claimed: false, paged: Default::default(), got_a_link: false };
     if needs_nexus && !premium {
         catcher.claim(&app);
     }
 
     let mut result = RunResult::default();
-    for m in &todo {
+    let count = todo.len();
+    *OVERALL.lock().unwrap() = Some(Overall {
+        start: std::time::Instant::now(),
+        mods: todo.iter().zip(&sizes).map(|(m, s)| (m.id.clone(), (s.0, s.2))).collect(),
+        pace: fetch::Pace::default(),
+        shown: None,
+        count,
+        finished: 0,
+    });
+    overall(&app, "", 0, None, true);
+    for (i, m) in todo.iter().enumerate() {
         if cancel.load(Ordering::SeqCst) {
             result.cancelled = true;
             break;
         }
+        // Put in by an earlier download of this run (the same files).
+        if m.installed(&dir) {
+            log::line(&format!("mods: {} is already in; nothing to download", m.name));
+            emit(&app, m, "done", 0, 0, "Installed");
+            overall_finish(&app, &m.id, true);
+            result.installed.push(m.name.clone());
+            continue;
+        }
+        let n_of = format!("Mod {} of {count}", i + 1);
         let mut r = Err(String::new());
         // One quiet retry before a failure is shown (a dropped download, a
         // busy Nexus).
@@ -775,12 +1202,13 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
                 if premium {
                     premium_one(&app, &api, m, &dir, &cancel, &mut catcher).await
                 } else {
-                    free_one(&app, &api, m, &dir, &cancel, &mut catcher.rx).await
+                    free_one(&app, &api, m, &dir, &cancel, &mut catcher, &n_of).await
                 }
             } else {
                 direct_one(&app, &state.http, m, &dir, &cancel).await
             };
             match &r {
+                // Free members' downloads are asked for again inside free_one.
                 Err(e) if attempt == 0 && e != "cancelled" && (m.nexus.is_none() || premium) => {
                     log::line(&format!("mods: {} failed ({e}); trying once more", m.name));
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -791,12 +1219,14 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
         match r {
             Ok(()) if m.installed(&dir) => {
                 emit(&app, m, "done", 0, 0, "Installed");
+                overall_finish(&app, &m.id, true);
                 result.installed.push(m.name.clone());
             }
             Ok(()) => {
                 let msg = format!("installed, but {} still isn't there", m.check.join(", "));
                 log::line(&format!("mods: {}: {msg}", m.name));
                 emit(&app, m, "failed", 0, 0, msg.clone());
+                overall_finish(&app, &m.id, false);
                 result.failed.push((m.name.clone(), msg));
             }
             Err(e) if e == "cancelled" => {
@@ -808,6 +1238,7 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
                 log::line(&format!("mods: {} failed: {e}", m.name));
                 let e = launcher_core::plain(&e);
                 emit(&app, m, "failed", 0, 0, e.clone());
+                overall_finish(&app, &m.id, false);
                 result.failed.push((m.name.clone(), e));
             }
         }
@@ -818,6 +1249,10 @@ pub async fn download_all_mods(app: AppHandle, state: State<'_, AppState>) -> Cm
         restore_left_handler(&app);
     }
     *state.mods.cancel.lock().unwrap() = None;
+    if let Some(o) = OVERALL.lock().unwrap().take() {
+        let done: u64 = o.mods.values().map(|v| v.1.min(v.0)).sum();
+        log::line(&format!("mods: {} in {} min ({} MB/min over the run)", gb(done), o.start.elapsed().as_secs() / 60, (done >> 20) / (o.start.elapsed().as_secs() / 60).max(1)));
+    }
     log::line(&format!("mods: done, {} installed, {} failed{}", result.installed.len(), result.failed.len(), if result.cancelled { ", stopped by the player" } else { "" }));
     Ok(result)
 }
@@ -829,5 +1264,85 @@ mod tests {
         assert!(super::looks_like_key("abcDEF123+/=abcDEF123+/=abcDEF123--xyz--QQ=="));
         assert!(!super::looks_like_key("hello world, this is not a key at all"));
         assert!(!super::looks_like_key("short"));
+    }
+
+    #[test]
+    fn requirements_readout_needs_current_feed_exact_deployment_and_game_files() {
+        use launcher_core::allowlist::VortexFile;
+        use launcher_core::modlist::{ModEntry, NexusRef};
+        use launcher_core::vortex::{ClientSet, Profile, Status, VortexMod};
+
+        let dir = std::env::temp_dir().join(format!("ad-mods-readout-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(dir.join("Data")).unwrap();
+        let set = ClientSet { vortex_required: false, collection: None, mods: vec![ModEntry {
+            id: "test-mod".into(), name: "Test Mod".into(),
+            nexus: Some(NexusRef { mod_id: 42, file: Some(73), pick: None }),
+            check: vec!["Data/Test.txt".into(), "test-loader.exe".into()],
+            ..Default::default()
+        }] };
+        let status = Status {
+            profile: Some(Profile { id: "p1".into(), name: "Aetherial Dawn".into(), active: true }),
+            aetherial_profiles: 1,
+            mods: vec![VortexMod {
+                id: "test-package".into(), installation_path: Some("test-package-folder".into()),
+                state: Some("installed".into()), nexus_mod_id: Some(42),
+                nexus_file_id: Some(73), enabled: true,
+            }],
+            ..Default::default()
+        };
+        let files = vec![VortexFile { rel: "Data/Test.txt".into(), source: "test-package-folder".into() }];
+        std::fs::write(dir.join("Data/Test.txt"), b"deployed").unwrap();
+
+        let unavailable = super::vortex_readout(&set, Some(&status), &files, &dir,
+            Some("Vortex: current game requirements unavailable"));
+        assert!(!unavailable.ready);
+        assert_eq!(unavailable.exact, vec![None]);
+
+        let missing_game_file = super::vortex_readout(&set, Some(&status), &files, &dir, None);
+        assert!(!missing_game_file.ready);
+        assert_eq!(missing_game_file.exact, vec![Some(false)]);
+        assert!(missing_game_file.line.contains("1 required mod"));
+        assert!(missing_game_file.line.contains("Test Mod"));
+
+        std::fs::write(dir.join("test-loader.exe"), b"loader").unwrap();
+        let wrong_source = [VortexFile { rel: "Data/Test.txt".into(), source: "old-package-folder".into() }];
+        assert!(!super::vortex_readout(&set, Some(&status), &wrong_source, &dir, None).ready);
+
+        let ready = super::vortex_readout(&set, Some(&status), &files, &dir, None);
+        assert!(ready.ready, "{} {:?}", ready.line, ready.exact);
+        assert_eq!(ready.exact, vec![Some(true)]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn requirements_names_installed_female_alternative_without_counting_it_as_deployed() {
+        use launcher_core::allowlist::VortexFile;
+        use launcher_core::modlist::{self, ModEntry, NexusRef};
+        use launcher_core::vortex::{ClientSet, Profile, Status, VortexMod};
+        let dir = std::env::temp_dir().join(format!("ad-face-readout-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let face = |id: &str, file| ModEntry { id: id.into(), name: id.into(),
+            nexus: Some(NexusRef { mod_id: 22487, file: Some(file), pick: None }), ..Default::default() };
+        let required = modlist::play_required(vec![face("community-overlays-1-female-face", 104828),
+            face("community-overlays-1-male-face", 104868)]);
+        let set = ClientSet { vortex_required: false, collection: None, mods: required };
+        let checks = &set.mods[0].check;
+        assert_eq!(checks.len(), 25);
+        for rel in checks {
+            let target = dir.join(rel);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(target, b"selected male texture").unwrap();
+        }
+        let package = |id: &str, file| VortexMod { id: id.into(), installation_path: Some(format!("{id}-folder")),
+            state: Some("installed".into()), nexus_mod_id: Some(22487), nexus_file_id: Some(file), enabled: true };
+        let status = Status { profile: Some(Profile { id: "p1".into(), name: "Aetherial Dawn".into(), active: true }),
+            aetherial_profiles: 1, mods: vec![package("female", 104828), package("male", 104868)], ..Default::default() };
+        let files: Vec<VortexFile> = checks.iter().map(|rel| VortexFile { rel: rel.clone(), source: "male-folder".into() }).collect();
+        let readout = super::vortex_readout(&set, Some(&status), &files, &dir, None);
+        assert!(readout.ready, "{}", readout.line);
+        assert_eq!((readout.confirmed, readout.required), (1, 1));
+        assert!(readout.line.contains("Female Face Overlays installed as an alternative"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
