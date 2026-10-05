@@ -87,7 +87,11 @@ pub fn vortex_deployed(m: &ModEntry, files: &[VortexFile], have_record: bool) ->
         return Some(false);
     }
     let data_checks: Vec<&String> = m.check.iter().filter(|c| c.replace('\\', "/").to_ascii_lowercase().starts_with("data/")).collect();
-    Some(data_checks.iter().all(|c| mine.iter().any(|f| matches(c, &f.rel))))
+    // An entry checked only next to SkyrimSE.exe (Engine Fixes' preloader,
+    // which shares its Nexus mod with the Data part) needs those files in a
+    // Vortex record too, not just a deployed file from the same mod.
+    let checks: Vec<&String> = if data_checks.is_empty() { m.check.iter().collect() } else { data_checks };
+    Some(checks.iter().all(|c| mine.iter().any(|f| matches(c, &f.rel))))
 }
 
 pub fn standing(m: &ModEntry, game_dir: &Path, files: &[VortexFile], have_record: bool) -> Standing {
@@ -373,10 +377,11 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let game = t.path();
         let builtins = builtin(Some("1.6.1170.0"));
-        assert_eq!(builtins.len(), 13);
+        assert_eq!(builtins.len(), 14);
         // Vortex's 11, deployed from folders named the way Vortex names them.
+        // Engine Fixes' root preloader is never Vortex's (2026-10-05 split).
         let mut deployed = Vec::new();
-        for m in builtins.iter().filter(|m| m.id != "address-library" && m.id != "mcm-helper") {
+        for m in builtins.iter().filter(|m| m.id != "address-library" && m.id != "mcm-helper" && m.id != "engine-fixes-preloader") {
             let n = m.nexus.as_ref().unwrap();
             let source = format!("{}-{}-1-0-1727000000", m.name, n.mod_id);
             for c in &m.check {
@@ -408,7 +413,7 @@ mod tests {
         };
         assert_eq!(deployed_builtins.len(), 11, "{deployed_builtins:?}");
         let absent: Vec<&str> = builtins.iter().map(|m| m.id.as_str()).filter(|id| !deployed_builtins.iter().any(|d| d == id)).collect();
-        assert_eq!(absent, vec!["address-library", "mcm-helper"]);
+        assert_eq!(absent, vec!["address-library", "engine-fixes-preloader", "mcm-helper"]);
         // The words never let the small game-files gap stand for Vortex.
         assert_eq!(f.describe(), "Game files: 36 of 37 present · Vortex: 0 of 37 deployed · Aetherial Dawn profile: not checked yet");
     }

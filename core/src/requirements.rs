@@ -24,20 +24,23 @@ const SOULS_SHA256: &str = "a5295783c6cab3e766bdd6306896910f61fe5f97122997dea0bb
 /// Skyrim Souls RE's files; tidying never moves them.
 pub const SOULS_FILES: [&str; 4] = ["SkyrimSoulsRE.dll", "SkyrimSoulsRE.ini", "SkyrimSoulsRE.pdb", "CombatAlertOverlayMenu.swf"];
 
-/// SSE Engine Fixes, required by Skyrim Souls RE (Timothy, 2026-09-26). He
-/// chose the All-In-One package from Nexus (20:19), which holds the SKSE
-/// plugin and the preloader files next to SkyrimSE.exe. The GitHub part 1
-/// installer stays for reference but isn't run before Play any more.
+/// SSE Engine Fixes, required by Skyrim Souls RE (Timothy, 2026-09-26): the
+/// 7.0.20 main file in Data/SKSE (Vortex) and the SKSE64 Preloader next to
+/// SkyrimSE.exe (2026-10-05 split; there's no 7.0.20 All-In-One). The GitHub
+/// part 1 installer stays for reference but isn't run before Play any more.
 pub const ENGINE_FIXES_VERSION: &str = "7.0.20";
 const ENGINE_FIXES_URL: &str = "https://github.com/aers/EngineFixesSkyrim64/releases/download/7.0.20/EngineFixes.FOMOD.Installer.7z";
 const ENGINE_FIXES_SHA256: &str = "21330c95011f41859139635b43ce95ffb5fbadd3cd375d2f4358abcc3cb99407";
 /// Engine Fixes' files in Data/SKSE/Plugins; tidying never moves them.
 pub const ENGINE_FIXES_FILES: [&str; 5] = ["EngineFixes.dll", "EngineFixes.pdb", "EngineFixes.toml", "EngineFixes_SNCT.ini", "EngineFixes_preload.txt"];
-/// Engine Fixes' old part 2 files, next to SkyrimSE.exe. Engine Fixes 7 on
-/// SKSE 2.2 loads early through SKSE's own EngineFixes_preload.txt, and the
-/// All-In-One package doesn't ship all of these, so they're copied when the
-/// package has them but never required.
+/// Engine Fixes' part 2 files, next to SkyrimSE.exe, from its SKSE64
+/// Preloader. d3dx9_42.dll is required on 1.6.1170 (the preload txt alone
+/// isn't enough); tbb.dll and tbbmalloc.dll are optional since 7.0.10 and
+/// copied when the archive has them (Mods, 2026-10-05).
 pub const ENGINE_FIXES_PRELOAD: [&str; 3] = ["d3dx9_42.dll", "tbb.dll", "tbbmalloc.dll"];
+/// Nexus files: 7.0.20 "Main File" (Data/SKSE) and "SKSE64 Preloader" 7.
+pub const ENGINE_FIXES_MAIN_FILE: u64 = 725753;
+pub const ENGINE_FIXES_PRELOADER_FILE: u64 = 725261;
 /// SKSE Menu Framework's plugin; tidying never moves it.
 pub const MENU_FRAMEWORK_DLL: &str = "SKSEMenuFramework.dll";
 /// ImGui Icons' folder in Data/Interface; tidying never moves it.
@@ -87,6 +90,11 @@ pub fn engine_fixes_preload_ok(game_dir: &Path) -> bool {
     plugins_dir(game_dir).join("EngineFixes_preload.txt").is_file()
 }
 
+/// Engine Fixes' preloader next to SkyrimSE.exe, required on 1.6.1170.
+pub fn engine_fixes_preloader_ok(game_dir: &Path) -> bool {
+    game_dir.join(ENGINE_FIXES_PRELOAD[0]).is_file()
+}
+
 pub fn ussep_ok(game_dir: &Path) -> bool {
     game_dir.join("Data").join(USSEP_PLUGIN).is_file() && crate::ussep::too_new(game_dir).is_none()
 }
@@ -132,7 +140,7 @@ pub fn missing_nexus_mods(game_dir: &Path, game_version: Option<&str>) -> Vec<Ne
                 id: "address-library",
                 name: "Address Library for SKSE Plugins",
                 page: page("address-library"),
-                pick: "All in one (Anniversary Edition)".into(),
+                pick: "All in One (1.7.104.0), version 13".into(),
                 looks_for: format!("{} in Data\\SKSE\\Plugins", address_library_file(v)),
             });
         }
@@ -140,10 +148,19 @@ pub fn missing_nexus_mods(game_dir: &Path, game_version: Option<&str>) -> Vec<Ne
     if !engine_fixes_ok(game_dir) || !engine_fixes_preload_ok(game_dir) {
         out.push(NexusMod {
             id: "engine-fixes",
-            name: "SSE Engine Fixes (All-In-One)",
+            name: "SSE Engine Fixes",
             page: page("engine-fixes"),
-            pick: "Engine Fixes (All-In-One) for 1.6.1170 and newer".into(),
+            pick: "Engine Fixes - Main File, version 7.0.20 (never 7.0.21, which is for Skyrim 1.7.99)".into(),
             looks_for: "EngineFixes.dll and EngineFixes_preload.txt in Data\\SKSE\\Plugins".into(),
+        });
+    }
+    if !engine_fixes_preloader_ok(game_dir) {
+        out.push(NexusMod {
+            id: "engine-fixes-preloader",
+            name: "SSE Engine Fixes - SKSE64 Preloader",
+            page: page("engine-fixes"),
+            pick: "Engine Fixes - SKSE64 Preloader (version 7)".into(),
+            looks_for: "d3dx9_42.dll next to SkyrimSE.exe".into(),
         });
     }
     if !ussep_ok(game_dir) {
@@ -651,7 +668,7 @@ mod tests {
     fn lists_missing_nexus_mods() {
         let tmp = tempfile::tempdir().unwrap();
         let ids: Vec<&str> = missing_nexus_mods(tmp.path(), Some("1.6.1170.0")).iter().map(|m| m.id).collect();
-        assert_eq!(ids, ["address-library", "engine-fixes", "ussep", "menu-framework", "imgui-icons", "skyui"]);
+        assert_eq!(ids, ["address-library", "engine-fixes", "engine-fixes-preloader", "ussep", "menu-framework", "imgui-icons", "skyui"]);
         assert!(missing_nexus_mods(tmp.path(), Some("1.6.1170.0")).iter().all(|m| m.page.starts_with("https://www.nexusmods.com/")));
         let d = tmp.path();
         std::fs::create_dir_all(plugins_dir(d)).unwrap();
@@ -660,6 +677,7 @@ mod tests {
             std::fs::write(plugins_dir(d).join(f), b"x").unwrap();
         }
         std::fs::write(plugins_dir(d).join("EngineFixes_preload.txt"), b"x").unwrap();
+        std::fs::write(d.join("d3dx9_42.dll"), b"x").unwrap();
         std::fs::write(d.join("Data").join(USSEP_PLUGIN), b"x").unwrap();
         // The 59-byte stub from the first live test isn't SkyUI.
         std::fs::write(d.join("Data").join(SKYUI_ARCHIVE), b"x").unwrap();

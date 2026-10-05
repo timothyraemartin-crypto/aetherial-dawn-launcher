@@ -782,7 +782,7 @@ fn crash_logger(i: &Inputs) -> Check {
             "requirements",
             "Required mods",
             if fail { Status::Fail } else { Status::Warn },
-            "Aetherial Dawn needs SKSE64 2.2.6, the Address Library, Crash Logger, Skyrim Souls RE, SSE Engine Fixes (All-In-One), the Unofficial Skyrim Special Edition Patch, SKSE Menu Framework and ImGui Icons.",
+            "Aetherial Dawn needs SKSE64 2.2.6, the Address Library, Crash Logger, Skyrim Souls RE, SSE Engine Fixes (main file and SKSE64 Preloader), the Unofficial Skyrim Special Edition Patch, SKSE Menu Framework and ImGui Icons.",
             missing,
         )
     }

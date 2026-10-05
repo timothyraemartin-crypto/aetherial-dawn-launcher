@@ -303,16 +303,18 @@ pub const TRUE_DIRECTIONAL_MOVEMENT_FILE: u64 = 798770;
 pub const UNKNOWN_ARCHIVE: u64 = 64 << 20;
 
 /// (id, download bytes, unpacked bytes) of the launcher's own mods.
-const BUILTIN_SIZES: [(&str, u64, u64); 13] = [
-    ("address-library", 6_640_552, 9_283_200),
-    ("engine-fixes", 5_607_605, 32_699_114),
+const BUILTIN_SIZES: [(&str, u64, u64); 14] = [
+    // v13: Nexus size; unpacked estimated from v11 1.6.X's ratio (2.41 MB -> 9.28 MB).
+    ("address-library", 6_640_552, 25_550_000),
+    ("engine-fixes", 7_973_497, 32_699_114),
+    ("engine-fixes-preloader", 25_080, 75_240),
     ("ussep", 168_852_028, 282_223_050),
     ("menu-framework", 10_715_519, 32_146_557),
     ("imgui-icons", 3_062_080, 6_392_717),
     ("skyui", 2_693_003, 2_902_400),
     ("display-tweaks", 187_137, 561_411),
     ("black-screen-fix", 1_800, 2_700),
-    ("mcm-helper", 8_187_265, 24_561_795),
+    ("mcm-helper", 8_115_424, 24_561_795),
     ("smoothcam", 36_638_690, 104_909_236),
     ("smoothcam-modern-preset", 2_186, 51_900),
     ("true-directional-movement", 5_210_375, 15_631_125),
@@ -342,14 +344,30 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
     // The settings file it can't start without (health.rs required files):
     // missing, Play installs the mod again (text audit A6).
     ef_check.push("Data/SKSE/Plugins/EngineFixes.toml".to_string());
+    // Two files, owned apart (world-mods/target/INSTALL-PLAN.md section 4):
+    // the 7.0.20 main file in Data/SKSE, which Vortex holds, and the SKSE64
+    // Preloader next to SkyrimSE.exe, where Vortex doesn't deploy. There is
+    // no 7.0.20 All-In-One, and 7.0.21 (794484) is for 1.7.99 only.
     out.push(ModEntry {
         id: "engine-fixes".into(),
-        name: "SSE Engine Fixes (All-In-One)".into(),
-        nexus: Some(NexusRef { mod_id: 17230, file: Some(669326), pick: Some("All-In-One".into()) }),
-        game_files: r::ENGINE_FIXES_PRELOAD.iter().map(|s| s.to_string()).collect(),
+        name: "SSE Engine Fixes".into(),
+        nexus: Some(NexusRef { mod_id: 17230, file: Some(r::ENGINE_FIXES_MAIN_FILE), pick: Some("Main File".into()) }),
         fomod: vec!["AE".into(), "1.6.1170".into()],
         check: ef_check,
-        hint: Some("Engine Fixes (All-In-One) for 1.6.1170 and newer".into()),
+        hint: Some("Engine Fixes - Main File, version 7.0.20".into()),
+        ..Default::default()
+    });
+    // The preload txt alone doesn't load Engine Fixes early enough on
+    // 1.6.1170 (Mods, 2026-10-05): d3dx9_42.dll is required; the tbb files
+    // are optional since 7.0.10.
+    out.push(ModEntry {
+        id: "engine-fixes-preloader".into(),
+        name: "SSE Engine Fixes - SKSE64 Preloader".into(),
+        nexus: Some(NexusRef { mod_id: 17230, file: Some(r::ENGINE_FIXES_PRELOADER_FILE), pick: Some("SKSE64 Preloader".into()) }),
+        target: Target::Game,
+        include: vec![r::ENGINE_FIXES_PRELOAD[0].to_string()],
+        check: vec![r::ENGINE_FIXES_PRELOAD[0].to_string()],
+        hint: Some("Engine Fixes - SKSE64 Preloader: d3dx9_42.dll goes next to SkyrimSE.exe".into()),
         ..Default::default()
     });
     out.push(ModEntry {
@@ -2230,11 +2248,12 @@ mod tests {
 
     #[test]
     fn every_builtin_nexus_package_has_the_manual_vortex_file_pin() {
-        // These are the 13 selected mod/file pairs in the 2026-09-29
+        // These are the 14 selected mod/file pairs in the 2026-09-29
         // migration inventory. A same-mod alternative must not become Ready.
         let expected = [
             ("address-library", 32444, 795954),
-            ("engine-fixes", 17230, 669326),
+            ("engine-fixes", 17230, 725753),
+            ("engine-fixes-preloader", 17230, 725261),
             ("ussep", 266, 733846),
             ("menu-framework", 120352, 806684),
             ("imgui-icons", 114790, 690123),
@@ -2257,22 +2276,31 @@ mod tests {
     }
 
     #[test]
-    fn all_in_one_splits_data_and_game_files() {
+    fn engine_fixes_main_file_goes_to_data_and_the_preloader_next_to_the_exe() {
         let t = tempfile::tempdir().unwrap();
         let a = t.path().join("m.zip");
-        zip_with(&a, &[("SKSE/Plugins/EngineFixes.dll", b"1"), ("SKSE/Plugins/EngineFixes_preload.txt", b"2"), ("d3dx9_42.dll", b"3"), ("tbbmalloc.dll", b"5")]);
+        zip_with(&a, &[("SKSE/Plugins/EngineFixes.dll", b"1"), ("SKSE/Plugins/EngineFixes_preload.txt", b"2")]);
         let u = t.path().join("u");
         extract(&a, &u).unwrap();
-        let e = builtin(None).into_iter().find(|e| e.id == "engine-fixes").unwrap();
-        let mut to: Vec<String> = plan(&e, &u).unwrap().iter().map(|c| c.to.to_string_lossy().replace('\\', "/")).collect();
+        let list = builtin(None);
+        let main = list.iter().find(|e| e.id == "engine-fixes").unwrap();
+        let mut to: Vec<String> = plan(main, &u).unwrap().iter().map(|c| c.to.to_string_lossy().replace('\\', "/")).collect();
         to.sort();
-        assert_eq!(to, ["Data/SKSE/Plugins/EngineFixes.dll", "Data/SKSE/Plugins/EngineFixes_preload.txt", "d3dx9_42.dll", "tbbmalloc.dll"]);
-        // A package with only the SKSE plugin installs too.
-        let b = t.path().join("n.zip");
-        zip_with(&b, &[("SKSE/Plugins/EngineFixes.dll", b"1"), ("SKSE/Plugins/EngineFixes_preload.txt", b"2")]);
+        assert_eq!(to, ["Data/SKSE/Plugins/EngineFixes.dll", "Data/SKSE/Plugins/EngineFixes_preload.txt"]);
+        let b = t.path().join("p.zip");
+        zip_with(&b, &[("d3dx9_42.dll", b"3"), ("readme.txt", b"r")]);
         let v = t.path().join("v");
         extract(&b, &v).unwrap();
-        assert_eq!(plan(&e, &v).unwrap().len(), 2);
+        let pre = list.iter().find(|e| e.id == "engine-fixes-preloader").unwrap();
+        let to: Vec<String> = plan(pre, &v).unwrap().iter().map(|c| c.to.to_string_lossy().into_owned()).collect();
+        assert_eq!(to, ["d3dx9_42.dll"]);
+        // Required next to SkyrimSE.exe; Vortex is never asked for it.
+        assert_eq!(pre.check, ["d3dx9_42.dll"]);
+        assert!(crate::vortex::vortex_ref(pre).is_none() && crate::vortex::vortex_ref(main).is_some());
+        std::fs::create_dir_all(t.path().join("g")).unwrap();
+        assert!(!crate::vortex::present_for_play(pre, &t.path().join("g"), true));
+        std::fs::write(t.path().join("g/d3dx9_42.dll"), b"3").unwrap();
+        assert!(crate::vortex::present_for_play(pre, &t.path().join("g"), true));
     }
 
     #[test]
