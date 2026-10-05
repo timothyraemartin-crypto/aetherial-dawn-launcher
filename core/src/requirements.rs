@@ -33,10 +33,10 @@ const ENGINE_FIXES_URL: &str = "https://github.com/aers/EngineFixesSkyrim64/rele
 const ENGINE_FIXES_SHA256: &str = "21330c95011f41859139635b43ce95ffb5fbadd3cd375d2f4358abcc3cb99407";
 /// Engine Fixes' files in Data/SKSE/Plugins; tidying never moves them.
 pub const ENGINE_FIXES_FILES: [&str; 5] = ["EngineFixes.dll", "EngineFixes.pdb", "EngineFixes.toml", "EngineFixes_SNCT.ini", "EngineFixes_preload.txt"];
-/// Engine Fixes' part 2 files, next to SkyrimSE.exe, from its SKSE64
-/// Preloader. d3dx9_42.dll is required on 1.6.1170 (the preload txt alone
-/// isn't enough); tbb.dll and tbbmalloc.dll are optional since 7.0.10 and
-/// copied when the archive has them (Mods, 2026-10-05).
+/// Engine Fixes' part 2 files, next to SkyrimSE.exe. d3dx9_42.dll, from its
+/// SKSE64 Preloader, is required on 1.6.1170 (the preload txt alone isn't
+/// enough); tbb.dll and tbbmalloc.dll are optional since 7.0.10, and the
+/// preloader entry neither installs nor checks them (Mods, 2026-10-05).
 pub const ENGINE_FIXES_PRELOAD: [&str; 3] = ["d3dx9_42.dll", "tbb.dll", "tbbmalloc.dll"];
 /// Nexus files: 7.0.20 "Main File" (Data/SKSE) and "SKSE64 Preloader" 7.
 pub const ENGINE_FIXES_MAIN_FILE: u64 = 725753;

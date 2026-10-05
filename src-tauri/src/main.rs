@@ -1328,6 +1328,11 @@ async fn server_patch_files(
     let mut swaps = Vec::new();
     for (i, step) in steps.iter().enumerate() {
         let patch = step.patch.as_ref().expect("checked");
+        // plan() only picks plainly named patches; checked again before any
+        // path is built from the name.
+        if !patcher::plain_file_name(&patch.file) {
+            return Err(format!("The server's patch list names a patch file the launcher won't use ({}). Staff need to fix it on the server; try again later.", patch.file));
+        }
         let _ = app.emit("patch-progress", PatchProgress { stage: "download", file: step.file.path.clone(), done: i, total });
         let purl = format!("{}/patches/{}", base.trim_end_matches('/'), patch.file);
         let made_here = local_dir.join(&patch.file);
