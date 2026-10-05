@@ -209,6 +209,14 @@ fn same_file(e: &ModEntry, n: &crate::modlist::NexusRef, file: u64, m: &VortexMo
         && e.md5.as_deref().is_none_or(|want| m.file_md5.as_deref().is_some_and(|got| got.eq_ignore_ascii_case(want.trim())))
 }
 
+/// The Nexus file Vortex is asked for. Vortex deploys only into Data, so an
+/// entry whose files go next to SkyrimSE.exe (Engine Fixes' root preloader,
+/// launcher-owned per world-mods/target/INSTALL-PLAN.md) is judged by its
+/// files alone and never by Vortex's profile.
+pub fn vortex_ref(e: &ModEntry) -> Option<&crate::modlist::NexusRef> {
+    e.nexus.as_ref().filter(|_| e.target != crate::modlist::Target::Game)
+}
+
 /// Vortex deploys by hard links, which only work when its staging folder
 /// is on the same drive as the game (references KB §3.1, §5 #20). The
 /// staging folder when it's on another drive.
@@ -270,6 +278,9 @@ pub fn gate_on(served: Option<&ClientSet>) -> bool {
 pub fn present_for_play(m: &ModEntry, game_dir: &std::path::Path, vortex_required: bool) -> bool {
     if m.nexus.is_none() {
         return m.installed(game_dir);
+    }
+    if vortex_ref(m).is_none() {
+        return m.installed(game_dir) || (!m.check.is_empty() && m.game_files_present(game_dir));
     }
     if vortex_required {
         return m.check.is_empty() || m.game_files_present(game_dir);
@@ -368,7 +379,7 @@ pub fn step(set: &ClientSet, status: Option<&Status>) -> Step {
     let (mut installed, mut enabled) = (0, 0);
     let mut waiting = Vec::new();
     for e in &set.mods {
-        let Some(n) = &e.nexus else { continue };
+        let Some(n) = vortex_ref(e) else { continue };
         required += 1;
         let found: Vec<&VortexMod> = st.mods.iter().filter(|m| m.nexus_mod_id == Some(n.mod_id)
             && n.file.is_none_or(|file| same_file(e, n, file, m)) && installed_state(m)).collect();
@@ -423,7 +434,7 @@ pub fn membership(list: &[ModEntry], status: &Status) -> Membership {
     let mut missing = Vec::new();
     let mut other_versions_on = Vec::new();
     for e in list {
-        let Some(n) = &e.nexus else { continue };
+        let Some(n) = vortex_ref(e) else { continue };
         let on: Vec<&VortexMod> = status.mods.iter().filter(|m| m.nexus_mod_id == Some(n.mod_id) && m.enabled).collect();
         let exact = match n.file {
             Some(file) => on.iter().any(|m| same_file(e, n, file, m) && installed(m)),
@@ -516,7 +527,7 @@ pub fn missing_deployment(list: &[ModEntry], status: &Status, files: &[VortexFil
     }
 
     list.iter().filter_map(|e| {
-        let n = e.nexus.as_ref()?;
+        let n = vortex_ref(e)?;
         let checks: Vec<&String> = e.check.iter().filter(|c| c.replace('\\', "/").to_ascii_lowercase().starts_with("data/")).collect();
         let enabled: Vec<&VortexMod> = status.mods.iter().filter(|m| m.nexus_mod_id == Some(n.mod_id) && m.enabled).collect();
         let valid = status.profile.as_ref().is_some_and(|p| p.active)
@@ -551,7 +562,7 @@ pub fn missing_deployment(list: &[ModEntry], status: &Status, files: &[VortexFil
 /// context. Requirements and Play must use the same source check.
 pub fn deployment_ready_for(list: &[ModEntry], entry: &ModEntry, status: &Status,
     files: &[VortexFile], game_dir: &Path) -> bool {
-    if entry.nexus.is_none() { return true; }
+    if vortex_ref(entry).is_none() { return true; }
     let mut context = vec![entry.clone()];
     if entry.id == "community-overlays-1" {
         if let Some(fix) = list.iter().find(|e| e.id == "community-overlays-1-fix") {
@@ -575,7 +586,7 @@ pub struct PackageStates {
 }
 
 pub fn package_states(list: &[ModEntry], entry: &ModEntry, status: Option<&Status>, files: &[VortexFile], game_dir: &Path) -> PackageStates {
-    let (Some(n), Some(status)) = (entry.nexus.as_ref(), status) else { return PackageStates::default() };
+    let (Some(n), Some(status)) = (vortex_ref(entry), status) else { return PackageStates::default() };
     // Without exactly one Aetherial Dawn profile, active, Vortex's answers
     // aren't about the server's mods: every step is unknown.
     if status.aetherial_profiles != 1 || !status.profile.as_ref().is_some_and(|p| p.active) {
@@ -606,7 +617,7 @@ pub fn approved(list: &[ModEntry], status: &Status, files: &[VortexFile], game_d
         return Vec::new();
     }
     list.iter().filter_map(|entry| {
-        let nexus = entry.nexus.as_ref()?;
+        let nexus = vortex_ref(entry)?;
         let enabled: Vec<&VortexMod> = status.mods.iter().filter(|m| m.nexus_mod_id == Some(nexus.mod_id)
             && m.enabled && m.state.as_deref() == Some("installed")).collect();
         let deploys = |m: &VortexMod| {

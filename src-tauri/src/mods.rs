@@ -342,7 +342,7 @@ fn vortex_readout(
 ) -> VortexReadout {
     use launcher_core::vortex;
 
-    let required = set.mods.iter().filter(|m| m.nexus.is_some()).count();
+    let required = set.mods.iter().filter(|m| vortex::vortex_ref(m).is_some()).count();
     if let Some(issue) = current_issue {
         return VortexReadout {
             line: issue.into(),
@@ -353,7 +353,7 @@ fn vortex_readout(
         };
     }
     let exact: Vec<Option<bool>> = set.mods.iter().map(|m| {
-        m.nexus.as_ref()?;
+        vortex::vortex_ref(m)?;
         let status = status?;
         Some(vortex::deployment_ready_for(&set.mods, m, status, files, dir)
             && (m.check.is_empty() || m.game_files_present(dir)))
@@ -426,7 +426,7 @@ pub async fn mods_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult
     for ((m, standing), exact) in list.iter().zip(&mut st).zip(&readout.exact) {
         if !vortex_required {
             standing.game_files = launcher_core::vortex::present_for_play(m, &dir, false);
-        } else if m.nexus.is_some() {
+        } else if launcher_core::vortex::vortex_ref(m).is_some() {
             standing.game_files = if m.check.is_empty() { *exact == Some(true) } else { m.game_files_present(&dir) };
         }
     }

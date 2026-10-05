@@ -1641,7 +1641,7 @@ async fn require_vortex_profile(app: &AppHandle, state: &AppState, dir: &std::pa
     // deployment sources, including checkless and unpinned Nexus packages,
     // before it decides which other deployed files to set aside.
     let approved = launcher_core::vortex::approved(&set.mods, &status, &deployed, dir);
-    let required = set.mods.iter().filter(|m| m.nexus.is_some()).count();
+    let required = set.mods.iter().filter(|m| launcher_core::vortex::vortex_ref(m).is_some()).count();
     if approved.len() != required {
         return Err("VORTEX_NOT_READY:Couldn't tell which Vortex mod some required files came from. Press Deploy in Vortex, then Check again.".into());
     }
