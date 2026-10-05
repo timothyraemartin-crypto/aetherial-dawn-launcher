@@ -127,15 +127,14 @@ pub fn plan(game_dir: &Path, index: &Index, mut hash: impl FnMut(&Path) -> Optio
     steps
 }
 
-/// A patch's `file` must be one plain file name, as `make_patches` writes
-/// them ("<from>-<to>.zst"): the launcher joins it to its own folders, so a
-/// path ("..\x", "C:\x", "a/b") from a changed index could write anywhere
-/// (triple check B-launcher-1). A patch with any other name never matches.
+/// A patch's `file` must be the name `make_patches` writes,
+/// "<hex>-<hex>.zst": the launcher joins it to its own folders, so a path
+/// ("..\\x", "C:\\x", "a/b") or a Windows device name ("NUL.zst") from a
+/// changed index could write anywhere (triple check B-launcher-1). A patch
+/// with any other name never matches.
 pub fn plain_file_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.contains(['/', '\\', ':'])
-        && !name.ends_with(['.', ' '])
-        && name.chars().all(|c| !c.is_control())
+    let hex = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit());
+    name.strip_suffix(".zst").and_then(|stem| stem.split_once('-')).is_some_and(|(a, b)| hex(a) && hex(b))
 }
 
 /// Where the server's patches write their results: the downgrade work
@@ -175,9 +174,14 @@ pub fn apply_step(game_dir: &Path, step: &Step, patch_file: &Path) -> Result<()>
 /// Creation Club files or _ResourcePack (QA 2026-09-30: no bytes of them,
 /// not even as a diff, are ever served), so `--make-patches` leaves them
 /// out and a served index that lists them is ignored.
+///
+/// The name after "Data/" must be one plain name too: the index's path is
+/// joined to the game and stage folders and becomes the swap target, so
+/// "Data/skyrim - ../../x.bsa" must never pass (triple check B-launcher-1).
 pub fn patchable(rel: &str) -> bool {
     let l = rel.to_ascii_lowercase();
     match l.strip_prefix("data/") {
+        Some(n) if n.contains(['/', '\\', ':']) || n.contains("..") || n.ends_with(['.', ' ']) || n.chars().any(char::is_control) => false,
         None => matches!(l.as_str(), "skyrimse.exe" | "skyrimselauncher.exe" | "steam_api64.dll" | "bink2w64.dll"),
         Some(n) => {
             matches!(n, "skyrim.esm" | "update.esm" | "dawnguard.esm" | "hearthfires.esm" | "dragonborn.esm" | "skyrim.ccc")
@@ -289,8 +293,31 @@ mod tests {
     }
 
     #[test]
+    fn an_index_path_that_leaves_the_game_folder_is_never_patchable() {
+        for bad in [
+            "Data/skyrim - ../../../evil.bsa",
+            "Data/marketplacetextures.x/../../../evil.dll",
+            "Data/skyrim - x\\..\\..\\evil.bsa",
+            "Data/marketplacetextures.x\\evil.dll",
+            "Data/marketplacetextures..",
+            "Data/skyrim - C:evil.bsa",
+            "Data/../SkyrimSE.exe",
+            "../SkyrimSE.exe",
+            "Data/Skyrim.esm/../../evil",
+        ] {
+            assert!(!patchable(bad), "{bad:?}");
+        }
+        for ok in ["Data/Skyrim - Textures0.bsa", "Data/MarketplaceTextures.bsa", "Data/Skyrim.esm", "SkyrimSE.exe"] {
+            assert!(patchable(ok), "{ok:?}");
+        }
+    }
+
+    #[test]
     fn a_patch_named_as_a_path_is_never_used() {
         for bad in ["", "..", ".", "..\\..\\x.zst", "../x.zst", "C:\\Users\\x.dll", "a/b.zst", "x.zst.", "x.zst ", "d:x"] {
+            assert!(!plain_file_name(bad), "{bad:?}");
+        }
+        for bad in ["NUL.zst", "con-aux.zst", "aa-bb.zst.exe", "aa.zst", "-aa.zst", "aa-.zst", "aa-b-b.zst"] {
             assert!(!plain_file_name(bad), "{bad:?}");
         }
         assert!(plain_file_name("0123456789abcdef-fedcba9876543210.zst"));
