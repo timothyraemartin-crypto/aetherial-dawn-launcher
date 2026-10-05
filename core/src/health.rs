@@ -83,6 +83,7 @@ pub fn run(i: &Inputs) -> Report {
     let mut checks = vec![
         exe(i),
         masters(i),
+        creation_club_light(i),
         required_files(i),
         max_stdio(i),
         skse_builds(i),
@@ -230,6 +231,42 @@ fn masters(i: &Inputs) -> Check {
     } else {
         check("masters", "Base game files", Status::Fail, "Don't match the server's. Press Play and the launcher puts the right ones in place.", bad)
     }
+}
+
+/// Creation Club .esm/.esp files on the server's list are run as they are
+/// (aliases.rs `shipped_with_game`), so one with the light (ESL) flag would
+/// load as a light plugin on PCs while the server gives it a full index, and
+/// everything after it would be numbered differently. Steam's files don't
+/// carry the flag today (world-mods/TONIGHT-MODS.md step 0); this catches it
+/// if that ever changes (references audit M15).
+fn creation_club_light(i: &Inputs) -> Check {
+    let data = i.game_dir.join("Data");
+    let want = i.masters.map(parse_masters).unwrap_or_default();
+    let flagged: Vec<String> = want
+        .iter()
+        .map(|(name, _, _)| name)
+        .filter(|n| {
+            let l = n.to_ascii_lowercase();
+            (l.ends_with(".esm") || l.ends_with(".esp"))
+                && crate::aliases::shipped_with_game(n)
+                && !MASTERS.iter().any(|m| m.eq_ignore_ascii_case(n))
+        })
+        .filter(|n| light_flag_set(&data.join(n)))
+        .cloned()
+        .collect();
+    if flagged.is_empty() {
+        check("cclight", "Creation Club plugins", Status::Ok, "No Creation Club plugin the server uses is marked as a light plugin.", vec![])
+    } else {
+        check("cclight", "Creation Club plugins", Status::Fail, "A Creation Club file the server uses is marked as a light plugin, so your game and the server would number its contents differently. Tell staff, and don't play until they say it's fixed.", flagged)
+    }
+}
+
+/// The TES4 header's light (ESL) flag, 0x200.
+fn light_flag_set(path: &Path) -> bool {
+    let mut b = [0u8; 12];
+    std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut b)).is_ok()
+        && &b[..4] == b"TES4"
+        && u32::from_le_bytes([b[8], b[9], b[10], b[11]]) & 0x200 != 0
 }
 
 fn load_order(i: &Inputs) -> Check {
@@ -779,6 +816,23 @@ pub fn cache_path(app_data: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_light_flagged_creation_club_master_on_the_server_list_fails() {
+        let t = tempfile::tempdir().unwrap();
+        let data = t.path().join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        let header = |flags: u32| { let mut b = b"TES4".to_vec(); b.extend(0u32.to_le_bytes()); b.extend(flags.to_le_bytes()); b.extend([0u8; 12]); b };
+        std::fs::write(data.join("ccBGSSSE001-Fish.esm"), header(0x1)).unwrap();
+        std::fs::write(data.join("ccBGSSSE025-AdvDSGS.esm"), header(0x1)).unwrap();
+        std::fs::write(data.join("Some Mod.esp"), header(0x200)).unwrap();
+        let masters = serde_json::json!([{"name": "ccBGSSSE001-Fish.esm"}, {"name": "ccBGSSSE025-AdvDSGS.esm"}, {"name": "Some Mod.esp"}, {"name": "ccQDRSSE001-SurvivalMode.esl"}]);
+        let run = || creation_club_light(&Inputs { game_dir: t.path(), manifest: None, masters: Some(&masters), appdata: None, documents: None, hash_cache: None, home: None });
+        assert_eq!(run().status, Status::Ok);
+        std::fs::write(data.join("ccBGSSSE025-AdvDSGS.esm"), header(0x201)).unwrap();
+        let c = run();
+        assert_eq!((c.status, c.items), (Status::Fail, vec!["ccBGSSSE025-AdvDSGS.esm".to_string()]));
+    }
 
     #[test]
     fn max_stdio_is_read_from_any_section_and_ignores_comments() {

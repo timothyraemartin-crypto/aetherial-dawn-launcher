@@ -6,7 +6,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { Jobs, sign, GAME, PROFILE_NAME } = require('../jobs');
+const { Jobs, sign, stagingPath, GAME, PROFILE_NAME } = require('../jobs');
 
 const TOKEN = 'a'.repeat(64);
 
@@ -102,4 +102,24 @@ test('status says which extension version Vortex loaded, from its own info.json'
   assert.strictEqual(out.extensionVersion, version);
   const old = new Jobs({ state: () => state() }, { token: TOKEN, now: () => 5 });
   assert.strictEqual((await old.handle(body, sign(TOKEN, body))).extensionVersion, null);
+});
+
+test('status reports each file MD5 Vortex recorded and the staging folder, read-only', async () => {
+  const st = state();
+  st.persistent.mods[GAME].skyui.attributes.fileMD5 = '0123456789abcdef0123456789abcdef';
+  const before = JSON.stringify(st);
+  const jobs = new Jobs({ state: () => st }, { token: TOKEN, now: () => 1_000_000, env: { APPDATA: 'C:\\Users\\p\\AppData\\Roaming' } });
+  const body = JSON.stringify({ verb: 'status', ts: 1_000_000, nonce: 'n-md5-0123456789abcdef' });
+  const r = await jobs.handle(body, sign(TOKEN, body));
+  assert.equal(r.mods.find(m => m.id === 'skyui').fileMD5, '0123456789abcdef0123456789abcdef');
+  assert.equal(r.mods.find(m => m.id === 'ussep439c').fileMD5, null);
+  assert.equal(r.stagingPath, 'C:\\Users\\p\\AppData\\Roaming\\Vortex\\skyrimse\\mods');
+  assert.equal(JSON.stringify(st), before);
+});
+
+test('the staging folder fills in Vortex placeholders, or is null when it cannot', () => {
+  const env = { APPDATA: 'C:\\Users\\p\\AppData\\Roaming\\' };
+  assert.equal(stagingPath({ settings: { mods: { installPath: { [GAME]: 'D:\\Vortex Mods\\{game}' } } } }, env), 'D:\\Vortex Mods\\skyrimse');
+  assert.equal(stagingPath({ settings: { mods: { installPath: { [GAME]: '{USERDATA}\\{GAME}\\mods' } } } }, env), 'C:\\Users\\p\\AppData\\Roaming\\Vortex\\skyrimse\\mods');
+  assert.equal(stagingPath({}, {}), null);
 });

@@ -117,6 +117,12 @@ pub struct ModEntry {
     /// (Alternate High Poly Head without its facegenmorphs morphs.ini).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skip: Vec<String>,
+    /// MD5 of the pinned Nexus file, as Vortex records it (its `fileMD5`).
+    /// With one, a Vortex install showing the right file id but holding
+    /// other bytes (Vortex bug #19522, "exact" fetching the newest file)
+    /// doesn't count (references audit M9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub md5: Option<String>,
 }
 
 /// CPU levels a `cpu` map can name, best first.
