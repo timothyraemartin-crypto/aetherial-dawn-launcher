@@ -1,0 +1,23 @@
+{
+  "name": "My Linux SkyMP Server",
+  "port": 7777,
+  "maxPlayers": 50,
+  "dataDir": "data",
+  "loadOrder": [
+    "Skyrim.esm",
+    "Update.esm",
+    "Dawnguard.esm",
+    "HearthFires.esm",
+    "Dragonborn.esm"
+  ],
+  "databaseDriver": "file",
+  "databaseName": "world",
+  "gamemodePath": "gamemode.js",
+  "isPapyrusHotReloadEnabled": false,
+  "offlineMode": false,
+  "reloot": {
+    "CONT": 86400000,
+    "FLOR": 86400000,
+    "TREE": 86400000
+  }
+}
