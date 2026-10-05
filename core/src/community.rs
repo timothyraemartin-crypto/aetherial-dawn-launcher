@@ -450,15 +450,36 @@ fn mv(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::rename(from, to)
 }
 
-/// The newer game writes a ContentCatalog.txt the old one can crash on, and
-/// its shader cache doesn't fit the old exe. MulderLoad clears both.
+/// The newer game's shader cache doesn't fit the old exe, and it writes a
+/// ContentCatalog.txt the old one can crash on. MulderLoad clears both.
 pub fn after_downgrade(game_dir: &Path) {
     let _ = std::fs::remove_dir_all(game_dir.join("Data").join("ShaderCache"));
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        let cat = PathBuf::from(local).join("Skyrim Special Edition").join("ContentCatalog.txt");
-        if std::fs::read_to_string(&cat).is_ok_and(|s| s.contains("AchievementSafe")) {
-            let _ = std::fs::rename(&cat, cat.with_extension("bak"));
-        }
+    let _ = set_aside_content_catalog();
+}
+
+/// The Creations index a newer Skyrim writes in
+/// %LOCALAPPDATA%\Skyrim Special Edition: 1.6.1170 crashes at the logo on
+/// its new format (references KB §4.1, "Logo CTD after downgrade": delete
+/// it). Every route that puts the game on the server's version runs this;
+/// the file is moved to ContentCatalog.txt.bak, and the game writes a new
+/// one. Returns what it did, for the log.
+pub fn set_aside_content_catalog() -> String {
+    match std::env::var_os("LOCALAPPDATA") {
+        Some(local) => set_aside_catalog_in(&PathBuf::from(local).join("Skyrim Special Edition")),
+        None => "no LOCALAPPDATA, so no ContentCatalog.txt to check".into(),
+    }
+}
+
+fn set_aside_catalog_in(dir: &Path) -> String {
+    let cat = dir.join("ContentCatalog.txt");
+    if !cat.exists() {
+        return "no ContentCatalog.txt".into();
+    }
+    let bak = dir.join("ContentCatalog.txt.bak");
+    let _ = std::fs::remove_file(&bak);
+    match std::fs::rename(&cat, &bak) {
+        Ok(()) => format!("moved {} to {}", cat.display(), bak.display()),
+        Err(e) => format!("found {} but kept it, couldn't move it ({e})", cat.display()),
     }
 }
 
@@ -494,6 +515,17 @@ pub async fn downgrade(client: &reqwest::Client, game_dir: &Path, report: Report
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_newer_games_content_catalog_is_set_aside_whatever_it_holds() {
+        let t = tempfile::tempdir().unwrap();
+        assert_eq!(set_aside_catalog_in(t.path()), "no ContentCatalog.txt");
+        std::fs::write(t.path().join("ContentCatalog.txt.bak"), b"older").unwrap();
+        std::fs::write(t.path().join("ContentCatalog.txt"), b"{\"ContentCatalog\":{}}").unwrap();
+        assert!(set_aside_catalog_in(t.path()).starts_with("moved "));
+        assert!(!t.path().join("ContentCatalog.txt").exists());
+        assert_eq!(std::fs::read(t.path().join("ContentCatalog.txt.bak")).unwrap(), b"{\"ContentCatalog\":{}}");
+    }
 
     #[test]
     fn parts_and_languages() {

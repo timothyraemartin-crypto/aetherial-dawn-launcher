@@ -1118,11 +1118,11 @@ mod tests {
             .into_iter().find(|m| m.id == "mcm-helper").unwrap();
         let set = ClientSet { vortex_required: false, collection: None, mods: vec![entry] };
         let files = [VortexFile { rel: "Data/SKSE/Plugins/MCMHelper.dll".into(), source: "mcm-folder".into() }];
-        let mut status = active(vec![vm("mcm", 53000, 795510, true)]);
+        let mut status = active(vec![vm("mcm", 53000, 746161, true)]);
         assert!(step(&set, Some(&status)).ok());
         assert!(missing_deployment(&set.mods, &status, &files, t.path()).is_empty());
 
-        status.mods[0].nexus_file_id = Some(795511);
+        status.mods[0].nexus_file_id = Some(795510);
         assert!(!step(&set, Some(&status)).ok());
         assert_eq!(missing_deployment(&set.mods, &status, &files, t.path()), ["MCM Helper"]);
     }

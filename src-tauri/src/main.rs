@@ -2034,6 +2034,9 @@ fn finish_downgrade(dir: &std::path::Path, spec: &launcher_core::manifest::GameS
         ));
     }
     version::record(dir, spec, manual).map_err(err)?;
+    // Every route (patch, MulderLoad, "already on this version"): a newer
+    // game's ContentCatalog.txt crashes 1.6.1170 at the logo.
+    log::line(&format!("version: {}", launcher_core::community::set_aside_content_catalog()));
     if !manual {
         match version::hold_updates(dir, spec.app) {
             Ok(p) => log::line(&format!("downgrade: set Steam to update Skyrim only when launched and made {} read-only", p.display())),
@@ -2078,6 +2081,7 @@ fn auto_version(dir: &std::path::Path, spec: Option<&launcher_core::manifest::Ga
                 if let Err(e) = version::record(dir, spec, false) {
                     log::line(&format!("version: couldn't record the build: {e}"));
                 }
+                log::line(&format!("version: {}", launcher_core::community::set_aside_content_catalog()));
                 match version::hold_updates(dir, spec.app) {
                     Ok(_) => log::line("version: Steam set to update Skyrim only when launched from Steam, again"),
                     Err(e) => log::line(&format!("version: couldn't stop Steam updating Skyrim: {e}")),

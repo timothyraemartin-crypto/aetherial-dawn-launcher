@@ -84,6 +84,7 @@ pub fn run(i: &Inputs) -> Report {
         exe(i),
         masters(i),
         required_files(i),
+        max_stdio(i),
         skse_builds(i),
         wanted_off(i),
         camera_preset(i),
@@ -367,6 +368,53 @@ pub fn missing_required_files(game_dir: &Path) -> Vec<String> {
     }
     items.extend(aside.into_iter().map(|r| format!("a required mod's file is in the launcher's backup folder: {r}")));
     items
+}
+
+/// Engine Fixes' open-file limit. At Windows' default of 512 the game can
+/// run out of file handles and report a save as corrupted (references KB
+/// §1.6, §5 #9). Engine Fixes 7's own file sets `bMaxStdIO = true`; an old
+/// or hand-edited one may not.
+fn max_stdio(i: &Inputs) -> Check {
+    let plugins = i.game_dir.join("Data/SKSE/Plugins");
+    let Ok(text) = std::fs::read_to_string(plugins.join("EngineFixes.toml")) else {
+        return check("maxstdio", "Open-file limit", Status::Info, "Checked once SSE Engine Fixes and its settings file are installed.", vec![]);
+    };
+    match engine_fixes_max_stdio(&text) {
+        Some(MaxStdio::Raised) => check("maxstdio", "Open-file limit", Status::Ok, "Engine Fixes raises it to the most Windows allows.", vec![]),
+        Some(MaxStdio::Limit(n)) if n > 512 => check("maxstdio", "Open-file limit", Status::Ok, format!("Engine Fixes raises it to {n}."), vec![]),
+        Some(_) => check("maxstdio", "Open-file limit", Status::Warn, "Engine Fixes' settings file leaves it at Windows' default, so saves can wrongly look corrupted. Reinstall SSE Engine Fixes in Vortex to get its own settings file, or set bMaxStdIO = true in Data\\SKSE\\Plugins\\EngineFixes.toml.", vec![]),
+        None => check("maxstdio", "Open-file limit", Status::Info, "EngineFixes.toml doesn't set it, so Engine Fixes uses its built-in value.", vec![]),
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum MaxStdio {
+    /// `bMaxStdIO = true` (Engine Fixes 7): the most Windows allows.
+    Raised,
+    /// `bMaxStdIO = false`: Windows' default stays.
+    Off,
+    /// An older file's `MaxStdio = <n>`.
+    Limit(u64),
+}
+
+/// The open-file setting in EngineFixes.toml (any section), when it's set.
+pub fn engine_fixes_max_stdio(toml: &str) -> Option<MaxStdio> {
+    toml.lines().find_map(|l| {
+        let l = l.split('#').next()?.trim();
+        let (k, v) = l.split_once('=')?;
+        let (k, v) = (k.trim(), v.trim());
+        if k.eq_ignore_ascii_case("bMaxStdIO") {
+            match v {
+                "true" => Some(MaxStdio::Raised),
+                "false" => Some(MaxStdio::Off),
+                _ => None,
+            }
+        } else if k.eq_ignore_ascii_case("MaxStdio") {
+            v.parse().ok().map(MaxStdio::Limit)
+        } else {
+            None
+        }
+    })
 }
 
 fn required_files(i: &Inputs) -> Check {
@@ -731,6 +779,24 @@ pub fn cache_path(app_data: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn max_stdio_is_read_from_any_section_and_ignores_comments() {
+        // Engine Fixes 7's shipped line.
+        assert_eq!(engine_fixes_max_stdio("[Patches]\nbMaxStdIO = true                                # sets the maximum number\n"), Some(MaxStdio::Raised));
+        assert_eq!(engine_fixes_max_stdio("bmaxstdio=false\n"), Some(MaxStdio::Off));
+        assert_eq!(engine_fixes_max_stdio("[Patches]\nMaxStdio = 8192\n"), Some(MaxStdio::Limit(8192)));
+        assert_eq!(engine_fixes_max_stdio("# bMaxStdIO = true\n[Fixes]\nbMaxStdIOX = true\n"), None);
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("Data/SKSE/Plugins");
+        std::fs::create_dir_all(&p).unwrap();
+        let inputs = |g: &Path| max_stdio(&Inputs { game_dir: g, manifest: None, masters: None, appdata: None, documents: None, hash_cache: None, home: None }).status;
+        assert_eq!(inputs(t.path()), Status::Info);
+        std::fs::write(p.join("EngineFixes.toml"), "MaxStdio = 512\n").unwrap();
+        assert_eq!(inputs(t.path()), Status::Warn);
+        std::fs::write(p.join("EngineFixes.toml"), "bMaxStdIO = true\n").unwrap();
+        assert_eq!(inputs(t.path()), Status::Ok);
+    }
 
     #[test]
     fn a_steam_master_mismatch_points_to_verify_and_fix_version_not_a_mod() {
