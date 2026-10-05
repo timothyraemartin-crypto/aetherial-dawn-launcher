@@ -120,10 +120,22 @@ pub fn plan(game_dir: &Path, index: &Index, mut hash: impl FnMut(&Path) -> Optio
             continue;
         }
         let have = size.and_then(|s| hash(&p).map(|h| (s, h)));
-        let patch = have.and_then(|(s, h)| f.patches.iter().find(|x| x.from_size == s && x.from_sha256.eq_ignore_ascii_case(&h)).cloned());
+        let patch = have.and_then(|(s, h)| f.patches.iter()
+            .find(|x| x.from_size == s && x.from_sha256.eq_ignore_ascii_case(&h) && plain_file_name(&x.file)).cloned());
         steps.push(Step { file: f.clone(), patch });
     }
     steps
+}
+
+/// A patch's `file` must be one plain file name, as `make_patches` writes
+/// them ("<from>-<to>.zst"): the launcher joins it to its own folders, so a
+/// path ("..\x", "C:\x", "a/b") from a changed index could write anywhere
+/// (triple check B-launcher-1). A patch with any other name never matches.
+pub fn plain_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains(['/', '\\', ':'])
+        && !name.ends_with(['.', ' '])
+        && name.chars().all(|c| !c.is_control())
 }
 
 /// Where the server's patches write their results: the downgrade work
@@ -274,6 +286,24 @@ mod tests {
         std::fs::write(dir.join("Data/SomeMod.esp"), b"not ours").unwrap();
         std::fs::write(dir.join("Data/ccBGSSSE001-Fish.esm"), [esm, b"cc"].concat()).unwrap();
         std::fs::write(dir.join("Data/_ResourcePack.esl"), [esm, b"rp"].concat()).unwrap();
+    }
+
+    #[test]
+    fn a_patch_named_as_a_path_is_never_used() {
+        for bad in ["", "..", ".", "..\\..\\x.zst", "../x.zst", "C:\\Users\\x.dll", "a/b.zst", "x.zst.", "x.zst ", "d:x"] {
+            assert!(!plain_file_name(bad), "{bad:?}");
+        }
+        assert!(plain_file_name("0123456789abcdef-fedcba9876543210.zst"));
+        let t = tempfile::tempdir().unwrap();
+        game(t.path(), b"old exe", b"old esm");
+        let have = sha256_file(&t.path().join("SkyrimSE.exe")).unwrap();
+        let patch = |file: &str| Patch { from_sha256: have.clone(), from_size: 7, file: file.into(), size: 1, sha256: "00".into() };
+        let index = Index { target: "1.6.1170.0".into(), files: vec![PFile { path: "SkyrimSE.exe".into(), size: 7, sha256: "ff".into(), patches: vec![patch("..\\..\\evil.dll")] }] };
+        let steps = plan(t.path(), &index, |p| sha256_file(p).ok());
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].patch, None);
+        let index = Index { files: vec![PFile { patches: vec![patch("aa-bb.zst")], ..index.files[0].clone() }], ..index };
+        assert_eq!(plan(t.path(), &index, |p| sha256_file(p).ok())[0].patch.as_ref().map(|p| p.file.as_str()), Some("aa-bb.zst"));
     }
 
     #[test]
