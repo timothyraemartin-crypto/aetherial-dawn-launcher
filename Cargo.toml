@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["core", "src-tauri"]
+# The list signer has its own lock; only "Sign server lists" builds it.
+exclude = ["tools/listsign"]
 
 [workspace.package]
 version = "0.1.105"

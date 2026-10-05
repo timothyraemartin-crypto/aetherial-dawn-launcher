@@ -108,6 +108,9 @@ impl Manifest {
             return Err(Error::NotPublished);
         }
         let bytes = resp.error_for_status()?.bytes().await?;
+        crate::listsig::check(client, base_url, crate::listsig::MANIFEST, &bytes)
+            .await
+            .map_err(|e| Error::Game(format!("{} ({e})", crate::listsig::REFUSED)))?;
         Self::parse(&bytes)
     }
 }

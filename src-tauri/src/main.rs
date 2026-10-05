@@ -1231,20 +1231,25 @@ async fn patch_game(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ver
         log::line(&format!("patch: using patches made on this PC in {}", local_dir.display()));
         ix
     } else {
-        state
-        .http
-        .get(&url)
-        .timeout(std::time::Duration::from_secs(15))
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| {
-            log::line(&format!("patch: patch list not available: {e}"));
-            not_patchable(&dir, &spec)
-        })?
-        .json()
-        .await
-        .map_err(|e| {
+        let bytes = state
+            .http
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+            .map_err(|e| {
+                log::line(&format!("patch: patch list not available: {e}"));
+                not_patchable(&dir, &spec)
+            })?
+            .bytes()
+            .await
+            .map_err(|e| {
+                log::line(&format!("patch: patch list unreadable: {e}"));
+                not_patchable(&dir, &spec)
+            })?;
+        list_signed(&state.http, &base, launcher_core::listsig::PATCH_INDEX, &bytes).await?;
+        serde_json::from_slice(&bytes).map_err(|e| {
             log::line(&format!("patch: patch list unreadable: {e}"));
             not_patchable(&dir, &spec)
         })?
@@ -1729,16 +1734,27 @@ struct Filed {
     likely_cause: Option<String>,
 }
 
+/// Checks a fetched server list's signature (`listsig`); a refused list is
+/// logged and never used.
+pub(crate) async fn list_signed(http: &reqwest::Client, base: &str, name: &str, body: &[u8]) -> Result<(), String> {
+    launcher_core::listsig::check(http, base, name, body).await.map(|_| ()).map_err(|e| {
+        log::line(&format!("lists: refused {name}: {e}"));
+        launcher_core::listsig::REFUSED.to_string()
+    })
+}
+
 /// The server's masters.json (its plugins and their fingerprints).
 async fn fetch_masters(http: &reqwest::Client, base: &str) -> Option<serde_json::Value> {
     let url = format!("{}/masters.json", base.trim_end_matches('/'));
-    match http.get(&url).timeout(std::time::Duration::from_secs(8)).send().await.and_then(|r| r.error_for_status()) {
-        Ok(r) => r.json::<serde_json::Value>().await.ok(),
+    let bytes = match http.get(&url).timeout(std::time::Duration::from_secs(8)).send().await.and_then(|r| r.error_for_status()) {
+        Ok(r) => r.bytes().await.ok()?,
         Err(e) => {
             log::line(&format!("health: couldn't load {url}: {e}"));
-            None
+            return None;
         }
-    }
+    };
+    list_signed(http, base, launcher_core::listsig::MASTERS, &bytes).await.ok()?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 async fn run_health(app: &AppHandle, http: &reqwest::Client, base: &str, dir: &std::path::Path, m: Option<&Manifest>) -> health::Report {
@@ -2379,6 +2395,7 @@ fn main() {
         .setup(|app| {
             if let Ok(dir) = app.path().app_local_data_dir() {
                 log::init(dir.join("logs"));
+                launcher_core::listsig::set_store(dir.join("list-signatures.json"));
             }
             let config = load_config(app.handle());
             log::line(&format!(

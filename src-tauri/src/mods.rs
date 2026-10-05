@@ -138,6 +138,9 @@ async fn fetch_server_list(state: &AppState) -> Option<modlist::ModList> {
         Ok(r) if r.status().is_success() => r.bytes().await.ok(),
         _ => None,
     };
+    if let Some(b) = &bytes {
+        crate::list_signed(&state.http, &base, launcher_core::listsig::MODS, b).await.ok()?;
+    }
     let got = bytes.as_ref().and_then(|b| serde_json::from_slice::<modlist::ModList>(b).ok().map(|l| (l, b)));
     let (l, b) = got?;
     let receipt = launcher_core::inventory::FeedReceipt::of(b, &l);
@@ -174,10 +177,12 @@ pub async fn refresh_server_list(state: &AppState) -> bool {
 pub async fn served_client_set(state: &AppState) -> Option<launcher_core::vortex::ClientSet> {
     let base = state.config.lock().await.base_url.clone();
     let url = format!("{}/aetherial-collection.json", base.trim_end_matches('/'));
-    match state.http.get(&url).timeout(std::time::Duration::from_secs(8)).send().await {
-        Ok(r) if r.status().is_success() => r.json().await.ok(),
-        _ => None,
-    }
+    let bytes = match state.http.get(&url).timeout(std::time::Duration::from_secs(8)).send().await {
+        Ok(r) if r.status().is_success() => r.bytes().await.ok()?,
+        _ => return None,
+    };
+    crate::list_signed(&state.http, &base, launcher_core::listsig::COLLECTION, &bytes).await.ok()?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 /// Read the active profile from the signed, read-only Vortex extension.

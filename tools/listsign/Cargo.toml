@@ -1,0 +1,16 @@
+# Signs the server lists with the launcher's update key (listsig in
+# launcher-core checks them). Its own workspace: only the "Sign server
+# lists" workflow builds it, so the launcher never links the signing code.
+[package]
+name = "listsign"
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+publish = false
+
+[workspace]
+
+[dependencies]
+minisign = "0.7"
+base64 = "0.22"
+serde_json = "1"

@@ -96,11 +96,13 @@ async fn run(app: &AppHandle) -> Result<(), String> {
         Some((lane, sha)) => (lane, serverlane::Source::local(&sha), lane_root.join(serverlane::OVERRIDE_RUN)),
         None => {
             let url = format!("{}/server-lane.json", base.trim_end_matches('/'));
-            let lane: serverlane::ServerLane = match in_time("the server", state.http.get(&url).send()).await {
-                Ok(r) if r.status().is_success() => in_time("the server", r.json()).await.map_err(|e| format!("server-lane.json: {e}"))?,
+            let bytes = match in_time("the server", state.http.get(&url).send()).await {
+                Ok(r) if r.status().is_success() => in_time("the server", r.bytes()).await.map_err(|e| format!("server-lane.json: {e}"))?,
                 // Not published: nothing to export (every other player's case).
                 _ => return Ok(()),
             };
+            crate::list_signed(&state.http, &base, launcher_core::listsig::SERVER_LANE, &bytes).await?;
+            let lane: serverlane::ServerLane = serde_json::from_slice(&bytes).map_err(|e| format!("server-lane.json: {e}"))?;
             (lane, serverlane::Source::served(), lane_root)
         }
     };

@@ -1,0 +1,77 @@
+name: Sign server lists
+
+# Signs the server lists (mods.json, client/manifest.json, ...) with the
+# launcher's update key, which never leaves GitHub. Run by hand only.
+#
+# 1. "fetch" (no secrets) downloads the lists from lists_url and stops unless
+#    each one matches the SHA-256 given, so only the exact files Server
+#    deploys checked get signed. A list with no hash given is left out.
+# 2. "sign" runs in the list-signing environment, which waits for Timothy's
+#    Approve, then writes <list>.minisig for each one. Download the
+#    "signatures" artifact and upload each .minisig next to its list.
+
+on:
+  workflow_dispatch:
+    inputs:
+      lists_url:
+        description: "Where the lists to sign are served (the folder that holds mods.json)"
+        required: true
+        default: "https://vps-d38c928e.vps.ovh.us/launcher"
+      sha256s:
+        description: "sha256sum lines for the lists, run in that folder, e.g. 'abc...  mods.json'"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the lists and check their hashes
+        env:
+          LISTS_URL: ${{ inputs.lists_url }}
+          EXPECT: ${{ inputs.sha256s }}
+        run: |
+          set -euo pipefail
+          mkdir lists
+          n_ok=0
+          for n in mods.json client/manifest.json aetherial-collection.json masters.json server-lane.json patches/index.json; do
+            want=$(printf '%s\n' "$EXPECT" | tr -s ' \t' '  ' | awk -v n="$n" '$2==n || $2=="*"n || $2=="./"n {print tolower($1)}' | head -1)
+            if [ -z "$want" ]; then echo "skip $n: no hash given"; continue; fi
+            mkdir -p "lists/$(dirname "$n")"
+            curl -fsSL "${LISTS_URL%/}/$n" -o "lists/$n"
+            got=$(sha256sum "lists/$n" | cut -d' ' -f1)
+            if [ "$got" != "$want" ]; then echo "::error::$n is $got on the server, not $want"; exit 1; fi
+            echo "- \`$n\` $got" >> "$GITHUB_STEP_SUMMARY"
+            n_ok=$((n_ok+1))
+          done
+          [ "$n_ok" -gt 0 ] || { echo "::error::no list matched a given hash"; exit 1; }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lists
+          path: lists
+          retention-days: 1
+
+  sign:
+    needs: fetch
+    runs-on: ubuntu-latest
+    environment: list-signing
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: lists
+          path: lists
+      - name: Sign
+        env:
+          LIST_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          LIST_SIGNING_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cargo run --quiet --locked --release --manifest-path tools/listsign/Cargo.toml -- lists src-tauri/tauri.conf.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signatures
+          path: lists/**/*.minisig
+          if-no-files-found: error
