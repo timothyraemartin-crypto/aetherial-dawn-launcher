@@ -159,6 +159,10 @@ pub struct Status {
     /// info.json. Missing from extensions before 0.2.1.
     #[serde(default, rename = "extensionVersion")]
     pub extension_version: Option<String>,
+    /// Vortex's staging folder for Skyrim SE, placeholders filled in.
+    /// Missing from extensions before 0.2.2.
+    #[serde(default, rename = "stagingPath")]
+    pub staging_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -190,6 +194,32 @@ pub struct VortexMod {
     pub nexus_file_id: Option<u64>,
     #[serde(default)]
     pub enabled: bool,
+    /// The downloaded file's MD5 as Vortex recorded it. Missing from
+    /// extensions before 0.2.2.
+    #[serde(default, rename = "fileMD5")]
+    pub file_md5: Option<String>,
+}
+
+/// Whether a Vortex mod is the exact file a list entry pins: the same
+/// Nexus mod and file, and the same MD5 when the list pins one (an older
+/// extension that doesn't report it never matches a pinned MD5).
+fn same_file(e: &ModEntry, n: &crate::modlist::NexusRef, file: u64, m: &VortexMod) -> bool {
+    m.nexus_mod_id == Some(n.mod_id)
+        && m.nexus_file_id == Some(file)
+        && e.md5.as_deref().is_none_or(|want| m.file_md5.as_deref().is_some_and(|got| got.eq_ignore_ascii_case(want.trim())))
+}
+
+/// Vortex deploys by hard links, which only work when its staging folder
+/// is on the same drive as the game (references KB §3.1, §5 #20). The
+/// staging folder when it's on another drive.
+pub fn staging_on_other_drive(status: &Status, game_dir: &Path) -> Option<String> {
+    let staging = status.staging_path.as_deref()?;
+    let drive = |p: &str| {
+        let b = p.as_bytes();
+        (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':').then(|| b[0].to_ascii_uppercase())
+    };
+    let (s, g) = (drive(staging)?, drive(&game_dir.to_string_lossy())?);
+    (s != g).then(|| staging.to_string())
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -341,7 +371,7 @@ pub fn step(set: &ClientSet, status: Option<&Status>) -> Step {
         let Some(n) = &e.nexus else { continue };
         required += 1;
         let found: Vec<&VortexMod> = st.mods.iter().filter(|m| m.nexus_mod_id == Some(n.mod_id)
-            && n.file.is_none_or(|file| m.nexus_file_id == Some(file)) && installed_state(m)).collect();
+            && n.file.is_none_or(|file| same_file(e, n, file, m)) && installed_state(m)).collect();
         if !found.is_empty() {
             installed += 1;
         }
@@ -396,7 +426,7 @@ pub fn membership(list: &[ModEntry], status: &Status) -> Membership {
         let Some(n) = &e.nexus else { continue };
         let on: Vec<&VortexMod> = status.mods.iter().filter(|m| m.nexus_mod_id == Some(n.mod_id) && m.enabled).collect();
         let exact = match n.file {
-            Some(file) => on.iter().any(|m| m.nexus_file_id == Some(file) && installed(m)),
+            Some(file) => on.iter().any(|m| same_file(e, n, file, m) && installed(m)),
             None => on.len() == 1 && installed(on[0]),
         };
         if !exact {
@@ -494,7 +524,7 @@ pub fn missing_deployment(list: &[ModEntry], status: &Status, files: &[VortexFil
             && (n.file.is_some() || enabled.len() == 1)
             && enabled.iter().any(|m| {
                 let Some(source) = m.installation_path.as_deref().filter(|s| !s.is_empty()) else { return false };
-                n.file.is_none_or(|file| m.nexus_file_id == Some(file))
+                n.file.is_none_or(|file| same_file(e, n, file, m))
                     && m.state.as_deref() == Some("installed")
                     && files.iter().any(|f| f.source == source && safe_rel(&f.rel).is_some_and(|rel| game_dir.join(rel).is_file()))
                     && checks.iter().all(|check| {
@@ -552,7 +582,7 @@ pub fn package_states(list: &[ModEntry], entry: &ModEntry, status: Option<&Statu
         return PackageStates::default();
     }
     let installed = |m: &&VortexMod| m.nexus_mod_id == Some(n.mod_id) && m.state.as_deref() == Some("installed")
-        && n.file.is_none_or(|f| m.nexus_file_id == Some(f));
+        && n.file.is_none_or(|f| same_file(entry, n, f, m));
     let packages: Vec<&VortexMod> = status.mods.iter().filter(installed).collect();
     let on = packages.iter().filter(|m| m.enabled).count();
     // A pinned file is only "switched on" alone: another file of the same
@@ -589,7 +619,7 @@ pub fn approved(list: &[ModEntry], status: &Status, files: &[VortexFile], game_d
             deployment_ready_for(list, entry, &one, files, game_dir)
         };
         let package = match nexus.file {
-            Some(file) => enabled.into_iter().find(|m| m.nexus_file_id == Some(file) && deploys(m))?,
+            Some(file) => enabled.into_iter().find(|m| same_file(entry, nexus, file, m) && deploys(m))?,
             None if enabled.len() == 1 && deploys(enabled[0]) => enabled[0],
             None => return None,
         };
@@ -934,7 +964,7 @@ mod tests {
     }
 
     fn vm(id: &str, m: u64, f: u64, on: bool) -> VortexMod {
-        VortexMod { id: id.into(), installation_path: Some(format!("{id}-folder")), state: Some("installed".into()), nexus_mod_id: Some(m), nexus_file_id: Some(f), enabled: on }
+        VortexMod { id: id.into(), installation_path: Some(format!("{id}-folder")), state: Some("installed".into()), nexus_mod_id: Some(m), nexus_file_id: Some(f), enabled: on, file_md5: None }
     }
 
     fn active(mods: Vec<VortexMod>) -> Status {
@@ -945,6 +975,7 @@ mod tests {
             mods,
             collections: vec![],
             extension_version: None,
+            staging_path: None,
         }
     }
 
@@ -1109,6 +1140,38 @@ mod tests {
     }
 
     #[test]
+    fn a_pinned_md5_must_match_what_vortex_downloaded() {
+        let mut entry = e("ussep", 266, 733846);
+        let set = |entry: &ModEntry| ClientSet { vortex_required: true, collection: None, mods: vec![entry.clone()] };
+        let mut status = active(vec![vm("u438a", 266, 733846, true)]);
+        // No MD5 pinned: the file id is enough, as before.
+        assert!(step(&set(&entry), Some(&status)).ok());
+        entry.md5 = Some("0123456789ABCDEF0123456789abcdef".into());
+        // An extension before 0.2.2 doesn't report it: not the pinned file.
+        assert!(!step(&set(&entry), Some(&status)).ok());
+        assert_eq!(membership(&set(&entry).mods, &status).missing, ["ussep"]);
+        // Vortex bug #19522: the right id over the newest file's bytes.
+        status.mods[0].file_md5 = Some("ffffffffffffffffffffffffffffffff".into());
+        assert!(!step(&set(&entry), Some(&status)).ok());
+        status.mods[0].file_md5 = Some("0123456789abcdef0123456789ABCDEF".into());
+        assert!(step(&set(&entry), Some(&status)).ok());
+        assert!(membership(&set(&entry).mods, &status).ready());
+    }
+
+    #[test]
+    fn staging_on_another_drive_is_named() {
+        let mut st = active(vec![]);
+        let game = Path::new("D:\\SteamLibrary\\steamapps\\common\\Skyrim Special Edition");
+        assert_eq!(staging_on_other_drive(&st, game), None, "an older extension doesn't report it");
+        st.staging_path = Some("d:\\Vortex Mods\\skyrimse".into());
+        assert_eq!(staging_on_other_drive(&st, game), None);
+        st.staging_path = Some("C:\\Users\\p\\AppData\\Roaming\\Vortex\\skyrimse\\mods".into());
+        assert_eq!(staging_on_other_drive(&st, game).as_deref(), Some("C:\\Users\\p\\AppData\\Roaming\\Vortex\\skyrimse\\mods"));
+        st.staging_path = Some("\\\\server\\share".into());
+        assert_eq!(staging_on_other_drive(&st, game), None, "only drive letters are compared");
+    }
+
+    #[test]
     fn a_different_file_of_a_built_in_cannot_pass_play_even_when_deployed() {
         let t = tempfile::tempdir().unwrap();
         let path = t.path().join("Data/SKSE/Plugins/MCMHelper.dll");
@@ -1118,11 +1181,11 @@ mod tests {
             .into_iter().find(|m| m.id == "mcm-helper").unwrap();
         let set = ClientSet { vortex_required: false, collection: None, mods: vec![entry] };
         let files = [VortexFile { rel: "Data/SKSE/Plugins/MCMHelper.dll".into(), source: "mcm-folder".into() }];
-        let mut status = active(vec![vm("mcm", 53000, 795510, true)]);
+        let mut status = active(vec![vm("mcm", 53000, 746161, true)]);
         assert!(step(&set, Some(&status)).ok());
         assert!(missing_deployment(&set.mods, &status, &files, t.path()).is_empty());
 
-        status.mods[0].nexus_file_id = Some(795511);
+        status.mods[0].nexus_file_id = Some(795510);
         assert!(!step(&set, Some(&status)).ok());
         assert_eq!(missing_deployment(&set.mods, &status, &files, t.path()), ["MCM Helper"]);
     }
@@ -1537,7 +1600,7 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let entry = ModEntry { id: "u".into(), name: "USSEP".into(), nexus: Some(NexusRef { mod_id: 266, file: Some(733846), ..Default::default() }), check: vec!["Data/U.esp".into()], ..Default::default() };
         let list = vec![entry.clone()];
-        let pkg = |file: u64, on: bool| VortexMod { id: format!("v{file}"), installation_path: Some(format!("USSEP-{file}")), state: Some("installed".into()), nexus_mod_id: Some(266), nexus_file_id: Some(file), enabled: on };
+        let pkg = |file: u64, on: bool| VortexMod { id: format!("v{file}"), installation_path: Some(format!("USSEP-{file}")), state: Some("installed".into()), nexus_mod_id: Some(266), nexus_file_id: Some(file), enabled: on, file_md5: None };
         let mut status = Status { profile: Some(Profile { id: "p".into(), name: "Aetherial Dawn".into(), active: true }), aetherial_profiles: 1, ..Default::default() };
         let states = |status: &Status, files: &[VortexFile]| package_states(&list, &entry, Some(status), files, t.path());
         // Without an answer from Vortex every step is unknown, never "no".

@@ -83,7 +83,9 @@ pub fn run(i: &Inputs) -> Report {
     let mut checks = vec![
         exe(i),
         masters(i),
+        creation_club_light(i),
         required_files(i),
+        max_stdio(i),
         skse_builds(i),
         wanted_off(i),
         camera_preset(i),
@@ -231,6 +233,42 @@ fn masters(i: &Inputs) -> Check {
     }
 }
 
+/// Creation Club .esm/.esp files on the server's list are run as they are
+/// (aliases.rs `shipped_with_game`), so one with the light (ESL) flag would
+/// load as a light plugin on PCs while the server gives it a full index, and
+/// everything after it would be numbered differently. Steam's files don't
+/// carry the flag today (world-mods/TONIGHT-MODS.md step 0); this catches it
+/// if that ever changes (references audit M15).
+fn creation_club_light(i: &Inputs) -> Check {
+    let data = i.game_dir.join("Data");
+    let want = i.masters.map(parse_masters).unwrap_or_default();
+    let flagged: Vec<String> = want
+        .iter()
+        .map(|(name, _, _)| name)
+        .filter(|n| {
+            let l = n.to_ascii_lowercase();
+            (l.ends_with(".esm") || l.ends_with(".esp"))
+                && crate::aliases::shipped_with_game(n)
+                && !MASTERS.iter().any(|m| m.eq_ignore_ascii_case(n))
+        })
+        .filter(|n| light_flag_set(&data.join(n)))
+        .cloned()
+        .collect();
+    if flagged.is_empty() {
+        check("cclight", "Creation Club plugins", Status::Ok, "No Creation Club plugin the server uses is marked as a light plugin.", vec![])
+    } else {
+        check("cclight", "Creation Club plugins", Status::Fail, "A Creation Club file the server uses is marked as a light plugin, so your game and the server would number its contents differently. Tell staff, and don't play until they say it's fixed.", flagged)
+    }
+}
+
+/// The TES4 header's light (ESL) flag, 0x200.
+fn light_flag_set(path: &Path) -> bool {
+    let mut b = [0u8; 12];
+    std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut b)).is_ok()
+        && &b[..4] == b"TES4"
+        && u32::from_le_bytes([b[8], b[9], b[10], b[11]]) & 0x200 != 0
+}
+
 fn load_order(i: &Inputs) -> Check {
     let Some(dir) = i.appdata else {
         return check("loadorder", "Load order", Status::Info, "Couldn't find the load order folder.", vec![]);
@@ -367,6 +405,53 @@ pub fn missing_required_files(game_dir: &Path) -> Vec<String> {
     }
     items.extend(aside.into_iter().map(|r| format!("a required mod's file is in the launcher's backup folder: {r}")));
     items
+}
+
+/// Engine Fixes' open-file limit. At Windows' default of 512 the game can
+/// run out of file handles and report a save as corrupted (references KB
+/// §1.6, §5 #9). Engine Fixes 7's own file sets `bMaxStdIO = true`; an old
+/// or hand-edited one may not.
+fn max_stdio(i: &Inputs) -> Check {
+    let plugins = i.game_dir.join("Data/SKSE/Plugins");
+    let Ok(text) = std::fs::read_to_string(plugins.join("EngineFixes.toml")) else {
+        return check("maxstdio", "Open-file limit", Status::Info, "Checked once SSE Engine Fixes and its settings file are installed.", vec![]);
+    };
+    match engine_fixes_max_stdio(&text) {
+        Some(MaxStdio::Raised) => check("maxstdio", "Open-file limit", Status::Ok, "Engine Fixes raises it to the most Windows allows.", vec![]),
+        Some(MaxStdio::Limit(n)) if n > 512 => check("maxstdio", "Open-file limit", Status::Ok, format!("Engine Fixes raises it to {n}."), vec![]),
+        Some(_) => check("maxstdio", "Open-file limit", Status::Warn, "Engine Fixes' settings file leaves it at Windows' default, so saves can wrongly look corrupted. Reinstall SSE Engine Fixes in Vortex to get its own settings file, or set bMaxStdIO = true in Data\\SKSE\\Plugins\\EngineFixes.toml.", vec![]),
+        None => check("maxstdio", "Open-file limit", Status::Info, "EngineFixes.toml doesn't set it, so Engine Fixes uses its built-in value.", vec![]),
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum MaxStdio {
+    /// `bMaxStdIO = true` (Engine Fixes 7): the most Windows allows.
+    Raised,
+    /// `bMaxStdIO = false`: Windows' default stays.
+    Off,
+    /// An older file's `MaxStdio = <n>`.
+    Limit(u64),
+}
+
+/// The open-file setting in EngineFixes.toml (any section), when it's set.
+pub fn engine_fixes_max_stdio(toml: &str) -> Option<MaxStdio> {
+    toml.lines().find_map(|l| {
+        let l = l.split('#').next()?.trim();
+        let (k, v) = l.split_once('=')?;
+        let (k, v) = (k.trim(), v.trim());
+        if k.eq_ignore_ascii_case("bMaxStdIO") {
+            match v {
+                "true" => Some(MaxStdio::Raised),
+                "false" => Some(MaxStdio::Off),
+                _ => None,
+            }
+        } else if k.eq_ignore_ascii_case("MaxStdio") {
+            v.parse().ok().map(MaxStdio::Limit)
+        } else {
+            None
+        }
+    })
 }
 
 fn required_files(i: &Inputs) -> Check {
@@ -731,6 +816,41 @@ pub fn cache_path(app_data: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_light_flagged_creation_club_master_on_the_server_list_fails() {
+        let t = tempfile::tempdir().unwrap();
+        let data = t.path().join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        let header = |flags: u32| { let mut b = b"TES4".to_vec(); b.extend(0u32.to_le_bytes()); b.extend(flags.to_le_bytes()); b.extend([0u8; 12]); b };
+        std::fs::write(data.join("ccBGSSSE001-Fish.esm"), header(0x1)).unwrap();
+        std::fs::write(data.join("ccBGSSSE025-AdvDSGS.esm"), header(0x1)).unwrap();
+        std::fs::write(data.join("Some Mod.esp"), header(0x200)).unwrap();
+        let masters = serde_json::json!([{"name": "ccBGSSSE001-Fish.esm"}, {"name": "ccBGSSSE025-AdvDSGS.esm"}, {"name": "Some Mod.esp"}, {"name": "ccQDRSSE001-SurvivalMode.esl"}]);
+        let run = || creation_club_light(&Inputs { game_dir: t.path(), manifest: None, masters: Some(&masters), appdata: None, documents: None, hash_cache: None, home: None });
+        assert_eq!(run().status, Status::Ok);
+        std::fs::write(data.join("ccBGSSSE025-AdvDSGS.esm"), header(0x201)).unwrap();
+        let c = run();
+        assert_eq!((c.status, c.items), (Status::Fail, vec!["ccBGSSSE025-AdvDSGS.esm".to_string()]));
+    }
+
+    #[test]
+    fn max_stdio_is_read_from_any_section_and_ignores_comments() {
+        // Engine Fixes 7's shipped line.
+        assert_eq!(engine_fixes_max_stdio("[Patches]\nbMaxStdIO = true                                # sets the maximum number\n"), Some(MaxStdio::Raised));
+        assert_eq!(engine_fixes_max_stdio("bmaxstdio=false\n"), Some(MaxStdio::Off));
+        assert_eq!(engine_fixes_max_stdio("[Patches]\nMaxStdio = 8192\n"), Some(MaxStdio::Limit(8192)));
+        assert_eq!(engine_fixes_max_stdio("# bMaxStdIO = true\n[Fixes]\nbMaxStdIOX = true\n"), None);
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("Data/SKSE/Plugins");
+        std::fs::create_dir_all(&p).unwrap();
+        let inputs = |g: &Path| max_stdio(&Inputs { game_dir: g, manifest: None, masters: None, appdata: None, documents: None, hash_cache: None, home: None }).status;
+        assert_eq!(inputs(t.path()), Status::Info);
+        std::fs::write(p.join("EngineFixes.toml"), "MaxStdio = 512\n").unwrap();
+        assert_eq!(inputs(t.path()), Status::Warn);
+        std::fs::write(p.join("EngineFixes.toml"), "bMaxStdIO = true\n").unwrap();
+        assert_eq!(inputs(t.path()), Status::Ok);
+    }
 
     #[test]
     fn a_steam_master_mismatch_points_to_verify_and_fix_version_not_a_mod() {

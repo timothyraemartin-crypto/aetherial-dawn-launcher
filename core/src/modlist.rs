@@ -117,6 +117,12 @@ pub struct ModEntry {
     /// (Alternate High Poly Head without its facegenmorphs morphs.ini).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skip: Vec<String>,
+    /// MD5 of the pinned Nexus file, as Vortex records it (its `fileMD5`).
+    /// With one, a Vortex install showing the right file id but holding
+    /// other bytes (Vortex bug #19522, "exact" fetching the newest file)
+    /// doesn't count (references audit M9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub md5: Option<String>,
 }
 
 /// CPU levels a `cpu` map can name, best first.
@@ -283,7 +289,10 @@ pub struct ModList {
 /// Nexus file ids for built-ins whose newer or best-named files can be wrong
 /// for Skyrim 1.6.1170. The other built-ins below are pinned to the exact
 /// files selected for this manual Vortex profile too.
-pub const ADDRESS_LIBRARY_FILE: u64 = 470707;
+pub const ADDRESS_LIBRARY_FILE: u64 = 795954;
+/// MCM Helper 1.6.2: the last file whose notes name 1.6.1130+; 1.6.3 says
+/// "Compatible with 1.7.99+" (world-mods/target/FRAMEWORK-PICKS.md).
+pub const MCM_HELPER_FILE: u64 = 746161;
 pub const TRUE_DIRECTIONAL_MOVEMENT_FILE: u64 = 798770;
 
 /// The mods the launcher requires on its own (Skyrim Souls RE's
@@ -295,7 +304,7 @@ pub const UNKNOWN_ARCHIVE: u64 = 64 << 20;
 
 /// (id, download bytes, unpacked bytes) of the launcher's own mods.
 const BUILTIN_SIZES: [(&str, u64, u64); 13] = [
-    ("address-library", 2_412_602, 9_283_200),
+    ("address-library", 6_640_552, 9_283_200),
     ("engine-fixes", 5_607_605, 32_699_114),
     ("ussep", 168_852_028, 282_223_050),
     ("menu-framework", 10_715_519, 32_146_557),
@@ -317,14 +326,14 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
         out.push(ModEntry {
             id: "address-library".into(),
             name: "Address Library for SKSE Plugins".into(),
-            // Pinned: the files named "All in one (Anniversary Edition)" are
-            // all archived and the newest (v8, 2022) has no 1.6.1170
-            // database, while today's main files are for newer Skyrim.
-            // v11 "All in one (1.6.X)" carries versionlib-1-6-1170-0.bin
-            // (Mod Curator's pin check, 2026-09-28).
-            nexus: Some(NexusRef { mod_id: 32444, file: Some(ADDRESS_LIBRARY_FILE), pick: Some("All in one (1.6.X)".into()) }),
+            // Pinned to v13, the required version (project rule; Mods'
+            // FRAMEWORK-PICKS.md): "for ALL game versions up to 1.7.104.0",
+            // v11's databases plus 1.7.99 and 1.7.104. The check below still
+            // needs versionlib-1-6-1170-0.bin, so a file without the 1.6.1170
+            // database never counts as installed.
+            nexus: Some(NexusRef { mod_id: 32444, file: Some(ADDRESS_LIBRARY_FILE), pick: Some("All in One (1.7.104.0)".into()) }),
             check: vec![format!("Data/SKSE/Plugins/{}", r::address_library_file(v))],
-            hint: Some("All in one (1.6.X), version 11".into()),
+            hint: Some("All in One, version 13".into()),
             ..Default::default()
         });
     }
@@ -411,9 +420,9 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
     out.push(ModEntry {
         id: "mcm-helper".into(),
         name: "MCM Helper".into(),
-        nexus: Some(NexusRef { mod_id: 53000, file: Some(795510), pick: None }),
+        nexus: Some(NexusRef { mod_id: 53000, file: Some(MCM_HELPER_FILE), pick: None }),
         check: vec!["Data/SKSE/Plugins/MCMHelper.dll".into()],
-        hint: Some("the main file".into()),
+        hint: Some("version 1.6.2 (under Old files), the one for Skyrim 1.6.1170".into()),
         ..Default::default()
     });
     out.push(ModEntry {
@@ -2209,10 +2218,11 @@ mod tests {
     }
 
     #[test]
-    fn address_library_and_tdm_are_pinned_to_files_that_run_on_1_6_1170() {
+    fn address_library_mcm_helper_and_tdm_are_pinned_to_files_that_run_on_1_6_1170() {
         let list = builtin(Some("1.6.1170.0"));
         let pin = |id: &str| list.iter().find(|e| e.id == id).and_then(|e| e.nexus.as_ref()).map(|n| (n.mod_id, n.file)).unwrap();
-        assert_eq!(pin("address-library"), (32444, Some(470707)));
+        assert_eq!(pin("address-library"), (32444, Some(795954)));
+        assert_eq!(pin("mcm-helper"), (53000, Some(746161)));
         assert_eq!(pin("true-directional-movement"), (51614, Some(798770)));
         let al = list.iter().find(|e| e.id == "address-library").unwrap();
         assert_eq!(al.check, ["Data/SKSE/Plugins/versionlib-1-6-1170-0.bin"]);
@@ -2223,7 +2233,7 @@ mod tests {
         // These are the 13 selected mod/file pairs in the 2026-09-29
         // migration inventory. A same-mod alternative must not become Ready.
         let expected = [
-            ("address-library", 32444, 470707),
+            ("address-library", 32444, 795954),
             ("engine-fixes", 17230, 669326),
             ("ussep", 266, 733846),
             ("menu-framework", 120352, 806684),
@@ -2231,7 +2241,7 @@ mod tests {
             ("skyui", 12604, 749043),
             ("display-tweaks", 34705, 797175),
             ("black-screen-fix", 176509, 738614),
-            ("mcm-helper", 53000, 795510),
+            ("mcm-helper", 53000, 746161),
             ("smoothcam", 41252, 729856),
             ("smoothcam-modern-preset", 41636, 220887),
             ("true-directional-movement", 51614, 798770),

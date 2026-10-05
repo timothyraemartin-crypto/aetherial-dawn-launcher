@@ -376,6 +376,10 @@ fn vortex_readout(
     let line = if status.is_some_and(|s| vortex::female_face_alternative_installed(&set.mods, s)) {
         format!("{line} · Male Face Overlays selected; Female Face Overlays installed as an alternative")
     } else { line };
+    let line = match status.and_then(|s| vortex::staging_on_other_drive(s, dir)) {
+        Some(p) => format!("{line} · Vortex keeps its mods on another drive than Skyrim ({p}), so deploying can fail. In Vortex, Settings > Mods, move the Mod Staging Folder to Skyrim's drive"),
+        None => line,
+    };
     VortexReadout { line, ready, exact, confirmed, required }
 }
 

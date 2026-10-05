@@ -30,6 +30,7 @@ class Jobs {
   // opts: { token, now(), version }
   constructor(vortex, opts) {
     this.v = vortex;
+    this.env = opts.env || process.env;
     this.token = opts.token;
     // The version in this extension's own info.json, so the launcher can
     // prove which version Vortex actually loaded.
@@ -83,6 +84,9 @@ class Jobs {
       activeProfile: profiles.some(p => p.id === active) ? { id: active, name: (profiles.find(p => p.id === active) || {}).name } : null,
       aetherialProfiles: mine.length,
       profile: prof ? { id: prof.id, name: prof.name, active: active === prof.id } : null,
+      // Vortex links mods into the game from here, which only works on the
+      // game's drive; the launcher compares the drives.
+      stagingPath: stagingPath(s, this.env),
       mods: mods.filter(m => m.type !== 'collection').map(m => ({
         id: m.id,
         // Vortex uses this staging folder name as the deployment record's
@@ -93,6 +97,10 @@ class Jobs {
         nexusFileId: attr(m).fileId,
         version: attr(m).version,
         enabled: !!(modState[m.id] && modState[m.id].enabled),
+        // The downloaded file's MD5 as Vortex recorded it, so the launcher
+        // can tell the pinned file from the newest one under the same id
+        // (Vortex bug #19522).
+        fileMD5: attr(m).fileMD5 || null,
         // (verify) the FOMOD choices Vortex saved for this install.
         installerChoices: attr(m).installerChoices || null,
       })),
@@ -108,4 +116,15 @@ class Jobs {
   }
 }
 
-module.exports = { Jobs, sign, GAME, PROFILE_NAME };
+// (verify) Vortex's staging folder setting for Skyrim SE, with its
+// {USERDATA} (%APPDATA%\Vortex) and {GAME} placeholders filled in; Vortex's
+// default is {USERDATA}\{GAME}\mods. Null when it can't be worked out.
+function stagingPath(s, env) {
+  const set = ((((s.settings || {}).mods || {}).installPath) || {})[GAME];
+  const raw = typeof set === 'string' && set ? set : '{USERDATA}\\{GAME}\\mods';
+  const userData = env.APPDATA ? env.APPDATA.replace(/[\\/]+$/, '') + '\\Vortex' : null;
+  if (/\{USERDATA\}/i.test(raw) && !userData) return null;
+  return raw.replace(/\{USERDATA\}/gi, () => userData).replace(/\{GAME\}/gi, GAME);
+}
+
+module.exports = { Jobs, sign, stagingPath, GAME, PROFILE_NAME };
