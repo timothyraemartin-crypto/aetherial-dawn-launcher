@@ -23,3 +23,4 @@ Fix threads started 2026-10-07 from the review findings (see memory quality-revi
 - File sync: unsigned manifest, unscoped `remove`, no retry on failed download: see memory topic quality-reviews-2.
 - Unsigned mods.json (fix in #58); Vortex Ready can be faked locally; Steam downgrader unused: see memory topic quality-reviews-3.
 - Tauri shell: dead code removal is draft PR #57; CI skips src-tauri tests/clippy/fmt, and src-tauri tests do not compile on main (missing `file_md5` in two VortexMod initializers in mods.rs tests): see memory topic quality-reviews-4.
+- Decided: follow-up PR removes Steam downgrader, Pandora, unused Nexus helpers, dead music.rs items; staff-only Nexus API key setting for the server-lane export (memory quality-reviews-4).
