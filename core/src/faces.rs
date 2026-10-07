@@ -256,4 +256,59 @@ mod tests {
         folder(t.path()).unwrap();
         assert_eq!(existing_folder(t.path()), Some(t.path().join(FOLDER)));
     }
+
+    fn preset(presets: usize, morphs: usize) -> Vec<u8> {
+        let nums = |n: usize| vec!["0.5"; n].join(",");
+        format!(r#"{{"headParts":[],"morphs":{{"default":{{"presets":[{}],"morphs":[{}]}}}}}}"#, nums(presets), nums(morphs)).into_bytes()
+    }
+
+    #[test]
+    fn a_preset_must_keep_the_vanilla_slider_counts() {
+        let ok = preset(4, 19);
+        check_face(&named(&ok), &ok).unwrap();
+        // skee64 doesn't bounds-check: more than 4 presets or 19 sliders (or
+        // fewer) would write past its arrays, so the launcher refuses them even
+        // when the name matches the contents.
+        for (p, m) in [(5, 19), (4, 20), (3, 19), (4, 0), (1000, 19)] {
+            let bad = preset(p, m);
+            assert!(check_face(&named(&bad), &bad).is_err(), "{p} presets, {m} sliders");
+        }
+        for bad in [
+            br#"{"morphs":{"default":{"presets":[1,2,3,"x"],"morphs":[]}}}"#.to_vec(),
+            br#"{"morphs":{"default":[]}}"#.to_vec(),
+            br#"{"morphs":{"default":{"presets":4,"morphs":19}}}"#.to_vec(),
+            br#"{"morphs":[]}"#.to_vec(),
+            b"[]".to_vec(),
+            b"4".to_vec(),
+        ] {
+            assert!(check_face(&named(&bad), &bad).is_err(), "{}", String::from_utf8_lossy(&bad));
+        }
+        let text = String::from_utf8(ok).unwrap().replacen("0.5", "\"x\"", 1);
+        assert!(check_face(&named(text.as_bytes()), text.as_bytes()).is_err(), "a non-number slider");
+        // A preset without vanilla sliders is fine (the server may send none).
+        let none = br#"{"headParts":[],"morphs":{"custom":[]}}"#;
+        check_face(&named(none), none).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_anywhere_on_the_path_is_refused() {
+        let t = tempfile::tempdir().unwrap();
+        let elsewhere = t.path().join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("SKSE/Plugins/CharGen/Presets")).unwrap();
+        let game = t.path().join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        // Data itself is a link (a junction on Windows).
+        std::os::unix::fs::symlink(&elsewhere, game.join("Data")).unwrap();
+        assert!(folder(&game).is_err());
+        assert!(existing_folder(&game).is_none());
+        assert!(!elsewhere.join("SKSE/Plugins/CharGen/Presets/ad").exists(), "nothing created through the link");
+        // A link in the middle.
+        let game2 = t.path().join("game2");
+        std::fs::create_dir_all(game2.join("Data/SKSE")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.join("SKSE/Plugins"), game2.join("Data/SKSE/Plugins")).unwrap();
+        assert!(folder(&game2).is_err());
+        assert!(existing_folder(&game2).is_none());
+        assert!(!elsewhere.join("SKSE/Plugins/CharGen/Presets/ad").exists());
+    }
 }
