@@ -9,7 +9,7 @@ Fix threads started 2026-10-07 from the review findings (see memory quality-revi
 - sign the server mods.json and manifest
 - src-tauri CI (tests, clippy, fmt)
 - remove dead launcher code (unreachable Download-all-mods queue)
-- Play stall on staff report upload
+- Play stall on staff report upload: fix in draft PR #55 (CI pending; not merged)
 - Dead-file cleanup is open as draft PR #51 (removes background-dawn.jpg, icon-128.png, connect-vortex-runbook.md).
 
 ## Done

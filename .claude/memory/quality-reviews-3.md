@@ -12,7 +12,7 @@ Read-only reviews on 2026-10-07; no code changed. Continues quality-reviews-2.
 - Pandora is documented but cannot run (`tools.rs`); a single removed mod is never cleaned up; `modlist.rs` is ~2,700 lines and not rustfmt-formatted; the `mods.json` fetch path is untested.
 
 **Vortex bridge** (signing/replay correct; 45 tests pass; https://claude.ai/artifact/GVXYTmgVA9PuDmzpXYQz51)
-- Replies are unauthenticated and the extension never deletes its port file, so another local process could fake Ready (`vortex.rs`). Re-pair while Vortex is open shows a misleading "open Vortex" message. The gate fails open if `aetherial-collection.json` cannot be fetched, and it is fetched twice per Play (`main.rs`).
+- Replies are unauthenticated and the extension never deletes its port file, so another local process could fake Ready (`vortex.rs`). Re-pair while Vortex is open shows a misleading "open Vortex" message. The gate fails open if `aetherial-collection.json` cannot be fetched, (fetched once per Play after draft PR #55). Whether the Vortex check stays skipped in that case was put to Timothy in the project chat.
 - Low: token permissions assumed, 600 s timeout for rejected verbs, hand-written HMAC, hard-coded mod ids, ~1,645-line file.
 
 **Game folder tidying** (https://claude.ai/artifact/QbzAdcRpYQa77b1fS5dQ6y)
