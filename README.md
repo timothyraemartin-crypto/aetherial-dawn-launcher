@@ -24,7 +24,7 @@ It's built with [Tauri 2](https://tauri.app). The UI is plain HTML, CSS and JS i
 
 The server serves static files under one base URL, for example `https://vps-d38c928e.vps.ovh.us/launcher`. The full format is in `skymp-setup/launcher/launcher-spec.md` in the project files.
 
-- `client/manifest.json` and `client/files/<sha256>`. Build these with `make-manifest.py` from the SkyMP client build folder.
+- `client/manifest.json` and `client/files/<sha256>`. Build these with `make-manifest.py` from the SkyMP client build folder. Both this and `mods.json` must have a `.sig` next to them (`sign-feed`, [docs/signing-feeds.md](docs/signing-feeds.md)); launchers that have seen a signature refuse the file without one.
 - `app/latest.json` and the installer (optional): a second source for launcher self-updates. The first is the latest GitHub release of this public repo.
 - `status.json` (optional), which feeds the side panel: `{ "online": true, "players": 7, "maxPlayers": 100, "sinceReset": "1d", "news": [{ "date": "26 Sep 2026", "title": "…", "body": "…" }] }`
 
