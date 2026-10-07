@@ -4,6 +4,7 @@ Read this at the start of every task; update it as you fix or build things.
 Build check (run by the Stop hook): `cargo check -p launcher-core --tests` when Rust changed, plus `node --check` on changed JS.
 
 ## Now
+- Shipping: Timothy decided to ship all launcher fixes live incl. #58 (feed must be signed on the server right after release). Merges only verified PRs, then tag vX.Y.Z (Cargo 0.1.105, latest release v0.1.103). Verification log: /mnt/project-files/aetherial-dawn/mods/fix-verification.md.
 - Next features: launcher improvements A-D in memory launcher-improvements (restore-setup defaults ON).
 - Draft PR #56 (CI green, ready for Timothy to review): launcher/server contract CI (`contract/`, `contract.yml`, Rust sign-in test). Draft PR #57: dead code removal (download queue, Nexus sign-in/clipboard, cancel_mods, game_check, last_game_report); mods.rs 1352 -> 501 lines.
 Fix threads started 2026-10-07 from the review findings (see memory quality-reviews*; update/delete a finding when its fix merges):
