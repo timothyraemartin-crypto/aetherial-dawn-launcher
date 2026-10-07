@@ -7,6 +7,7 @@ Build check (run by the Stop hook): `cargo check -p launcher-core --tests` when 
 - (nothing in flight)
 
 ## Done
+- 2026-10-07 Added repo memory (`.claude/memory/`: INDEX.md + topic files, linted by `.claude/memory-lint.sh`).
 - 2026-10-07 Added progress/build hooks (`.claude/progress-hook.sh`).
 
 ## Broken / Next

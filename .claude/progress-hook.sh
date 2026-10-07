@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Claude Code hook: keeps PROGRESS.md the source of truth and checks the build.
 #   start -> SessionStart: show PROGRESS.md, remember the starting commit
-#   stop  -> Stop: block if code changed without a PROGRESS.md update, or if the build check fails
+#   stop  -> Stop: block if code changed without a PROGRESS.md update, if the build check fails,
+#            or if .claude/memory/ changed and fails memory-lint.sh
 set -u
 cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
 mode=${1:-}
@@ -29,16 +30,25 @@ start)
   echo "PROGRESS.md is this repo's source of truth. Read it before starting; update it as you fix or build things (Done / Next / Broken)."
   echo "----- PROGRESS.md -----"
   if [ -f PROGRESS.md ]; then head -n 40 PROGRESS.md; else echo "(missing - create PROGRESS.md before finishing)"; fi
+  if [ -f .claude/memory/INDEX.md ]; then
+    echo "----- MEMORY (.claude/memory/INDEX.md; Read a topic file only when its line applies) -----"
+    cat .claude/memory/INDEX.md
+    bash .claude/memory-lint.sh 2>&1 | head -n 10
+  fi
   ;;
 stop)
   # Already continued once because of this hook: let the session end.
   printf '%s' "$input" | grep -q '"stop_hook_active" *: *true' && exit 0
   files=$(changed_files)
   code=$(printf '%s\n' "$files" | grep -v -e '^$' -e '^PROGRESS\.md$' -e '^\.claude/' -e '\.md$')
-  [ -n "$code" ] || exit 0
   msg=""
-  printf '%s\n' "$files" | grep -qx 'PROGRESS.md' || msg="Code changed but PROGRESS.md was not updated. Add what you fixed/built (and anything still broken or next) to PROGRESS.md. "
-  out=$(build_check 2>&1) || msg="${msg}Build check failed - fix it, then re-run: ${out:0:1500}"
+  if printf '%s\n' "$files" | grep -q '^\.claude/memory/'; then
+    mout=$(bash .claude/memory-lint.sh 2>&1) || msg="Memory check failed (.claude/memory/INDEX.md has the rules): $(printf '%s' "$mout" | grep '^ERROR' | head -n 8 | tr '\n' ' ')"
+  fi
+  if [ -n "$code" ]; then
+    printf '%s\n' "$files" | grep -qx 'PROGRESS.md' || msg="${msg}Code changed but PROGRESS.md was not updated. Add what you fixed/built (and anything still broken or next) to PROGRESS.md. "
+    out=$(build_check 2>&1) || msg="${msg}Build check failed - fix it, then re-run: ${out:0:1500}"
+  fi
   if [ -n "$msg" ]; then
     esc=$(printf '%s' "$msg" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s\\n", $0}')
     printf '{"decision":"block","reason":"%s"}\n' "$esc"
