@@ -22,23 +22,34 @@ pub const MAX_FACE: usize = 400 * 1024;
 pub const MAX_LIST: usize = 256 * 1024;
 const LIST_RECORD: &str = ".aetherial-dawn/faces-list.json";
 
-/// The ad/ folder, created when missing. The ad folder itself being a link
-/// (or a junction) is refused; the folders above it are the game's own and
-/// aren't checked.
+/// The ad/ folder, created when missing. Every folder from Data/ down to ad/
+/// is checked and any of them being a link (or a junction) is refused, so
+/// nothing is created or saved through one.
 pub fn folder(game_dir: &Path) -> Result<PathBuf> {
-    let dir = game_dir.join(FOLDER);
-    std::fs::create_dir_all(&dir)?;
-    if std::fs::symlink_metadata(&dir)?.file_type().is_symlink() {
-        return Err(Error::Game(format!("{FOLDER} is a link; faces aren't saved there")));
+    let mut dir = game_dir.to_path_buf();
+    for part in FOLDER.split('/') {
+        dir.push(part);
+        match std::fs::symlink_metadata(&dir) {
+            Ok(m) if m.file_type().is_symlink() => return Err(Error::Game(format!("{FOLDER} goes through a link at {part}; faces aren't saved there"))),
+            Ok(m) if !m.is_dir() => return Err(Error::Game(format!("{part} isn't a folder; faces aren't saved there"))),
+            Ok(_) => {}
+            Err(_) => std::fs::create_dir(&dir)?,
+        }
     }
     Ok(dir)
 }
 
-/// The ad/ folder when it's already there as a real folder (not a link),
-/// for tidying; never created.
+/// The ad/ folder when it's already there as a real folder (no link on the
+/// way down), for tidying; never created.
 pub fn existing_folder(game_dir: &Path) -> Option<PathBuf> {
-    let dir = game_dir.join(FOLDER);
-    std::fs::symlink_metadata(&dir).ok().filter(|m| m.is_dir()).map(|_| dir)
+    let mut dir = game_dir.to_path_buf();
+    for part in FOLDER.split('/') {
+        dir.push(part);
+        if !std::fs::symlink_metadata(&dir).ok()?.is_dir() {
+            return None;
+        }
+    }
+    Some(dir)
 }
 
 /// A face name as the server gives it: "a<1-8 hex>-<16 hex>".
@@ -49,8 +60,32 @@ pub fn valid_name(name: &str) -> bool {
     (1..=8).contains(&id.len()) && hex(id) && hash.len() == 16 && hex(hash)
 }
 
-/// Checks a downloaded face before it's saved: size, JSON, and that its
-/// SHA-256 starts with the name's hash part.
+/// The vanilla face numbers RaceMenu's presets hold (TESNPC::FaceMorphs); the
+/// server rebuilds every preset to exactly these counts.
+const NUM_PRESETS: usize = 4;
+const NUM_OPTIONS: usize = 19;
+
+/// skee64 doesn't bounds-check a preset, so a hostile server could send one
+/// with more presets or sliders than the game's arrays hold. When the preset
+/// carries vanilla sliders (`morphs.default`) they must be exactly 4 numbers
+/// and 19 numbers, the same rule the server applies.
+fn check_structure(name: &str, v: &serde_json::Value) -> Result<()> {
+    let bad = |what: &str| Error::Game(format!("{name} isn't a valid preset: {what}"));
+    let root = v.as_object().ok_or_else(|| bad("not an object"))?;
+    let Some(morphs) = root.get("morphs") else { return Ok(()) };
+    let morphs = morphs.as_object().ok_or_else(|| bad("morphs isn't an object"))?;
+    let Some(default) = morphs.get("default") else { return Ok(()) };
+    let default = default.as_object().ok_or_else(|| bad("default sliders aren't an object"))?;
+    let numbers = |key: &str, want: usize| match default.get(key).and_then(|a| a.as_array()) {
+        Some(a) if a.len() == want && a.iter().all(|n| n.is_number()) => Ok(()),
+        _ => Err(bad(&format!("{key} isn't {want} numbers"))),
+    };
+    numbers("presets", NUM_PRESETS)?;
+    numbers("morphs", NUM_OPTIONS)
+}
+
+/// Checks a downloaded face before it's saved: size, JSON, the preset's
+/// structure, and that its SHA-256 starts with the name's hash part.
 pub fn check_face(name: &str, body: &[u8]) -> Result<()> {
     if !valid_name(name) {
         return Err(Error::Game(format!("{name:?} isn't a face name")));
@@ -58,7 +93,8 @@ pub fn check_face(name: &str, body: &[u8]) -> Result<()> {
     if body.len() > MAX_FACE {
         return Err(Error::Game(format!("{name} is {} bytes, over the limit", body.len())));
     }
-    serde_json::from_slice::<serde_json::Value>(body).map_err(|_| Error::Game(format!("{name} isn't a preset file")))?;
+    let value = serde_json::from_slice::<serde_json::Value>(body).map_err(|_| Error::Game(format!("{name} isn't a preset file")))?;
+    check_structure(name, &value)?;
     let hash = hex::encode(Sha256::digest(body));
     if !name.ends_with(&hash[..16]) {
         return Err(Error::Game(format!("{name} doesn't match its contents")));
