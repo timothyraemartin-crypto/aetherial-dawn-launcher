@@ -102,6 +102,9 @@ jobs:
         with:
           name: bug-fix
           path: out
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - id: run
         name: Apply the patch and run the tests (no secrets in this job)
         run: |
@@ -180,11 +183,15 @@ jobs:
           echo "$gh_pr" > prnum.txt
 
       - name: Post the result for the Discord bot
+        # Runs even when an earlier step failed (a failed push), so the bot hears back at once.
+        if: always()
         # The built-in token, so the comment's author is github-actions[bot], the login the bot trusts.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
+          OUTCOME="${OUTCOME:-nofix}"
+          [ -s summary.txt ] || echo "The investigation could not finish. Check the Actions run." > summary.txt
           if [ "$OUTCOME" = "fix" ] && [ -s prnum.txt ] && [ -s sha.txt ]; then
             marker="{\"v\":1,\"outcome\":\"fix\",\"pr\":$(cat prnum.txt),\"sha\":\"$(cat sha.txt)\"}"
           else
