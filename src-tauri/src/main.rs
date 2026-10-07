@@ -1719,7 +1719,7 @@ const HEALTH_REPORTS_ON: bool = true;
 const HEALTH_REPORT_MAX: usize = 58_000;
 
 fn health_report_url() -> Option<String> {
-    HEALTH_REPORTS_ON.then(|| format!("{AUTH_URL}/api/crash-reports"))
+    HEALTH_REPORTS_ON.then(|| format!("{AUTH_URL}/api/crash-reports")) // contract-method: POST (sent by post_report)
 }
 
 /// What staff sent back: the report number and the likely cause.

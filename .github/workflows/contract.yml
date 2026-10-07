@@ -1,0 +1,47 @@
+name: Server contract
+
+# The launcher's calls to the login service must match contract/launcher-server.json, which the
+# discord repo (aetherial-dawn-discord) checks against the real server. See contract/README.md.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  calls-match-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every server call is in the contract, and the contract has no stale entry
+        run: node .github/scripts/contract-check.js
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Sign-in code reads the contract's answers
+        run: cargo test -p launcher-core --test server_contract
+
+  # Needs a token that can read the discord repo (repository secret CONTRACT_SYNC_TOKEN,
+  # contents: read); without it the step is skipped with a notice. A pull request is compared with the
+  # discord branch of the same name first, then with main, so a contract change can go up in both repos at once.
+  contract-in-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare with the discord repo's copy
+        env:
+          TOKEN: ${{ secrets.CONTRACT_SYNC_TOKEN }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::notice::CONTRACT_SYNC_TOKEN is not set, so the discord repo's copy of the contract was not compared."
+            exit 0
+          fi
+          url=https://api.github.com/repos/timothyraemartin-crypto/aetherial-dawn-discord/contents/contract/launcher-server.json
+          fetch() { curl -fsS -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github.raw" "$url?ref=$1"; }
+          { [ -n "$HEAD_REF" ] && fetch "$HEAD_REF"; } > other.json 2>/dev/null || fetch main > other.json
+          diff <(jq -S . contract/launcher-server.json) <(jq -S . other.json) \
+            || { echo "::error::contract/launcher-server.json differs from the discord repo's copy. Change both together."; exit 1; }
