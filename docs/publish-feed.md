@@ -5,9 +5,9 @@ On the server (or anywhere with the web root and the key):
     sudo AD_WEB_ROOT=/srv/aetherial-dawn/launcher AD_FEED_KEY=/etc/aetherial-dawn/feed-signing.pem scripts/publish-feed.sh
 
 It (1) finds every direct-download entry in `mods.json` without a `sha256`, hashes the file (from the
-web root when the address is ours, else by downloading it) and pins it, keeping `mods.json.bak`;
+web root when the address is ours, else by downloading it) and pins it in a temp copy;
 (2) fetches `sign-feed` from the newest release (checked against its `.sha256`); (3) signs
-`mods.json` and `client/manifest.json`; (4) verifies both. `--check` only reports and changes nothing.
+`mods.json` and `client/manifest.json` in that copy and verifies it; (4) only then swaps the files and their signatures in together, keeping the replaced files in `AD_BACKUP_DIR` (outside the web root). A failure at any step leaves the live files untouched, or restores them. `--check` only reports and changes nothing.
 The two paths above are the defaults and are guesses: set the real ones.
 
 Or from GitHub: Actions > Publish launcher feed > Run workflow (needs secrets `AD_SSH_HOST`,

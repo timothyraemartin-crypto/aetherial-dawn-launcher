@@ -27,8 +27,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check secrets
         id: have
+        env:
+          K: ${{ secrets.AD_SSH_KEY }}
+          H: ${{ secrets.AD_SSH_HOST }}
+          U: ${{ secrets.AD_SSH_USER }}
+          KH: ${{ secrets.AD_SSH_KNOWN_HOSTS }}
         run: |
-          if [ -n "${{ secrets.AD_SSH_KEY }}" ] && [ -n "${{ secrets.AD_SSH_HOST }}" ] && [ -n "${{ secrets.AD_SSH_USER }}" ] && [ -n "${{ secrets.AD_SSH_KNOWN_HOSTS }}" ]; then
+          if [ -n "$K" ] && [ -n "$H" ] && [ -n "$U" ] && [ -n "$KH" ]; then
             echo ready=true >> "$GITHUB_OUTPUT"
           else
             echo ready=false >> "$GITHUB_OUTPUT"
@@ -36,11 +41,19 @@ jobs:
           fi
       - name: Run scripts/publish-feed.sh on the server
         if: steps.have.outputs.ready == 'true'
+        env:
+          K: ${{ secrets.AD_SSH_KEY }}
+          H: ${{ secrets.AD_SSH_HOST }}
+          U: ${{ secrets.AD_SSH_USER }}
+          KH: ${{ secrets.AD_SSH_KNOWN_HOSTS }}
+          WEB_ROOT: ${{ vars.AD_WEB_ROOT }}
+          FEED_KEY: ${{ vars.AD_FEED_KEY }}
+          CHECK_ONLY: ${{ inputs.check_only }}
         run: |
           set -euo pipefail
           install -d -m 700 ~/.ssh
-          printf '%s\n' "${{ secrets.AD_SSH_KEY }}" > ~/.ssh/id_ed25519; chmod 600 ~/.ssh/id_ed25519
-          printf '%s\n' "${{ secrets.AD_SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
-          flag=""; [ "${{ inputs.check_only }}" = true ] && flag="--check"
-          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "${{ secrets.AD_SSH_USER }}@${{ secrets.AD_SSH_HOST }}" \
-            "sudo env AD_WEB_ROOT='${{ vars.AD_WEB_ROOT }}' AD_FEED_KEY='${{ vars.AD_FEED_KEY }}' bash -s -- $flag" < scripts/publish-feed.sh
+          printf '%s\n' "$K" > ~/.ssh/id_ed25519; chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KH" > ~/.ssh/known_hosts
+          flag=""; [ "$CHECK_ONLY" = true ] && flag="--check"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$U@$H" \
+            "sudo env AD_WEB_ROOT='$WEB_ROOT' AD_FEED_KEY='$FEED_KEY' bash -s -- $flag" < scripts/publish-feed.sh
