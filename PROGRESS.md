@@ -8,7 +8,7 @@ Build check (run by the Stop hook): `cargo check -p launcher-core --tests` when 
 Fix threads started 2026-10-07 from the review findings (see memory quality-reviews*; update/delete a finding when its fix merges):
 - plugins.txt data loss: fix in draft PR #54 (CI green, ready for review; not merged; real-game test on Windows still to do)
 - sign the server mods.json and manifest: draft PR #58 (CI pending; not merged; server steps for Timothy in memory signed-feeds)
-- src-tauri CI (tests, clippy, fmt)
+- src-tauri CI (tests, clippy, UI/command contract): draft PR #59 (Windows CI running; not merged). TODO after fix PRs land: cargo fmt --all once, drop continue-on-error
 - remove dead launcher code (unreachable Download-all-mods queue)
 - Play stall on staff report upload: fix in draft PR #55 (CI green, mergeable, ready for Timothy to review; not merged)
 - Dead-file cleanup is open as draft PR #51 (removes background-dawn.jpg, icon-128.png, connect-vortex-runbook.md).
