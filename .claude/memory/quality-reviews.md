@@ -1,9 +1,9 @@
 ---
 name: quality-reviews
-description: Open findings from the launcher quality reviews (sign-in and health, plugin order); more reviews pending
+description: Open findings from launcher quality reviews (sign-in, plugin order, UI); more reviews pending
 type: reference
 verified: 2026-10-07
-refs: core/src/auth.rs, core/src/health.rs, core/src/serverorder.rs, core/src/serverlane.rs, core/src/loadorder.rs
+refs: ui/app.js, core/src/auth.rs, core/src/health.rs, core/src/serverorder.rs, core/src/serverlane.rs, core/src/loadorder.rs
 ---
 Read-only reviews on 2026-10-07; no code changed. Vortex has its own topic: topic vortex-extension-review. Unproven items say so.
 
@@ -17,5 +17,10 @@ Read-only reviews on 2026-10-07; no code changed. Vortex has its own topic: topi
 3. No pinned `list_hash` test in `serverlane.rs`, so a `ModEntry` change silently changes every list hash.
 4. `masters_json` does not enforce the 254-plugin MAX_FULL limit.
 Minor: byte-at-a-time crc32 is slow.
+
+**Launcher UI** (solid, nothing blocking; report: https://claude.ai/artifact/9J7JvDtDmscCBAW4jXgBPJ)
+- CI browser test `ui-fast-play-test.js` passes 153/153 against a fake Tauri back end; `ui/` has no linter or unit tests.
+- `app.js`: the progress listener is registered outside try in `update()`/`patchGame()`, so `busy` can stick true; settings toggles do not roll back when `set_prefs` fails; the "launcher is updating" message is unreachable; news cannot be cleared and player counts go stale after a failed fetch.
+- Risk: one ~1,260-line closure with ~8 overlapping flags. The UI depends on 35 Tauri commands and error prefixes like `NEEDS_NEXUS_MODS:`; CI fakes them, so a Rust-side rename is not caught.
 
 **How to apply:** fix 1 first (data loss); read bytes and decode lossily, and back up before any overwrite.
