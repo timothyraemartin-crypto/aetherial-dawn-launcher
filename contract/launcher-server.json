@@ -134,21 +134,5 @@
       "server": "external"
     }
   ],
-  "knownGaps": [
-    {
-      "id": "login-token",
-      "reason": "On unmerged discord branches (e.g. triple-check-fixes), not on main.",
-      "owner": "Fix sign-in endpoint mismatch"
-    },
-    {
-      "id": "client-status",
-      "reason": "On unmerged discord branches (e.g. triple-check-fixes), not on main.",
-      "owner": "Fix sign-in endpoint mismatch"
-    },
-    {
-      "id": "crash-reports",
-      "reason": "On unmerged discord branches (e.g. triple-check-fixes), not on main.",
-      "owner": "Fix sign-in endpoint mismatch"
-    }
-  ]
+  "knownGaps": []
 }

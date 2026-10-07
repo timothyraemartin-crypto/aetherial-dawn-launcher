@@ -21,7 +21,7 @@ CONTRACT.md explains the flows in words; this file is what CI checks.
 3. Update CONTRACT.md.
 
 ## knownGaps
-Endpoints the launcher calls that this branch doesn't serve yet. The test requires them to stay missing, so
+Endpoints the launcher calls that the server doesn't serve yet (empty now that the sign-in endpoints are on main). The test requires them to stay missing, so
 when one lands the test fails until you remove it from `knownGaps` in both repos. The list can only shrink;
 it should be empty once the sign-in endpoints reach main.
 
