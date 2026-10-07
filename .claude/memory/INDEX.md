@@ -3,6 +3,7 @@ Durable facts a fresh session cannot get from the code. Read a topic only when i
 
 Save: one fact per `<slug>.md` (<= 3 KB). Frontmatter: name (= slug), description, type (gotcha|decision|contract|howto|reference), verified (YYYY-MM-DD), refs (repo paths it depends on). Body: the fact, then **Why:** and **How to apply:**. Add one line below. Update instead of duplicating; delete when wrong or when the code now says it. No secrets, no task state (that is PROGRESS.md), nothing git or the code already shows. Check with `bash .claude/memory-lint.sh`.
 Cross-repo facts are also in the project memory; repo-specific ones live here.
+Questions for Timothy go through the project chat, not your thread (send_message to the channel session).
 
 ## Topics
 - [live-mod-list](live-mod-list.md) - before answering "which mods" or editing the mod list / server load order
