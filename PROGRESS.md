@@ -10,7 +10,7 @@ Fix threads started 2026-10-07 from the review findings (see memory quality-revi
 - sign the server mods.json and manifest: draft PR #58 (CI pending; not merged; server steps for Timothy in memory signed-feeds)
 - src-tauri CI (tests, clippy, fmt)
 - remove dead launcher code (unreachable Download-all-mods queue)
-- Play stall on staff report upload: fix in draft PR #55 (CI pending; not merged)
+- Play stall on staff report upload: fix in draft PR #55 (CI green, mergeable, ready for Timothy to review; not merged)
 - Dead-file cleanup is open as draft PR #51 (removes background-dawn.jpg, icon-128.png, connect-vortex-runbook.md).
 
 ## Done
