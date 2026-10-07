@@ -10,7 +10,7 @@ refs: docs/masters-json.md
 - discord -> ingame-ui: `gamemode-kick-hook.js` (in discord) is loaded by the game server gamemode.
 - launcher <-> ingame-ui: no direct link confirmed.
 
-- Repo merge (undecided as of 2026-10-07): the plan recommends NOT merging yet (56 open PRs, 266 branches, installed launchers self-update from the launcher repo's releases) and instead adding a launcher/discord contract test in CI. Plan: /mnt/project-files/aetherial-dawn/cross-repo/monorepo-merge-plan.md
+- Repo merge (DECIDED 2026-10-07 by Timothy): no monorepo. Keep three repos (56 open PRs, 266 branches, installed launchers self-update from the launcher repo's releases) and add a launcher<->discord contract test in CI (own thread: "Launcher and server contract test"). Plan: /mnt/project-files/aetherial-dawn/cross-repo/monorepo-merge-plan.md
 
 **Why:** a change on one side of these links breaks the other; the first two links come from CONTRACT.md and the READMEs, the third from the hook name and README (not traced in code).
 

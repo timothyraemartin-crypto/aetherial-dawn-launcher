@@ -12,7 +12,7 @@ Read-only reviews on 2026-10-07; no code changed. Parts 2 and 3 are topics quali
 - Master-file check passes when the server gives no size or hash. Loopback listener serves one connection at a time. Network and report paths have thin tests. The `auth-data-no-load.js` name is an untested guess.
 
 **Plugin order matching** (launcher main 4fc172b; 27 serverorder/serverlane tests pass)
-1. plugins.txt can be wiped with no backup: `serverorder.rs` reads it with `read_to_string(..).unwrap_or_default()`, a non-UTF-8 (ANSI) plugin name gives empty text, which is then overwritten with only server plugins, and `keep_backup` is skipped for empty text. Same read pattern in `game_order` and several places in `loadorder.rs`. Confirmed by a reproduced test in the game-folder review (quality-reviews-3).
+1. [FIX IN DRAFT PR #54, not merged: plugins.txt read as bytes, failed read is an error, every rewrite backed up (.aetherial-dawn-backup = first list, .aetherial-dawn-previous = list before latest change), atomic writes; untested on Windows] plugins.txt can be wiped with no backup: `serverorder.rs` reads it with `read_to_string(..).unwrap_or_default()`, a non-UTF-8 (ANSI) plugin name gives empty text, which is then overwritten with only server plugins, and `keep_backup` is skipped for empty text. Same read pattern in `game_order` and several places in `loadorder.rs`. Confirmed by a reproduced test in the game-folder review (quality-reviews-3).
 2. `health.rs` reports OK on an unusable masters list.
 3. No pinned `list_hash` test in `serverlane.rs`, so a `ModEntry` change silently changes every list hash.
 4. `masters_json` does not enforce the 254-plugin MAX_FULL limit.

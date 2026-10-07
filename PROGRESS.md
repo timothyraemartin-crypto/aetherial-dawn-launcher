@@ -5,7 +5,7 @@ Build check (run by the Stop hook): `cargo check -p launcher-core --tests` when 
 
 ## Now
 Fix threads started 2026-10-07 from the review findings (see memory quality-reviews*; update/delete a finding when its fix merges):
-- plugins.txt data loss (loadorder.rs force_on/switch_on)
+- plugins.txt data loss: fix in draft PR #54 (CI pending; not merged; untested on Windows)
 - sign the server mods.json and manifest
 - src-tauri CI (tests, clippy, fmt)
 - remove dead launcher code (unreachable Download-all-mods queue)
