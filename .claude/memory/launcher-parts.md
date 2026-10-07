@@ -7,7 +7,7 @@ refs: ui, src-tauri/src/main.rs, core/src/lib.rs, vortex-extension/index.js
 ---
 Windows app that puts a player's Skyrim into the state the server needs, signs them in with Discord, then starts the game.
 - `ui/`: plain JS screens (Home, Server, Mods, News). No file or network work; only calls Tauri commands.
-- `src-tauri/`: Windows shell, ~30 commands, the Play sequence in `main.rs`, "Download all mods", staff server-mods export, face sharing, menu music, self-update.
+- `src-tauri/`: Windows shell, ~30 commands (the "Download all mods" queue in `mods.rs` is currently unreachable, see quality-reviews-4), the Play sequence in `main.rs`, staff server-mods export, face sharing, menu music, self-update.
 - `core/`: the testable Rust library, grouped by job: game build detection/fixing (version checks, patching, MulderLoad community patches, Steam downgrade fallback); SkyMP file sync; Discord sign-in, health checks, crash reports; mod list and installers; game-folder tidying; matching the server's plugin order; the Vortex bridge.
 - `vortex-extension/`: read-only helper that answers only launcher-signed requests on localhost.
 - Play: install SKSE, tidy mods, set load order, health checks, get a Discord game session, start the game through SKSE.

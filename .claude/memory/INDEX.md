@@ -10,6 +10,4 @@ Cross-repo facts are also in the project memory; repo-specific ones live here.
 - [launcher-parts](launcher-parts.md) - before editing the launcher or when asked what a part does
 - [kept-files](kept-files.md) - before deleting a file that looks unused
 - [vortex-extension-review](vortex-extension-review.md) - before changing vortex-extension/ or the Vortex bridge
-- [quality-reviews](quality-reviews.md) - before touching sign-in, health checks, plugin order, load order or ui/ (open findings)
-- [quality-reviews-2](quality-reviews-2.md) - before touching manifest/file sync or settings.rs (open findings, part 2)
-- [quality-reviews-3](quality-reviews-3.md) - before touching mod list, Vortex bridge, load order/tidying or game patching (open findings, part 3)
+- [quality-reviews](quality-reviews.md), [-2](quality-reviews-2.md), [-3](quality-reviews-3.md), [-4](quality-reviews-4.md) - open findings by area: sign-in/health/UI/plugin order (1), file sync (2), mod list/Vortex bridge/tidying/game build (3), Tauri shell (4); read before touching that area

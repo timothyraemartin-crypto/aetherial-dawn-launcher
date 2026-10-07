@@ -15,3 +15,4 @@ Build check (run by the Stop hook): `cargo check -p launcher-core --tests` when 
 - Launcher calls sign-in/status/crash endpoints missing from discord main; plugins.txt can be wiped on a non-UTF-8 plugin name: see memory topic quality-reviews (CONFIRMED: force_on/switch_on in loadorder.rs rewrite plugins.txt empty on an ANSI read failure, no backup).
 - File sync: unsigned manifest, unscoped `remove`, no retry on failed download: see memory topic quality-reviews-2.
 - Unsigned mods.json; Vortex Ready can be faked locally; Steam downgrader unused: see memory topic quality-reviews-3.
+- Tauri shell: dead "Download all mods" code (~780 lines), CI skips src-tauri tests/clippy/fmt: see memory topic quality-reviews-4.
