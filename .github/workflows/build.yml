@@ -26,6 +26,8 @@ jobs:
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Check version and release tag
         shell: bash
@@ -41,6 +43,19 @@ jobs:
           fi
       - name: Test
         run: cargo test -p launcher-core -- --skip rehearsal
+      # The Tauri app layer (src-tauri) has its own tests; the line above
+      # covers only launcher-core. Windows is where its cfg(windows) code builds.
+      - name: Test the Tauri app layer
+        run: cargo test -p aetherial-dawn-launcher
+      # Every warning is an error, in both crates and their tests.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Report-only for now: the code base has never been through rustfmt, and
+      # one reformat touches nearly every line, so it waits for a quiet moment.
+      # Delete continue-on-error after running `cargo fmt --all` once.
+      - name: Rustfmt (report only)
+        continue-on-error: true
+        run: cargo fmt --all --check
       # Cutover day from a player's side with stand-in archives made by the
       # test (no Nexus files): a returning and a new player go from today's
       # list to one shaped like 3.4.6 and then an append, through the
@@ -53,6 +68,11 @@ jobs:
       # or a wrong game version, and the news box never jumps.
       - name: Fast Play checks
         run: node .github/scripts/ui-fast-play-test.js
+      # The page and the Rust side still share the same command, event and
+      # error-code names (commands, events, and the SIGNED_OUT: style
+      # error prefixes), which nothing else checks. See ui-contract-test.js.
+      - name: UI and Tauri command contract
+        run: node .github/scripts/ui-contract-test.js
       # The Vortex extension's job rules with a stand-in for Vortex (signed
       # requests, listed mods only, the Aetherial Dawn profile only, USSEP
       # version swap, rollback). Real Vortex proof is on Timothy's PC.

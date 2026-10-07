@@ -11,6 +11,9 @@ use tokio::sync::Mutex;
 mod export;
 mod faces;
 mod log;
+// The old "Download all mods" code in mods.rs is unreachable; the thread that
+// deletes it should also delete this allow so clippy covers the file again.
+#[allow(dead_code)]
 mod mods;
 mod music;
 

@@ -444,7 +444,7 @@ mod tests {
             mods: vec![VortexMod {
                 id: "test-package".into(), installation_path: Some("test-package-folder".into()),
                 state: Some("installed".into()), nexus_mod_id: Some(42),
-                nexus_file_id: Some(73), enabled: true,
+                nexus_file_id: Some(73), enabled: true, file_md5: None,
             }],
             ..Default::default()
         };
@@ -492,7 +492,7 @@ mod tests {
             std::fs::write(target, b"selected male texture").unwrap();
         }
         let package = |id: &str, file| VortexMod { id: id.into(), installation_path: Some(format!("{id}-folder")),
-            state: Some("installed".into()), nexus_mod_id: Some(22487), nexus_file_id: Some(file), enabled: true };
+            state: Some("installed".into()), nexus_mod_id: Some(22487), nexus_file_id: Some(file), enabled: true, file_md5: None };
         let status = Status { profile: Some(Profile { id: "p1".into(), name: "Aetherial Dawn".into(), active: true }),
             aetherial_profiles: 1, mods: vec![package("female", 104828), package("male", 104868)], ..Default::default() };
         let files: Vec<VortexFile> = checks.iter().map(|rel| VortexFile { rel: rel.clone(), source: "male-folder".into() }).collect();
