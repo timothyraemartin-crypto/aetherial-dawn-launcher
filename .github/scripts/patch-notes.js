@@ -50,7 +50,7 @@ const CODE = /\((?:[^()]*\b(?:audit|QA|red team|finding|fix-list|triple-check)\b
 function splitTitle(title) {
   let t = String(title || '').replace(/\s*\(#\d+\)\s*$/, '').trim();
   let prefix = '';
-  const m = t.match(/^([A-Za-z][A-Za-z0-9 ./_-]{0,22}?|\d+\.\d+\.\d+)(?:\s+v?\d+(?:\.\d+){1,3})?:\s+(.+)$/);
+  const m = t.match(/^([A-Za-z][A-Za-z0-9./_-]*(?: (?!v?\d+\.\d)[A-Za-z0-9./_-]+)?|\d+\.\d+\.\d+)(?:\s+v?\d+(?:\.\d+){1,3})?:\s+(.+)$/);
   if (m) { prefix = m[1].trim(); t = m[2]; }
   return { prefix, text: t };
 }
