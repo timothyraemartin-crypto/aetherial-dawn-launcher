@@ -219,7 +219,7 @@ fn allowed(game_dir: &Path, manifest: &Manifest) -> Vec<String> {
 
 /// Active plugins that shouldn't load with Aetherial Dawn.
 pub fn extras(game_dir: &Path, plugins_txt: &Path, manifest: &Manifest) -> Vec<Extra> {
-    let Ok(text) = std::fs::read_to_string(plugins_txt) else { return Vec::new() };
+    let Ok(text) = read_text(plugins_txt) else { return Vec::new() };
     let ok = allowed(game_dir, manifest);
     text.lines()
         .filter_map(|l| l.trim().strip_prefix('*'))
@@ -235,23 +235,106 @@ pub fn extras(game_dir: &Path, plugins_txt: &Path, manifest: &Manifest) -> Vec<E
         .collect()
 }
 
-/// Keeps `text`, the list as it was before the launcher first changed it,
-/// as `<name>.txt.aetherial-dawn-backup`. Only the first one is kept (as
-/// the ini backups are), so later changes never replace the player's own
-/// load order with one the launcher wrote.
-pub fn keep_backup(txt: &Path, text: &str) -> std::io::Result<()> {
-    let backup = txt.with_extension("txt.aetherial-dawn-backup");
-    if backup.exists() {
+/// A list file (plugins.txt, loadorder.txt) as it is on disk. Skyrim writes
+/// them in Windows-1252, so a name like "Café.esp" isn't UTF-8. Such a file
+/// is held as Latin-1 text, one char per byte, and written back the same way,
+/// so what the launcher doesn't change stays byte for byte.
+pub struct ListFile {
+    pub bytes: Vec<u8>,
+    pub text: String,
+    ansi: bool,
+}
+
+/// Decodes list-file bytes: UTF-8 when it is, else one char per byte.
+fn decode(bytes: &[u8]) -> (String, bool) {
+    match std::str::from_utf8(bytes) {
+        Ok(t) => (t.to_string(), false),
+        Err(_) => (bytes.iter().map(|&b| b as char).collect(), true),
+    }
+}
+
+/// The text of a list file, for reading only. Unlike `read_to_string` it
+/// doesn't fail on a non-UTF-8 name.
+pub fn read_text(path: &Path) -> std::io::Result<String> {
+    Ok(decode(&std::fs::read(path)?).0)
+}
+
+impl ListFile {
+    /// Reads the file. `None` when it doesn't exist; any other failure (a lock,
+    /// no permission) is an error, never an empty list.
+    pub fn read(path: &Path) -> std::io::Result<Option<ListFile>> {
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                let (text, ansi) = decode(&bytes);
+                Ok(Some(ListFile { bytes, text, ansi }))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn encode(&self, new: &str) -> std::io::Result<Vec<u8>> {
+        if !self.ansi {
+            return Ok(new.as_bytes().to_vec());
+        }
+        new.chars()
+            .map(|c| u8::try_from(c as u32).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("'{c}' can't be written to an ANSI list file"))))
+            .collect()
+    }
+}
+
+/// Writes `new` to a list file. The old contents are backed up first (see
+/// `keep_backup`), and the file is replaced in one step, so a crash or a
+/// failed backup never leaves a short or empty list.
+pub fn write_list(path: &Path, old: Option<&ListFile>, new: &str) -> std::io::Result<()> {
+    let bytes = match old {
+        Some(f) => {
+            keep_backup(path, &f.bytes)?;
+            f.encode(new)?
+        }
+        None => new.as_bytes().to_vec(),
+    };
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    atomic_write(path, &bytes)
+}
+
+/// Writes `bytes` to a temp file next to `path`, then renames it over `path`.
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".aetherial-dawn-tmp");
+    let tmp = std::path::PathBuf::from(tmp);
+    let res = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
+}
+
+/// Keeps `old`, the list as it was before the launcher changed it, beside it.
+/// `<name>.txt.aetherial-dawn-backup` is the first one only (as the ini
+/// backups are), so later changes never replace the player's own load order
+/// with one the launcher wrote; an empty one, left by an older version that
+/// had read a list as empty, doesn't count. `<name>.txt.aetherial-dawn-previous`
+/// is the list just before the latest change. Nothing is kept for an empty
+/// list: there is nothing to lose.
+pub fn keep_backup(txt: &Path, old: &[u8]) -> std::io::Result<()> {
+    if old.is_empty() {
         return Ok(());
     }
-    std::fs::write(backup, text)
+    let backup = txt.with_extension("txt.aetherial-dawn-backup");
+    if std::fs::metadata(&backup).map_or(true, |m| m.len() == 0) {
+        atomic_write(&backup, old)?;
+    }
+    atomic_write(&txt.with_extension("txt.aetherial-dawn-previous"), old)
 }
 
 /// Switches plugins off in plugins.txt (drops the `*`), keeping the file and
 /// its place in the list. A copy of the old file is kept next to it.
 pub fn switch_off(plugins_txt: &Path, names: &[String]) -> Result<()> {
-    let text = std::fs::read_to_string(plugins_txt)?;
-    crate::loadorder::keep_backup(plugins_txt, &text)?;
+    let Some(file) = ListFile::read(plugins_txt)? else { return Err(std::io::Error::from(std::io::ErrorKind::NotFound).into()) };
+    let text = file.text.as_str();
     let lower: Vec<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
     let mut out: Vec<String> = text
         .lines()
@@ -263,7 +346,7 @@ pub fn switch_off(plugins_txt: &Path, names: &[String]) -> Result<()> {
     if text.ends_with('\n') {
         out.push(String::new());
     }
-    std::fs::write(plugins_txt, out.join(if text.contains("\r\n") { "\r\n" } else { "\n" }))?;
+    write_list(plugins_txt, Some(&file), &out.join(if text.contains("\r\n") { "\r\n" } else { "\n" }))?;
     Ok(())
 }
 
@@ -338,7 +421,7 @@ fn wanted_with_ledger(game_dir: &Path, trust_nexus_ledger: bool) -> Vec<String> 
 /// off, which the launcher leaves off. SmoothCam's settings page only shows
 /// with SmoothCam.esp on (Timothy, 2026-09-26).
 pub fn wanted_but_off(game_dir: &Path, plugins_txt: &Path) -> Vec<String> {
-    let text = std::fs::read_to_string(plugins_txt).unwrap_or_default();
+    let text = read_text(plugins_txt).unwrap_or_default();
     let off: std::collections::HashSet<String> = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('*') && !l.starts_with('#')).map(|l| l.to_ascii_lowercase()).collect();
     let vortex_managed = crate::modlist::vortex_manages(game_dir) || crate::inventory::has_vortex_record(game_dir);
     wanted_with_ledger(game_dir, !vortex_managed).into_iter().filter(|n| off.contains(&n.to_ascii_lowercase())).collect()
@@ -350,7 +433,8 @@ pub fn wanted_but_off(game_dir: &Path, plugins_txt: &Path) -> Vec<String> {
 /// SmoothCam, TDM and TrueHUD off on Timothy's PC). Returns the ones changed;
 /// the old file is kept next to it.
 pub fn force_on(plugins_txt: &Path, names: &[String]) -> Result<Vec<String>> {
-    let text = std::fs::read_to_string(plugins_txt).unwrap_or_default();
+    let file = ListFile::read(plugins_txt)?;
+    let text = file.as_ref().map_or("", |f| f.text.as_str());
     let nl = if text.contains("\r\n") || text.is_empty() { "\r\n" } else { "\n" };
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     let mut changed = Vec::new();
@@ -371,14 +455,9 @@ pub fn force_on(plugins_txt: &Path, names: &[String]) -> Result<Vec<String>> {
     if changed.is_empty() {
         return Ok(changed);
     }
-    if !text.is_empty() {
-        crate::loadorder::keep_backup(plugins_txt, &text)?;
-    } else if let Some(d) = plugins_txt.parent() {
-        std::fs::create_dir_all(d)?;
-    }
     lines.retain(|l| !l.is_empty());
     lines.push(String::new());
-    std::fs::write(plugins_txt, lines.join(nl))?;
+    write_list(plugins_txt, file.as_ref(), &lines.join(nl))?;
     Ok(changed)
 }
 
@@ -387,7 +466,8 @@ pub fn force_on(plugins_txt: &Path, names: &[String]) -> Result<Vec<String>> {
 /// off: the player or Vortex chose that. Returns the ones it added; the old
 /// file is kept next to it.
 pub fn switch_on(plugins_txt: &Path, names: &[String]) -> Result<Vec<String>> {
-    let text = std::fs::read_to_string(plugins_txt).unwrap_or_default();
+    let file = ListFile::read(plugins_txt)?;
+    let text = file.as_ref().map_or("", |f| f.text.as_str());
     let nl = if text.contains("\r\n") || text.is_empty() { "\r\n" } else { "\n" };
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     let mut changed = Vec::new();
@@ -404,13 +484,8 @@ pub fn switch_on(plugins_txt: &Path, names: &[String]) -> Result<Vec<String>> {
     if changed.is_empty() {
         return Ok(changed);
     }
-    if !text.is_empty() {
-        crate::loadorder::keep_backup(plugins_txt, &text)?;
-    } else if let Some(d) = plugins_txt.parent() {
-        std::fs::create_dir_all(d)?;
-    }
     lines.push(String::new());
-    std::fs::write(plugins_txt, lines.join(nl))?;
+    write_list(plugins_txt, file.as_ref(), &lines.join(nl))?;
     Ok(changed)
 }
 
@@ -418,7 +493,8 @@ pub fn switch_on(plugins_txt: &Path, names: &[String]) -> Result<Vec<String>> {
 /// keeping everything else as it was (Vortex had the Unofficial Patch ahead
 /// of Skyrim.esm on 2026-09-26). Returns whether it changed the file.
 pub fn fix_order(loadorder_txt: &Path) -> Result<bool> {
-    let Ok(text) = std::fs::read_to_string(loadorder_txt) else { return Ok(false) };
+    let Some(file) = ListFile::read(loadorder_txt)? else { return Ok(false) };
+    let text = file.text.as_str();
     let masters = &BASE[..5];
     let lines: Vec<&str> = text.lines().collect();
     let is_master = |l: &str| masters.contains(&l.trim().to_ascii_lowercase().as_str());
@@ -431,12 +507,11 @@ pub fn fix_order(loadorder_txt: &Path) -> Result<bool> {
     if want == entries {
         return Ok(false);
     }
-    crate::loadorder::keep_backup(loadorder_txt, &text)?;
     let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let mut out: Vec<&str> = comments;
     out.extend(want);
     out.push("");
-    std::fs::write(loadorder_txt, out.join(nl))?;
+    write_list(loadorder_txt, Some(&file), &out.join(nl))?;
     Ok(true)
 }
 
@@ -460,6 +535,71 @@ pub mod tests {
         switch_on(&txt, &["Mine.esp".into()]).unwrap();
         // Three changes later, the backup is still the list before the first.
         assert_eq!(std::fs::read_to_string(t.path().join("plugins.txt.aetherial-dawn-backup")).unwrap(), "*Mine.esp\n*Other.esp\n");
+    }
+
+    // "Café.esp" in Windows-1252, as Skyrim writes plugins.txt.
+    const ANSI: &[u8] = b"# Vortex\r\n*Caf\xE9.esp\r\n*Other.esp\r\n";
+
+    #[test]
+    fn force_on_keeps_an_ansi_plugins_txt_byte_for_byte_and_backs_it_up() {
+        let t = tempfile::tempdir().unwrap();
+        let txt = t.path().join("plugins.txt");
+        std::fs::write(&txt, ANSI).unwrap();
+        assert_eq!(force_on(&txt, &["SkyUI_SE.esp".into()]).unwrap(), ["SkyUI_SE.esp"]);
+        assert_eq!(std::fs::read(&txt).unwrap(), [ANSI, b"*SkyUI_SE.esp\r\n"].concat());
+        assert_eq!(std::fs::read(t.path().join("plugins.txt.aetherial-dawn-backup")).unwrap(), ANSI);
+    }
+
+    #[test]
+    fn switch_on_and_switch_off_keep_an_ansi_plugins_txt() {
+        let t = tempfile::tempdir().unwrap();
+        let txt = t.path().join("plugins.txt");
+        std::fs::write(&txt, ANSI).unwrap();
+        switch_on(&txt, &["New.esp".into()]).unwrap();
+        switch_off(&txt, &["Other.esp".into()]).unwrap();
+        assert_eq!(std::fs::read(&txt).unwrap(), b"# Vortex\r\n*Caf\xE9.esp\r\nOther.esp\r\n*New.esp\r\n");
+        assert_eq!(std::fs::read(t.path().join("plugins.txt.aetherial-dawn-backup")).unwrap(), ANSI);
+    }
+
+    #[test]
+    fn an_unreadable_plugins_txt_is_an_error_and_is_left_alone() {
+        let t = tempfile::tempdir().unwrap();
+        // A directory stands in for a file that can't be read (locked).
+        let txt = t.path().join("plugins.txt");
+        std::fs::create_dir(&txt).unwrap();
+        assert!(force_on(&txt, &["A.esp".into()]).is_err());
+        assert!(switch_on(&txt, &["A.esp".into()]).is_err());
+        assert!(txt.is_dir());
+        assert!(!t.path().join("plugins.txt.aetherial-dawn-backup").exists());
+    }
+
+    #[test]
+    fn a_missing_plugins_txt_is_created_without_a_backup() {
+        let t = tempfile::tempdir().unwrap();
+        let txt = t.path().join("sub").join("plugins.txt");
+        assert_eq!(force_on(&txt, &["A.esp".into()]).unwrap(), ["A.esp"]);
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*A.esp\r\n");
+        assert!(!t.path().join("sub/plugins.txt.aetherial-dawn-backup").exists());
+    }
+
+    #[test]
+    fn an_empty_first_backup_is_replaced_by_a_real_one() {
+        let t = tempfile::tempdir().unwrap();
+        let txt = t.path().join("plugins.txt");
+        std::fs::write(&txt, "*Mine.esp\n").unwrap();
+        std::fs::write(t.path().join("plugins.txt.aetherial-dawn-backup"), b"").unwrap();
+        switch_off(&txt, &["Mine.esp".into()]).unwrap();
+        assert_eq!(std::fs::read_to_string(t.path().join("plugins.txt.aetherial-dawn-backup")).unwrap(), "*Mine.esp\n");
+    }
+
+    #[test]
+    fn every_rewrite_also_keeps_the_list_just_before_it() {
+        let t = tempfile::tempdir().unwrap();
+        let txt = t.path().join("plugins.txt");
+        std::fs::write(&txt, "*Mine.esp\n").unwrap();
+        switch_off(&txt, &["Mine.esp".into()]).unwrap();
+        switch_on(&txt, &["New.esp".into()]).unwrap();
+        assert_eq!(std::fs::read_to_string(t.path().join("plugins.txt.aetherial-dawn-previous")).unwrap(), "Mine.esp\n");
     }
 
     #[test]

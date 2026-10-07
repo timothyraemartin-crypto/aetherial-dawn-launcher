@@ -132,8 +132,18 @@ fn config_path(app: &AppHandle) -> CmdResult<PathBuf> {
 fn load_config(app: &AppHandle) -> Config {
     config_path(app)
         .ok()
-        .and_then(|p| std::fs::read(p).ok())
-        .and_then(|b| serde_json::from_slice::<Config>(&b).ok())
+        .and_then(|p| {
+            let bytes = std::fs::read(&p).ok()?;
+            let parsed = serde_json::from_slice::<Config>(&bytes).ok();
+            if parsed.is_none() {
+                // Defaults take over, so keep the damaged file for support
+                // instead of letting the next save overwrite it.
+                let bad = p.with_extension("json.bad");
+                log::line(&format!("config: {} couldn't be read; starting from defaults, copy kept at {}", p.display(), bad.display()));
+                let _ = std::fs::write(&bad, &bytes);
+            }
+            parsed
+        })
         .map(|mut c| {
             // The server address is baked into each build, so an older saved
             // config (or one from a test build) never points somewhere stale.
@@ -148,7 +158,7 @@ fn save_config(app: &AppHandle, c: &Config) -> CmdResult<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    std::fs::write(path, serde_json::to_vec_pretty(c).unwrap()).map_err(|e| e.to_string())
+    launcher_core::atomicfile::write(&path, &serde_json::to_vec_pretty(c).unwrap()).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
@@ -381,10 +391,13 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<Strin
     // The Vortex gate runs only when the server switches it on
     // (vortexRequired in aetherial-collection.json); off, Play checks the
     // game files as 0.1.87 did.
-    let vortex_required = launcher_core::vortex::gate_on(mods::served_client_set(&state).await.as_ref());
+    // Fetched once; the Vortex check below reads its collection from it.
+    let served = mods::served_client_set(&state).await;
+    let vortex_required = launcher_core::vortex::gate_on(served.as_ref());
+    let collection = served.and_then(|s| s.collection);
     log::line(&format!("play: Vortex gate {}", if vortex_required { "on" } else { "off" }));
     if vortex_required {
-        require_vortex_profile(&app, &state, &dir).await?;
+        require_vortex_profile(&app, &state, &dir, collection.clone()).await?;
     }
     // One masters.json per Play, fetched before anything changes on the PC:
     // its plugin names decide which light plugins run as full "<stem>.esm"
@@ -406,7 +419,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<Strin
     // this PC doesn't have yet, and the order check would refuse Play
     // before the downloads were ever offered.
     // Helpers still missing after this pass are shown once the game starts.
-    let warnings = ensure_requirements(&app, &state, &dir, vortex_required).await?;
+    let warnings = ensure_requirements(&app, &state, &dir, vortex_required, collection).await?;
     // Each listed mod's settings as the server sets them, once; the
     // player's later changes stay.
     let list = mods::full_list(&state).await;
@@ -507,7 +520,12 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<Strin
         return Err(format!("Your plugins don't match the server's order, so the game would refuse to connect: {which}. {tell}"));
     }
     if report.worst >= health::Status::Warn && config.share_health {
-        send_health(&app, &state.http, &config, &m.build, "before play", None, None, &report).await;
+        // Nobody needs the report number here, and the staff service can
+        // rate-limit for 90 s or more, so the upload runs beside Play.
+        let (app, http, config, build, report) = (app.clone(), state.http.clone(), config.clone(), m.build.clone(), report.clone());
+        launcher_core::detach::detach(async move {
+            send_health(&app, &http, &config, &build, "before play", None, None, &report).await;
+        });
     }
     let token = token(&app).ok_or("SIGNED_OUT:Sign in with Discord to play.")?;
     play_step(&app, "Getting your game session…");
@@ -1576,7 +1594,7 @@ fn play_step(app: &AppHandle, text: &str) {
     let _ = app.emit("play-step", text);
 }
 
-async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path::Path, vortex_required: bool) -> CmdResult<Vec<String>> {
+async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path::Path, vortex_required: bool, collection: Option<launcher_core::vortex::CollectionRef>) -> CmdResult<Vec<String>> {
     let got = install_missing_mods(&state.http, dir).await;
     // Sent whether or not the installs worked: a failed one is the case
     // staff most want to see.
@@ -1597,19 +1615,18 @@ async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path:
     // that the Vortex package files are still deployed immediately before the
     // load-order and launch steps.
     if vortex_required {
-        require_vortex_profile(app, state, dir).await?;
+        require_vortex_profile(app, state, dir, collection).await?;
     }
     Ok(warnings)
 }
 
 /// Vortex owns every Nexus-pinned mod in the current client list. Check the
 /// active profile and deployment before Play changes load order or files.
-async fn require_vortex_profile(app: &AppHandle, state: &AppState, dir: &std::path::Path) -> CmdResult<()> {
+async fn require_vortex_profile(app: &AppHandle, state: &AppState, dir: &std::path::Path, collection: Option<launcher_core::vortex::CollectionRef>) -> CmdResult<()> {
     if mods::fetched_server_list(state).await.is_none() {
         return Err("VORTEX_NOT_READY:The server's current mod list is unavailable. Try Check again when the server responds.".into());
     }
     let list = mods::full_list(state).await;
-    let collection = mods::served_client_set(state).await.and_then(|s| s.collection);
     let set = launcher_core::vortex::ClientSet { collection, mods: list, vortex_required: true };
     let status = mods::vortex_status(app, state).await;
     let step = launcher_core::vortex::step(&set, status.as_ref());
