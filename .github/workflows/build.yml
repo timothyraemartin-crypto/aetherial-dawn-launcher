@@ -56,6 +56,8 @@ jobs:
       # The Vortex extension's job rules with a stand-in for Vortex (signed
       # requests, listed mods only, the Aetherial Dawn profile only, USSEP
       # version swap, rollback). Real Vortex proof is on Timothy's PC.
+      - name: Discord notice checks
+        run: node --test .github/scripts/patch-notes.test.js
       - name: Vortex extension checks
         run: node --test "vortex-extension/test/*.test.js"
       - name: Install Tauri CLI
@@ -285,3 +287,29 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --latest \
             --title "Aetherial Dawn Launcher ${GITHUB_REF_NAME#v}" \
             --notes-file release-notes.md
+      # Discord: player patch notes and a staff line. A Discord problem never fails or undoes a release
+      # (the release is already published above). Webhooks are repo secrets AD_PATCHNOTES_WEBHOOK and
+      # AD_STAFF_WEBHOOK; with none set these steps print "not posted" and finish.
+      - name: Post release notes to Discord
+        id: notes
+        continue-on-error: true
+        env:
+          AD_PATCHNOTES_WEBHOOK: ${{ secrets.AD_PATCHNOTES_WEBHOOK }}
+          AD_STAFF_WEBHOOK: ${{ secrets.AD_STAFF_WEBHOOK }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          node .github/scripts/patch-notes.js post ${prev:+--from "$prev"} --to "$GITHUB_REF_NAME" --title "Launcher ${GITHUB_REF_NAME#v}"
+          node .github/scripts/patch-notes.js staff --event released ${prev:+--from "$prev"} --to "$GITHUB_REF_NAME"
+  # Staff hear about a failed release even though the release job itself stopped.
+  release-failed-notice:
+    if: failure() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, canonical-plugins-linux, release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Staff feed - release failed
+        continue-on-error: true
+        env:
+          AD_STAFF_WEBHOOK: ${{ secrets.AD_STAFF_WEBHOOK }}
+        run: node .github/scripts/patch-notes.js staff --event release-failed --detail "Release $GITHUB_REF_NAME did not publish. Open the run for the log."
