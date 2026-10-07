@@ -10,3 +10,4 @@ Cross-repo facts are also in the project memory; repo-specific ones live here.
 - [launcher-parts](launcher-parts.md) - before editing the launcher or when asked what a part does
 - [kept-files](kept-files.md) - before deleting a file that looks unused
 - [vortex-extension-review](vortex-extension-review.md) - before changing vortex-extension/ or the Vortex bridge
+- [quality-reviews](quality-reviews.md) - before touching sign-in, health checks, plugin order or load order (open findings)
