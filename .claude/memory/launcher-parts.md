@@ -13,6 +13,6 @@ Windows app that puts a player's Skyrim into the state the server needs, signs t
 - Play: install SKSE, tidy mods, set load order, health checks, get a Discord game session, start the game through SKSE.
 - Fetched from the server: client manifest, `mods.json`, `masters.json`, patches, status, login service.
 
-**Why:** the README says Discord sign-in and the downgrader were tested only against stand-ins, not the live services.
+**Why:** the README says Discord sign-in and the downgrader were tested only against stand-ins, not the live services. The Steam downgrader (`core/src/downgrade.rs`) is not called by the app; the shipped route is the MulderLoad patch, so that README line is outdated.
 
 **How to apply:** put logic in `core/` (unit-testable), keep `ui/` and `src-tauri/` thin. Full page: https://claude.ai/artifact/TKnhzamYtqMX9e1CXJhLyg

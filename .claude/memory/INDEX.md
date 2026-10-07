@@ -12,3 +12,4 @@ Cross-repo facts are also in the project memory; repo-specific ones live here.
 - [vortex-extension-review](vortex-extension-review.md) - before changing vortex-extension/ or the Vortex bridge
 - [quality-reviews](quality-reviews.md) - before touching sign-in, health checks, plugin order, load order or ui/ (open findings)
 - [quality-reviews-2](quality-reviews-2.md) - before touching manifest/file sync or settings.rs (open findings, part 2)
+- [quality-reviews-3](quality-reviews-3.md) - before touching mod list, Vortex bridge, load order/tidying or game patching (open findings, part 3)
