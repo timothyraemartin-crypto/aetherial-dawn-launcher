@@ -90,15 +90,9 @@ function noteLines(body) {
   return any ? out : null;
 }
 
-// "a; b" is two items; "a, b, c, d" (3+ commas) is a list of items, but a sentence with one comma stays whole.
+// One bullet per PR: titles are never split on commas or semicolons.
 function titleItems(text) {
-  const out = [];
-  for (const part of text.split(/;\s+/)) {
-    const bits = part.split(/,\s+/);
-    const list = bits.length >= 3 && !bits.some((b) => /^(and|or|so|but|then|because)\b/i.test(b));
-    for (const b of list ? bits : [part]) out.push({ group: null, text: sentence(b) });
-  }
-  return out;
+  return [{ group: null, text: sentence(text) }];
 }
 
 function prNumber(subject) {

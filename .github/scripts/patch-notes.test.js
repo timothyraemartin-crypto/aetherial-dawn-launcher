@@ -24,6 +24,11 @@ test('real launcher history: merges and version commits become player wording, i
   assert.strictEqual(r.skipped, 2);
 });
 
+test('a title with commas stays one bullet', () => {
+  const r = collect([c('Launcher: bzip2, for archive entries, and more (#5)', ['core/src/bsa.rs'])]);
+  assert.deepStrictEqual(r.groups[0].items, ['Bzip2, for archive entries, and more']);
+});
+
 test('PR description "Patch note:" line wins; none hides the PR', () => {
   const prs = { 58: { title: 'x (#58)', body: 'Patch note: Mods with a download link in the list are no longer installed from it.' }, 59: { title: 'y (#59)', body: 'Patch note: none' } };
   const r = collect([c('Merge pull request #58 from a/b', ['core/src/modlist.rs']), c('Merge pull request #59 from a/c', ['core/src/x.rs'])], prs);
