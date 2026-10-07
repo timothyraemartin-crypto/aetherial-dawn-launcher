@@ -27,7 +27,7 @@ changed_files() {
 case $mode in
 start)
   git rev-parse HEAD > "$mark" 2>/dev/null || true
-  echo "PROGRESS.md is this repo's source of truth. Read it before starting; update it EVERY time you start, fix or build something (Now / Done / Broken). Also update .claude/memory: when you fix a finding a topic lists, edit or delete that entry; add new durable facts."
+  echo "RULE (Timothy, 2026-10-07): before ANY work, read the project memory, PROGRESS.md and .claude/memory/INDEX.md (from the hooks/memory PR branches until they merge) and state that you did in your first status line."; echo "PROGRESS.md is this repo's source of truth. Read it before starting; update it EVERY time you start, fix or build something (Now / Done / Broken). Also update .claude/memory: when you fix a finding a topic lists, edit or delete that entry; add new durable facts."
   echo "----- PROGRESS.md -----"
   if [ -f PROGRESS.md ]; then head -n 40 PROGRESS.md; else echo "(missing - create PROGRESS.md before finishing)"; fi
   if [ -f .claude/memory/INDEX.md ]; then
