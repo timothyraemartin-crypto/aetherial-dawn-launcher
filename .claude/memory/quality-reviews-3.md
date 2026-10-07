@@ -17,7 +17,7 @@ Read-only reviews on 2026-10-07; no code changed. Continues quality-reviews-2.
 
 **Game folder tidying** (https://claude.ai/artifact/QbzAdcRpYQa77b1fS5dQ6y)
 - CONFIRMED data loss (reproduced with a temp test; fix in draft PR #54, not merged): `force_on` and `switch_on` in `loadorder.rs` turn a failed ANSI plugins.txt read into empty text and rewrite the file with no backup. `force_on` runs on every Play.
-- `aliases.rs` deleted an existing dash-name file without checking the launcher made it (fixed in #54, with atomic writes and a second backup). Skyrim.ini handling: see #54 (`gameini.rs`). The `allowlist.rs` doc comment contradicts the 2026-09-26 sweep decision.
+- `aliases.rs` deleted an existing dash-name file without checking the launcher made it (fixed in #54, with atomic writes and a second backup). #54 also touches `gameini.rs` (Skyrim.ini writes; check it covers the non-atomic-write finding). The `allowlist.rs` doc comment contradicts the 2026-09-26 sweep decision.
 - Good: tidying moves rather than deletes; `retire_unlisted` refuses lists that drop more than half the mods.
 
 **Game build detection** (good on the shipped patch route; 44 tests pass; https://claude.ai/artifact/VvZhT5jGC2fvX3Ad5C5NBm)
