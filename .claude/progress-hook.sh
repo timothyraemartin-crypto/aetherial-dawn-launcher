@@ -27,7 +27,7 @@ changed_files() {
 case $mode in
 start)
   git rev-parse HEAD > "$mark" 2>/dev/null || true
-  echo "PROGRESS.md is this repo's source of truth. Read it before starting; update it as you fix or build things (Done / Next / Broken)."
+  echo "PROGRESS.md is this repo's source of truth. Read it before starting; update it EVERY time you start, fix or build something (Now / Done / Broken). Also update .claude/memory: when you fix a finding a topic lists, edit or delete that entry; add new durable facts."
   echo "----- PROGRESS.md -----"
   if [ -f PROGRESS.md ]; then head -n 40 PROGRESS.md; else echo "(missing - create PROGRESS.md before finishing)"; fi
   if [ -f .claude/memory/INDEX.md ]; then
@@ -46,7 +46,7 @@ stop)
     mout=$(bash .claude/memory-lint.sh 2>&1) || msg="Memory check failed (.claude/memory/INDEX.md has the rules): $(printf '%s' "$mout" | grep '^ERROR' | head -n 8 | tr '\n' ' ')"
   fi
   if [ -n "$code" ]; then
-    printf '%s\n' "$files" | grep -qx 'PROGRESS.md' || msg="${msg}Code changed but PROGRESS.md was not updated. Add what you fixed/built (and anything still broken or next) to PROGRESS.md. "
+    printf '%s\n' "$files" | grep -qx 'PROGRESS.md' || msg="${msg}Code changed but PROGRESS.md was not updated. Add what you fixed/built (and anything still broken or next) to PROGRESS.md, and update any .claude/memory topic whose finding you fixed. "
     out=$(build_check 2>&1) || msg="${msg}Build check failed - fix it, then re-run: ${out:0:1500}"
   fi
   if [ -n "$msg" ]; then

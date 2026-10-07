@@ -4,6 +4,12 @@ Read this at the start of every task; update it as you fix or build things.
 Build check (run by the Stop hook): `cargo check -p launcher-core --tests` when Rust changed, plus `node --check` on changed JS.
 
 ## Now
+Fix threads started 2026-10-07 from the review findings (see memory quality-reviews*; update/delete a finding when its fix merges):
+- plugins.txt data loss (loadorder.rs force_on/switch_on)
+- sign the server mods.json and manifest
+- src-tauri CI (tests, clippy, fmt)
+- remove dead launcher code (unreachable Download-all-mods queue)
+- Play stall on staff report upload
 - Dead-file cleanup is open as draft PR #51 (removes background-dawn.jpg, icon-128.png, connect-vortex-runbook.md).
 
 ## Done
