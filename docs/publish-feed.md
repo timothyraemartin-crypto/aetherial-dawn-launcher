@@ -2,7 +2,7 @@
 
 On the server (or anywhere with the web root and the key):
 
-    sudo AD_WEB_ROOT=/srv/aetherial-dawn/launcher AD_FEED_KEY=/etc/aetherial-dawn/feed-signing.pem scripts/publish-feed.sh
+    sudo AD_WEB_ROOT=/srv/aetherial-dawn/launcher AD_FEED_KEY=/etc/aetherial-dawn/skymp-sign.pem scripts/publish-feed.sh
 
 It (1) finds every direct-download entry in `mods.json` without a `sha256`, hashes the file (from the
 web root when the address is ours, else by downloading it) and pins it in a temp copy;

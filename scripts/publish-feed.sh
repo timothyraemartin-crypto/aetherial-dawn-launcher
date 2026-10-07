@@ -15,7 +15,7 @@
 set -euo pipefail
 
 WEB_ROOT=${AD_WEB_ROOT:-/srv/aetherial-dawn/launcher}
-KEY=${AD_FEED_KEY:-/etc/aetherial-dawn/feed-signing.pem}
+KEY=${AD_FEED_KEY:-/etc/aetherial-dawn/skymp-sign.pem}
 BASE_URL=${AD_BASE_URL:-https://vps-d38c928e.vps.ovh.us/launcher}
 REPO=${AD_RELEASE_REPO:-timothyraemartin-crypto/aetherial-dawn-launcher}
 BACKUP_DIR=${AD_BACKUP_DIR:-/var/backups/aetherial-deploy/feed-$(date +%Y%m%d%H%M%S)}
