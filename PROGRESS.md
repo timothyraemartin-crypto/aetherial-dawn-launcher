@@ -4,11 +4,11 @@ Read this at the start of every task; update it as you fix or build things.
 Build check (run by the Stop hook): `cargo check -p launcher-core --tests` when Rust changed, plus `node --check` on changed JS.
 
 ## Now
-- (nothing in flight)
+- Dead-file cleanup is open as draft PR #51 (removes background-dawn.jpg, icon-128.png, connect-vortex-runbook.md).
 
 ## Done
 - 2026-10-07 Added repo memory (`.claude/memory/`: INDEX.md + topic files, linted by `.claude/memory-lint.sh`).
 - 2026-10-07 Added progress/build hooks (`.claude/progress-hook.sh`).
 
 ## Broken / Next
-- (none known)
+- vortex-extension robustness (null body hangs, unguarded startup I/O, token read once, no index.js test): see memory topic vortex-extension-review.

@@ -6,3 +6,7 @@ Cross-repo facts are also in the project memory; repo-specific ones live here.
 
 ## Topics
 - [live-mod-list](live-mod-list.md) - before answering "which mods" or editing the mod list / server load order
+- [repo-links](repo-links.md) - before changing auth, bans/kicks, or anything crossing repos
+- [launcher-parts](launcher-parts.md) - before editing the launcher or when asked what a part does
+- [kept-files](kept-files.md) - before deleting a file that looks unused
+- [vortex-extension-review](vortex-extension-review.md) - before changing vortex-extension/ or the Vortex bridge
