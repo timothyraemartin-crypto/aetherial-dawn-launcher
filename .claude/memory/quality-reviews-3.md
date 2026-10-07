@@ -8,7 +8,7 @@ refs: core/src/modlist.rs, core/src/vortex.rs, core/src/loadorder.rs, core/src/a
 Read-only reviews on 2026-10-07; no code changed. Continues quality-reviews-2.
 
 **Mod list and installers** (solid; 279 core tests pass; https://claude.ai/artifact/6f9FgQfwBuaYiWqP6cMDy5)
-- Medium: `mods.json` is unsigned, and a download is hash-checked only if the list gives a sha256 (`modlist.rs`, `src-tauri/src/mods.rs`).
+- FIX IN DRAFT PR #58 (not merged): `mods.json` signed; direct downloads must pin a sha256 (topic signed-feeds). Was: unsigned, hash-checked only if the list gives a sha256 (`modlist.rs`, `src-tauri/src/mods.rs`).
 - Pandora is documented but cannot run (`tools.rs`); a single removed mod is never cleaned up; `modlist.rs` is ~2,700 lines and not rustfmt-formatted; the `mods.json` fetch path is untested.
 
 **Vortex bridge** (signing/replay correct; 45 tests pass; https://claude.ai/artifact/GVXYTmgVA9PuDmzpXYQz51)

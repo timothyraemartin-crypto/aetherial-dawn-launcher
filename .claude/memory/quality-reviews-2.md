@@ -9,7 +9,8 @@ Read-only reviews on 2026-10-07; no code changed. Part 1 is topic quality-review
 
 **SkyMP file sync** (grade B; manifest.rs, sync.rs, settings.rs; 9/9 tests pass; report: https://claude.ai/artifact/BCS1BHhWmFwCThdwKkr4Qc)
 - Solid: hash-verified files, temp-then-rename writes, path-escape checks.
-- High: the manifest is unsigned and hashes come from the same host as the files (the repo already has an ed25519 key for signed scripts that could be reused). `remove` can delete any file in the game folder, and a path listed in both files and remove is downloaded then deleted every run. The first failed download aborts with no retry, leaving a mix of old and new files.
+- FIX IN DRAFT PR #58 (not merged): manifest and mods.json now signed (topic signed-feeds); `remove` only deletes files the launcher synced. Still open: no retry on failed download, no size cap, Windows reserved names, untested `apply`/`download_verified`/`replace`.
+- Original findings, High: the manifest was unsigned and hashes come from the same host as the files (the repo already has an ed25519 key for signed scripts that could be reused). `remove` can delete any file in the game folder, and a path listed in both files and remove is downloaded then deleted every run. The first failed download aborts with no retry, leaving a mix of old and new files.
 - Medium: no download size cap; one locked file aborts the check; path checks miss Windows reserved names and case; an unparseable settings file silently drops the player's other keys.
 - Untested: `apply`, `download_verified`, `replace`.
 
