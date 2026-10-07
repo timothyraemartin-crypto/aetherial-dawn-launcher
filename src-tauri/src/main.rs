@@ -41,9 +41,6 @@ struct Config {
     background_updates: bool,
     /// Send game health reports to the server's staff (players can turn it off).
     share_health: bool,
-    /// The Nexus Mods account the player signed in with (the key itself is
-    /// kept separately, encrypted).
-    nexus_user: Option<launcher_core::nexus::User>,
     /// Menu music: None until the player answers the Keep music / Mute
     /// question, then their answer.
     music: Option<bool>,
@@ -62,7 +59,6 @@ impl Default for Config {
             close_on_launch: true,
             background_updates: true,
             share_health: true,
-            nexus_user: None,
             music: None,
             only_server_mods: true,
         }
@@ -862,11 +858,6 @@ fn last_report() -> Option<(String, String)> {
     Some((name.clone(), std::fs::read_to_string(dir.join(name)).ok()?))
 }
 
-#[tauri::command]
-fn last_game_report() -> CmdResult<String> {
-    last_report().map(|(_, text)| text).ok_or_else(|| "No game session has been recorded yet.".into())
-}
-
 // ---------- Discord sign-in ----------
 
 fn token_path(app: &AppHandle) -> Option<PathBuf> {
@@ -1107,14 +1098,6 @@ fn plain_error(text: String) -> String {
 async fn auth_sign_out(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     sign_out(&app, &state).await;
     Ok(())
-}
-
-/// Is the player's Skyrim the build the server needs?
-#[tauri::command]
-async fn game_check(state: State<'_, AppState>) -> CmdResult<version::GameCheck> {
-    let dir = game_dir(&state).await?;
-    let m = state.manifest.lock().await.clone();
-    Ok(auto_version(&dir, m.as_ref().and_then(|m| m.game.as_ref())))
 }
 
 
@@ -2368,11 +2351,9 @@ fn main() {
         std::process::exit(code);
     }
     tauri::Builder::default()
-        // Windows starts the launcher again for each nxm:// link; hand the
-        // link to the running one.
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| mods::on_second_launch(app, &args)))
+        // A second launch (Windows runs one for each nxm:// link) brings this one forward.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| mods::on_second_launch(app)))
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
@@ -2424,7 +2405,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, report_problem, patch_game, game_running, self_update_begin, self_update_end, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::vortex_connect, restore_set_aside, skip_tool, window_ready, open_invite])
+        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, health_check, report_problem, patch_game, game_running, self_update_begin, self_update_end, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::vortex_connect, restore_set_aside, skip_tool, window_ready, open_invite])
         .build(tauri::generate_context!())
         .expect("error while running the launcher")
         .run(|_, event| {
