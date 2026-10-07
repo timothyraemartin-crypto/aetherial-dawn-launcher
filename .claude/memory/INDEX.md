@@ -14,3 +14,4 @@ Before ANY work: read the project memory, PROGRESS.md and this index (from the h
 - [vortex-extension-review](vortex-extension-review.md) - before changing vortex-extension/ or the Vortex bridge
 - [quality-reviews](quality-reviews.md), [-2](quality-reviews-2.md), [-3](quality-reviews-3.md), [-4](quality-reviews-4.md) - open findings by area: sign-in/health/UI/plugin order (1), file sync (2), mod list/Vortex bridge/tidying/game build (3), Tauri shell (4); read before touching that area
 - [signed-feeds](signed-feeds.md) - before editing mods.json/manifest on the server or the feed signing code
+- [launcher-improvements](launcher-improvements.md) - before planning new launcher features
