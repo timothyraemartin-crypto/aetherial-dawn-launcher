@@ -13,10 +13,13 @@ name = "aetherial-dawn-launcher"
 version = "0.1.105"
 dependencies = [
  "futures-util",
+ "hex",
+ "http",
  "launcher-core",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -24,6 +27,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
+ "tempfile",
  "tokio",
  "windows",
 ]
