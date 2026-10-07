@@ -11,3 +11,4 @@ Cross-repo facts are also in the project memory; repo-specific ones live here.
 - [kept-files](kept-files.md) - before deleting a file that looks unused
 - [vortex-extension-review](vortex-extension-review.md) - before changing vortex-extension/ or the Vortex bridge
 - [quality-reviews](quality-reviews.md) - before touching sign-in, health checks, plugin order, load order or ui/ (open findings)
+- [quality-reviews-2](quality-reviews-2.md) - before touching manifest/file sync or settings.rs (open findings, part 2)

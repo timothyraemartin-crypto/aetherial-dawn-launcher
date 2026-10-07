@@ -13,3 +13,4 @@ Build check (run by the Stop hook): `cargo check -p launcher-core --tests` when 
 ## Broken / Next
 - vortex-extension robustness (null body hangs, unguarded startup I/O, token read once, no index.js test): see memory topic vortex-extension-review.
 - Launcher calls sign-in/status/crash endpoints missing from discord main; plugins.txt can be wiped on a non-UTF-8 plugin name: see memory topic quality-reviews.
+- File sync: unsigned manifest, unscoped `remove`, no retry on failed download: see memory topic quality-reviews-2.
