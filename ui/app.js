@@ -1106,6 +1106,26 @@
     asideNote(n);
     logUi(`set aside ${n} file(s) from other mods before Play`);
   });
+  // ---------- staff: Nexus key for the server-mod export ----------
+  const xkShow = (saved, note) => {
+    $('xk-forget').hidden = !saved;
+    $('xk-key').value = '';
+    $('xk-note').textContent = note || (saved ? 'A key is saved on this PC.' : 'No key saved.');
+  };
+  const xkRefresh = () => invoke('export_key_saved').then(v => xkShow(!!v)).catch(() => {});
+  $('xk').addEventListener('toggle', () => { if ($('xk').open) xkRefresh(); });
+  $('xk-save').onclick = async () => {
+    const b = $('xk-save');
+    b.disabled = true;
+    $('xk-note').textContent = 'Checking the key with Nexus…';
+    try { xkShow(true, await invoke('export_key_save', { key: $('xk-key').value })); }
+    catch (e) { $('xk-note').textContent = String(e); }
+    b.disabled = false;
+  };
+  $('xk-forget').onclick = async () => {
+    try { await invoke('export_key_forget'); xkShow(false, 'Key removed.'); }
+    catch (e) { $('xk-note').textContent = String(e); }
+  };
   $('aside-restore').onclick = async () => {
     const b = $('aside-restore');
     b.disabled = true;

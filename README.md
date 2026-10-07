@@ -45,11 +45,7 @@ To test the file sync against any server, run `cargo run -p launcher-core --exam
 
 ## Game version check
 
-**Only the patch route ships.** The app players get fixes a wrong Skyrim build through "Patching the game instead of downloading it" below (plus a Steam "verify files" repair when the game is Steam's newest build). The Steam downgrader described in the rest of this section and in the sections after the patch route (`core/src/downgrade.rs`, `core/src/steamapp.rs`, Steam sign-in, the Steam console option) is still in the repo but no button or command calls it today.
-
-The server's `manifest.json` names the Skyrim build it needs (`game.version`, now 1.6.1170.0 with SKSE 2.2.6) and the Steam depot manifests for it. `core/src/version.rs` compares the player's SkyrimSE.exe, Steam's `appmanifest_489830.acf` and the launcher's own record. `core/src/downgrade.rs` fixes a mismatch by running DepotDownloader in its own window, where the player signs in with their own Steam account. The full format is in the spec.
-
-To test without Steam, point `game.tool.url` at a zip holding a stand-in `DepotDownloader`. `cargo run -p launcher-core --example gamever -- SkyrimSE.exe` prints an exe's version.
+The server's `manifest.json` names the Skyrim build it needs (`game.version`, now 1.6.1170.0 with SKSE 2.2.6) and the Steam depot manifests for it. `core/src/version.rs` compares the player's SkyrimSE.exe, Steam's `appmanifest_489830.acf` and the launcher's own record. A wrong build is fixed by patching the player's own files ("Patching the game instead of downloading it" below), after a Steam "verify files" repair when the game is Steam's newest build. The launcher has no Steam downloader: DepotDownloader, Steam sign-in inside the launcher and the Steam console download were removed because nothing used them. `cargo run -p launcher-core --example gamever -- SkyrimSE.exe` prints an exe's version.
 
 ## Discord sign-in
 
@@ -63,19 +59,11 @@ Fix version patches the player's own Skyrim files into the server's build, with 
 
 To make patches, run the launcher as `AetherialDawn.exe --make-patches <newer game folder> <server-build game folder> <out folder> [1.6.1170.0]`. This writes the `.zst` files and `index.json` to the out folder. It proves each patch round-trips, logs to `make-patches.log`, and merges with an existing index, so one folder can serve several Steam builds. Upload the folder to the server's `launcher/patches/`.
 
-Staff can also call the `build_patches` command, which signs in to Steam in the launcher, downloads the server's build into `<game>/.aetherial-dawn/patch-build/<version>` (never over the game), builds the patches into `patch-build/out` and patches the game from them. Upload `patch-build/out` to the server's `launcher/patches/` so no other player needs Steam. Fix version on that PC uses `patch-build/out` directly when its target matches the server.
-
-## Signing in to Steam inside the launcher
-
-One of the other ways to download (the default in 0.1.21 to 0.1.25) runs DepotDownloader with no window of its own (`downgrade::spawn_piped`, `-remember-password`). `downgrade::Scanner` reads its output and turns the password prompt, Steam Guard code prompts (authenticator or email), the phone-approval notice and the download percentage into `steam-login` events. The Fix version window shows a password or code box when Steam asks, and `steam_login_answer` writes the answer to DepotDownloader's input. The answer is never logged or kept. Steam gives DepotDownloader a sign-in token, stored in the launcher's tools folder, so later downloads usually need no password. The older options (Steam console, QR code window, separate sign-in window) sit under **Other ways to download**.
+Patches made on a staff PC can be put in `<game>/.aetherial-dawn/patch-build/out`; Fix version on that PC uses them directly when their target matches the server (there is no in-launcher builder any more, so make them with `--make-patches`).
 
 ## Putting the game back by itself
 
 After a downgrade the launcher keeps hard links to Steam's own files (the exe, `steam_api64.dll`, `bink2w64.dll`, the base masters, Bethesda's and Creation Club archives, and `Skyrim.ccc`) in `.aetherial-dawn/pristine/` inside the game folder (`core/src/pristine.rs`). This takes no extra space. When Steam updates or repairs Skyrim, it writes new files and leaves the links on the old build. Every version check (at start, on Check, and before Play) then puts the kept files back, marks the build, and holds Steam updates again, with nothing for the player to do. Players who downgraded before 0.1.21 get the copy on their next check. If the drive can't hold hard links (FAT32 or exFAT), or a file was changed in place, there is no usable copy and the launcher asks for a download as before.
-
-## Downgrading through the Steam app
-
-The Steam console option uses the Steam app the player is already signed into. Steam doesn't let other programs start a depot download, so the launcher opens Steam's console (`steam://open/console`) and shows the three `download_depot 489830 <depot> <manifest>` lines with Copy buttons. Steam downloads each depot into `<Steam>/steamapps/content/app_489830/depot_<id>/`. The launcher watches those folders, and when all of them have been quiet for 10 seconds and the player clicks Install, it copies the files into the game folder, deletes the downloaded copy, and checks the version. The DepotDownloader options (Steam mobile app QR, or account name) stay as a fallback for when Steam isn't running.
 
 ## Crash reports
 
@@ -179,7 +167,6 @@ The launcher keeps a log at `%LOCALAPPDATA%\gg.aetherialdawn.launcher\logs\launc
 ## Known gaps
 
 - **Discord sign-in:** built to aetherial-dawn-discord/CONTRACT.md and tested against a stand-in service, not yet the live one. The file name of the game's remembered login (`auth-data-no-load.js`) is inferred from the SkyMP client source and needs checking on the first real test.
-- **Downgrader (Steam, not used by the app):** tested end to end with a stand-in for DepotDownloader, never against real Steam; nothing in the shipped launcher calls it. Players on non-Steam copies use the patch route.
 - **Game detection:** only Steam installs are found automatically. GOG and other installs use the folder picker.
 
 Fonts are Cinzel, Hanken Grotesk and JetBrains Mono, all under the SIL Open Font License.
@@ -200,6 +187,10 @@ Timothy (2026-09-26): the server will run a lot of mods. The launcher no longer 
 ```
 
 Other fields: `target` ("data", default, or "game" with `include` file names for files next to SkyrimSE.exe), `game_files` (names from a Data package that go next to SkyrimSE.exe instead), `fomod` (FOMOD option names to pick). A server entry with the same `id` replaces the built-in one. `check` paths must all exist for a mod to count as installed; entries without https sources or with unsafe paths are ignored.
+
+## Server-mods export (staff)
+
+When the server's `server-lane.json` names a staff member's Discord account, that PC downloads the listed pinned Nexus files in the background and zips them for the server (`src-tauri/src/export.rs`). It needs a Nexus Premium API key: staff paste it under **Settings > Staff: server-mod export**. The key is checked with Nexus, kept encrypted for the Windows user in the launcher's settings folder (`nexus.bin`), used only by the export, never logged and never shown again. Players never sign in to Nexus in the launcher.
 
 ## Menu music
 
