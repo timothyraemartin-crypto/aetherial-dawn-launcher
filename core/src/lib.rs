@@ -5,10 +5,12 @@
 pub mod aliases;
 pub mod allowlist;
 pub mod auth;
+pub mod atomicfile;
 pub mod bsa;
 pub mod camera;
 pub mod clientstatus;
 pub mod community;
+pub mod detach;
 pub mod downgrade;
 pub mod faces;
 pub mod feedsig;

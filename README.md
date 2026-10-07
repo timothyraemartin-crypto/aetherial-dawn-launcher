@@ -43,7 +43,9 @@ To cross-build the Windows installer from Linux, as used for the first test buil
 
 To test the file sync against any server, run `cargo run -p launcher-core --example sync -- <base-url> <skyrim-folder>`.
 
-## Game version check and downgrader
+## Game version check
+
+**Only the patch route ships.** The app players get fixes a wrong Skyrim build through "Patching the game instead of downloading it" below (plus a Steam "verify files" repair when the game is Steam's newest build). The Steam downgrader described in the rest of this section and in the sections after the patch route (`core/src/downgrade.rs`, `core/src/steamapp.rs`, Steam sign-in, the Steam console option) is still in the repo but no button or command calls it today.
 
 The server's `manifest.json` names the Skyrim build it needs (`game.version`, now 1.6.1170.0 with SKSE 2.2.6) and the Steam depot manifests for it. `core/src/version.rs` compares the player's SkyrimSE.exe, Steam's `appmanifest_489830.acf` and the launcher's own record. `core/src/downgrade.rs` fixes a mismatch by running DepotDownloader in its own window, where the player signs in with their own Steam account. The full format is in the spec.
 
@@ -177,14 +179,14 @@ The launcher keeps a log at `%LOCALAPPDATA%\gg.aetherialdawn.launcher\logs\launc
 ## Known gaps
 
 - **Discord sign-in:** built to aetherial-dawn-discord/CONTRACT.md and tested against a stand-in service, not yet the live one. The file name of the game's remembered login (`auth-data-no-load.js`) is inferred from the SkyMP client source and needs checking on the first real test.
-- **Downgrader:** tested end to end with a stand-in for DepotDownloader, not yet against real Steam. Players on non-Steam copies can't use it.
+- **Downgrader (Steam, not used by the app):** tested end to end with a stand-in for DepotDownloader, never against real Steam; nothing in the shipped launcher calls it. Players on non-Steam copies use the patch route.
 - **Game detection:** only Steam installs are found automatically. GOG and other installs use the folder picker.
 
 Fonts are Cinzel, Hanken Grotesk and JetBrains Mono, all under the SIL Open Font License.
 
-## Download all mods
+## Server mod list (mods.json)
 
-Timothy (2026-09-26): the server will run a lot of mods, so the launcher has one-click **Download all mods** (Mods page, and the screen Play shows when mods are missing). The list is `core/src/modlist.rs`'s built-in required mods, overlaid by the server's optional `<base>/mods.json`:
+Timothy (2026-09-26): the server will run a lot of mods. The launcher no longer downloads or installs them itself (the one-click "Download all mods" queue and its Nexus sign-in were removed as unreachable): Vortex installs them, and the Mods page shows what is present and opens each mod's Nexus page. The list is `core/src/modlist.rs`'s built-in required mods, overlaid by the server's optional `<base>/mods.json`:
 
 ```json
 {"mods": [
@@ -198,8 +200,6 @@ Timothy (2026-09-26): the server will run a lot of mods, so the launcher has one
 ```
 
 Other fields: `target` ("data", default, or "game" with `include` file names for files next to SkyrimSE.exe), `game_files` (names from a Data package that go next to SkyrimSE.exe instead), `fomod` (FOMOD option names to pick). A server entry with the same `id` replaces the built-in one. `check` paths must all exist for a mod to count as installed; entries without https sources or with unsafe paths are ignored.
-
-Players sign in with **Sign in with Nexus** (Nexus Mods' SSO for mod managers: wss://sso.nexusmods.com, protocol 2; the player clicks Authorise on nexusmods.com and Nexus sends their key back). SSO needs an application slug that only Nexus Mods staff issue; put it in the server's mods.json as `"nexus_app": "<slug>"` (or build with AD_NEXUS_APP) and the button appears, no launcher release needed. Until then the same button opens the player's own Nexus API keys page in their browser and signs them in when they copy their Personal API Key (clipboard text shaped like a key is checked with Nexus, kept encrypted, never logged, and cleared from the clipboard); the launcher never shows Nexus's login inside its own window. As a last fallback players can paste the key (kept DPAPI-encrypted in the launcher's settings folder, never logged). Premium members get every file from the Nexus API with one click; without a pinned `file`, the newest main file (or the one matching `pick`) is used, falling back to older files when a plugin is made for a newer Skyrim than the game's masters. Free members can't download without visiting Nexus: the launcher opens each mod's page in turn, holds the nxm:// handler (HKCU\Software\Classes\nxm) while it waits, catches the "Mod manager download" link through the single-instance hook, and gives nxm:// back to Vortex (or whoever had it) afterwards, even after a crash. Archives (zip, 7z; not RAR) are unpacked by the launcher: FOMOD installers are answered from `fomod` or their Required/Recommended options, otherwise the folder holding game data is found automatically. Installs are recorded in `<game>/.aetherial-dawn/mods/installed.json`. When Vortex manages Data, files already there are left alone; players' existing ini/toml/json settings are always kept.
 
 ## Menu music
 
