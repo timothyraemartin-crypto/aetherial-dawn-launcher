@@ -8,7 +8,7 @@ refs: ui/app.js, core/src/auth.rs, core/src/health.rs, core/src/serverorder.rs, 
 Read-only reviews on 2026-10-07; no code changed. Parts 2 and 3 are topics quality-reviews-2 and -3. Vortex has its own topic: topic vortex-extension-review. Unproven items say so.
 
 **Sign-in and health checks** (report: https://claude.ai/artifact/NXj5Tw5yRXcMddHcyNSqm1)
-- The launcher calls `/api/users/login-discord/token`, `/api/client-status`, `/api/crash-reports`; these exist on discord only on unmerged branches (e.g. triple-check-fixes), not main; discord draft PR #4 merges that branch. Which branch the live server runs is unknown. See discord memory `launcher-endpoints-unmerged`.
+- The launcher calls `/api/users/login-discord/token`, `/api/client-status`, `/api/crash-reports`; these exist on discord only on unmerged branches (e.g. triple-check-fixes), not main; discord draft PR #4 merges that branch. Confirmed 2026-10-07: the live server runs triple-check-fixes. See discord memory `launcher-endpoints-unmerged`.
 - Master-file check passes when the server gives no size or hash. Loopback listener serves one connection at a time. Network and report paths have thin tests. The `auth-data-no-load.js` name is an untested guess.
 
 **Plugin order matching** (launcher main 4fc172b; 27 serverorder/serverlane tests pass)
