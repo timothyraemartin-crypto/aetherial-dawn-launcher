@@ -143,10 +143,12 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          cargo build --locked --release -p launcher-core --no-default-features --bin canonical-plugins --target x86_64-unknown-linux-musl
+          cargo build --locked --release -p launcher-core --no-default-features --bin canonical-plugins --bin sign-feed --target x86_64-unknown-linux-musl
           mkdir dist
           cp target/x86_64-unknown-linux-musl/release/canonical-plugins dist/canonical-plugins-linux-x86_64
+          cp target/x86_64-unknown-linux-musl/release/sign-feed dist/sign-feed-linux-x86_64
           (cd dist && sha256sum canonical-plugins-linux-x86_64 | tee canonical-plugins-linux-x86_64.sha256)
+          (cd dist && sha256sum sign-feed-linux-x86_64 | tee sign-feed-linux-x86_64.sha256)
       - uses: actions/upload-artifact@v4
         with:
           name: canonical-plugins-linux-x86_64
@@ -214,6 +216,8 @@ jobs:
           test -s dist/latest.json
           test -s dist/canonical-plugins-linux-x86_64
           (cd dist && sha256sum -c canonical-plugins-linux-x86_64.sha256)
+          test -s dist/sign-feed-linux-x86_64
+          (cd dist && sha256sum -c sign-feed-linux-x86_64.sha256)
           cmp "dist/AetherialDawn-Launcher-$version-setup.exe" dist/AetherialDawn-Setup.exe
           VERSION="$version" node <<'NODE'
           const fs = require('node:fs');

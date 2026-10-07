@@ -11,6 +11,7 @@ pub mod clientstatus;
 pub mod community;
 pub mod downgrade;
 pub mod faces;
+pub mod feedsig;
 pub mod fetch;
 pub mod game;
 pub mod gameini;
@@ -57,6 +58,8 @@ pub enum Error {
     HashMismatch { path: String, expected: String, actual: String },
     #[error("The server hasn't published its game files yet.")]
     NotPublished,
+    #[error("The server's file can't be trusted: {0}")]
+    FeedSignature(String),
     #[error("{0}")]
     Game(String),
 }

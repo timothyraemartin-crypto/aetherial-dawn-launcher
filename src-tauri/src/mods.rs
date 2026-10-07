@@ -134,9 +134,13 @@ pub async fn server_list(state: &AppState) -> Option<modlist::ModList> {
 async fn fetch_server_list(state: &AppState) -> Option<modlist::ModList> {
     let base = state.config.lock().await.base_url.clone();
     let url = format!("{}/mods.json", base.trim_end_matches('/'));
-    let bytes = match state.http.get(&url).timeout(std::time::Duration::from_secs(8)).send().await {
-        Ok(r) if r.status().is_success() => r.bytes().await.ok(),
-        _ => None,
+    // Signature checked here (feedsig.rs): a changed or unsigned-after-signed list is not used.
+    let bytes = match launcher_core::feedsig::trust().fetch(&state.http, &base, launcher_core::feedsig::Feed::Mods, Some(std::time::Duration::from_secs(8))).await {
+        Ok(b) => Some(b),
+        Err(e) => {
+            log::line(&format!("mods: {url}: {e}"));
+            None
+        }
     };
     let got = bytes.as_ref().and_then(|b| serde_json::from_slice::<modlist::ModList>(b).ok().map(|l| (l, b)));
     let (l, b) = got?;

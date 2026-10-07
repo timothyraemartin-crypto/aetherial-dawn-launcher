@@ -335,6 +335,9 @@ async fn update(app: AppHandle, state: State<'_, AppState>, verify_all: bool) ->
     // A cached list can be obsolete by the time Update is pressed.
     let m = Manifest::fetch(&state.http, &base).await.map_err(err)?;
     let plan = sync::plan(&dir, &m, verify_all).await.map_err(err)?;
+    if !plan.kept.is_empty() {
+        log::line(&format!("update: the file list asks to remove files this launcher didn't install; left alone: {}", plan.kept.join(", ")));
+    }
     sync::apply(&state.http, &base, &dir, &plan, |p| {
         let _ = app.emit("sync-progress", p);
     })
@@ -2379,6 +2382,8 @@ fn main() {
         .setup(|app| {
             if let Ok(dir) = app.path().app_local_data_dir() {
                 log::init(dir.join("logs"));
+                // Remembers which server files came signed (feedsig.rs).
+                launcher_core::feedsig::init(&dir);
             }
             let config = load_config(app.handle());
             log::line(&format!(
