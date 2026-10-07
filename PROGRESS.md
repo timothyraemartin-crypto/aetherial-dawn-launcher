@@ -6,7 +6,7 @@ Build check (run by the Stop hook): `cargo check -p launcher-core --tests` when 
 ## Now
 - Draft PR #56: launcher/server contract CI (`contract/`, `contract.yml`, Rust sign-in test). Draft PR #57: dead code removal (download queue, Nexus sign-in/clipboard, cancel_mods, game_check, last_game_report); mods.rs 1352 -> 501 lines.
 Fix threads started 2026-10-07 from the review findings (see memory quality-reviews*; update/delete a finding when its fix merges):
-- plugins.txt data loss: fix in draft PR #54 (CI pending; not merged; untested on Windows)
+- plugins.txt data loss: fix in draft PR #54 (CI green, ready for review; not merged; real-game test on Windows still to do)
 - sign the server mods.json and manifest: draft PR #58 (CI pending; not merged; server steps for Timothy in memory signed-feeds)
 - src-tauri CI (tests, clippy, fmt)
 - remove dead launcher code (unreachable Download-all-mods queue)
