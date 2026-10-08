@@ -45,7 +45,7 @@ impl HashCache {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(path, serde_json::to_vec(self)?)?;
+        crate::atomicfile::write(&path, &serde_json::to_vec(self)?)?;
         Ok(())
     }
 

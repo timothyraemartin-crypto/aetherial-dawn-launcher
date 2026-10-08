@@ -161,7 +161,7 @@ fn save_config(app: &AppHandle, c: &Config) -> CmdResult<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    launcher_core::atomicfile::write(&path, &serde_json::to_vec_pretty(c).unwrap()).map_err(|e| e.to_string())
+    launcher_core::atomicfile::safe_write(&path, &serde_json::to_vec_pretty(c).unwrap()).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]

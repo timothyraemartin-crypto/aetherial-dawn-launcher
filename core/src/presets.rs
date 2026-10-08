@@ -42,7 +42,7 @@ fn save(game_dir: &Path, r: &Record) -> std::io::Result<()> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d)?;
     }
-    std::fs::write(p, serde_json::to_vec_pretty(r)?)
+    crate::atomicfile::write(&p, &serde_json::to_vec_pretty(r)?)
 }
 
 /// A served path that stays inside Data and names a settings file.
