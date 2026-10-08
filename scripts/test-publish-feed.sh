@@ -88,4 +88,10 @@ echo "$out" | grep -q "Entries without sha256: local pinned nothex" || { echo "F
 rm -f "$T/root/mods.json.sig" "$T/root/client/manifest.json.sig"
 SIGN_FEED= "$here/publish-feed.sh" --pin-only >/dev/null || { echo "FAIL: --pin-only should repair short pins"; exit 1; }
 jq -e '[.mods[] | select(.url != null and .nexus == null) | .sha256 | test("^[0-9a-fA-F]{64}$")] | all' "$T/root/mods.json" >/dev/null || { echo "FAIL: --pin-only left an invalid sha256"; exit 1; }
+# A nexus entry with a `file` and a short sha256 is dropped by the launcher, so --check must name it.
+fresh; jq '.mods[0].sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" | .mods[2].file="Data/x.ini" | .mods[2].sha256="abc123"' "$T/root/mods.json" > "$T/m" && mv "$T/m" "$T/root/mods.json"
+out=$(SIGN_FEED= "$here/publish-feed.sh" --check 2>&1) && { echo "FAIL: --check should flag the nexus entry with a short sha256"; exit 1; }
+echo "$out" | grep -q "no full sha256 (the launcher drops them): nx" || { echo "FAIL: nexus file entry not named: $out"; exit 1; }
+jq '.mods[2].sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$T/root/mods.json" > "$T/m" && mv "$T/m" "$T/root/mods.json"
+out=$(SIGN_FEED= "$here/publish-feed.sh" --check 2>&1) || { echo "FAIL: a full sha256 on the file entry should pass: $out"; exit 1; }
 echo "publish-feed test ok"
