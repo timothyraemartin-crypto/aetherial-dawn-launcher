@@ -15,6 +15,8 @@ const PROTECTED = ['.github/', 'deploy/', '.claude/', 'package.json', 'package-l
 const DEPLOY = { 'aetherial-dawn-ingame-ui': { test: 'test.yml', deploy: 'deploy-server.yml', inputs: { apply: 'true' } },
   'aetherial-dawn-discord': { test: 'test.yml', deploy: 'deploy-server.yml', inputs: { ref: 'main' } } };
 const MIN_AGE_MS = 3 * 60_000;
+const RETRY_MS = 2 * 3_600_000;
+const TRANSIENT = /^(CI is still running|The fix was pushed minutes ago)/;
 
 const touched = (names) => names.filter((n) => PROTECTED.some((p) => (p.endsWith('/') ? n.startsWith(p) : n === p || n.endsWith(`/${p}`))));
 const labelsOf = (o) => (o.labels || []).map((l) => l.name);
@@ -54,7 +56,13 @@ async function run({ gh, bot, graphql, repo, dry = false, log = console.log, now
   const asked = await gh('GET', `/issues?labels=${ASKED}&state=open&per_page=30`);
   const ready = await gh('GET', `/issues?labels=${READY}&state=open&per_page=30`);
   const prs = [...ready, ...asked].filter((x) => x.pull_request).filter((x, i, a) => a.findIndex((y) => y.number === x.number) === i);
-  if (!prs.length) { log('no auto-fix pull requests; nothing to do'); return; }
+  if (!prs.length) {
+    log('no auto-fix pull requests; nothing to do');
+    if (dry) { // a manual check: one read-only call proves the SSH login, sudo, the token and the bot's route
+      try { const { decisions } = bot('GET', '/internal/autofix/decisions'); log(`bot reachable; ${decisions.length} pending decision(s)`); } catch (e) { if (e.code === 'not_found') log('auto-fix is not switched on in the bot'); else throw e; }
+    }
+    return;
+  }
 
   try {
     // Ask about every labelled pull request. The bot ignores one it already asked about at the same commit and
@@ -115,7 +123,13 @@ async function decide({ gh, bot, graphql, repo, dry, log, now, addLabel, removeL
       if (!pull.head.sha.toLowerCase().startsWith(d.sha.toLowerCase())) { report('refused', 'The pull request changed after you were asked. A new question follows within minutes.'); continue; }
       const files = await gh('GET', `/pulls/${d.number}/files?per_page=100`);
       const why = await gate(gh, pull, files, now);
-      if (why) { report('refused', why); continue; }
+      if (why) {
+        // Only waiting for CI is not a refusal: leave the decision pending and look again next run, for the same
+        // commit (the sha check above still guards it), for up to two hours.
+        if (TRANSIENT.test(why) && now() - (d.at || 0) < RETRY_MS) { log(`${d.key}: ${why} Trying again next run.`); continue; }
+        report('refused', why);
+        continue;
+      }
       if (dry) { log(`${d.key}: would merge ${pull.head.sha.slice(0, 7)}`); continue; }
       if (pull.draft) await graphql('mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}', { id: pull.node_id });
       await gh('PUT', `/pulls/${d.number}/merge`, { sha: pull.head.sha, merge_method: 'merge' });
