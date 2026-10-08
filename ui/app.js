@@ -78,7 +78,7 @@
     hint.hidden = false;
     hint.style.visibility = $('play-wrap').dataset.state === 'ready' ? 'visible' : 'hidden';
   }
-  function markHintSeen() { try { localStorage.setItem(HINT_KEY, '1'); } catch (_) {} showHint(); if ($('setup')) $('setup').hidden = true; }
+  function markHintSeen() { try { localStorage.setItem(HINT_KEY, '1'); } catch (_) {} showHint(); setupWanted = false; applySetup(); }
   let statusMsg = null;
   function setStatus(msg, isError) {
     statusMsg = msg ? { msg, isError } : null;
@@ -137,6 +137,7 @@
     $('nav-settings').removeAttribute('aria-current');
     $('news-box').hidden = p !== 'home';
     $('tagline').hidden = p !== 'home';
+    applySetup();
     if (p === 'mods') loadFiles();
   }
   function showSheet(id) {
@@ -394,15 +395,18 @@
   let helperWarning = null;
   // The first-run checklist on Home: shown until the player has started the
   // game once, or while every step is done there is nothing to show.
-  let setupSeq = 0;
+  let setupSeq = 0, setupWanted = false;
+  // The checklist belongs to Home only.
+  function applySetup() { const box = $('setup'); if (box) box.hidden = !(setupWanted && page === 'home'); }
   async function refreshSetup() {
     const box = $('setup'), seq = ++setupSeq;
-    if (!box || hintSeen()) { if (box) box.hidden = true; return; }
+    if (!box || hintSeen()) { setupWanted = false; applySetup(); return; }
     const steps = await invoke('setup_state').catch(() => null);
     if (seq !== setupSeq) return;
-    if (!Array.isArray(steps) || steps.every(s => s.done)) { box.hidden = true; return; }
+    if (!Array.isArray(steps) || steps.every(s => s.done)) { setupWanted = false; applySetup(); return; }
     $('setup-list').innerHTML = steps.map(s => `<li class="${s.done ? 'done' : 'todo'}"><i aria-hidden="true"></i><b>${esc(s.title)}${s.done ? ' (done)' : ''}</b><small>${esc(s.hint)}</small></li>`).join('');
-    box.hidden = false;
+    setupWanted = true;
+    applySetup();
   }
   function ready() {
     refreshSetup();

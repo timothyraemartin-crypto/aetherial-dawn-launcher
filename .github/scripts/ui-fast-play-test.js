@@ -125,6 +125,7 @@ function fakeBackEnd() {
       if (action.kind === 'open') document.getElementById(action.id).open = true;
       if (action.kind === 'focus') document.getElementById(action.id).focus();
       if (action.kind === 'key') document.dispatchEvent(new KeyboardEvent('keydown', { key: action.key, shiftKey: !!action.shiftKey, bubbles: true, cancelable: true }));
+      (log.setupHidden ||= []).push(document.getElementById('setup').hidden);
       log.actions.push([at(), action.kind, action.id || action.name || action.key, document.activeElement && document.activeElement.id]);
     }, action.at);
     setTimeout(() => {
@@ -203,6 +204,11 @@ const scenarios = [
     { id: 'signin', title: 'Sign in with Discord', hint: 'Press Sign in.', done: false } ], end: 4000 }, expect: r => [
     ['the checklist is shown with each step', !!r.setup && r.setup.length === 3],
     ['done steps are marked and open ones are not', !!r.setup && r.setup[0].startsWith('done:') && r.setup[1].startsWith('todo:') && r.setup[2].startsWith('todo:')],
+  ] },
+  { name: 'setup checklist: only on Home, back when the player returns', s: { ...base, clicks: [], setup: [{ id: 'skse', title: 'SKSE is installed', hint: 'Press Play.', done: false }], end: 5000,
+    actions: [{ kind: 'click', id: 'nav-server', at: 3000 }, { kind: 'click', id: 'nav-mods', at: 3300 }, { kind: 'click', id: 'nav-news', at: 3600 }, { kind: 'click', id: 'nav-home', at: 4200 }, { kind: 'click', id: 'nav-home', at: 4300 }] }, expect: r => [
+    ['the checklist is hidden on the Server, Mods and News pages', r.setupHidden.slice(0, 3).every(h => h === true)],
+    ['it is back on Home', !!r.setup && r.setup.length === 1],
   ] },
   { name: 'setup checklist: hidden once the game has been started before', s: { ...base, clicks: [], hintSeen: true, setup: [{ id: 'skse', title: 'SKSE is installed', hint: 'Press Play.', done: false }], end: 4000 }, expect: r => [
     ['the checklist is not shown', r.setup === null],
