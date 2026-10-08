@@ -183,7 +183,7 @@ mod tests {
     use crate::manifest::Depot;
 
     fn spec() -> GameSpec {
-        GameSpec { version: Some("1.6.1170.0".into()), skse_version: None, app: 489830, depots: vec![Depot { depot: 489831, manifest: "1".into() }], tool: None }
+        GameSpec { version: Some("1.6.1170.0".into()), skse_version: None, app: 489830, depots: vec![Depot { depot: 489831, manifest: "1".into() }] }
     }
 
     #[test]

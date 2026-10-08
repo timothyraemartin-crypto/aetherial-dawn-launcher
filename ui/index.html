@@ -289,6 +289,14 @@
         <div class="line" id="aside-line"><small id="aside-note">Nothing has been set aside.</small><button class="btn" id="aside-restore">Put my other mods back</button></div>
       </div>
       <div class="field">
+        <details id="xk">
+          <summary>Staff: server-mod export</summary>
+          <small class="note">Only for staff whose PC the server lists for the export. Paste a Nexus Premium API key (Nexus account, API keys page). It is checked with Nexus, kept encrypted on this PC, used only by the export and never shown again.</small>
+          <div class="line"><input id="xk-key" type="password" autocomplete="off" spellcheck="false" placeholder="Nexus API key" aria-label="Nexus API key"><button class="btn" id="xk-save">Save key</button><button class="btn" id="xk-forget" hidden>Remove key</button></div>
+          <small class="note" id="xk-note" role="status"></small>
+        </details>
+      </div>
+      <div class="field">
         <label>Problems?</label>
         <div class="line"><button class="btn" id="set-health">Check my game</button><button class="btn" id="set-diag">Copy diagnostics</button><button class="btn" id="set-logs">Open log folder</button></div>
         <small class="note" id="set-diag-note" hidden></small>

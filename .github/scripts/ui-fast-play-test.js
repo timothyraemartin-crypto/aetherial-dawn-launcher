@@ -50,8 +50,10 @@ function fakeBackEnd() {
     game_running: () => !!S.outsideGame,
     self_update_begin: () => !S.updateReservationFails,
     self_update_end: () => null,
-    mods_state: () => Object.assign({ mods: [], nexus: null, vortex: true, vortex_ready: true, vortex_paired: true, running: false, sso: false }, S.modsState || {}),
-    download_all_mods: () => ({ installed: [], failed: [], cancelled: false }),
+    mods_state: () => Object.assign({ mods: [], vortex: true, vortex_ready: true, vortex_paired: true }, S.modsState || {}),
+    export_key_saved: () => !!S.keySaved,
+    export_key_save: a => { log.keySent = a.key; S.keySaved = true; return 'Saved for Staffer (Premium).'; },
+    export_key_forget: () => { S.keySaved = false; return null; },
     plain_error: a => a.text,
     auth_begin: () => 'st',
     // S.signIn: when the launcher has the answer, and an error each poll gives.
@@ -70,6 +72,7 @@ function fakeBackEnd() {
         if (cmd === 'server_status' && S.statusNow === 'down') return rej('no answer');
         if (cmd === 'auth_status' && S.authFails) return rej('network down');
         if (cmd === 'game_running' && (S.gameCheckFails || (S.gameCheckFailsFrom && (S.gameChecks = (S.gameChecks || 0) + 1) >= S.gameCheckFailsFrom))) return rej('process list unavailable');
+        if (cmd === 'export_key_save' && S.keyError) { log.keySent = args.key; return rej(S.keyError); }
         if (cmd === 'set_game_dir' && S.setDirError) return rej(S.setDirError);
         if (cmd === 'set_game_dir' && S.picks && S.picks.find(p => p.dir === args.dir && p.error)) return rej(S.picks.find(p => p.dir === args.dir).error);
         if (cmd === 'play' && S.playError && !S.played) { S.played = true; return rej(S.playError); }
@@ -119,6 +122,8 @@ function fakeBackEnd() {
       if (action.kind === 'click') document.getElementById(action.id).click();
       if (action.kind === 'event') for (const callback of listeners[action.name] || []) callback({ payload: action.payload });
       if (action.kind === 'status') S.statusNow = action.value;
+      if (action.kind === 'type') document.getElementById(action.id).value = action.text;
+      if (action.kind === 'open') document.getElementById(action.id).open = true;
       if (action.kind === 'focus') document.getElementById(action.id).focus();
       if (action.kind === 'key') document.dispatchEvent(new KeyboardEvent('keydown', { key: action.key, shiftKey: !!action.shiftKey, bubbles: true, cancelable: true }));
       log.actions.push([at(), action.kind, action.id || action.name || action.key, document.activeElement && document.activeElement.id]);
@@ -172,6 +177,7 @@ function fakeBackEnd() {
       const rect = sel => { const b = document.querySelector(sel).getBoundingClientRect(); return [Math.round(b.top), Math.round(b.bottom)]; };
       log.layout = { height: document.querySelector('.app').offsetHeight, width: document.querySelector('.app').offsetWidth, titlebar: rect('.titlebar'), dock: rect('.dock'), play: rect('#play') };
       log.signInError = document.getElementById('si-error').hidden ? null : document.getElementById('si-error').textContent;
+      log.xk = { note: document.getElementById('xk-note').textContent, forget: !document.getElementById('xk-forget').hidden, field: document.getElementById('xk-key').value, type: document.getElementById('xk-key').type };
       log.me = document.getElementById('me').hidden ? null : document.getElementById('me-name').textContent;
       const pre = document.createElement('pre');
       pre.id = 'ui-test-result';
@@ -531,6 +537,19 @@ const scenarios = [
     ['Settings closes', r.modal === null],
     ['focus returns to Settings button', r.focus === 'nav-settings', r.focus],
     ['background navigation is active again', !r.navInert],
+  ] },
+  { name: 'staff Nexus key: saved, shown only as saved, field cleared, Remove offered', s: { ...base, clicks: [], actions: [
+      { at: 1500, kind: 'open', id: 'xk' }, { at: 1800, kind: 'type', id: 'xk-key', text: 'abcDEF123+/=abcDEF123+/=abcDEF123--xyz--QQ==' }, { at: 2000, kind: 'click', id: 'xk-save' }] }, expect: r => [
+    ['the key goes to the launcher once', r.keySent === 'abcDEF123+/=abcDEF123+/=abcDEF123--xyz--QQ=='],
+    ['the page names the account', r.xk.note === 'Saved for Staffer (Premium).', r.xk.note],
+    ['the key is not left in the field or the note', r.xk.field === '' && !r.xk.note.includes('abcDEF')],
+    ['the field hides what is typed', r.xk.type === 'password'],
+    ['Remove key is offered', r.xk.forget === true],
+  ] },
+  { name: 'staff Nexus key: a refused key says why and is not saved', s: { ...base, clicks: [], keyError: 'Nexus Mods didn\'t accept the API key', actions: [
+      { at: 1500, kind: 'open', id: 'xk' }, { at: 1800, kind: 'type', id: 'xk-key', text: 'abcDEF123+/=abcDEF123+/=abcDEF123--xyz--QQ==' }, { at: 2000, kind: 'click', id: 'xk-save' }] }, expect: r => [
+    ['the note gives the reason', r.xk.note === 'Nexus Mods didn\'t accept the API key', r.xk.note],
+    ['Remove key stays hidden', r.xk.forget === false],
   ] },
 ];
 
