@@ -145,6 +145,16 @@ function fakeBackEnd() {
       log.steps = { first: stepsOf('first'), signin: stepsOf('signin') };
       log.siAfter = document.querySelector('#signin .panel').getBoundingClientRect().height;
       { const o = document.querySelector('#signin .steps'); const l = o && o.children; log.stepColors = l ? { other: getComputedStyle(l[2]).color, now: getComputedStyle(l[1]).color, muted: getComputedStyle(document.documentElement).getPropertyValue('--muted').trim() } : null; log.slotRole = (document.querySelector('#signin .si-slot') || {}).getAttribute ? document.querySelector('#signin .si-slot').getAttribute('role') : null; }
+      if (S.jank) {
+        const wrap = document.getElementById('play-wrap'), top = () => Math.round(wrap.getBoundingClientRect().top * 10) / 10;
+        const ids = ['play-hint', 'whatsnew', 'play-gate', 'progress', 'setup'];
+        const before = ids.map(i => document.getElementById(i)).filter(Boolean).map(el => [el, el.hidden]);
+        before.forEach(([el]) => { el.hidden = true; });
+        const base0 = top();
+        log.jank = { base: base0 };
+        for (const [el, was] of before) { el.hidden = false; log.jank[el.id] = Math.round((top() - base0) * 10) / 10; el.hidden = true; }
+        before.forEach(([el, was]) => { el.hidden = was; });
+      }
       log.siGoLabel = document.getElementById('si-go').textContent.trim();
       log.siGoDisabled = document.getElementById('si-go').disabled;
       log.status = document.getElementById('status').textContent;
@@ -809,6 +819,7 @@ scenarios.push({ name: 'Settings: screen readers hear Saved politely and a failu
 
 const chrome = findChrome();
 let failed = 0;
+scenarios.push({ name: 'Home: optional rows do not move the Play button', s: { ...base, clicks: [], jank: true, end: 3000 }, expect: r => Object.entries(r.jank).filter(([k]) => k !== 'base').map(([k, d]) => [`showing ${k} moves Play by ${d}px`, Math.abs(d) < 1, String(d)]) });
 for (const sc of scenarios) {
   if (process.env.AD_UI_SCENARIO && !sc.name.includes(process.env.AD_UI_SCENARIO)) continue;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-ui-'));

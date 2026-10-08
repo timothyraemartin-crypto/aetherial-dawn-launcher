@@ -123,16 +123,7 @@
         <div class="bar" id="p-progress" role="progressbar" aria-label="Game file update progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="p-bar"></i></div>
         <div class="prow"><span class="file" id="p-file"></span><span id="p-speed"></span></div>
       </div>
-      <div class="play-wrap off" id="play-wrap">
-        <button class="play" id="play" disabled>
-          <span id="play-label">CHECKING</span>
-          <svg class="play-frame" viewBox="0 0 360 72" preserveAspectRatio="none" aria-hidden="true">
-            <path d="M20.5 1.5H339.5L358 36L339.5 70.5H20.5L2 36Z"/>
-            <path class="inner" d="M24 6H336L351 36L336 66H24L9 36Z"/>
-          </svg>
-        </button>
-      </div>
-      <p class="play-hint" id="play-hint" hidden>In game, press F3 for the menu.</p>
+      <!-- Rows above Play grow upward; the dock is anchored to the bottom, so Play never moves when they show. -->
       <details class="whatsnew" id="whatsnew" hidden>
         <summary>What's new</summary>
         <ul id="whatsnew-list"></ul>
@@ -145,9 +136,21 @@
           <button class="linkish" id="gate-cancel" type="button">Cancel</button>
         </div>
       </div>
+      <div class="play-wrap off" id="play-wrap">
+        <button class="play" id="play" disabled>
+          <span id="play-label">CHECKING</span>
+          <svg class="play-frame" viewBox="0 0 360 72" preserveAspectRatio="none" aria-hidden="true">
+            <path d="M20.5 1.5H339.5L358 36L339.5 70.5H20.5L2 36Z"/>
+            <path class="inner" d="M24 6H336L351 36L336 66H24L9 36Z"/>
+          </svg>
+        </button>
+      </div>
+      <div class="play-below">
+      <p class="play-hint" id="play-hint" hidden>In game, press F3 for the menu.</p>
       <div class="status" id="status"><span>Checking for updates…</span></div>
       <!-- What screen readers announce: only the launcher's own messages, not the player count refreshed every 30 s. -->
       <div class="sr-only" id="status-live" role="status" aria-live="polite"></div>
+      </div>
     </div>
   </div>
 
