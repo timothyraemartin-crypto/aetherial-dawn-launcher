@@ -161,6 +161,8 @@ function fakeBackEnd() {
       log.vortexConnect = !document.getElementById('rq-vortex-connect').hidden;
       log.installerControl = !!document.querySelector('#rq-all, #rq-stop, #rq-sso-go, #rq-signin');
       log.playDisabled = btn.disabled;
+      const wn = document.getElementById('whatsnew');
+      log.whatsNew = wn.hidden ? null : { lines: [...document.querySelectorAll('#whatsnew-list li')].map(li => li.textContent), open: wn.open };
       log.modal = [...document.querySelectorAll('.sheet')].find(el => !el.hidden)?.id || null;
       log.navInert = document.getElementById('nav-home').closest('.nav').inert;
       log.titlebarInert = document.querySelector('.titlebar').inert;
@@ -194,6 +196,16 @@ const firstLabel = (r, text) => (r.labels.find(l => l[1] === text) || [null])[0]
 const lastLabel = r => r.labels[r.labels.length - 1][1];
 
 const scenarios = [
+  { name: 'update available: the notes are listed under the update, closed, with no dialog', s: { ...base, clicks: [], check: { files: 2, bytes: 5000000, notes: ['New tavern in Whiterun', 'Fixed <b>crash</b> at the docks'] }, end: 4000 }, expect: r => [
+    ['the lines are listed', !!r.whatsNew && r.whatsNew.lines.length === 2 && r.whatsNew.lines[0] === 'New tavern in Whiterun'],
+    ['markup in a note is shown as text', !!r.whatsNew && r.whatsNew.lines[1].includes('<b>crash</b>')],
+    ['it starts closed', !!r.whatsNew && r.whatsNew.open === false],
+    ['no sheet or dialog is open', r.modal === null],
+    ['the button offers UPDATE', lastLabel(r) === 'UPDATE'],
+  ] },
+  { name: 'no update: the notes are not shown', s: { ...base, clicks: [], check: { files: 0, notes: ['Old note'] }, end: 4000 }, expect: r => [
+    ['it is hidden', r.whatsNew === null],
+  ] },
   { name: 'returning player: Play waits for fresh game, Discord and Vortex checks', s: base, expect: r => [
     ['PLAY is not enabled before fresh checks answer', firstLabel(r, 'PLAY') !== null && firstLabel(r, 'PLAY') >= Math.max(answeredAt(r, 'auth_status'), answeredAt(r, 'check'), answeredAt(r, 'mods_state'))],
     ['the game starts once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],

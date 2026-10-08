@@ -276,6 +276,7 @@ mod tests {
             files,
             remove,
             game: None,
+            notes: vec![],
         }
     }
 
