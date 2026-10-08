@@ -16,15 +16,17 @@ const chrome = [process.argv[2], process.env.CHROME,
   .filter(Boolean).find(c => fs.existsSync(c));
 if (!chrome) { console.error('no Chrome found; pass its path'); process.exit(1); }
 
+// The stylesheet is inlined: a file:// link breaks when the temp folder and the repo are on different drives.
+const css = fs.readFileSync(path.join(UI, 'style.css'), 'utf8');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-motion-'));
 const page = path.join(dir, 'page.html');
-fs.writeFileSync(page, `<!doctype html><html><head><link rel="stylesheet" href="file:///${UI.replace(/\\/g, '/').replace(/^\//, '')}/style.css"></head><body>
+fs.writeFileSync(page, `<!doctype html><html><head><style>${css}</style></head><body>
 <div class="app"><section class="page" id="pg"></section><div class="sheet" id="sh"><div class="panel" id="pn"></div></div>
 <div class="sheet" id="hid" hidden><div class="panel" id="hpn"></div></div></div>
 <script>
   window.addEventListener('load', () => {
     const name = id => getComputedStyle(document.getElementById(id)).animationName;
-    const out = { page: name('pg'), sheet: name('sh'), panel: name('pn'), hiddenSheet: getComputedStyle(document.getElementById('hid')).display };
+    const out = { page: name('pg'), sheet: name('sh'), panel: name('pn'), rules: document.styleSheets[0] ? document.styleSheets[0].cssRules.length : 0, hiddenSheet: getComputedStyle(document.getElementById('hid')).display };
     const pre = document.createElement('pre'); pre.id = 'r'; pre.textContent = JSON.stringify(out); document.body.appendChild(pre);
   });
 </script></body></html>`);
@@ -38,6 +40,7 @@ const normal = run([]);
 const reduced = run(['--force-prefers-reduced-motion']);
 
 const checks = [
+  ['the stylesheet loaded', normal.rules > 50],
   ['a page animates in', normal.page !== 'none'],
   ['a sheet fades in', normal.sheet !== 'none'],
   ['a sheet panel rises in', normal.panel !== 'none'],
