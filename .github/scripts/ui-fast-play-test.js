@@ -168,6 +168,7 @@ function fakeBackEnd() {
       const wn = document.getElementById('whatsnew');
       log.whatsNew = wn.hidden ? null : { lines: [...document.querySelectorAll('#whatsnew-list li')].map(li => li.textContent), open: wn.open };
       const setupBox = document.getElementById('setup');
+      { const b = setupBox.getBoundingClientRect(); log.setupInView = !setupBox.hidden && b.width > 100 && b.left >= 0 && b.top >= 0 && b.right <= innerWidth && b.bottom <= innerHeight; log.setupClear = !setupBox.hidden && document.elementFromPoint(b.left + 20, b.top + 20)?.closest('#setup') !== null; }
       log.setup = setupBox.hidden ? null : [...document.querySelectorAll('#setup-list li')].map(li => li.className + ':' + li.querySelector('b').textContent);
       const gate = document.getElementById('play-gate');
       log.gate = gate.hidden ? null : { msg: document.getElementById('play-gate-msg').textContent, anyway: !document.getElementById('gate-anyway').hidden, wait: !document.getElementById('gate-wait').hidden };
@@ -224,6 +225,7 @@ const scenarios = [
     { id: 'skse', title: 'SKSE is installed', hint: 'Press Play.', done: false },
     { id: 'signin', title: 'Sign in with Discord', hint: 'Press Sign in.', done: false } ], end: 4000 }, expect: r => [
     ['the checklist is shown with each step', !!r.setup && r.setup.length === 3],
+    ['the box sits inside the window, not behind other parts', r.setupInView === true && r.setupClear === true],
     ['done steps are marked and open ones are not', !!r.setup && r.setup[0].startsWith('done:') && r.setup[1].startsWith('todo:') && r.setup[2].startsWith('todo:')],
   ] },
   { name: 'setup checklist: only on Home, back when the player returns', s: { ...base, clicks: [], setup: [{ id: 'skse', title: 'SKSE is installed', hint: 'Press Play.', done: false }], end: 5000,
