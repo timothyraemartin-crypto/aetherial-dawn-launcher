@@ -440,6 +440,8 @@
   }
   function ready() {
     refreshSetup();
+    // Home's character card on a normal start (showPage only runs it on a page change).
+    if (page === 'home') loadCharCard();
     // Only a current check or a completed update can claim file readiness.
     if (!pending || pending.files || pending.remove) {
       setPlay('retry', 'RECHECK');
