@@ -349,6 +349,9 @@
     $('progress').hidden = false;
     $('p-progress').setAttribute('aria-valuenow', '0');
     let last = { t: performance.now(), b: 0 }, speed = 0;
+    const began = last.t;
+    let lastEvent = began;
+    const stallTimer = setInterval(() => { if (performance.now() - lastEvent > 3000) $('p-speed').textContent = 'Waiting for the server…'; }, 1000);
     const off = await T.event.listen('sync-progress', ({ payload: p }) => {
       const pct = p.bytesTotal ? (p.bytesDone / p.bytesTotal) * 100 : 100;
       $('p-bar').style.width = pct.toFixed(1) + '%';
@@ -357,12 +360,16 @@
       $('p-file').textContent = p.file ? p.file.split(/[\\/]/).pop() : 'All files match the server';
       $('p-file').title = p.file || '';
       const now = performance.now();
+      lastEvent = now;
       if (now - last.t > 500) {
         const rate = ((p.bytesDone - last.b) / (now - last.t)) * 1000;
-        // Smoothed so the time left doesn't jump around with every burst.
-        speed = speed ? speed * 0.6 + rate * 0.4 : rate;
+        // Weighted by time, so a long gap counts for more than a burst of quick events.
+        const alpha = 1 - Math.exp(-(now - last.t) / 5000);
+        speed = speed ? speed + alpha * (rate - speed) : rate;
         const left = speed > 0 && p.bytesTotal > p.bytesDone ? (p.bytesTotal - p.bytesDone) / speed : 0;
-        $('p-speed').textContent = mb(speed) + '/s' + (left > 0 ? ` · about ${timeLeft(left)} left` : '');
+        // Not a guess before three seconds of samples.
+        const guess = left > 0 && now - began >= 3000 ? ` · ${left > 99 * 60 ? 'over 99 min' : 'about ' + timeLeft(left)} left` : '';
+        $('p-speed').textContent = mb(speed) + '/s' + guess;
         last = { t: now, b: p.bytesDone };
       }
     });
@@ -378,6 +385,7 @@
       pending = null;
     } finally {
       off();
+      clearInterval(stallTimer);
       $('progress').hidden = true;
       busy = false;
     }
