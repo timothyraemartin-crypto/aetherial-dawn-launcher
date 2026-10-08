@@ -288,6 +288,11 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 @keyframes ready-glow { 0%, 100% { opacity: .15; } 50% { opacity: .7; } }
 @keyframes play-shimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }
 
+/* ---------- error line ---------- */
+.status .error::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: var(--warn); vertical-align: 1px; }
+.btn.small { height: 26px; padding: 0 10px; font-size: 12px; }
+.status .btn.small + span::before, .status span + .btn.small { margin-left: 2px; }
+
 @media (max-width: 1240px) { .about { display: none; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 /* With the background moving, live blur behind panels would be re-rendered every frame; use solid glass instead. */

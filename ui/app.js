@@ -89,7 +89,13 @@
   let toolRunning = false;
   function renderStatus() {
     const parts = [];
-    if (statusMsg) parts.push(`<span${statusMsg.isError ? ' class="error"' : ''}>${esc(statusMsg.msg)}</span>`);
+    if (statusMsg) {
+      // An error that ends in the help line shows the message plus one button, instead of the paragraph of steps.
+      const help = statusMsg.isError && statusMsg.msg.endsWith(HELP);
+      const text = help ? statusMsg.msg.slice(0, -HELP.length) : statusMsg.msg;
+      parts.push(`<span${statusMsg.isError ? ' class="error"' : ''}>${esc(text)}</span>`);
+      if (help) parts.push('<button class="btn small" id="status-copy">Copy details for staff</button>');
+    }
     else {
       // Only a current /health answer can claim the server is online.
       const st = status;
@@ -1206,6 +1212,14 @@
     else renderStatus();
   });
   $('status').addEventListener('click', e => {
+    if (e.target && e.target.id === 'status-copy') {
+      const base = statusMsg ? statusMsg.msg.replace(HELP, '') : '';
+      e.target.disabled = true;
+      invoke('diagnostics').then(text => Promise.race([navigator.clipboard.writeText(text), new Promise((_, no) => setTimeout(() => no(new Error('clipboard timeout')), 2000))]))
+        .then(() => setStatus(`${base} Copied. Paste it in Discord (Ctrl+V).`, true),
+          () => setStatus(`${base} Couldn't copy automatically. Open Settings, then Open log folder, and send launcher.log to staff.`, true));
+      return;
+    }
     if (e.target && e.target.id === 'tool-skip') {
       e.target.disabled = true;
       invoke('skip_tool').catch(() => {});

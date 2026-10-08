@@ -76,6 +76,8 @@ function fakeBackEnd() {
         if (cmd === 'export_key_save' && S.keyError) { log.keySent = args.key; return rej(S.keyError); }
         if (cmd === 'set_game_dir' && S.setDirError) return rej(S.setDirError);
         if (cmd === 'set_game_dir' && S.picks && S.picks.find(p => p.dir === args.dir && p.error)) return rej(S.picks.find(p => p.dir === args.dir).error);
+        if (cmd === 'update' && S.updateError) return rej(S.updateError);
+        if (cmd === 'diagnostics') return res('diagnostics text');
         if (cmd === 'play' && S.playError && !S.played) { S.played = true; return rej(S.playError); }
         res(answers[cmd] ? answers[cmd](args || {}) : null);
       }, pickDelay || (delay[cmd] ?? delay.default));
@@ -148,6 +150,7 @@ function fakeBackEnd() {
       try { log.hintStored = localStorage.getItem('ad.f3hint'); } catch (_) {}
       log.progress = { file: document.getElementById('p-file').textContent, speed: document.getElementById('p-speed').textContent, num: document.getElementById('p-num').textContent };
       log.readyAnim = getComputedStyle(document.getElementById('play-wrap')).animationName;
+      log.statusUi = { text: status.textContent, copy: !!document.getElementById('status-copy'), errorClass: !!document.querySelector('#status .error') };
       log.gameRow = document.querySelector('#c-game small').textContent;
       const join = document.getElementById('si-join');
       log.join = join.hidden ? null : join.textContent;
@@ -671,6 +674,18 @@ scenarios.push({ name: 'download progress: no news for 3 s says it is waiting fo
 ] });
 scenarios.push({ name: 'Play ready glow animates opacity or transform only, so hover still brightens it', s: { ...base, clicks: [] }, expect: r => [
   ['the ready state does not animate a filter on the wrapper', r.readyAnim === 'none' || r.readyAnim === null, String(r.readyAnim)],
+] });
+
+scenarios.push({ name: 'errors: a failed update says what happened and offers Copy details, not a paragraph of steps', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, updateError: 'disk is full', end: 5000 }, expect: r => [
+  ['the message says what stopped and what to click', /The game file update stopped: disk is full\. Click Retry\./.test(r.statusUi.text), JSON.stringify(r.statusUi.text)],
+  ['the long "open Settings" instructions are gone', !/open Settings/.test(r.statusUi.text), JSON.stringify(r.statusUi.text)],
+  ['a Copy details button is there', r.statusUi.copy],
+] });
+scenarios.push({ name: 'errors: Copy details copies the diagnostics and says so', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, updateError: 'disk is full', end: 7500, actions: [{ at: 3000, kind: 'click', id: 'status-copy' }] }, expect: r => [
+  ['the line confirms the copy (or says how to send the log if the clipboard is blocked)', /Copied\.|Couldn't copy/.test(r.statusUi.text), JSON.stringify(r.statusUi.text)],
+] });
+scenarios.push({ name: 'errors: a normal status line has no Copy details button', s: { ...base, clicks: [] }, expect: r => [
+  ['no button on a healthy status', !r.statusUi.copy],
 ] });
 
 const chrome = findChrome();
