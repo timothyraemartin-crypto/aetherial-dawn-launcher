@@ -140,6 +140,23 @@
     $('tagline').hidden = p !== 'home';
     applySetup();
     if (p === 'mods') loadFiles();
+    if (p === 'home') loadCharCard(); else $('char-card').hidden = true;
+  }
+  // The character seen last, with the portrait the launcher grabbed after a
+  // finished race menu. Hidden when signed out or when no character is known.
+  async function loadCharCard() {
+    let c = null;
+    try { c = await invoke('character_card'); } catch { c = null; }
+    const card = $('char-card');
+    if (!c || page !== 'home') { card.hidden = true; return; }
+    $('cc-name').textContent = c.name;
+    const hours = Math.floor((c.playtimeMin || 0) / 60);
+    $('cc-facts').textContent = [c.race, c.sex, c.hold, hours + ' h played'].filter(Boolean).join(' · ');
+    const img = $('cc-img');
+    img.hidden = !c.portrait;
+    if (c.portrait) img.src = c.portrait; else img.removeAttribute('src');
+    $('cc-note').textContent = c.portrait ? '' : 'Open the race menu once in game to add your portrait.';
+    card.hidden = false;
   }
   function showSheet(id) {
     const previous = activeSheet;
@@ -423,6 +440,8 @@
   }
   function ready() {
     refreshSetup();
+    // Home's character card on a normal start (showPage only runs it on a page change).
+    if (page === 'home') loadCharCard();
     // Only a current check or a completed update can claim file readiness.
     if (!pending || pending.files || pending.remove) {
       setPlay('retry', 'RECHECK');

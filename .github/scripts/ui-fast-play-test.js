@@ -46,6 +46,7 @@ function fakeBackEnd() {
     update: () => null,
     server_status: () => ({ online: true, players: 1, maxPlayers: 50, ...(typeof S.statusNow === 'object' ? S.statusNow : {}), discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
     setup_state: () => S.setup || [{ id: 'folder', title: 'Choose your Skyrim folder', hint: 'x', done: true }],
+    character_card: () => S.card || null,
     files: () => [], play: () => S.playWarnings || null,
     patch_game: () => S.patchResult || { ...game, needed: false },
     game_running: () => !!S.outsideGame,
@@ -165,6 +166,8 @@ function fakeBackEnd() {
       log.vortexConnect = !document.getElementById('rq-vortex-connect').hidden;
       log.installerControl = !!document.querySelector('#rq-all, #rq-stop, #rq-sso-go, #rq-signin');
       log.playDisabled = btn.disabled;
+      const cc = document.getElementById('char-card');
+      log.charCard = cc.hidden ? null : { name: document.getElementById('cc-name').textContent, facts: document.getElementById('cc-facts').textContent };
       const wn = document.getElementById('whatsnew');
       log.whatsNew = wn.hidden ? null : { lines: [...document.querySelectorAll('#whatsnew-list li')].map(li => li.textContent), open: wn.open };
       const setupBox = document.getElementById('setup');
@@ -204,6 +207,13 @@ const firstLabel = (r, text) => (r.labels.find(l => l[1] === text) || [null])[0]
 const lastLabel = r => r.labels[r.labels.length - 1][1];
 
 const scenarios = [
+  { name: 'home: the character card shows on a normal start, without visiting another page', s: { ...base, clicks: [], card: { name: 'Aerin Dawnwalker', race: 'Nord', sex: 'Female', hold: 'Whiterun', playtimeMin: 380, portrait: null }, end: 4000 }, expect: r => [
+    ['the card is shown with the name', !!r.charCard && r.charCard.name === 'Aerin Dawnwalker'],
+    ['the facts include the hours played', !!r.charCard && /6 h played/.test(r.charCard.facts)],
+  ] },
+  { name: 'home: no known character, no card', s: { ...base, clicks: [], end: 4000 }, expect: r => [
+    ['the card is hidden', r.charCard === null],
+  ] },
   { name: 'update available: the notes are listed under the update, closed, with no dialog', s: { ...base, clicks: [], check: { files: 2, bytes: 5000000, notes: ['New tavern in Whiterun', 'Fixed <b>crash</b> at the docks'] }, end: 4000 }, expect: r => [
     ['the lines are listed', !!r.whatsNew && r.whatsNew.lines.length === 2 && r.whatsNew.lines[0] === 'New tavern in Whiterun'],
     ['markup in a note is shown as text', !!r.whatsNew && r.whatsNew.lines[1].includes('<b>crash</b>')],

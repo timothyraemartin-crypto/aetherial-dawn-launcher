@@ -44,7 +44,7 @@ for (const dir of ['core/src', 'src-tauri/src']) {
       for (const lit of line.matchAll(/"((?:[^"\\]|\\.)*)"/g)) {
         let text = lit[1];
         for (const [from, to] of Object.entries(ALIASES[rel] || {})) text = text.replace(from, `}${to}`);
-        const m = text.match(/\}(\/(?:api|health|faces)[^\s"]*)/);
+        const m = text.match(/\}(\/(?:api|health|faces|portrait|characters)[^\s"]*)/);
         if (!m) continue;
         const [pathPart, query = ''] = m[1].split('?');
         if (BASES.has(norm(pathPart))) continue;

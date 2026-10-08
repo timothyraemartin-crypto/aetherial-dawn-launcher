@@ -115,6 +115,16 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .eyebrow { font: 500 12px var(--display); letter-spacing: .24em; color: var(--text); }
 .about p { margin: 0; font-size: 14px; line-height: 1.6; color: rgba(232,237,242,.78); text-shadow: 0 1px 8px rgba(0,0,0,.9); }
 
+/* ---------- home: character card (same left edge as the about text, above it) ---------- */
+.charcard { position: absolute; z-index: 3; left: calc(var(--nav) + 36px); bottom: 170px; width: 380px; display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 14px; align-items: center; padding: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; backdrop-filter: blur(12px); }
+.charcard[hidden] { display: none; }
+.cc-pic { aspect-ratio: 3 / 4; border-radius: 4px; border: 1px solid var(--line); background: radial-gradient(120% 80% at 50% 20%, #27374b, #0b1018 70%); overflow: hidden; }
+.cc-pic img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.cc-body { display: grid; gap: 3px; min-width: 0; }
+.cc-body b { font: 500 17px var(--display); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-facts, .cc-body small { font-size: 13px; color: rgba(232,237,242,.7); }
+@media (max-width: 1240px) { .charcard { display: none; } }
+
 /* ---------- right dock: news + play ---------- */
 .dock { position: absolute; z-index: 6; right: 20px; bottom: 16px; width: var(--dock); display: grid; gap: 10px; }
 .dock-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; backdrop-filter: blur(12px); box-shadow: 0 30px 60px -30px #000; }

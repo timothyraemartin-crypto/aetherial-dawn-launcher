@@ -12,6 +12,7 @@ pub mod clientstatus;
 pub mod community;
 pub mod detach;
 pub mod faces;
+pub mod portrait;
 pub mod feedsig;
 pub mod fetch;
 pub mod game;
