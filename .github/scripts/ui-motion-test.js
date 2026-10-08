@@ -36,7 +36,7 @@ function run(extra) {
     '--virtual-time-budget=2000', '--dump-dom', ...extra, 'file:///' + page.replace(/\\/g, '/').replace(/^\//, '')], { encoding: 'utf8' });
   return JSON.parse(/<pre id="r">(.*?)<\/pre>/s.exec(out)[1].replace(/&quot;/g, '"'));
 }
-const normal = run([]);
+const normal = run(['--force-prefers-no-reduced-motion']);
 const reduced = run(['--force-prefers-reduced-motion']);
 
 const checks = [
