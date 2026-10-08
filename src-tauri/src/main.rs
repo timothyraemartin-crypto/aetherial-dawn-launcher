@@ -11,6 +11,9 @@ use tokio::sync::Mutex;
 mod export;
 mod faces;
 mod log;
+// The old "Download all mods" code in mods.rs is unreachable; the thread that
+// deletes it should also delete this allow so clippy covers the file again.
+#[allow(dead_code)]
 mod mods;
 mod music;
 
@@ -41,9 +44,6 @@ struct Config {
     background_updates: bool,
     /// Send game health reports to the server's staff (players can turn it off).
     share_health: bool,
-    /// The Nexus Mods account the player signed in with (the key itself is
-    /// kept separately, encrypted).
-    nexus_user: Option<launcher_core::nexus::User>,
     /// Menu music: None until the player answers the Keep music / Mute
     /// question, then their answer.
     music: Option<bool>,
@@ -62,7 +62,6 @@ impl Default for Config {
             close_on_launch: true,
             background_updates: true,
             share_health: true,
-            nexus_user: None,
             music: None,
             only_server_mods: true,
         }
@@ -136,8 +135,18 @@ fn config_path(app: &AppHandle) -> CmdResult<PathBuf> {
 fn load_config(app: &AppHandle) -> Config {
     config_path(app)
         .ok()
-        .and_then(|p| std::fs::read(p).ok())
-        .and_then(|b| serde_json::from_slice::<Config>(&b).ok())
+        .and_then(|p| {
+            let bytes = std::fs::read(&p).ok()?;
+            let parsed = serde_json::from_slice::<Config>(&bytes).ok();
+            if parsed.is_none() {
+                // Defaults take over, so keep the damaged file for support
+                // instead of letting the next save overwrite it.
+                let bad = p.with_extension("json.bad");
+                log::line(&format!("config: {} couldn't be read; starting from defaults, copy kept at {}", p.display(), bad.display()));
+                let _ = std::fs::write(&bad, &bytes);
+            }
+            parsed
+        })
         .map(|mut c| {
             // The server address is baked into each build, so an older saved
             // config (or one from a test build) never points somewhere stale.
@@ -152,7 +161,7 @@ fn save_config(app: &AppHandle, c: &Config) -> CmdResult<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    std::fs::write(path, serde_json::to_vec_pretty(c).unwrap()).map_err(|e| e.to_string())
+    launcher_core::atomicfile::write(&path, &serde_json::to_vec_pretty(c).unwrap()).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
@@ -335,6 +344,9 @@ async fn update(app: AppHandle, state: State<'_, AppState>, verify_all: bool) ->
     // A cached list can be obsolete by the time Update is pressed.
     let m = Manifest::fetch(&state.http, &base).await.map_err(err)?;
     let plan = sync::plan(&dir, &m, verify_all).await.map_err(err)?;
+    if !plan.kept.is_empty() {
+        log::line(&format!("update: the file list asks to remove files this launcher didn't install; left alone: {}", plan.kept.join(", ")));
+    }
     sync::apply(&state.http, &base, &dir, &plan, |p| {
         let _ = app.emit("sync-progress", p);
     })
@@ -385,10 +397,13 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<Strin
     // The Vortex gate runs only when the server switches it on
     // (vortexRequired in aetherial-collection.json); off, Play checks the
     // game files as 0.1.87 did.
-    let vortex_required = launcher_core::vortex::gate_on(mods::served_client_set(&state).await.as_ref());
+    // Fetched once; the Vortex check below reads its collection from it.
+    let served = mods::served_client_set(&state).await;
+    let vortex_required = launcher_core::vortex::gate_on(served.as_ref());
+    let collection = served.and_then(|s| s.collection);
     log::line(&format!("play: Vortex gate {}", if vortex_required { "on" } else { "off" }));
     if vortex_required {
-        require_vortex_profile(&app, &state, &dir).await?;
+        require_vortex_profile(&app, &state, &dir, collection.clone()).await?;
     }
     // One masters.json per Play, fetched before anything changes on the PC:
     // its plugin names decide which light plugins run as full "<stem>.esm"
@@ -410,7 +425,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<Strin
     // this PC doesn't have yet, and the order check would refuse Play
     // before the downloads were ever offered.
     // Helpers still missing after this pass are shown once the game starts.
-    let warnings = ensure_requirements(&app, &state, &dir, vortex_required).await?;
+    let warnings = ensure_requirements(&app, &state, &dir, vortex_required, collection).await?;
     // Each listed mod's settings as the server sets them, once; the
     // player's later changes stay.
     let list = mods::full_list(&state).await;
@@ -511,7 +526,12 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<Strin
         return Err(format!("Your plugins don't match the server's order, so the game would refuse to connect: {which}. {tell}"));
     }
     if report.worst >= health::Status::Warn && config.share_health {
-        send_health(&app, &state.http, &config, &m.build, "before play", None, None, &report).await;
+        // Nobody needs the report number here, and the staff service can
+        // rate-limit for 90 s or more, so the upload runs beside Play.
+        let (app, http, config, build, report) = (app.clone(), state.http.clone(), config.clone(), m.build.clone(), report.clone());
+        launcher_core::detach::detach(async move {
+            send_health(&app, &http, &config, &build, "before play", None, None, &report).await;
+        });
     }
     let token = token(&app).ok_or("SIGNED_OUT:Sign in with Discord to play.")?;
     play_step(&app, "Getting your game session…");
@@ -862,11 +882,6 @@ fn last_report() -> Option<(String, String)> {
     Some((name.clone(), std::fs::read_to_string(dir.join(name)).ok()?))
 }
 
-#[tauri::command]
-fn last_game_report() -> CmdResult<String> {
-    last_report().map(|(_, text)| text).ok_or_else(|| "No game session has been recorded yet.".into())
-}
-
 // ---------- Discord sign-in ----------
 
 fn token_path(app: &AppHandle) -> Option<PathBuf> {
@@ -1107,14 +1122,6 @@ fn plain_error(text: String) -> String {
 async fn auth_sign_out(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     sign_out(&app, &state).await;
     Ok(())
-}
-
-/// Is the player's Skyrim the build the server needs?
-#[tauri::command]
-async fn game_check(state: State<'_, AppState>) -> CmdResult<version::GameCheck> {
-    let dir = game_dir(&state).await?;
-    let m = state.manifest.lock().await.clone();
-    Ok(auto_version(&dir, m.as_ref().and_then(|m| m.game.as_ref())))
 }
 
 
@@ -1593,7 +1600,7 @@ fn play_step(app: &AppHandle, text: &str) {
     let _ = app.emit("play-step", text);
 }
 
-async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path::Path, vortex_required: bool) -> CmdResult<Vec<String>> {
+async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path::Path, vortex_required: bool, collection: Option<launcher_core::vortex::CollectionRef>) -> CmdResult<Vec<String>> {
     let got = install_missing_mods(&state.http, dir).await;
     // Sent whether or not the installs worked: a failed one is the case
     // staff most want to see.
@@ -1614,19 +1621,18 @@ async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path:
     // that the Vortex package files are still deployed immediately before the
     // load-order and launch steps.
     if vortex_required {
-        require_vortex_profile(app, state, dir).await?;
+        require_vortex_profile(app, state, dir, collection).await?;
     }
     Ok(warnings)
 }
 
 /// Vortex owns every Nexus-pinned mod in the current client list. Check the
 /// active profile and deployment before Play changes load order or files.
-async fn require_vortex_profile(app: &AppHandle, state: &AppState, dir: &std::path::Path) -> CmdResult<()> {
+async fn require_vortex_profile(app: &AppHandle, state: &AppState, dir: &std::path::Path, collection: Option<launcher_core::vortex::CollectionRef>) -> CmdResult<()> {
     if mods::fetched_server_list(state).await.is_none() {
         return Err("VORTEX_NOT_READY:The server's current mod list is unavailable. Try Check again when the server responds.".into());
     }
     let list = mods::full_list(state).await;
-    let collection = mods::served_client_set(state).await.and_then(|s| s.collection);
     let set = launcher_core::vortex::ClientSet { collection, mods: list, vortex_required: true };
     let status = mods::vortex_status(app, state).await;
     let step = launcher_core::vortex::step(&set, status.as_ref());
@@ -1719,7 +1725,7 @@ const HEALTH_REPORTS_ON: bool = true;
 const HEALTH_REPORT_MAX: usize = 58_000;
 
 fn health_report_url() -> Option<String> {
-    HEALTH_REPORTS_ON.then(|| format!("{AUTH_URL}/api/crash-reports"))
+    HEALTH_REPORTS_ON.then(|| format!("{AUTH_URL}/api/crash-reports")) // contract-method: POST (sent by post_report)
 }
 
 /// What staff sent back: the report number and the likely cause.
@@ -2368,17 +2374,17 @@ fn main() {
         std::process::exit(code);
     }
     tauri::Builder::default()
-        // Windows starts the launcher again for each nxm:// link; hand the
-        // link to the running one.
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| mods::on_second_launch(app, &args)))
+        // A second launch (Windows runs one for each nxm:// link) brings this one forward.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| mods::on_second_launch(app)))
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             if let Ok(dir) = app.path().app_local_data_dir() {
                 log::init(dir.join("logs"));
+                // Remembers which server files came signed (feedsig.rs).
+                launcher_core::feedsig::init(&dir);
             }
             let config = load_config(app.handle());
             log::line(&format!(
@@ -2424,7 +2430,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, game_check, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, last_game_report, health_check, report_problem, patch_game, game_running, self_update_begin, self_update_end, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::nexus_sign_in, mods::nexus_sso, mods::nexus_copy_sign_in, mods::nexus_sso_cancel, mods::nexus_sign_out, mods::open_nexus_key_page, mods::cancel_mods, mods::vortex_connect, restore_set_aside, skip_tool, window_ready, open_invite])
+        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, health_check, report_problem, patch_game, game_running, self_update_begin, self_update_end, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::vortex_connect, restore_set_aside, skip_tool, window_ready, open_invite])
         .build(tauri::generate_context!())
         .expect("error while running the launcher")
         .run(|_, event| {

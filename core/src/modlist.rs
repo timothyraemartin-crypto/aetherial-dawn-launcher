@@ -491,6 +491,17 @@ pub fn builtin(game_version: Option<&str>) -> Vec<ModEntry> {
     out
 }
 
+/// A full SHA-256 in hex.
+fn pinned(sha256: &Option<String>) -> bool {
+    sha256.as_ref().is_some_and(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Downloaded from an address the list gives (not Nexus): the bytes are
+/// whatever that host serves, so the list has to pin them.
+fn direct_download(m: &ModEntry) -> bool {
+    m.nexus.is_none() && m.url.is_some()
+}
+
 /// The built-in list with the server's list laid over it: a server entry with
 /// the same id replaces the built-in one, new ids are added after. Entries
 /// with unsafe check paths or no source are dropped.
@@ -511,6 +522,11 @@ pub fn merged(game_version: Option<&str>, server: Option<&ModList>) -> Vec<ModEn
                 if !url.starts_with("https://") {
                     continue;
                 }
+            }
+            // A direct download is pinned or it isn't used (a link can be
+            // pointed at other bytes after the list was written).
+            if direct_download(m) && !pinned(&m.sha256) {
+                continue;
             }
             match out.iter_mut().find(|e| e.id == m.id) {
                 Some(e) => {
@@ -1308,7 +1324,7 @@ fn read_xml_text(path: &Path) -> Result<String> {
     let b = std::fs::read(path)?;
     if b.starts_with(&[0xFF, 0xFE]) || b.starts_with(&[0xFE, 0xFF]) {
         let le = b[0] == 0xFF;
-        let units: Vec<u16> = b[2..].chunks_exact(2).map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) }).collect();
+        let units: Vec<u16> = b[2..].as_chunks::<2>().0.iter().map(|c| if le { u16::from_le_bytes(*c) } else { u16::from_be_bytes(*c) }).collect();
         return Ok(String::from_utf16_lossy(&units));
     }
     let s = String::from_utf8_lossy(&b).into_owned();
@@ -1800,6 +1816,9 @@ pub fn too_new_plugins(copies: &[Copy], game_dir: &Path) -> Vec<String> {
 
 /// Checks a downloaded archive against the list's SHA-256, when it has one.
 pub fn verify(entry: &ModEntry, archive: &Path) -> Result<()> {
+    if direct_download(entry) && !pinned(&entry.sha256) {
+        return Err(Error::Game(format!("{} is a direct download and the list gives no SHA-256 for it, so the launcher won't install it.", entry.name)));
+    }
     let Some(want) = &entry.sha256 else { return Ok(()) };
     use sha2::{Digest, Sha256};
     use std::io::Read;
@@ -1823,6 +1842,34 @@ pub fn verify(entry: &ModEntry, archive: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    fn direct(sha: Option<&str>) -> ModEntry {
+        ModEntry { id: "d".into(), name: "D".into(), url: Some("https://github.com/a/b.zip".into()), sha256: sha.map(String::from), check: vec!["Data/d.esp".into()], ..Default::default() }
+    }
+
+    #[test]
+    fn a_direct_download_without_a_pinned_hash_is_dropped_from_the_server_list() {
+        let list = |e: ModEntry| merged(None, Some(&ModList { mods: vec![e], nexus_app: None, revision: None }));
+        let has = |l: &[ModEntry]| l.iter().any(|m| m.id == "d");
+        assert!(!has(&list(direct(None))));
+        assert!(!has(&list(direct(Some("abc")))), "a short hash is no pin");
+        assert!(has(&list(direct(Some(&"0".repeat(64))))));
+        // Nexus files are named by mod and file id, not by URL.
+        let nexus = ModEntry { id: "d".into(), name: "D".into(), nexus: Some(NexusRef { mod_id: 1, file: Some(2), pick: None }), ..Default::default() };
+        assert!(has(&list(nexus)));
+    }
+
+    #[test]
+    fn a_direct_download_is_refused_without_a_hash_even_if_it_got_this_far() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.zip");
+        std::fs::write(&a, b"abc").unwrap();
+        assert!(verify(&direct(None), &a).is_err());
+        assert!(verify(&direct(Some(&crate::patcher::sha256_bytes(b"abc"))), &a).is_ok());
+        assert!(verify(&direct(Some(&"0".repeat(64))), &a).is_err());
+        let nexus = ModEntry { id: "n".into(), name: "N".into(), nexus: Some(NexusRef { mod_id: 1, file: Some(2), pick: None }), ..Default::default() };
+        assert!(verify(&nexus, &a).is_ok(), "a Nexus download is as named by the list; a hash is checked when given");
+    }
+
     #[test]
     fn play_requires_only_the_explicit_male_face_variant_for_exact_feed_pins() {
         use super::{play_required, ModEntry, NexusRef};
@@ -2190,7 +2237,7 @@ mod tests {
                 ModEntry { id: "ussep".into(), name: "USSEP pinned".into(), nexus: Some(NexusRef { mod_id: 266, file: Some(9), pick: None }), check: vec!["Data/x.esp".into()], ..Default::default() },
                 ModEntry { id: "bad".into(), name: "Bad".into(), url: Some("https://x/y.zip".into()), check: vec!["../evil".into()], ..Default::default() },
                 ModEntry { id: "plain".into(), name: "Plain http".into(), url: Some("http://x/y.zip".into()), ..Default::default() },
-                ModEntry { id: "new".into(), name: "New".into(), url: Some("https://github.com/a/b.zip".into()), check: vec!["Data/new.esp".into()], ..Default::default() },
+                ModEntry { id: "new".into(), name: "New".into(), url: Some("https://github.com/a/b.zip".into()), sha256: Some("0".repeat(64)), check: vec!["Data/new.esp".into()], ..Default::default() },
             ],
             nexus_app: None,
             revision: None,

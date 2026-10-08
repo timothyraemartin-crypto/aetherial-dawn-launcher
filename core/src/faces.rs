@@ -22,23 +22,34 @@ pub const MAX_FACE: usize = 400 * 1024;
 pub const MAX_LIST: usize = 256 * 1024;
 const LIST_RECORD: &str = ".aetherial-dawn/faces-list.json";
 
-/// The ad/ folder, created when missing. The ad folder itself being a link
-/// (or a junction) is refused; the folders above it are the game's own and
-/// aren't checked.
+/// The ad/ folder, created when missing. Every folder from Data/ down to ad/
+/// is checked and any of them being a link (or a junction) is refused, so
+/// nothing is created or saved through one.
 pub fn folder(game_dir: &Path) -> Result<PathBuf> {
-    let dir = game_dir.join(FOLDER);
-    std::fs::create_dir_all(&dir)?;
-    if std::fs::symlink_metadata(&dir)?.file_type().is_symlink() {
-        return Err(Error::Game(format!("{FOLDER} is a link; faces aren't saved there")));
+    let mut dir = game_dir.to_path_buf();
+    for part in FOLDER.split('/') {
+        dir.push(part);
+        match std::fs::symlink_metadata(&dir) {
+            Ok(m) if m.file_type().is_symlink() => return Err(Error::Game(format!("{FOLDER} goes through a link at {part}; faces aren't saved there"))),
+            Ok(m) if !m.is_dir() => return Err(Error::Game(format!("{part} isn't a folder; faces aren't saved there"))),
+            Ok(_) => {}
+            Err(_) => std::fs::create_dir(&dir)?,
+        }
     }
     Ok(dir)
 }
 
-/// The ad/ folder when it's already there as a real folder (not a link),
-/// for tidying; never created.
+/// The ad/ folder when it's already there as a real folder (no link on the
+/// way down), for tidying; never created.
 pub fn existing_folder(game_dir: &Path) -> Option<PathBuf> {
-    let dir = game_dir.join(FOLDER);
-    std::fs::symlink_metadata(&dir).ok().filter(|m| m.is_dir()).map(|_| dir)
+    let mut dir = game_dir.to_path_buf();
+    for part in FOLDER.split('/') {
+        dir.push(part);
+        if !std::fs::symlink_metadata(&dir).ok()?.is_dir() {
+            return None;
+        }
+    }
+    Some(dir)
 }
 
 /// A face name as the server gives it: "a<1-8 hex>-<16 hex>".
@@ -49,8 +60,32 @@ pub fn valid_name(name: &str) -> bool {
     (1..=8).contains(&id.len()) && hex(id) && hash.len() == 16 && hex(hash)
 }
 
-/// Checks a downloaded face before it's saved: size, JSON, and that its
-/// SHA-256 starts with the name's hash part.
+/// The vanilla face numbers RaceMenu's presets hold (TESNPC::FaceMorphs); the
+/// server rebuilds every preset to exactly these counts.
+const NUM_PRESETS: usize = 4;
+const NUM_OPTIONS: usize = 19;
+
+/// skee64 doesn't bounds-check a preset, so a hostile server could send one
+/// with more presets or sliders than the game's arrays hold. When the preset
+/// carries vanilla sliders (`morphs.default`) they must be exactly 4 numbers
+/// and 19 numbers, the same rule the server applies.
+fn check_structure(name: &str, v: &serde_json::Value) -> Result<()> {
+    let bad = |what: &str| Error::Game(format!("{name} isn't a valid preset: {what}"));
+    let root = v.as_object().ok_or_else(|| bad("not an object"))?;
+    let Some(morphs) = root.get("morphs") else { return Ok(()) };
+    let morphs = morphs.as_object().ok_or_else(|| bad("morphs isn't an object"))?;
+    let Some(default) = morphs.get("default") else { return Ok(()) };
+    let default = default.as_object().ok_or_else(|| bad("default sliders aren't an object"))?;
+    let numbers = |key: &str, want: usize| match default.get(key).and_then(|a| a.as_array()) {
+        Some(a) if a.len() == want && a.iter().all(|n| n.is_number()) => Ok(()),
+        _ => Err(bad(&format!("{key} isn't {want} numbers"))),
+    };
+    numbers("presets", NUM_PRESETS)?;
+    numbers("morphs", NUM_OPTIONS)
+}
+
+/// Checks a downloaded face before it's saved: size, JSON, the preset's
+/// structure, and that its SHA-256 starts with the name's hash part.
 pub fn check_face(name: &str, body: &[u8]) -> Result<()> {
     if !valid_name(name) {
         return Err(Error::Game(format!("{name:?} isn't a face name")));
@@ -58,7 +93,8 @@ pub fn check_face(name: &str, body: &[u8]) -> Result<()> {
     if body.len() > MAX_FACE {
         return Err(Error::Game(format!("{name} is {} bytes, over the limit", body.len())));
     }
-    serde_json::from_slice::<serde_json::Value>(body).map_err(|_| Error::Game(format!("{name} isn't a preset file")))?;
+    let value = serde_json::from_slice::<serde_json::Value>(body).map_err(|_| Error::Game(format!("{name} isn't a preset file")))?;
+    check_structure(name, &value)?;
     let hash = hex::encode(Sha256::digest(body));
     if !name.ends_with(&hash[..16]) {
         return Err(Error::Game(format!("{name} doesn't match its contents")));
@@ -255,5 +291,60 @@ mod tests {
         assert!(!t.path().join(FOLDER).exists());
         folder(t.path()).unwrap();
         assert_eq!(existing_folder(t.path()), Some(t.path().join(FOLDER)));
+    }
+
+    fn preset(presets: usize, morphs: usize) -> Vec<u8> {
+        let nums = |n: usize| vec!["0.5"; n].join(",");
+        format!(r#"{{"headParts":[],"morphs":{{"default":{{"presets":[{}],"morphs":[{}]}}}}}}"#, nums(presets), nums(morphs)).into_bytes()
+    }
+
+    #[test]
+    fn a_preset_must_keep_the_vanilla_slider_counts() {
+        let ok = preset(4, 19);
+        check_face(&named(&ok), &ok).unwrap();
+        // skee64 doesn't bounds-check: more than 4 presets or 19 sliders (or
+        // fewer) would write past its arrays, so the launcher refuses them even
+        // when the name matches the contents.
+        for (p, m) in [(5, 19), (4, 20), (3, 19), (4, 0), (1000, 19)] {
+            let bad = preset(p, m);
+            assert!(check_face(&named(&bad), &bad).is_err(), "{p} presets, {m} sliders");
+        }
+        for bad in [
+            br#"{"morphs":{"default":{"presets":[1,2,3,"x"],"morphs":[]}}}"#.to_vec(),
+            br#"{"morphs":{"default":[]}}"#.to_vec(),
+            br#"{"morphs":{"default":{"presets":4,"morphs":19}}}"#.to_vec(),
+            br#"{"morphs":[]}"#.to_vec(),
+            b"[]".to_vec(),
+            b"4".to_vec(),
+        ] {
+            assert!(check_face(&named(&bad), &bad).is_err(), "{}", String::from_utf8_lossy(&bad));
+        }
+        let text = String::from_utf8(ok).unwrap().replacen("0.5", "\"x\"", 1);
+        assert!(check_face(&named(text.as_bytes()), text.as_bytes()).is_err(), "a non-number slider");
+        // A preset without vanilla sliders is fine (the server may send none).
+        let none = br#"{"headParts":[],"morphs":{"custom":[]}}"#;
+        check_face(&named(none), none).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_anywhere_on_the_path_is_refused() {
+        let t = tempfile::tempdir().unwrap();
+        let elsewhere = t.path().join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("SKSE/Plugins/CharGen/Presets")).unwrap();
+        let game = t.path().join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        // Data itself is a link (a junction on Windows).
+        std::os::unix::fs::symlink(&elsewhere, game.join("Data")).unwrap();
+        assert!(folder(&game).is_err());
+        assert!(existing_folder(&game).is_none());
+        assert!(!elsewhere.join("SKSE/Plugins/CharGen/Presets/ad").exists(), "nothing created through the link");
+        // A link in the middle.
+        let game2 = t.path().join("game2");
+        std::fs::create_dir_all(game2.join("Data/SKSE")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.join("SKSE/Plugins"), game2.join("Data/SKSE/Plugins")).unwrap();
+        assert!(folder(&game2).is_err());
+        assert!(existing_folder(&game2).is_none());
+        assert!(!elsewhere.join("SKSE/Plugins/CharGen/Presets/ad").exists());
     }
 }

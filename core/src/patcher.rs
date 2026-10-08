@@ -119,7 +119,7 @@ pub fn plan(game_dir: &Path, index: &Index, mut hash: impl FnMut(&Path) -> Optio
         if size == Some(f.size) && hash(&p).is_some_and(|h| h.eq_ignore_ascii_case(&f.sha256)) {
             continue;
         }
-        let have = size.and_then(|s| hash(&p).map(|h| (s, h)));
+        let have = size.zip(hash(&p));
         let patch = have.and_then(|(s, h)| f.patches.iter()
             .find(|x| x.from_size == s && x.from_sha256.eq_ignore_ascii_case(&h) && plain_file_name(&x.file)).cloned());
         steps.push(Step { file: f.clone(), patch });
