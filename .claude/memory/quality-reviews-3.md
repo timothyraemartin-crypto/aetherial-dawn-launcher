@@ -3,7 +3,7 @@ name: quality-reviews-3
 description: Open findings from launcher quality reviews, part 3 (mod list, Vortex bridge, game-folder tidying, game build)
 type: reference
 verified: 2026-10-07
-refs: core/src/modlist.rs, core/src/vortex.rs, core/src/loadorder.rs, core/src/aliases.rs, core/src/downgrade.rs, core/src/patcher.rs
+refs: core/src/modlist.rs, core/src/vortex.rs, core/src/loadorder.rs, core/src/aliases.rs, core/src/patcher.rs
 ---
 Read-only reviews on 2026-10-07; no code changed. Continues quality-reviews-2.
 
@@ -21,5 +21,5 @@ Read-only reviews on 2026-10-07; no code changed. Continues quality-reviews-2.
 - Good: tidying moves rather than deletes; `retire_unlisted` refuses lists that drop more than half the mods.
 
 **Game build detection** (good on the shipped patch route; 44 tests pass; https://claude.ai/artifact/VvZhT5jGC2fvX3Ad5C5NBm)
-- The Steam downgrader (`downgrade.rs`, `steamapp.rs`) was NOT called by the app (`ui/app.js`); draft PR #60 removes it.
+- The Steam downgrader (`downgrade.rs`, `steamapp.rs`) was NOT called by the app (`ui/app.js`); removed by #60 (merged 2026-10-08).
 - MulderLoad gaps: later parts unchecked if the hash pins only part 1; a damaged part is kept after an unpack error; no disk-space check; only the exe version is confirmed after patching. Three disagreeing lists of Steam's own files (`version.rs`, `patcher.rs`, `pristine.rs`).
