@@ -364,7 +364,9 @@
     let last = { t: performance.now(), b: 0 }, speed = 0;
     const began = last.t;
     let lastEvent = began;
-    const stallTimer = setInterval(() => { if (performance.now() - lastEvent > 3000) $('p-speed').textContent = 'Waiting for the server…'; }, 1000);
+    // Once every byte is in, the quiet is the launcher checking the file, not the server.
+    let allIn = false;
+    const stallTimer = setInterval(() => { if (performance.now() - lastEvent > 3000) $('p-speed').textContent = allIn ? 'Checking file…' : 'Waiting for the server…'; }, 1000);
     const off = await T.event.listen('sync-progress', ({ payload: p }) => {
       const pct = p.bytesTotal ? (p.bytesDone / p.bytesTotal) * 100 : 100;
       $('p-bar').style.width = pct.toFixed(1) + '%';
@@ -374,6 +376,7 @@
       $('p-file').title = p.file || '';
       const now = performance.now();
       lastEvent = now;
+      allIn = p.bytesTotal > 0 && p.bytesDone >= p.bytesTotal;
       if (now - last.t > 500) {
         const rate = ((p.bytesDone - last.b) / (now - last.t)) * 1000;
         // Weighted by time, so a long gap counts for more than a burst of quick events.
@@ -972,6 +975,8 @@
 
   // ---------- mods page ----------
   async function loadFiles() {
+    // Placeholder rows keep the table's height steady while the list loads.
+    if (!$('files-body').children.length) $('files-body').innerHTML = '<tr class="skel"><td><i></i></td><td><i></i></td></tr>'.repeat(5);
     const files = await invoke('files').catch(() => null);
     if (!files) {
       $('files-body').innerHTML = '<tr><td colspan="2">The file list loads after the launcher reaches the server.</td></tr>';
@@ -979,7 +984,11 @@
     }
     const total = files.reduce((n, f) => n + f.size, 0);
     $('mods-summary').textContent = `Build ${pending ? pending.build : ''} · ${plural(files.length, 'file')} · ${mb(total)}. The server decides which files every player needs.`;
-    $('files-body').innerHTML = files.map(f => `<tr><td>${esc(f.path)}</td><td>${mb(f.size)}</td></tr>`).join('');
+    // The file's own name stands out; its folder sits dimmed in front of it.
+    $('files-body').innerHTML = files.map(f => {
+      const cut = f.path.lastIndexOf('/') + 1;
+      return `<tr><td title="${esc(f.path)}"><span class="fdir">${esc(f.path.slice(0, cut))}</span><span class="fname">${esc(f.path.slice(cut))}</span></td><td>${mb(f.size)}</td></tr>`;
+    }).join('');
   }
 
   // ---------- server status.json (optional) ----------
