@@ -78,6 +78,7 @@ function fakeBackEnd() {
         if (cmd === 'auth_status' && S.authFails) return rej('network down');
         if (cmd === 'game_running' && (S.gameCheckFails || (S.gameCheckFailsFrom && (S.gameChecks = (S.gameChecks || 0) + 1) >= S.gameCheckFailsFrom))) return rej('process list unavailable');
         if (cmd === 'export_key_save' && S.keyError) { log.keySent = args.key; return rej(S.keyError); }
+        if (cmd === 'set_music' && S.setMusicError) return rej(S.setMusicError);
         if (cmd === 'set_prefs' && S.setPrefsError) return rej(S.setPrefsError);
         if (cmd === 'set_game_dir' && S.setDirError) return rej(S.setDirError);
         if (cmd === 'set_game_dir' && S.picks && S.picks.find(p => p.dir === args.dir && p.error)) return rej(S.picks.find(p => p.dir === args.dir).error);
@@ -166,6 +167,10 @@ function fakeBackEnd() {
       log.settingsGroups = { heads: [...document.querySelectorAll('#settings h3')].map(h => h.textContent), close: groupOf('set-close'), bg: groupOf('set-bg'), share: groupOf('set-share'), only: groupOf('set-only'), folder: groupOf('set-path') };
       const saved = document.getElementById('set-saved');
       log.saved = saved ? saved.textContent : null;
+      const toast = document.getElementById('set-saved');
+      const tr = toast.getBoundingClientRect();
+      log.toast = { top: Math.round(tr.top), bottom: Math.round(tr.bottom), fixed: getComputedStyle(toast).position, color: getComputedStyle(toast).color, cls: toast.className, shown: tr.width > 0 && tr.height > 0 };
+      log.musicChecked = document.getElementById('set-music').getAttribute('aria-checked');
       log.bgChecked = document.getElementById('set-bg').getAttribute('aria-checked');
       log.gameRow = document.querySelector('#c-game small').textContent;
       const join = document.getElementById('si-join');
@@ -748,6 +753,26 @@ scenarios.push({ name: 'Settings: a changed setting says Saved', s: { ...base, c
 scenarios.push({ name: 'Settings: a setting that cannot be saved flips back and says so', s: { ...base, clicks: [], setPrefsError: 'settings are read-only', end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-bg' }] }, expect: r => [
   ['it says it could not save', /Couldn't save/.test(r.saved || ''), String(r.saved)],
   ['the switch is back where it was (off)', r.bgChecked === 'false', String(r.bgChecked)],
+] });
+
+scenarios.push({ name: 'Settings: the save message stays in view at the top, not below the fold', s: { ...base, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-bg' }] }, expect: r => [
+  ['the message is on screen near the top', r.toast.shown && r.toast.top >= 0 && r.toast.bottom <= 120, JSON.stringify(r.toast)],
+  ['it stays put when the settings scroll', r.toast.fixed === 'fixed', String(r.toast.fixed)],
+] });
+scenarios.push({ name: 'Settings: a failed save is shown as a warning, not in the success colour', s: { ...base, clicks: [], setPrefsError: 'read-only', end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-bg' }] }, expect: r => [
+  ['it carries the warning class', /\bbad\b/.test(r.toast.cls), r.toast.cls],
+  ['it is not green', r.toast.color !== 'rgb(92, 201, 138)', r.toast.color],
+] });
+scenarios.push({ name: 'Settings: a saved change uses the success style', s: { ...base, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-bg' }] }, expect: r => [
+  ['it carries the ok class', /\bok\b/.test(r.toast.cls), r.toast.cls],
+] });
+scenarios.push({ name: 'Settings: menu music that cannot be saved flips back and says so', s: { ...base, clicks: [], setMusicError: 'no audio device', end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-music' }] }, expect: r => [
+  ['it says it could not save', /Couldn't save/.test(r.saved || ''), String(r.saved)],
+  ['the switch is back where it was', r.musicChecked === 'false', String(r.musicChecked)],
+] });
+scenarios.push({ name: 'Settings: menu music that saves says Saved and stays on', s: { ...base, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-music' }] }, expect: r => [
+  ['it says Saved', r.saved === 'Saved', String(r.saved)],
+  ['the switch is on', r.musicChecked === 'true', String(r.musicChecked)],
 ] });
 
 const chrome = findChrome();

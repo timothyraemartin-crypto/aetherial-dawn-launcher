@@ -1206,18 +1206,25 @@
   };
   // A short confirmation next to DONE after a setting changes.
   let savedTimer = null;
-  function flashSaved(text) {
+  function flashSaved(text, bad) {
     const el = $('set-saved');
     el.textContent = text;
+    el.className = 'toast ' + (bad ? 'bad' : 'ok');
     clearTimeout(savedTimer);
-    savedTimer = setTimeout(() => { el.textContent = ''; }, 2500);
+    // A failure stays longer: it is the one the player has to notice.
+    savedTimer = setTimeout(() => { el.textContent = ''; el.className = 'toast'; }, bad ? 6000 : 2500);
   }
   $('set-anim').setAttribute('aria-checked', Ambient.enabled);
   $('set-anim').onclick = () => { Ambient.set(!Ambient.enabled); $('set-anim').setAttribute('aria-checked', Ambient.enabled); flashSaved('Saved'); };
   const setMusic = async on => {
+    const before = $('set-music').getAttribute('aria-checked');
     $('set-music').setAttribute('aria-checked', on);
     state.config.music = on;
-    await invoke('set_music', { on }).then(() => flashSaved('Saved'), () => {});
+    await invoke('set_music', { on }).then(() => flashSaved('Saved'), () => {
+      $('set-music').setAttribute('aria-checked', before);
+      state.config.music = before === 'true';
+      flashSaved("Couldn't save that setting", true);
+    });
   };
   $('set-music').onclick = () => setMusic($('set-music').getAttribute('aria-checked') !== 'true');
   document.querySelectorAll('.switch:not(#set-anim):not(#set-music)').forEach(s => s.onclick = async () => {
@@ -1229,7 +1236,7 @@
       flashSaved('Saved');
     } catch (_) {
       s.setAttribute('aria-checked', s.getAttribute('aria-checked') !== 'true');
-      flashSaved("Couldn't save that setting");
+      flashSaved("Couldn't save that setting", true);
     }
   });
   $('c-game-pick').onclick = pickFolder;

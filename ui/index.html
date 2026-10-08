@@ -279,6 +279,7 @@
 
   <!-- ===== settings ===== -->
   <div class="sheet" id="settings" role="dialog" aria-modal="true" aria-label="Settings" tabindex="-1" hidden>
+    <div class="toast" id="set-saved" role="status" aria-live="polite"></div>
     <div class="panel">
       <h2>Settings</h2>
       <div class="account" id="set-account" hidden><span class="avatar" id="acc-avatar"></span><div><b id="acc-name"></b><small id="acc-note">Signed in with Discord</small></div><button class="btn" id="acc-signout">Sign out</button></div>
@@ -315,7 +316,7 @@
         <div class="line"><button class="btn" id="set-health">Check my game</button><button class="btn" id="set-diag">Copy diagnostics</button><button class="btn" id="set-logs">Open log folder</button></div>
         <small class="note" id="set-diag-note" hidden></small>
       </div>
-      <div class="actions"><button class="btn primary" id="set-done">DONE</button><button class="btn" id="set-update">Check for updates</button><span class="note" id="set-version"></span><span class="saved" id="set-saved" role="status" aria-live="polite"></span></div>
+      <div class="actions"><button class="btn primary" id="set-done">DONE</button><button class="btn" id="set-update">Check for updates</button><span class="note" id="set-version"></span></div>
     </div>
   </div>
 </div>
