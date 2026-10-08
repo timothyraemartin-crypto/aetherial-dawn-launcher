@@ -141,9 +141,10 @@ function fakeBackEnd() {
     setTimeout(() => {
       try { log.lastReady = JSON.parse(localStorage.getItem('ad.lastReady')); } catch (_) {}
       log.signinShown = !document.getElementById('signin').hidden;
-      const stepsOf = id => { const ol = document.querySelector('#' + id + ' .steps'); return ol ? [...ol.children].map(li => li.textContent.trim() + (li.getAttribute('aria-current') ? '*' : '')) : null; };
+      const stepsOf = id => { const ol = document.querySelector('#' + id + ' .steps'); return ol ? [...ol.children].map(li => li.textContent.trim().replace(/,\s*/, ' ') + (li.getAttribute('aria-current') ? '*' : '')) : null; };
       log.steps = { first: stepsOf('first'), signin: stepsOf('signin') };
       log.siAfter = document.querySelector('#signin .panel').getBoundingClientRect().height;
+      { const o = document.querySelector('#signin .steps'); const l = o && o.children; log.stepColors = l ? { other: getComputedStyle(l[2]).color, now: getComputedStyle(l[1]).color, muted: getComputedStyle(document.documentElement).getPropertyValue('--muted').trim() } : null; log.slotRole = (document.querySelector('#signin .si-slot') || {}).getAttribute ? document.querySelector('#signin .si-slot').getAttribute('role') : null; }
       log.siGoLabel = document.getElementById('si-go').textContent.trim();
       log.siGoDisabled = document.getElementById('si-go').disabled;
       log.status = document.getElementById('status').textContent;
@@ -789,7 +790,10 @@ scenarios.push({ name: 'Settings: menu music that saves says Saved and stays on'
 
 scenarios.push({ name: 'First run and sign-in: a step indicator shows where the player is', s: { ...signedOut, end: 3000 }, expect: r => [
   ['first run lists three steps with the first current', JSON.stringify(r.steps.first) === JSON.stringify(['Your game*', 'Sign in', 'Play']), JSON.stringify(r.steps.first)],
-  ['sign-in lists the same steps with the second current', JSON.stringify(r.steps.signin) === JSON.stringify(['Your game', 'Sign in*', 'Play']), JSON.stringify(r.steps.signin)],
+  ['the finished step is marked done for screen readers', /done/.test((r.steps.signin || [])[0] || ''), JSON.stringify(r.steps.signin)],
+  ['steps still to do are readable (the muted colour, not the faint one)', !!r.stepColors && r.stepColors.other !== 'rgb(102, 114, 127)', JSON.stringify(r.stepColors)],
+  ['the waiting line is a status message', r.slotRole === 'status', String(r.slotRole)],
+  ['sign-in lists the same steps with the second current', JSON.stringify(r.steps.signin) === JSON.stringify(['Your game done', 'Sign in*', 'Play']), JSON.stringify(r.steps.signin)],
 ] });
 scenarios.push({ name: 'Sign-in: waiting for the browser keeps the dialog the same size and says so on the button', s: { ...signedOut, signIn: { doneAfter: 60 * 1000 }, end: 5000 }, expect: r => [
   ['the dialog does not change height while waiting', Math.abs(r.siAfter - r.siBefore) < 1, JSON.stringify([r.siBefore, r.siAfter])],
