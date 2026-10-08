@@ -296,7 +296,7 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .play-gate p { margin: 0 0 6px; }
 .play-gate-btns { display: flex; gap: 14px; justify-content: center; }
 .play-gate .linkish { margin-left: 0; }
-.play-below { width: 100%; display: grid; gap: 10px; justify-items: center; align-content: start; min-height: 46px; }
+.play-below { width: 100%; display: grid; gap: 10px; justify-items: center; align-content: start; min-height: 20px; }
 .play-hint { margin: -2px 0 0; font-size: 12px; color: var(--muted); text-align: center; }
 @keyframes ready-glow { 0%, 100% { opacity: .15; } 50% { opacity: .7; } }
 @keyframes play-shimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }

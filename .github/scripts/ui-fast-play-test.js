@@ -154,6 +154,19 @@ function fakeBackEnd() {
         log.jank = { base: base0 };
         for (const [el, was] of before) { el.hidden = false; log.jank[el.id] = Math.round((top() - base0) * 10) / 10; el.hidden = true; }
         before.forEach(([el, was]) => { el.hidden = was; });
+        // The status line under the button changes with state: a short line, an error with the Copy button, maintenance, a long list.
+        const st = document.getElementById('status'), keep = st.innerHTML;
+        const samples = {
+          'a short status line': '<span><i class="dot"></i>Server online</span><span>v0.1.0</span>',
+          'an error with Copy details': '<span class="error">Couldn\'t reach the Aetherial Dawn server. Check your internet; the launcher tries again every minute.</span><span class="copy-row"><button class="btn small" id="x">Copy details for staff</button><span class="copy-note"></span></span><span>v0.1.0</span>',
+          'maintenance': '<span><i class="dot"></i>Server online</span><span class="error">Server maintenance: back at 18:00 UTC, thanks for waiting</span><span>v0.1.0</span>',
+          'a long missing-mods line': '<span>Skyrim Script Extender, Unofficial Skyrim Special Edition Patch, SkyUI, Address Library for SKSE Plugins, powerofthree\'s Tweaks and 6 more still need game files</span><span>v0.1.0</span>',
+        };
+        log.jankStatus = {};
+        st.innerHTML = samples['a short status line'];
+        const sBase = top();
+        for (const [name, html] of Object.entries(samples)) { st.innerHTML = html; log.jankStatus[name] = Math.round((top() - sBase) * 10) / 10; }
+        st.innerHTML = keep;
       }
       log.siGoLabel = document.getElementById('si-go').textContent.trim();
       log.siGoDisabled = document.getElementById('si-go').disabled;
@@ -819,7 +832,8 @@ scenarios.push({ name: 'Settings: screen readers hear Saved politely and a failu
 
 const chrome = findChrome();
 let failed = 0;
-scenarios.push({ name: 'Home: optional rows do not move the Play button', s: { ...base, clicks: [], jank: true, end: 3000 }, expect: r => Object.entries(r.jank).filter(([k]) => k !== 'base').map(([k, d]) => [`showing ${k} moves Play by ${d}px`, Math.abs(d) < 1, String(d)]) });
+scenarios.push({ name: 'Home: optional rows do not move the Play button', s: { ...base, clicks: [], jank: true, end: 3000 }, expect: r => [...Object.entries(r.jank).filter(([k]) => k !== 'base').map(([k, d]) => [`showing ${k} moves Play by ${d}px`, Math.abs(d) < 1, String(d)]),
+  ...Object.entries(r.jankStatus).map(([k, d]) => [`${k} moves Play by ${d}px`, Math.abs(d) < 1, String(d)])] });
 for (const sc of scenarios) {
   if (process.env.AD_UI_SCENARIO && !sc.name.includes(process.env.AD_UI_SCENARIO)) continue;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-ui-'));
