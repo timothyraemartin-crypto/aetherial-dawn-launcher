@@ -610,6 +610,7 @@
     el.hidden = !message;
     $('si-wait').hidden = true;
     $('si-go').disabled = false;
+    $('si-go-label').textContent = 'SIGN IN WITH DISCORD';
     showSheet('signin');
   }
   async function signedInNow() {
@@ -629,6 +630,7 @@
     try { st = await invoke('auth_begin'); }
     catch (e) { showSignIn("Couldn't open your browser. " + e); return; }
     $('si-go').disabled = true;
+    $('si-go-label').textContent = 'WAITING FOR DISCORD…';
     $('si-wait').hidden = false;
     // The launcher gives up on the browser after 5 minutes and says so; this
     // later limit only covers a launcher that stops answering, so a sign-in
@@ -1389,7 +1391,7 @@
   $('f-go').onclick = () => { if (!signedIn()) { showSignIn(); return; } showPage('home'); check(); };
   $('f-retry').onclick = () => window.location.reload();
   $('si-go').onclick = beginSignIn;
-  $('si-cancel').onclick = () => { signInRun++; $('si-wait').hidden = true; $('si-go').disabled = false; };
+  $('si-cancel').onclick = () => { signInRun++; $('si-wait').hidden = true; $('si-go').disabled = false; $('si-go-label').textContent = 'SIGN IN WITH DISCORD'; };
   $('set-diag').onclick = async () => {
     const note = $('set-diag-note');
     try {
