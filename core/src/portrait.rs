@@ -266,12 +266,7 @@ pub mod grab {
     /// The game window's handle, found by its class, then by its title.
     fn find() -> Option<*mut core::ffi::c_void> {
         let name = wide("Skyrim Special Edition");
-        for hwnd in [unsafe { FindWindowW(name.as_ptr(), null()) }, unsafe { FindWindowW(null(), name.as_ptr()) }] {
-            if !hwnd.is_null() {
-                return Some(hwnd);
-            }
-        }
-        None
+        [unsafe { FindWindowW(name.as_ptr(), null()) }, unsafe { FindWindowW(null(), name.as_ptr()) }].into_iter().find(|hwnd| !hwnd.is_null())
     }
 
     /// The game window's picture as RGBA and its size.
@@ -316,9 +311,9 @@ pub mod grab {
                 return Err(fail("the screen copy failed"));
             }
             // GDI gives BGRX; make it RGBA, opaque.
-            for p in px.chunks_exact_mut(4) {
-                p.swap(0, 2);
-                p[3] = 255;
+            for at in (0..px.len()).step_by(4) {
+                px.swap(at, at + 2);
+                px[at + 3] = 255;
             }
             Ok((px, (w as u32, h as u32)))
         }
