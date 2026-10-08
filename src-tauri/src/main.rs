@@ -2124,6 +2124,34 @@ async fn open_game_folder(state: State<'_, AppState>) -> CmdResult<()> {
     std::process::Command::new(opener).arg(dir).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// The first-run checklist on Home (core/src/setup.rs), from checks the
+/// launcher already makes. Nothing here changes anything on the PC.
+#[tauri::command]
+async fn setup_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<launcher_core::setup::Step>> {
+    let dir = state.config.lock().await.game_dir.clone();
+    let spec = state.manifest.lock().await.as_ref().and_then(|m| m.game.clone());
+    let signed_in = token(&app).is_some();
+    let inputs = match dir {
+        Some(dir) => tokio::task::spawn_blocking(move || {
+            let version = spec.as_ref().map(|s| !version::check(&dir, Some(s)).needed);
+            let game_dir_ok = game::inspect(&dir).is_ok();
+            let req = launcher_core::clientstatus::required(&dir, None);
+            let has = |name: &str| req.iter().find(|(n, _)| *n == name).is_some_and(|(_, ok)| *ok);
+            launcher_core::setup::Inputs {
+                game_folder: game_dir_ok,
+                game_version_ok: version,
+                skse: has("SKSE64"),
+                helper_mods: req.iter().all(|(_, ok)| *ok),
+                signed_in,
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())?,
+        None => launcher_core::setup::Inputs { signed_in, ..Default::default() },
+    };
+    Ok(launcher_core::setup::steps(&inputs))
+}
+
 /// Server state for the home screen and the server page. Up/down and players
 /// come live from the login service's public /health (the game server checks
 /// in there every 5 s); the optional `status.json` adds news and the last reset.
@@ -2429,7 +2457,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, health_check, report_problem, patch_game, game_running, self_update_begin, self_update_end, music_start, set_music, mods::open_mod_page, export::export_key_saved, export::export_key_save, export::export_key_forget, mods::mods_state, mods::vortex_connect, restore_set_aside, skip_tool, window_ready, open_invite])
+        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, setup_state, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, health_check, report_problem, patch_game, game_running, self_update_begin, self_update_end, music_start, set_music, mods::open_mod_page, export::export_key_saved, export::export_key_save, export::export_key_forget, mods::mods_state, mods::vortex_connect, restore_set_aside, skip_tool, window_ready, open_invite])
         .build(tauri::generate_context!())
         .expect("error while running the launcher")
         .run(|_, event| {

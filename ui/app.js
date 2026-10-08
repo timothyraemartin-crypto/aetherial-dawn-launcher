@@ -4,7 +4,7 @@
   // Every command's failure (and the outcome of the important ones) goes to the
   // launcher log, so Copy diagnostics shows what happened. Nothing secret
   // reaches the UI, so nothing secret can be logged from here.
-  const QUIET = new Set(['log_ui', 'diagnostics', 'files', 'server_status', 'auth_poll', 'game_running']);
+  const QUIET = new Set(['log_ui', 'diagnostics', 'files', 'server_status', 'setup_state', 'auth_poll', 'game_running']);
   const logUi = msg => { try { T.core.invoke('log_ui', { msg: String(msg) }).catch(() => {}); } catch {} };
   const invoke = async (cmd, args) => {
     const t = performance.now();
@@ -78,7 +78,7 @@
     hint.hidden = false;
     hint.style.visibility = $('play-wrap').dataset.state === 'ready' ? 'visible' : 'hidden';
   }
-  function markHintSeen() { try { localStorage.setItem(HINT_KEY, '1'); } catch (_) {} showHint(); }
+  function markHintSeen() { try { localStorage.setItem(HINT_KEY, '1'); } catch (_) {} showHint(); if ($('setup')) $('setup').hidden = true; }
   let statusMsg = null;
   function setStatus(msg, isError) {
     statusMsg = msg ? { msg, isError } : null;
@@ -392,7 +392,20 @@
   }
 
   let helperWarning = null;
+  // The first-run checklist on Home: shown until the player has started the
+  // game once, or while every step is done there is nothing to show.
+  let setupSeq = 0;
+  async function refreshSetup() {
+    const box = $('setup'), seq = ++setupSeq;
+    if (!box || hintSeen()) { if (box) box.hidden = true; return; }
+    const steps = await invoke('setup_state').catch(() => null);
+    if (seq !== setupSeq) return;
+    if (!Array.isArray(steps) || steps.every(s => s.done)) { box.hidden = true; return; }
+    $('setup-list').innerHTML = steps.map(s => `<li class="${s.done ? 'done' : 'todo'}"><i aria-hidden="true"></i><b>${esc(s.title)}${s.done ? ' (done)' : ''}</b><small>${esc(s.hint)}</small></li>`).join('');
+    box.hidden = false;
+  }
   function ready() {
+    refreshSetup();
     // Only a current check or a completed update can claim file readiness.
     if (!pending || pending.files || pending.remove) {
       setPlay('retry', 'RECHECK');
