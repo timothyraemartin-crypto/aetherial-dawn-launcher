@@ -271,6 +271,18 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .whatsnew { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
 .whatsnew summary { cursor: pointer; color: var(--faint); text-decoration: underline; text-underline-offset: 3px; width: max-content; margin: 0 auto; }
 .whatsnew ul { margin: 6px 0 0; padding-left: 18px; text-align: left; }
+.setup { margin: 14px 0 0; }
+.setup ol { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.setup li { display: grid; grid-template-columns: 18px 1fr; gap: 0 8px; font-size: 13px; color: var(--muted); }
+.setup li i { grid-row: 1 / 3; width: 12px; height: 12px; margin-top: 3px; border-radius: 50%; border: 1px solid var(--faint); }
+.setup li.done i { background: var(--ok, #6bbf8a); border-color: transparent; }
+.setup li.done b { font-weight: 400; text-decoration: line-through; }
+.setup li small { color: var(--faint); font-size: 12px; }
+.setup li.done small { display: none; }
+.play-gate { margin: 6px 0 0; padding: 8px 12px; border: 1px solid var(--faint); border-radius: 6px; text-align: center; font-size: 12px; color: var(--muted); }
+.play-gate p { margin: 0 0 6px; }
+.play-gate-btns { display: flex; gap: 14px; justify-content: center; }
+.play-gate .linkish { margin-left: 0; }
 .play-hint { margin: -2px 0 0; font-size: 12px; color: var(--muted); text-align: center; }
 @keyframes ready-glow { 0%, 100% { opacity: .15; } 50% { opacity: .7; } }
 @keyframes play-shimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }

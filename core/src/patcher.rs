@@ -274,7 +274,7 @@ pub fn build(from: &Path, to: &Path, target: &str, out: &Path, mut log: impl FnM
         index.files[pos].patches.push(p);
     }
     index.files.sort_by(|a, b| a.path.cmp(&b.path));
-    std::fs::write(&index_path, serde_json::to_vec_pretty(&index)?)?;
+    crate::atomicfile::write(&index_path, &serde_json::to_vec_pretty(&index)?)?;
     Ok(index)
 }
 

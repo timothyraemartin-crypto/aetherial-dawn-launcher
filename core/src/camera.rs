@@ -108,14 +108,14 @@ pub fn apply_once(game_dir: &Path) -> std::io::Result<Option<String>> {
     if let Some(p) = sc.parent() {
         std::fs::create_dir_all(p)?;
     }
-    std::fs::write(&sc, serde_json::to_string_pretty(&config)?)?;
+    crate::atomicfile::safe_write(&sc, serde_json::to_string_pretty(&config)?.as_bytes())?;
 
     let m = Marker { version: PRESET_VERSION, when: now, files: vec![SMOOTHCAM_JSON.to_string()], preset: Some(file.clone()) };
     let mp = game_dir.join(MARKER);
     if let Some(p) = mp.parent() {
         std::fs::create_dir_all(p)?;
     }
-    std::fs::write(mp, serde_json::to_vec_pretty(&m)?)?;
+    crate::atomicfile::write(&mp, &serde_json::to_vec_pretty(&m)?)?;
     Ok(Some(file))
 }
 

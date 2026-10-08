@@ -217,7 +217,7 @@ fn save(game_dir: &Path, r: &BTreeMap<String, Done>) -> Result<()> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d)?;
     }
-    std::fs::write(p, serde_json::to_vec_pretty(r)?)?;
+    crate::atomicfile::write(&p, &serde_json::to_vec_pretty(r)?)?;
     Ok(())
 }
 

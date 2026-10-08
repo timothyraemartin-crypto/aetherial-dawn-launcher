@@ -30,6 +30,7 @@ pub mod requirements;
 pub mod serverlane;
 pub mod serverorder;
 pub mod settings;
+pub mod setup;
 pub mod skse;
 pub mod strays;
 pub mod sync;
