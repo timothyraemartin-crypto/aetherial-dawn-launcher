@@ -15,6 +15,8 @@ const PROTECTED = ['.github/', 'deploy/', '.claude/', 'package.json', 'package-l
 const DEPLOY = { 'aetherial-dawn-ingame-ui': { test: 'test.yml', deploy: 'deploy-server.yml', inputs: { apply: 'true' } },
   'aetherial-dawn-discord': { test: 'test.yml', deploy: 'deploy-server.yml', inputs: { ref: 'main' } } };
 const MIN_AGE_MS = 3 * 60_000;
+const RETRY_MS = 2 * 3_600_000;
+const TRANSIENT = /^(CI is still running|The fix was pushed minutes ago)/;
 
 const touched = (names) => names.filter((n) => PROTECTED.some((p) => (p.endsWith('/') ? n.startsWith(p) : n === p || n.endsWith(`/${p}`))));
 const labelsOf = (o) => (o.labels || []).map((l) => l.name);
@@ -115,7 +117,13 @@ async function decide({ gh, bot, graphql, repo, dry, log, now, addLabel, removeL
       if (!pull.head.sha.toLowerCase().startsWith(d.sha.toLowerCase())) { report('refused', 'The pull request changed after you were asked. A new question follows within minutes.'); continue; }
       const files = await gh('GET', `/pulls/${d.number}/files?per_page=100`);
       const why = await gate(gh, pull, files, now);
-      if (why) { report('refused', why); continue; }
+      if (why) {
+        // Only waiting for CI is not a refusal: leave the decision pending and look again next run, for the same
+        // commit (the sha check above still guards it), for up to two hours.
+        if (TRANSIENT.test(why) && now() - (d.at || 0) < RETRY_MS) { log(`${d.key}: ${why} Trying again next run.`); continue; }
+        report('refused', why);
+        continue;
+      }
       if (dry) { log(`${d.key}: would merge ${pull.head.sha.slice(0, 7)}`); continue; }
       if (pull.draft) await graphql('mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}', { id: pull.node_id });
       await gh('PUT', `/pulls/${d.number}/merge`, { sha: pull.head.sha, merge_method: 'merge' });
