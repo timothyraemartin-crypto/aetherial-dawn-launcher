@@ -20,7 +20,11 @@ permissions:
   contents: read
 
 jobs:
+  # Pull requests and main are checked by linux-checks below. The Windows runner is not always
+  # available, so the full Windows build and installer test runs only for release tags and by hand
+  # (Actions > Build launcher > Run workflow).
   windows:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: [self-hosted, windows, x64]
     env:
       # Where the server publishes launcher files, and the Discord login service.
@@ -178,6 +182,32 @@ jobs:
           name: aetherial-dawn-launcher-windows
           path: dist/*
           if-no-files-found: error
+
+  # What pull requests and main get while the Windows build is release-only: the cross-platform
+  # checks, on the Linux runner. cfg(windows) code, the Tauri build and the installer test are
+  # not covered here.
+  linux-checks:
+    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v')
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Test launcher-core
+        run: cargo test -p launcher-core -- --skip rehearsal
+      - name: Clippy launcher-core
+        run: cargo clippy -p launcher-core --all-targets --locked -- -D warnings
+      - name: UI and Tauri command contract
+        run: node .github/scripts/ui-contract-test.js
+      - name: Discord notice checks
+        run: node --test .github/scripts/patch-notes.test.js
+      - name: Vortex extension checks
+        run: node --test "vortex-extension/test/*.test.js"
 
   # The canonical-plugins tool for the server (staging runbook C): the VPS has
   # no Rust, so it downloads this build from the release instead. Static

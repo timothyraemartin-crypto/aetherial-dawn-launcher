@@ -4,7 +4,7 @@ Every workflow job except `bug-investigate.yml` runs on one of two runners:
 
 | Labels | Where | Jobs |
 |---|---|---|
-| `self-hosted, windows, x64` | native Windows, dedicated local user | `build.yml` `windows` (tests, clippy, Tauri NSIS build, signed release build, installer test) |
+| `self-hosted, windows, x64` | native Windows, dedicated local user | `build.yml` `windows`, release tags and manual runs only; PRs and main use `linux-checks` (tests, clippy, Tauri NSIS build, signed release build, installer test) |
 | `self-hosted, linux, x64` | WSL2 Ubuntu 22.04+ | everything else (`canonical-plugins-linux`, `release`, contract, scripts, publish-feed, autofix-bridge, capture-errors) |
 
 No macOS jobs exist. `bug-investigate.yml` stays on GitHub-hosted runners: its verify job runs a model-written patch.
