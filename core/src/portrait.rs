@@ -255,7 +255,7 @@ pub mod grab {
 
     use windows_sys::Win32::Foundation::{POINT, RECT};
     use windows_sys::Win32::Graphics::Gdi::*;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{ClientToScreen, FindWindowW, GetClientRect, GetForegroundWindow, IsIconic};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, GetClientRect, GetForegroundWindow, IsIconic};
 
     use crate::{Error, Result};
 
