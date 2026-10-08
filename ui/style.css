@@ -166,7 +166,7 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .status > span { position: relative; }
 /* The "|" sits in the gap between items, so it takes no width: hiding it at the start of a wrapped line cannot change how the line wraps. */
 .status span + span:not(.error):not(.copy-row)::before { content: "|"; position: absolute; left: -10px; width: 10px; text-align: center; color: var(--faint); }
-.status span.row-start:not(.error)::before { content: none; }
+.status span + span.row-start:not(.error):not(.copy-row)::before, .status > span.row-start:not(.error):not(.copy-row)::before { content: none; }
 .status .error { color: var(--warn); }
 .status .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); margin-right: 6px; vertical-align: 1px; box-shadow: 0 0 0 3px rgba(92,201,138,.18); }
 .status .dot.off { background: var(--faint); box-shadow: none; }
