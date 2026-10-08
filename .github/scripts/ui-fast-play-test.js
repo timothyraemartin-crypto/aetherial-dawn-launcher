@@ -50,7 +50,7 @@ function fakeBackEnd() {
     update: () => null,
     server_status: () => ({ online: true, players: 1, maxPlayers: 50, ...(typeof S.statusNow === 'object' ? S.statusNow : {}), discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
     setup_state: () => S.setup || [{ id: 'folder', title: 'Choose your Skyrim folder', hint: 'x', done: true }],
-    files: () => S.files || [], play: () => S.playWarnings || null,
+    files: () => S.files || [], files_state: () => S.fileStates || [], play: () => S.playWarnings || null,
     patch_game: () => S.patchResult || { ...game, needed: false },
     game_running: () => !!S.outsideGame,
     self_update_begin: () => !S.updateReservationFails,
@@ -83,6 +83,7 @@ function fakeBackEnd() {
         if (cmd === 'set_game_dir' && S.setDirError) return rej(S.setDirError);
         if (cmd === 'set_game_dir' && S.picks && S.picks.find(p => p.dir === args.dir && p.error)) return rej(S.picks.find(p => p.dir === args.dir).error);
         if (cmd === 'update' && S.updateError) return rej(S.updateError);
+        if (cmd === 'files_state' && S.fileStatesError) return rej(S.fileStatesError);
         if (cmd === 'diagnostics') return res('diagnostics text');
         if (cmd === 'play' && S.playError && !S.played) { S.played = true; return rej(S.playError); }
         res(answers[cmd] ? answers[cmd](args || {}) : null);
@@ -212,7 +213,8 @@ function fakeBackEnd() {
       log.readyAnim = getComputedStyle(document.getElementById('play-wrap')).animationName;
       log.copied = log.copied || null;
       log.statusUi = { text: status.textContent, copy: !!document.getElementById('status-copy'), errorClass: !!document.querySelector('#status .error'), minH: parseFloat(getComputedStyle(status).minHeight) || 0, lineH: parseFloat(getComputedStyle(status).lineHeight) || 0, dividerAfterError: (() => { const e = document.querySelector('#status .error'); const n = e && e.nextElementSibling && e.nextElementSibling.tagName === 'SPAN' ? e.nextElementSibling : null; return n ? getComputedStyle(n, '::before').content : null; })() };
-      log.fileRows = [...document.querySelectorAll('#files-body tr')].map(tr => ({ skel: tr.classList.contains('skel'), name: (tr.querySelector('.fname') || {}).textContent || null, dir: (tr.querySelector('.fdir') || {}).textContent || null }));
+      log.fileRows = [...document.querySelectorAll('#files-body tr')].map(tr => ({ skel: tr.classList.contains('skel'), name: (tr.querySelector('.fname') || {}).textContent || null, dir: (tr.querySelector('.fdir') || {}).textContent || null, cells: tr.children.length, state: (tr.querySelector('.fstate') || {}).textContent || null, stateCls: (tr.querySelector('.fstate') || {}).className || null }));
+      log.modsSummary = document.getElementById('mods-summary').textContent;
       const alpha = c => { const m = /rgba?\([^)]*?,\s*([\d.]+)\)$/.exec(c); return m ? parseFloat(m[1]) : 1; };
       log.pageAlpha = alpha(getComputedStyle(document.querySelector('#page-mods .ftable-wrap')).backgroundColor);
       const sk = document.querySelector('#files-body tr.skel i');
@@ -864,6 +866,23 @@ scenarios.push({ name: 'Status line: no separator at the start of a line', s: { 
   [`state ${n + 1}: no separator on the first item of a line`, row.every(k => !(k.rowStart && k.sep)), JSON.stringify(row)],
   [`state ${n + 1}: the other items keep theirs`, row.every(k => k.rowStart || k.error || k.sep), JSON.stringify(row)]
 ]) });
+const stateFiles = [{ path: 'Data/Meshes/rock.nif', size: 2048 }, { path: 'Readme.txt', size: 10 }, { path: 'Data/SKSE/new.dll', size: 99 }];
+scenarios.push({ name: 'Mods page: each file says whether it is up to date, needs an update or is missing', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Data/Meshes/rock.nif', state: 'current' }, { path: 'Readme.txt', state: 'changed' }, { path: 'Data/SKSE/new.dll', state: 'missing' }], end: 4000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
+  ['a current file says Up to date', r.fileRows[0] && r.fileRows[0].state === 'Up to date', JSON.stringify(r.fileRows[0])],
+  ['a changed file says Update needed', r.fileRows[1] && r.fileRows[1].state === 'Update needed', JSON.stringify(r.fileRows[1])],
+  ['a missing file says Missing', r.fileRows[2] && r.fileRows[2].state === 'Missing', JSON.stringify(r.fileRows[2])],
+  ['only files that need attention use the warning style', /\bok\b/.test(r.fileRows[0].stateCls) && /\bwarn\b/.test(r.fileRows[1].stateCls) && /\bwarn\b/.test(r.fileRows[2].stateCls), JSON.stringify(r.fileRows.map(x => x.stateCls))],
+  ['the summary counts what needs attention', /2 need attention/.test(r.modsSummary), r.modsSummary],
+  ['every row has the same three cells', r.fileRows.every(x => x.cells === 3), JSON.stringify(r.fileRows.map(x => x.cells))],
+] });
+scenarios.push({ name: 'Mods page: when the state cannot be read the list still shows, with a dash', s: { ...base, clicks: [], files: stateFiles, fileStatesError: 'no game folder', end: 4000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
+  ['all files are still listed', r.fileRows.length === 3 && r.fileRows.every(x => x.name), JSON.stringify(r.fileRows.map(x => x.name))],
+  ['each row shows a dash, not an error', r.fileRows.every(x => x.state === '–'), JSON.stringify(r.fileRows.map(x => x.state))],
+  ['the summary does not claim anything is wrong', !/need attention/.test(r.modsSummary), r.modsSummary],
+] });
+scenarios.push({ name: 'Mods page: placeholder rows have all three cells', s: { ...base, clicks: [], files: stateFiles, delay: { files: 3000 }, end: 2500, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
+  ['placeholder rows keep the three columns', r.fileRows.length >= 3 && r.fileRows.every(x => x.skel && x.cells === 3), JSON.stringify(r.fileRows.map(x => x.cells))],
+] });
 for (const sc of scenarios) {
   if (process.env.AD_UI_SCENARIO && !sc.name.includes(process.env.AD_UI_SCENARIO)) continue;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-ui-'));

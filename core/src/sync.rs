@@ -145,6 +145,45 @@ pub async fn plan(game_dir: &Path, manifest: &Manifest, verify_all: bool) -> Res
     Ok(Plan { download, remove, kept, download_bytes })
 }
 
+/// Where one listed file stands on this PC, for the Game files page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileSync {
+    /// The file is here and matches the server's copy.
+    Current,
+    /// The file is here but differs, so an update will replace it.
+    Changed,
+    /// The file isn't here, so an update will download it.
+    Missing,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FileState {
+    pub path: String,
+    pub state: FileSync,
+}
+
+/// Each listed file's state, in the manifest's order. Reads the same hash
+/// cache as `plan`, so it is just as quick, and anything not `Current` is in
+/// `plan`'s download list.
+pub async fn file_states(game_dir: &Path, manifest: &Manifest) -> Result<Vec<FileState>> {
+    let mut cache = HashCache::load(game_dir);
+    let mut out = Vec::new();
+    for f in &manifest.files {
+        if f.path == SETTINGS_PATH {
+            continue;
+        }
+        let state = match cache.hash(game_dir, &f.path, false).await? {
+            None => FileSync::Missing,
+            Some(h) if h.eq_ignore_ascii_case(&f.sha256) => FileSync::Current,
+            Some(_) => FileSync::Changed,
+        };
+        out.push(FileState { path: f.path.clone(), state });
+    }
+    cache.save(game_dir)?;
+    Ok(out)
+}
+
 /// A file the server's list asks to remove goes only if the launcher put it
 /// there (an earlier file list had it, so it's in the hash cache) and it isn't
 /// one of Skyrim's own files. The remove list can't be used to delete a
@@ -308,6 +347,41 @@ mod tests {
         let cached = plan(dir.path(), &m, false).await.unwrap();
         assert_eq!(cached.download.len(), 2);
         assert!(dir.path().join(CACHE_PATH).exists());
+    }
+
+    #[tokio::test]
+    async fn file_states_say_which_files_are_current_changed_or_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Data")).unwrap();
+        std::fs::write(dir.path().join("Data/same.js"), b"same").unwrap();
+        std::fs::write(dir.path().join("Data/edited.js"), b"old!").unwrap();
+        let m = manifest(
+            vec![
+                entry("Data/same.js", b"same"),
+                entry("Data/edited.js", b"new!"),
+                entry("Data/missing.js", b"hello"),
+                entry(SETTINGS_PATH, b"{}"),
+            ],
+            vec![],
+        );
+        let states = file_states(dir.path(), &m).await.unwrap();
+        let got: Vec<_> = states.iter().map(|s| (s.path.as_str(), s.state)).collect();
+        assert_eq!(
+            got,
+            [
+                ("Data/same.js", FileSync::Current),
+                ("Data/edited.js", FileSync::Changed),
+                ("Data/missing.js", FileSync::Missing),
+            ],
+            "the player's own settings file is never listed, like in the plan"
+        );
+        // It agrees with the plan: everything not current is in the download list.
+        let p = plan(dir.path(), &m, false).await.unwrap();
+        let not_current: Vec<_> = states.iter().filter(|s| s.state != FileSync::Current).map(|s| s.path.clone()).collect();
+        let to_download: Vec<_> = p.download.iter().map(|f| f.path.clone()).collect();
+        assert_eq!(not_current, to_download);
+        // The JSON the page reads.
+        assert_eq!(serde_json::to_value(&states[2]).unwrap(), serde_json::json!({ "path": "Data/missing.js", "state": "missing" }));
     }
 
     #[tokio::test]

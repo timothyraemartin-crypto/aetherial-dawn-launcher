@@ -1015,18 +1015,23 @@
   // ---------- mods page ----------
   async function loadFiles() {
     // Placeholder rows keep the table's height steady while the list loads.
-    if (!$('files-body').children.length) $('files-body').innerHTML = '<tr class="skel"><td><i></i></td><td><i></i></td></tr>'.repeat(5);
-    const files = await invoke('files').catch(() => null);
+    if (!$('files-body').children.length) $('files-body').innerHTML = '<tr class="skel"><td><i></i></td><td><i></i></td><td><i></i></td></tr>'.repeat(5);
+    const [files, marks] = await Promise.all([invoke('files').catch(() => null), invoke('files_state').catch(() => null)]);
     if (!files) {
-      $('files-body').innerHTML = '<tr><td colspan="2">The file list loads after the launcher reaches the server.</td></tr>';
+      $('files-body').innerHTML = '<tr><td colspan="3">The file list loads after the launcher reaches the server.</td></tr>';
       return;
     }
+    // Each file's state on this PC. If it can't be read the rows show a dash and the page claims nothing.
+    const stateOf = new Map(Array.isArray(marks) ? marks.map(m => [m.path, m.state]) : []);
+    const LABEL = { current: ['Up to date', 'ok'], changed: ['Update needed', 'warn'], missing: ['Missing', 'warn'] };
+    const attention = [...stateOf.values()].filter(v => v === 'changed' || v === 'missing').length;
     const total = files.reduce((n, f) => n + f.size, 0);
-    $('mods-summary').textContent = `Build ${pending ? pending.build : ''} · ${plural(files.length, 'file')} · ${mb(total)}. The server decides which files every player needs.`;
+    $('mods-summary').textContent = `Build ${pending ? pending.build : ''} · ${plural(files.length, 'file')} · ${mb(total)}${attention ? ` · ${attention} need attention` : ''}. The server decides which files every player needs.`;
     // The file's own name stands out; its folder sits dimmed in front of it.
     $('files-body').innerHTML = files.map(f => {
       const cut = f.path.lastIndexOf('/') + 1;
-      return `<tr><td title="${esc(f.path)}"><span class="fdir">${esc(f.path.slice(0, cut))}</span><span class="fname">${esc(f.path.slice(cut))}</span></td><td>${mb(f.size)}</td></tr>`;
+      const [label, cls] = LABEL[stateOf.get(f.path)] || ['–', 'none'];
+      return `<tr><td title="${esc(f.path)}"><span class="fdir">${esc(f.path.slice(0, cut))}</span><span class="fname">${esc(f.path.slice(cut))}</span></td><td class="fstate ${cls}">${label}</td><td>${mb(f.size)}</td></tr>`;
     }).join('');
   }
 
