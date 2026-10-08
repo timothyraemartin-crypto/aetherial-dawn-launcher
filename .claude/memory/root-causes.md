@@ -13,3 +13,4 @@ One line per cause: symptom -> root cause -> fix (PR). Add a line whenever you f
 - Windows UAC prompt from a remote session is cancelled -> needs admin terminal -> give Timothy a command only when he is home.
 - A fixed toast scrolled away inside Settings -> an ancestor with backdrop-filter (the scrolling .sheet) becomes the containing block for position: fixed -> keep fixed elements outside any element with backdrop-filter/transform/filter.
 - Play button jumped up when the F3 hint, What's new or a Play-anyway prompt appeared -> the dock is bottom-anchored, so rows added below Play push it up -> put growing rows above Play and reserve a fixed slot for the hint and status below it.
+- Play still moved in error states -> the status line sat below Play and grew downward with long text -> every row that changes height sits above Play; only the fixed hint slot is below.

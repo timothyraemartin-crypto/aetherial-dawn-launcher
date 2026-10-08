@@ -123,7 +123,7 @@
         <div class="bar" id="p-progress" role="progressbar" aria-label="Game file update progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="p-bar"></i></div>
         <div class="prow"><span class="file" id="p-file"></span><span id="p-speed"></span></div>
       </div>
-      <!-- Rows above Play grow upward; the dock is anchored to the bottom, so Play never moves when they show. -->
+      <!-- Everything that changes height sits above Play and grows upward; the dock is anchored to the bottom, so Play never moves. -->
       <details class="whatsnew" id="whatsnew" hidden>
         <summary>What's new</summary>
         <ul id="whatsnew-list"></ul>
@@ -136,6 +136,9 @@
           <button class="linkish" id="gate-cancel" type="button">Cancel</button>
         </div>
       </div>
+      <div class="status" id="status"><span>Checking for updates…</span></div>
+      <!-- What screen readers announce: only the launcher's own messages, not the player count refreshed every 30 s. -->
+      <div class="sr-only" id="status-live" role="status" aria-live="polite"></div>
       <div class="play-wrap off" id="play-wrap">
         <button class="play" id="play" disabled>
           <span id="play-label">CHECKING</span>
@@ -147,9 +150,6 @@
       </div>
       <div class="play-below">
       <p class="play-hint" id="play-hint" hidden>In game, press F3 for the menu.</p>
-      <div class="status" id="status"><span>Checking for updates…</span></div>
-      <!-- What screen readers announce: only the launcher's own messages, not the player count refreshed every 30 s. -->
-      <div class="sr-only" id="status-live" role="status" aria-live="polite"></div>
       </div>
     </div>
   </div>
