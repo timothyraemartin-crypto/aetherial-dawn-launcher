@@ -24,7 +24,7 @@ It's built with [Tauri 2](https://tauri.app). The UI is plain HTML, CSS and JS i
 
 The server serves static files under one base URL, for example `https://vps-d38c928e.vps.ovh.us/launcher`. The full format is in `skymp-setup/launcher/launcher-spec.md` in the project files.
 
-- `client/manifest.json` and `client/files/<sha256>`. Build these with `make-manifest.py` from the SkyMP client build folder.
+- `client/manifest.json` and `client/files/<sha256>`. Build these with `make-manifest.py` from the SkyMP client build folder. Both this and `mods.json` must have a `.sig` next to them (`sign-feed`, [docs/signing-feeds.md](docs/signing-feeds.md)); launchers that have seen a signature refuse the file without one.
 - `app/latest.json` and the installer (optional): a second source for launcher self-updates. The first is the latest GitHub release of this public repo.
 - `status.json` (optional), which feeds the side panel: `{ "online": true, "players": 7, "maxPlayers": 100, "sinceReset": "1d", "news": [{ "date": "26 Sep 2026", "title": "…", "body": "…" }] }`
 
@@ -195,3 +195,7 @@ When the server's `server-lane.json` names a staff member's Discord account, tha
 ## Menu music
 
 Timothy (2026-09-26): quiet Skyrim music in the launcher. Bethesda's music can't ship with the launcher, so `core/src/bsa.rs` reads the main title theme (or an explore track) straight from the player's own `Data/Skyrim - *.bsa` (version 105, LZ4 when compressed) into memory, and `src-tauri/src/music.rs` plays the xWMA with Windows' XAudio2 at 12% volume with a 3-second fade in, looping. Nothing is copied out of the game folder. It stops when Play starts the game. The first time, a small card asks Keep music / Mute; the answer is saved (`music` in the launcher config) and Settings has a Menu music switch. Without a Skyrim folder there's no music.
+
+## Discord patch notes
+When a `vX.Y.Z` release is published, the release job posts player patch notes to Discord (the PRs merged since the previous release, grouped, in plain words) and a line to the staff channel; a failed release also posts to the staff channel. Add two repository secrets, each a Discord channel webhook URL: `AD_PATCHNOTES_WEBHOOK` (player channel) and `AD_STAFF_WEBHOOK` (private staff channel). With none set the steps print "not posted" and the release is unaffected.
+Wording: add `Patch note: Play no longer stalls on the status line.` to the PR description (several lines make several bullets; `Patch note: none` hides the PR). Without one the PR title is cleaned up and used. Preview: `node .github/scripts/patch-notes.js notes --from v0.1.103 --to HEAD`. Tests: `node --test .github/scripts/patch-notes.test.js`.

@@ -1,0 +1,138 @@
+{
+  "$comment": "Launcher <-> login service contract, machine-checked. The discord repo owns this file; the launcher repo keeps an identical copy (contract/launcher-server.json). Change both together. Prose lives in CONTRACT.md. See contract/README.md.",
+  "version": 1,
+  "defaultServerKey": "aetherial-dawn",
+  "endpoints": [
+    {
+      "id": "health",
+      "method": "GET",
+      "path": "/health",
+      "auth": "none",
+      "success": 200,
+      "responses": {
+        "200": {
+          "required": { "gameServerSeen": "boolean" },
+          "optional": { "players": "number|null", "maxPlayers": "number|null", "discordInvite": "string|null" },
+          "example": { "ok": true, "gameServerSeen": true, "players": 3, "maxPlayers": 64, "discordInvite": "https://discord.gg/abc123" }
+        }
+      }
+    },
+    {
+      "id": "login-start",
+      "note": "Opened in the player's browser, never fetched by the launcher. 302 to Discord.",
+      "method": "GET",
+      "path": "/api/users/login-discord",
+      "auth": "none",
+      "browser": true,
+      "query": ["state", "challenge", "port"],
+      "probeQuery": "state=%STATE%&challenge=%CHALLENGE%&port=50123",
+      "success": 302
+    },
+    {
+      "id": "login-token",
+      "method": "POST",
+      "path": "/api/users/login-discord/token",
+      "auth": "none",
+      "request": { "required": { "state": "string", "code": "string", "verifier": "string" } },
+      "success": 200,
+      "launcherHandles": [200, 403, 404, 503],
+      "responses": {
+        "200": {
+          "required": { "token": "string", "masterApiId": "integer", "discordId": "string", "discordUsername": "string" },
+          "optional": { "discordDiscriminator": "string|null", "discordAvatar": "string|null" },
+          "example": { "token": "opaque", "masterApiId": 1, "discordId": "111", "discordUsername": "Dovah", "discordDiscriminator": null, "discordAvatar": null }
+        },
+        "403": { "required": { "error": "string" }, "optional": { "message": "string" }, "example": { "error": "not_member", "message": "Join the Aetherial Dawn Discord first." } },
+        "403/bad_verifier": { "required": { "error": "string" }, "optional": { "message": "string" }, "example": { "error": "bad_verifier", "message": "Sign-in failed. Start again from the launcher." } },
+        "404": { "required": { "error": "string" }, "optional": { "message": "string" }, "example": { "error": "unknown_state" } },
+        "503": { "required": { "error": "string" }, "optional": { "message": "string" }, "example": { "error": "unavailable", "message": "Discord is not answering right now." } }
+      }
+    },
+    {
+      "id": "me",
+      "method": "GET",
+      "path": "/api/users/me",
+      "auth": "token",
+      "success": 200,
+      "launcherHandles": [200, 401, 403],
+      "responses": {
+        "200": {
+          "required": { "masterApiId": "integer", "discordId": "string", "discordUsername": "string" },
+          "optional": { "discordDiscriminator": "string|null", "discordAvatar": "string|null" },
+          "example": { "masterApiId": 1, "discordId": "111", "discordUsername": "Dovah", "discordDiscriminator": null, "discordAvatar": null }
+        },
+        "401": { "required": { "error": "string" }, "optional": { "message": "string" }, "example": { "error": "signed_out", "message": "Please sign in with Discord again." } },
+        "403": { "required": { "error": "string" }, "optional": { "message": "string" }, "example": { "error": "banned", "message": "You are banned from the Aetherial Dawn Discord." } }
+      }
+    },
+    {
+      "id": "play",
+      "method": "POST",
+      "path": "/api/users/me/play/{serverKey}",
+      "auth": "token",
+      "request": { "body": {} },
+      "success": 200,
+      "launcherHandles": [200, 401, 403, 503],
+      "responses": {
+        "200": { "required": { "session": "string" }, "example": { "session": "0123456789abcdef" } },
+        "401": { "required": { "error": "string" }, "optional": { "message": "string" }, "example": { "error": "signed_out", "message": "Please sign in with Discord again." } },
+        "403": { "required": { "error": "string" }, "optional": { "message": "string" }, "example": { "error": "banned", "message": "You are banned from the Aetherial Dawn Discord." } },
+        "503": { "required": { "error": "string" }, "optional": { "message": "string" }, "example": { "error": "maintenance", "message": "Aetherial Dawn is being updated, back shortly" } }
+      }
+    },
+    {
+      "id": "client-status",
+      "note": "Sent on each Play. The launcher treats 404 as 'not set up yet' and ignores other failures.",
+      "method": "POST",
+      "path": "/api/client-status",
+      "auth": "token",
+      "request": {
+        "required": { "launcher": "string", "mods": "object", "required": "object" },
+        "example": { "launcher": "0.1.103", "mods": { "served": 3, "installed": 2, "missing": ["Some Mod"] }, "required": { "ok": true, "missing": [] } }
+      },
+      "success": 202,
+      "launcherHandles": [202, 404, 429]
+    },
+    {
+      "id": "crash-reports",
+      "note": "Staff health/crash report. 404 means the feature is off; 429 carries retryAfter seconds.",
+      "method": "POST",
+      "path": "/api/crash-reports",
+      "auth": "token",
+      "request": {
+        "required": { "kind": "string", "when": "string", "launcher": "string", "build": "string", "checks": "array", "text": "string", "consent": "boolean" },
+        "example": { "kind": "health", "when": "before Play", "launcher": "0.1.103", "build": "3.4.6", "discordId": "111", "discordUsername": "Dovah", "crash": null, "worst": "ok", "likelyCause": null, "checks": [], "text": "All checks passed.", "consent": true }
+      },
+      "success": 202,
+      "launcherHandles": [202, 404, 429],
+      "responses": {
+        "202": { "required": { "reportId": "string" }, "optional": { "likelyCause": "string|null" }, "example": { "ok": true, "reportId": "R-1", "likelyCause": null } }
+      }
+    },
+    {
+      "id": "faces-list",
+      "note": "Not served by the discord repo. The launcher polls it while the game runs. Owner unconfirmed; see contract/README.md.",
+      "method": "GET",
+      "path": "/faces/list",
+      "auth": "token",
+      "server": "external"
+    },
+    {
+      "id": "faces-self",
+      "note": "The player's own face file, uploaded while the game runs. Not served by the discord repo, see faces-list.",
+      "method": "PUT",
+      "path": "/faces/self",
+      "auth": "token",
+      "server": "external"
+    },
+    {
+      "id": "faces-slot",
+      "note": "Not served by the discord repo, see faces-list.",
+      "method": "GET",
+      "path": "/faces/f/{name}.jslot",
+      "auth": "token",
+      "server": "external"
+    }
+  ],
+  "knownGaps": []
+}

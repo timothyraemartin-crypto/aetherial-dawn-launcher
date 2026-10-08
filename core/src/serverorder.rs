@@ -232,13 +232,13 @@ pub fn game_order(game_dir: &Path, plugins_txt: &Path) -> Vec<String> {
         Some((master || l.ends_with(".esm"), p))
     };
     if let Some(ccc) = ccc_paths(game_dir).first() {
-        for n in std::fs::read_to_string(ccc).unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()) {
+        for n in crate::loadorder::read_text(ccc).unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()) {
             if !has(&out, n) && full(n).is_some() {
                 out.push(n.to_string());
             }
         }
     }
-    let active: Vec<String> = std::fs::read_to_string(plugins_txt)
+    let active: Vec<String> = crate::loadorder::read_text(plugins_txt)
         .unwrap_or_default()
         .lines()
         .filter_map(|l| l.trim().strip_prefix('*'))
@@ -349,7 +349,8 @@ pub fn set_exact(game_dir: &Path, plugins_txt: &Path, server: &[ServerPlugin]) -
         let l = n.to_ascii_lowercase();
         find(&data, n).and_then(|p| flags(&p)).is_some_and(|(master, light)| !light && !l.ends_with(".esl") && (master || l.ends_with(".esm")))
     };
-    let text = std::fs::read_to_string(plugins_txt).unwrap_or_default();
+    let file = crate::loadorder::ListFile::read(plugins_txt)?;
+    let text = file.as_ref().map_or("", |f| f.text.as_str());
     let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let name = |l: &str| l.trim().trim_start_matches('*').trim().to_string();
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -373,10 +374,7 @@ pub fn set_exact(game_dir: &Path, plugins_txt: &Path, server: &[ServerPlugin]) -
     if new == text {
         return Ok(false);
     }
-    if !text.is_empty() {
-        crate::loadorder::keep_backup(plugins_txt, &text)?;
-    }
-    std::fs::write(plugins_txt, new)?;
+    crate::loadorder::write_list(plugins_txt, file.as_ref(), &new)?;
     Ok(true)
 }
 
@@ -419,6 +417,25 @@ mod tests {
         b.extend(flags.to_le_bytes());
         b.extend([0u8; 12]);
         b
+    }
+
+    #[test]
+    fn set_exact_keeps_an_ansi_plugins_txt_and_refuses_an_unreadable_one() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        std::fs::create_dir_all(g.join("Data")).unwrap();
+        let txt = g.join("plugins.txt");
+        std::fs::write(&txt, b"*Caf\xE9.esp\r\n*Mine.esp\r\n").unwrap();
+        let server = vec![sp("Server.esp")];
+        assert!(set_exact(g, &txt, &server).unwrap());
+        let out = std::fs::read(&txt).unwrap();
+        assert!(out.windows(4).any(|w| w == b"Caf\xE9"), "the accented name survives: {out:?}");
+        assert_eq!(std::fs::read(g.join("plugins.txt.aetherial-dawn-backup")).unwrap(), b"*Caf\xE9.esp\r\n*Mine.esp\r\n");
+
+        let bad = g.join("dir.txt");
+        std::fs::create_dir(&bad).unwrap();
+        assert!(set_exact(g, &bad, &server).is_err());
+        assert!(bad.is_dir());
     }
 
     fn sp(n: &str) -> ServerPlugin {

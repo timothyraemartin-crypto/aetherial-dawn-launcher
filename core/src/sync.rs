@@ -79,6 +79,8 @@ impl HashCache {
 pub struct Plan {
     pub download: Vec<FileEntry>,
     pub remove: Vec<String>,
+    /// Listed to remove, but not the launcher's to delete.
+    pub kept: Vec<String>,
     pub download_bytes: u64,
 }
 
@@ -128,13 +130,27 @@ pub async fn plan(game_dir: &Path, manifest: &Manifest, verify_all: bool) -> Res
     }
     cache.save(game_dir)?;
     let mut remove = Vec::new();
+    let mut kept = Vec::new();
     for r in &manifest.remove {
-        if r != SETTINGS_PATH && game_dir.join(safe_relative(r)?).exists() {
+        if r == SETTINGS_PATH || !game_dir.join(safe_relative(r)?).exists() {
+            continue;
+        }
+        if removable(&cache, r) {
             remove.push(r.clone());
+        } else {
+            kept.push(r.clone());
         }
     }
     let download_bytes = download.iter().map(|f| f.size).sum();
-    Ok(Plan { download, remove, download_bytes })
+    Ok(Plan { download, remove, kept, download_bytes })
+}
+
+/// A file the server's list asks to remove goes only if the launcher put it
+/// there (an earlier file list had it, so it's in the hash cache) and it isn't
+/// one of Skyrim's own files. The remove list can't be used to delete a
+/// player's saves, other mods or the game.
+fn removable(cache: &HashCache, rel: &str) -> bool {
+    cache.0.contains_key(rel) && !crate::modlist::game_owned(rel)
 }
 
 pub async fn apply(
@@ -164,7 +180,8 @@ pub async fn apply(
         .await?;
         p.files_done += 1;
     }
-    for r in &plan.remove {
+    let known = HashCache::load(game_dir);
+    for r in plan.remove.iter().filter(|r| removable(&known, r)) {
         let path = game_dir.join(safe_relative(r)?);
         match tokio::fs::remove_file(&path).await {
             Ok(()) => {}
@@ -269,6 +286,8 @@ mod tests {
         std::fs::write(dir.path().join("Data/same.js"), b"same").unwrap();
         std::fs::write(dir.path().join("Data/edited.js"), b"old!").unwrap();
         std::fs::write(dir.path().join("Data/old.dll"), b"x").unwrap();
+        // old.dll came from an earlier file list.
+        plan(dir.path(), &manifest(vec![entry("Data/old.dll", b"x")], vec![]), false).await.unwrap();
         let m = manifest(
             vec![
                 entry("Data/same.js", b"same"),
@@ -288,6 +307,33 @@ mod tests {
         let cached = plan(dir.path(), &m, false).await.unwrap();
         assert_eq!(cached.download.len(), 2);
         assert!(dir.path().join(CACHE_PATH).exists());
+    }
+
+    #[tokio::test]
+    async fn remove_only_deletes_files_the_launcher_put_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path();
+        std::fs::create_dir_all(game.join("Data/SKSE/Plugins")).unwrap();
+        std::fs::write(game.join("Data/SKSE/Plugins/served.dll"), b"served").unwrap();
+        std::fs::write(game.join("Data/players-own.esp"), b"mine").unwrap();
+        std::fs::write(game.join("SkyrimSE.exe"), b"game").unwrap();
+        std::fs::write(game.join("Data/Skyrim.esm"), b"game").unwrap();
+        // The launcher synced served.dll earlier, so it knows the file.
+        plan(game, &manifest(vec![entry("Data/SKSE/Plugins/served.dll", b"served")], vec![]), false).await.unwrap();
+
+        let m = manifest(
+            vec![],
+            ["Data/SKSE/Plugins/served.dll", "Data/players-own.esp", "SkyrimSE.exe", "Data/Skyrim.esm", "Saves/x.ess"].map(String::from).to_vec(),
+        );
+        let p = plan(game, &m, false).await.unwrap();
+        assert_eq!(p.remove, ["Data/SKSE/Plugins/served.dll"]);
+        assert_eq!(p.kept, ["Data/players-own.esp", "SkyrimSE.exe", "Data/Skyrim.esm"], "listed but not the launcher's to delete");
+
+        // apply() holds the same line even for a plan made by hand.
+        let hand = Plan { download: vec![], remove: vec!["Data/players-own.esp".into(), "Data/SKSE/Plugins/served.dll".into()], kept: vec![], download_bytes: 0 };
+        apply(&reqwest::Client::new(), "http://127.0.0.1:1", game, &hand, |_| {}).await.unwrap();
+        assert!(game.join("Data/players-own.esp").exists());
+        assert!(!game.join("Data/SKSE/Plugins/served.dll").exists());
     }
 
     #[test]

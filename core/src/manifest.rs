@@ -90,13 +90,14 @@ impl Manifest {
         Ok(m)
     }
 
+    /// The server's file list, once its signature has been checked
+    /// (feedsig.rs). Every caller goes through here.
     pub async fn fetch(client: &reqwest::Client, base_url: &str) -> Result<Self> {
-        let url = format!("{}/client/manifest.json", base_url.trim_end_matches('/'));
-        let resp = client.get(url).send().await?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(Error::NotPublished);
-        }
-        let bytes = resp.error_for_status()?.bytes().await?;
+        Self::fetch_with(crate::feedsig::trust(), client, base_url).await
+    }
+
+    pub async fn fetch_with(trust: &crate::feedsig::Trust, client: &reqwest::Client, base_url: &str) -> Result<Self> {
+        let bytes = trust.fetch(client, base_url, crate::feedsig::Feed::Manifest, None).await?;
         Self::parse(&bytes)
     }
 }
@@ -149,5 +150,26 @@ mod tests {
     fn rejects_unknown_schema() {
         let s = manifest("Data/x").replace("\"schema\":1", "\"schema\":2");
         assert!(matches!(Manifest::parse(s.as_bytes()), Err(Error::UnsupportedSchema(2))));
+    }
+
+    #[tokio::test]
+    async fn fetch_refuses_a_file_list_that_was_changed_after_signing() {
+        use crate::feedsig::tests::{key, serve, sign, trust_for};
+        let k = key(9);
+        let good = manifest("Data/Platform/Plugins/skymp5-client.js");
+        let evil = manifest("Data/SKSE/Plugins/evil.dll");
+        let sig = sign(&k, crate::feedsig::Feed::Manifest, good.as_bytes());
+        let http = reqwest::Client::new();
+
+        let signed = serve(vec![("/l/client/manifest.json", 200, good.clone().into_bytes()), ("/l/client/manifest.json.sig", 200, sig.clone())]).await.replace("/launcher", "/l");
+        assert_eq!(Manifest::fetch_with(&trust_for(&k, true, None), &http, &signed).await.unwrap().files[0].path, "Data/Platform/Plugins/skymp5-client.js");
+
+        let tampered = serve(vec![("/l/client/manifest.json", 200, evil.into_bytes()), ("/l/client/manifest.json.sig", 200, sig)]).await.replace("/launcher", "/l");
+        assert!(matches!(Manifest::fetch_with(&trust_for(&k, false, None), &http, &tampered).await, Err(Error::FeedSignature(_))));
+
+        // Not signed yet: still used by a launcher that never saw a signature, never when required.
+        let unsigned = serve(vec![("/l/client/manifest.json", 200, good.into_bytes())]).await.replace("/launcher", "/l");
+        assert!(Manifest::fetch_with(&trust_for(&k, false, None), &http, &unsigned).await.is_ok());
+        assert!(Manifest::fetch_with(&trust_for(&k, true, None), &http, &unsigned).await.is_err());
     }
 }

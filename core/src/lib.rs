@@ -5,11 +5,14 @@
 pub mod aliases;
 pub mod allowlist;
 pub mod auth;
+pub mod atomicfile;
 pub mod bsa;
 pub mod camera;
 pub mod clientstatus;
 pub mod community;
+pub mod detach;
 pub mod faces;
+pub mod feedsig;
 pub mod fetch;
 pub mod game;
 pub mod gameini;
@@ -55,6 +58,8 @@ pub enum Error {
     HashMismatch { path: String, expected: String, actual: String },
     #[error("The server hasn't published its game files yet.")]
     NotPublished,
+    #[error("The server's file can't be trusted: {0}")]
+    FeedSignature(String),
     #[error("{0}")]
     Game(String),
 }

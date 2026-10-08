@@ -269,3 +269,280 @@ fn short(text: &str) -> String {
     let s = v["message"].as_str().or(v["error"].as_str()).unwrap_or(text);
     s.chars().take(200).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    /// What the stand-in server saw: "METHOD /path", the authorization header, the body.
+    type Seen = Arc<Mutex<Vec<(String, String, Vec<u8>)>>>;
+    type Reply = (u16, Vec<(&'static str, String)>, Vec<u8>);
+
+    /// A local HTTP server answering from `reply("METHOD /path")`. Returns its
+    /// base URL and what it saw.
+    async fn server(reply: impl Fn(&str) -> Reply + Send + Sync + 'static) -> (String, Seen) {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        let seen: Seen = Arc::default();
+        let (seen2, reply) = (seen.clone(), Arc::new(reply));
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = l.accept().await else { return };
+                let (seen, reply) = (seen2.clone(), reply.clone());
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 8192];
+                    let head_end = loop {
+                        let n = sock.read(&mut chunk).await.unwrap_or(0);
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break i + 4;
+                        }
+                    };
+                    let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
+                    let mut lines = head.lines();
+                    let mut first = lines.next().unwrap_or("").split(' ');
+                    let key = format!("{} {}", first.next().unwrap_or(""), first.next().unwrap_or(""));
+                    let header = |name: &str| lines.clone().find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.trim().to_string())).unwrap_or_default();
+                    let len: usize = header("content-length").parse().unwrap_or(0);
+                    let auth = header("authorization");
+                    while buf.len() < head_end + len {
+                        let n = sock.read(&mut chunk).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                    }
+                    seen.lock().unwrap().push((key.clone(), auth, buf[head_end..].to_vec()));
+                    let (status, headers, body) = reply(&key);
+                    let mut out = format!("HTTP/1.1 {status} X\r\ncontent-length: {}\r\nconnection: close\r\n", body.len());
+                    for (k, v) in headers {
+                        out += &format!("{k}: {v}\r\n");
+                    }
+                    out += "\r\n";
+                    let _ = sock.write_all(out.as_bytes()).await;
+                    let _ = sock.write_all(&body).await;
+                    let _ = sock.shutdown().await;
+                });
+            }
+        });
+        (base, seen)
+    }
+
+    fn client() -> reqwest::Client {
+        reqwest::Client::builder().no_proxy().build().unwrap()
+    }
+
+    fn named(body: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        format!("aff000003-{}", &hex::encode(Sha256::digest(body))[..16])
+    }
+
+    fn own_file(len: usize) -> (tempfile::TempDir, PathBuf) {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join(faces::SELF_FILE);
+        std::fs::write(&p, vec![b'x'; len]).unwrap();
+        (t, p)
+    }
+
+    #[tokio::test]
+    async fn upload_sends_the_face_and_reads_the_answer() {
+        let (_t, own) = own_file(10);
+        let retry = |s: &str| vec![("retry-after", s.to_string())];
+        for (status, headers, want) in [
+            (200, vec![], "done"),
+            (400, vec![], "done"),
+            (413, vec![], "done"),
+            (500, vec![], "done"),
+            (401, vec![], "signed out"),
+            (409, vec![], "retry 15"),
+            (429, retry("3"), "retry 3"),
+            (429, vec![], "retry 10"),
+            (503, retry("500"), "retry 60"),
+            (503, vec![], "retry 5"),
+        ] {
+            let (base, seen) = server(move |_| (status, headers.clone(), br#"{"error":"x"}"#.to_vec())).await;
+            let got = match upload(&client(), &format!("{base}/faces"), "tok123", &own).await {
+                Upload::Done => "done".to_string(),
+                Upload::SignedOut => "signed out".to_string(),
+                Upload::RetryAfter(d) => format!("retry {}", d.as_secs()),
+            };
+            assert_eq!(got, want, "status {status}");
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].0, "PUT /faces/self");
+            assert_eq!(seen[0].1, "tok123");
+            assert_eq!(seen[0].2, vec![b'x'; 10]);
+        }
+    }
+
+    #[tokio::test]
+    async fn upload_skips_an_empty_missing_or_oversized_file() {
+        let (base, seen) = server(|_| (200, vec![], b"{}".to_vec())).await;
+        let api = format!("{base}/faces");
+        let (_t, empty) = own_file(0);
+        assert!(matches!(upload(&client(), &api, "t", &empty).await, Upload::Done));
+        assert!(matches!(upload(&client(), &api, "t", &empty.with_file_name("missing.jslot")).await, Upload::Done));
+        let (_t2, big) = own_file(faces::MAX_UPLOAD as usize + 1);
+        assert!(matches!(upload(&client(), &api, "t", &big).await, Upload::Done));
+        assert!(seen.lock().unwrap().is_empty(), "nothing was sent");
+        // A server that isn't there is a log line, not a failure.
+        let (_t3, small) = own_file(5);
+        assert!(matches!(upload(&client(), "http://127.0.0.1:1/faces", "t", &small).await, Upload::Done));
+    }
+
+    #[tokio::test]
+    async fn list_reads_answers_and_failures() {
+        let body = br#"{"faces":[{"name":"aff000003-0123456789abcdef"},{"name":"../evil"}],"listEvery":2}"#.to_vec();
+        let (base, seen) = server(move |_| (200, vec![], body.clone())).await;
+        let Ok(answer) = list(&client(), &format!("{base}/faces"), "tok").await else { panic!("200 should read") };
+        assert_eq!(answer.names, vec!["aff000003-0123456789abcdef"]);
+        assert_eq!(answer.every, Duration::from_secs(2));
+        assert_eq!(seen.lock().unwrap()[0], ("GET /faces/list".to_string(), "tok".to_string(), vec![]));
+
+        let retry = |s: &str| vec![("retry-after", s.to_string())];
+        for (status, headers, want) in [(401, vec![], "signed out"), (429, retry("7"), "slower 7"), (503, vec![], "slower"), (500, vec![], "failed answer 500")] {
+            let (base, _) = server(move |_| (status, headers.clone(), vec![])).await;
+            let got = match list(&client(), &format!("{base}/faces"), "t").await {
+                Ok(_) => "ok".to_string(),
+                Err(List::SignedOut) => "signed out".to_string(),
+                Err(List::Slower(Some(d))) => format!("slower {}", d.as_secs()),
+                Err(List::Slower(None)) => "slower".to_string(),
+                Err(List::Failed(e)) => format!("failed {e}"),
+            };
+            assert_eq!(got, want, "status {status}");
+        }
+        // Not JSON, and too long.
+        let (base, _) = server(|_| (200, vec![], b"nope".to_vec())).await;
+        assert!(matches!(list(&client(), &format!("{base}/faces"), "t").await, Err(List::Failed(_))));
+        let (base, _) = server(|_| (200, vec![], vec![b' '; faces::MAX_LIST + 1])).await;
+        assert!(matches!(list(&client(), &format!("{base}/faces"), "t").await, Err(List::Failed(_))));
+    }
+
+    #[tokio::test]
+    async fn fetch_saves_only_a_face_that_checks_out() {
+        let t = tempfile::tempdir().unwrap();
+        let dir = faces::folder(t.path()).unwrap();
+        let good = br#"{"headParts":[]}"#.to_vec();
+        let name = named(&good);
+        // One slider too many in the vanilla numbers: the hash matches the
+        // contents, the structure doesn't.
+        let long = format!(r#"{{"morphs":{{"default":{{"presets":[0,0,0,0,0],"morphs":[{}]}}}}}}"#, vec!["0"; 19].join(",")).into_bytes();
+        let long_name = named(&long);
+        let (g, n, l, ln) = (good.clone(), name.clone(), long.clone(), long_name.clone());
+        let (base, seen) = server(move |key| match key {
+            k if k == format!("GET /faces/f/{n}.jslot") => (200, vec![], g.clone()),
+            k if k == format!("GET /faces/f/{ln}.jslot") => (200, vec![], l.clone()),
+            "GET /faces/f/aff000004-0123456789abcdef.jslot" => (200, vec![], b"{}".to_vec()),
+            "GET /faces/f/aff000005-0123456789abcdef.jslot" => (200, vec![], vec![b' '; faces::MAX_FACE + 1]),
+            "GET /faces/f/aff000006-0123456789abcdef.jslot" => (404, vec![], vec![]),
+            "GET /faces/f/aff000007-0123456789abcdef.jslot" => (429, vec![], vec![]),
+            _ => (500, vec![], vec![]),
+        })
+        .await;
+        let api = format!("{base}/faces");
+        assert!(fetch(&client(), &api, "tok", &dir, &name).await);
+        assert_eq!(std::fs::read(dir.join(format!("{name}.jslot"))).unwrap(), good);
+        // Wrong hash, bad structure, too big, gone, a server error: nothing saved and the loop goes on.
+        for other in [&long_name, "aff000004-0123456789abcdef", "aff000005-0123456789abcdef", "aff000006-0123456789abcdef", "aff000008-0123456789abcdef"] {
+            assert!(fetch(&client(), &api, "tok", &dir, other).await, "{other}");
+        }
+        // Busy: the caller stops fetching.
+        assert!(!fetch(&client(), &api, "tok", &dir, "aff000007-0123456789abcdef").await);
+        assert_eq!(faces::saved(&dir), BTreeSet::from([name]));
+        assert!(std::fs::read_dir(&dir).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".tmp")));
+        assert_eq!(seen.lock().unwrap()[0].1, "tok");
+    }
+
+    #[test]
+    fn retry_after_is_kept_between_one_and_sixty_seconds() {
+        let secs = |v: &str| {
+            let r = reqwest::Response::from(http::Response::builder().status(429).header("retry-after", v).body(Vec::<u8>::new()).unwrap());
+            retry_after(&r).map(|d| d.as_secs())
+        };
+        assert_eq!(secs("0"), Some(1));
+        assert_eq!(secs(" 12 "), Some(12));
+        assert_eq!(secs("9999"), Some(60));
+        assert_eq!(secs("soon"), None);
+        assert_eq!(secs("-1"), None);
+    }
+
+    #[test]
+    fn short_keeps_the_servers_reason_brief() {
+        assert_eq!(short(r#"{"error":"slot","message":"not ready"}"#), "not ready");
+        assert_eq!(short(r#"{"error":"slot"}"#), "slot");
+        assert_eq!(short("plain text"), "plain text");
+        assert_eq!(short(&"y".repeat(500)).len(), 200);
+    }
+
+    #[tokio::test]
+    async fn run_saves_faces_then_hands_back_the_list_for_tidying() {
+        let t = tempfile::tempdir().unwrap();
+        let good = br#"{"headParts":[]}"#.to_vec();
+        let name = named(&good);
+        let (g, n) = (good.clone(), name.clone());
+        let list_body = format!(r#"{{"faces":[{{"name":"{name}"}}]}}"#).into_bytes();
+        let (base, _) = server(move |key| match key {
+            "GET /faces/list" => (200, vec![], list_body.clone()),
+            k if k == format!("GET /faces/f/{n}.jslot") => (200, vec![], g.clone()),
+            _ => (404, vec![], vec![]),
+        })
+        .await;
+        let stop = Arc::new(AtomicBool::new(false));
+        let game = t.path().to_path_buf();
+        let task = tokio::spawn(run(client(), base, "tok".into(), game.clone(), stop.clone()));
+        let saved = game.join(faces::FOLDER).join(format!("{name}.jslot"));
+        for _ in 0..50 {
+            if saved.exists() && faces::remembered(&game).contains(&name) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        stop.store(true, Ordering::SeqCst);
+        let last = task.await.unwrap();
+        assert_eq!(std::fs::read(&saved).unwrap(), good);
+        assert_eq!(last, Some(BTreeSet::from([name.clone()])));
+        // Closing the game tidies away faces that left the list, never self.jslot.
+        let ad = game.join(faces::FOLDER);
+        std::fs::write(ad.join(faces::SELF_FILE), "{}").unwrap();
+        tidy(&game, Some(BTreeSet::new()));
+        assert!(!saved.exists());
+        assert!(ad.join(faces::SELF_FILE).exists());
+    }
+
+    #[tokio::test]
+    async fn run_stops_on_sign_out() {
+        let t = tempfile::tempdir().unwrap();
+        let (base, seen) = server(|_| (401, vec![], vec![])).await;
+        let stop = Arc::new(AtomicBool::new(false));
+        let last = tokio::time::timeout(Duration::from_secs(10), run(client(), base, "tok".into(), t.path().to_path_buf(), stop)).await.expect("run should stop by itself on a 401");
+        assert_eq!(last, None);
+        assert_eq!(seen.lock().unwrap().len(), 1, "one list asked, then stopped");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_and_tidy_stay_away_from_a_linked_folder() {
+        let t = tempfile::tempdir().unwrap();
+        let elsewhere = t.path().join("elsewhere");
+        let ad = elsewhere.join("SKSE/Plugins/CharGen/Presets/ad");
+        std::fs::create_dir_all(&ad).unwrap();
+        let game = t.path().join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, game.join("Data")).unwrap();
+        let (base, seen) = server(|_| (200, vec![], b"{\"faces\":[]}".to_vec())).await;
+        let stop = Arc::new(AtomicBool::new(false));
+        assert_eq!(run(client(), base, "tok".into(), game.clone(), stop).await, None);
+        assert!(seen.lock().unwrap().is_empty(), "off for the session: no requests");
+        let stale = ad.join("aff000003-0123456789abcdef.jslot");
+        std::fs::write(&stale, "{}").unwrap();
+        tidy(&game, Some(BTreeSet::new()));
+        assert!(stale.exists(), "tidying never follows the link");
+    }
+}

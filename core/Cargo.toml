@@ -30,6 +30,7 @@ lzma-rust2 = { version = "0.21", default-features = false, features = ["std"] }
 roxmltree = "0.20"
 lz4_flex = "0.11"
 futures-util = { version = "0.3", features = ["sink"] }
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "pkcs8", "pem"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
