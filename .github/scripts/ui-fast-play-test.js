@@ -46,7 +46,7 @@ function fakeBackEnd() {
     update: () => null,
     server_status: () => ({ online: true, players: 1, maxPlayers: 50, ...(typeof S.statusNow === 'object' ? S.statusNow : {}), discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
     setup_state: () => S.setup || [{ id: 'folder', title: 'Choose your Skyrim folder', hint: 'x', done: true }],
-    files: () => [], play: () => S.playWarnings || null,
+    files: () => S.files || [], play: () => S.playWarnings || null,
     patch_game: () => S.patchResult || { ...game, needed: false },
     game_running: () => !!S.outsideGame,
     self_update_begin: () => !S.updateReservationFails,
@@ -150,7 +150,15 @@ function fakeBackEnd() {
       try { log.hintStored = localStorage.getItem('ad.f3hint'); } catch (_) {}
       log.progress = { file: document.getElementById('p-file').textContent, speed: document.getElementById('p-speed').textContent, num: document.getElementById('p-num').textContent };
       log.readyAnim = getComputedStyle(document.getElementById('play-wrap')).animationName;
+<<<<<<< HEAD
       log.statusUi = { text: status.textContent, copy: !!document.getElementById('status-copy'), errorClass: !!document.querySelector('#status .error') };
+=======
+      log.fileRows = [...document.querySelectorAll('#files-body tr')].map(tr => ({ skel: tr.classList.contains('skel'), name: (tr.querySelector('.fname') || {}).textContent || null, dir: (tr.querySelector('.fdir') || {}).textContent || null }));
+      const alpha = c => { const m = /rgba?\([^)]*?,\s*([\d.]+)\)$/.exec(c); return m ? parseFloat(m[1]) : 1; };
+      log.pageAlpha = alpha(getComputedStyle(document.querySelector('#page-mods .ftable-wrap')).backgroundColor);
+      const sk = document.querySelector('#files-body tr.skel i');
+      log.skelAlpha = sk ? Math.max(...(getComputedStyle(sk).backgroundImage.match(/rgba\([^)]*\)/g) || []).map(alpha)) : null;
+>>>>>>> origin/main
       log.gameRow = document.querySelector('#c-game small').textContent;
       const join = document.getElementById('si-join');
       log.join = join.hidden ? null : join.textContent;
@@ -676,6 +684,7 @@ scenarios.push({ name: 'Play ready glow animates opacity or transform only, so h
   ['the ready state does not animate a filter on the wrapper', r.readyAnim === 'none' || r.readyAnim === null, String(r.readyAnim)],
 ] });
 
+<<<<<<< HEAD
 scenarios.push({ name: 'errors: a failed update says what happened and offers Copy details, not a paragraph of steps', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, updateError: 'disk is full', end: 5000 }, expect: r => [
   ['the message says what stopped and what to click', /The game file update stopped: disk is full\. Click Retry\./.test(r.statusUi.text), JSON.stringify(r.statusUi.text)],
   ['the long "open Settings" instructions are gone', !/open Settings/.test(r.statusUi.text), JSON.stringify(r.statusUi.text)],
@@ -686,6 +695,25 @@ scenarios.push({ name: 'errors: Copy details copies the diagnostics and says so'
 ] });
 scenarios.push({ name: 'errors: a normal status line has no Copy details button', s: { ...base, clicks: [] }, expect: r => [
   ['no button on a healthy status', !r.statusUi.copy],
+=======
+scenarios.push({ name: 'Mods page: placeholder rows while the file list loads', s: { ...base, clicks: [], files: [{ path: 'Data/a.esp', size: 1000 }], delay: { files: 3000 }, end: 2500, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
+  ['placeholder rows show while waiting', r.fileRows.length >= 3 && r.fileRows.every(x => x.skel), JSON.stringify(r.fileRows)],
+] });
+scenarios.push({ name: 'Mods page: each file shows its name with its folder dimmed', s: { ...base, clicks: [], files: [{ path: 'Data/Meshes/rock.nif', size: 2048 }, { path: 'Readme.txt', size: 10 }], end: 4000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
+  ['the name is separate from the folder', r.fileRows[0] && r.fileRows[0].name === 'rock.nif' && r.fileRows[0].dir === 'Data/Meshes/', JSON.stringify(r.fileRows[0])],
+  ['a file in the top folder has no folder text', r.fileRows[1] && r.fileRows[1].name === 'Readme.txt' && !r.fileRows[1].dir, JSON.stringify(r.fileRows[1])],
+] });
+scenarios.push({ name: 'download progress: after the last byte, hashing says Checking file', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, delay: { update: 20000 }, end: 8000, actions: [
+  { at: 2000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 0, bytesTotal: 3000000, filesDone: 0, filesTotal: 3, file: 'Data/big.bsa' } },
+  { at: 3000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 3000000, bytesTotal: 3000000, filesDone: 2, filesTotal: 3, file: 'Data/big.bsa' } },
+] }, expect: r => [
+  ['it says the file is being checked, not that the server is silent', r.progress.speed === 'Checking file…', JSON.stringify(r.progress.speed)],
+] });
+
+scenarios.push({ name: 'Mods page: file list is solid enough to read over the artwork, placeholders are visible', s: { ...base, clicks: [], files: [{ path: 'Data/a.esp', size: 1000 }], delay: { files: 3000 }, end: 2500, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
+  ['the file list background is at least 95% opaque, so the artwork does not cross the rows', r.pageAlpha >= 0.95, String(r.pageAlpha)],
+  ['the placeholder bars reach at least 18% white', r.skelAlpha >= 0.18, String(r.skelAlpha)],
+>>>>>>> origin/main
 ] });
 
 const chrome = findChrome();
