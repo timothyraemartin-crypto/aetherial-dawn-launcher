@@ -89,6 +89,9 @@ pub fn plain(raw: &str) -> String {
     if has(&["os error 2)", "os error 3)", "cannot find the path", "cannot find the file", "no such file or directory"]) {
         return "A file or folder the launcher needs is missing. Check your Skyrim folder in Settings, then try again.".into();
     }
+    if has(&["the server's file can't be trusted"]) {
+        return "The launcher couldn't confirm the server's files are genuine, so it did not use them. It tries again the next time you press Play; if it keeps happening, send Copy diagnostics to staff.".into();
+    }
     if has(&["corrupted while downloading", "hash mismatch", "invalid zip", "could not find eocd", "isn't a readable zip", "couldn't unpack", "download is damaged"]) {
         return "A download came through damaged. The launcher fetches it again the next time you press Play.".into();
     }
@@ -189,6 +192,16 @@ mod plain_tests {
         assert!(super::plain("file error: The system cannot find the path specified. (os error 3)").contains("missing"));
         assert!(super::plain("The requested operation requires elevation. (os error 740)").contains("administrator"));
         assert!(!super::plain("file error: something odd").contains("odd"));
+        // A file the server sent that failed its signature check: the reason names a file path, the player gets words.
+        for raw in [
+            "The server's file can't be trusted: mods.json: the signature doesn't match, so the file was changed or isn't from the server",
+            "The server's file can't be trusted: client/manifest.json: it has no valid signature, and this launcher only uses signed files",
+            "The server's file can't be trusted: the server address http://x.example doesn't use https, so its files aren't used",
+        ] {
+            let w = super::plain(raw);
+            assert!(w.starts_with("The launcher couldn't confirm the server's files are genuine"), "{w}");
+            assert!(!w.contains("mods.json") && !w.contains("manifest") && !w.contains("signature") && !w.contains("http"), "{w}");
+        }
         assert_eq!(super::plain("see https://x.y/z now"), "see (link hidden) now");
         // The export log's error lines (a Nexus CDN link names the account).
         let e = super::scrub("export: failed JK: error sending request for url (https://cf-files.nexusmods.com/cdn/1704/x.7z?md5=abc&expires=17&user_id=42)");

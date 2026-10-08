@@ -84,6 +84,7 @@ function fakeBackEnd() {
         if (cmd === 'set_game_dir' && S.setDirError) return rej(S.setDirError);
         if (cmd === 'set_game_dir' && S.picks && S.picks.find(p => p.dir === args.dir && p.error)) return rej(S.picks.find(p => p.dir === args.dir).error);
         if (cmd === 'update' && S.updateError) return rej(S.updateError);
+        if (cmd === 'check' && S.checkError) return rej(S.checkError);
         if (cmd === 'files_state' && S.fileStatesError) return rej(S.fileStatesError);
         if (cmd === 'diagnostics') return res('diagnostics text');
         if (cmd === 'play' && S.playError && !S.played) { S.played = true; return rej(S.playError); }
@@ -896,6 +897,10 @@ scenarios.push({ name: 'Mods page: when the state cannot be read the list still 
 ] });
 scenarios.push({ name: 'Mods page: placeholder rows have all three cells', s: { ...base, clicks: [], files: stateFiles, delay: { files: 3000 }, end: 2500, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
   ['placeholder rows keep the three columns', r.fileRows.length >= 3 && r.fileRows.every(x => x.skel && x.cells === 3), JSON.stringify(r.fileRows.map(x => x.cells))],
+] });
+scenarios.push({ name: 'Feed refused (unsigned or tampered): the launcher update still installs and the words are plain', s: { ...base, update: '9.9.10', clicks: [], checkError: "The launcher couldn't confirm the server's files are genuine, so it did not use them. It tries again the next time you press Play.", end: 5000 }, expect: r => [
+  ['the launcher update installs', askedAt(r, 'updater_install') !== null],
+  ['the player reads the plain words, no file names', /couldn't confirm the server's files/.test(r.statusUi.text) && !/signature|mods\.json|manifest/i.test(r.statusUi.text), r.statusUi.text],
 ] });
 scenarios.push({ name: 'Mods page: the chip does not say ready while files need attention', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }, { path: 'Data/SKSE/new.dll', state: 'missing' }], end: 4000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
   ['the chip names the files', /2 files? need attention/i.test(r.chip.text), r.chip.text],
