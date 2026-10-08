@@ -38,6 +38,7 @@ pub mod tools;
 pub mod ussep;
 pub mod version;
 pub mod watch;
+pub mod whatsnew;
 pub mod window;
 
 #[cfg(test)]

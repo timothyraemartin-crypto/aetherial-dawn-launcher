@@ -289,6 +289,8 @@ struct CheckResult {
     game: version::GameCheck,
     /// Plugins in the game folder that the server didn't ship.
     strays: Vec<String>,
+    /// "What's new" lines for the update bar; empty when nothing changes.
+    notes: Vec<String>,
 }
 
 async fn game_dir(state: &AppState) -> CmdResult<PathBuf> {
@@ -326,6 +328,10 @@ async fn check(app: AppHandle, state: State<'_, AppState>, verify_all: bool) -> 
         bytes: plan.download_bytes,
         game: auto_version(&dir, m.game.as_ref()),
         strays: all_strays(&app, &dir, &m),
+        notes: if plan.download.is_empty() && plan.remove.is_empty() { vec![] } else {
+            let (down, gone): (Vec<String>, Vec<String>) = (plan.download.iter().map(|f| f.path.clone()).collect(), plan.remove.clone());
+            launcher_core::whatsnew::lines(&m.notes, &down, &gone)
+        },
     };
     if !result.strays.is_empty() {
         log::line(&format!("check: plugins not from the server: {}", result.strays.join(", ")));

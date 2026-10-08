@@ -165,6 +165,8 @@ function fakeBackEnd() {
       log.vortexConnect = !document.getElementById('rq-vortex-connect').hidden;
       log.installerControl = !!document.querySelector('#rq-all, #rq-stop, #rq-sso-go, #rq-signin');
       log.playDisabled = btn.disabled;
+      const wn = document.getElementById('whatsnew');
+      log.whatsNew = wn.hidden ? null : { lines: [...document.querySelectorAll('#whatsnew-list li')].map(li => li.textContent), open: wn.open };
       const setupBox = document.getElementById('setup');
       log.setup = setupBox.hidden ? null : [...document.querySelectorAll('#setup-list li')].map(li => li.className + ':' + li.querySelector('b').textContent);
       const gate = document.getElementById('play-gate');
@@ -202,6 +204,21 @@ const firstLabel = (r, text) => (r.labels.find(l => l[1] === text) || [null])[0]
 const lastLabel = r => r.labels[r.labels.length - 1][1];
 
 const scenarios = [
+  { name: 'update available: the notes are listed under the update, closed, with no dialog', s: { ...base, clicks: [], check: { files: 2, bytes: 5000000, notes: ['New tavern in Whiterun', 'Fixed <b>crash</b> at the docks'] }, end: 4000 }, expect: r => [
+    ['the lines are listed', !!r.whatsNew && r.whatsNew.lines.length === 2 && r.whatsNew.lines[0] === 'New tavern in Whiterun'],
+    ['markup in a note is shown as text', !!r.whatsNew && r.whatsNew.lines[1].includes('<b>crash</b>')],
+    ['it starts closed', !!r.whatsNew && r.whatsNew.open === false],
+    ['no sheet or dialog is open', r.modal === null],
+    ['the button offers UPDATE', lastLabel(r) === 'UPDATE'],
+  ] },
+  { name: 'update finished: the notes go away and the button returns to PLAY', s: { ...base, clicks: [1250], seedPlay: true, check: { files: 2, bytes: 5000000, notes: ['New tavern in Whiterun'] }, end: 7000 }, expect: r => [
+    ['the update ran', askedAt(r, 'update') !== null],
+    ['the notes are gone once it finished', r.whatsNew === null],
+    ['the button returns to PLAY after the update', r.labels.some(l => l[0] > askedAt(r, 'update') && l[1].startsWith('PLAY'))],
+  ] },
+  { name: 'no update: the notes are not shown', s: { ...base, clicks: [], check: { files: 0, notes: ['Old note'] }, end: 4000 }, expect: r => [
+    ['it is hidden', r.whatsNew === null],
+  ] },
   { name: 'new player: the setup checklist lists what is still open', s: { ...base, clicks: [], seed: null, setup: [
     { id: 'folder', title: 'Choose your Skyrim folder', hint: 'Open Settings.', done: true },
     { id: 'skse', title: 'SKSE is installed', hint: 'Press Play.', done: false },

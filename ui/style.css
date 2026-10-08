@@ -268,6 +268,9 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .play::after { content: ""; position: absolute; inset: 0; opacity: 0; pointer-events: none; background: radial-gradient(ellipse at 50% 120%, rgba(169,214,242,.4), transparent 65%); }
 .play-wrap[data-state="ready"] .play::after { animation: ready-glow 3.2s ease-in-out infinite; }
 .play:not(:disabled):active { transform: translateY(1px) scale(.992); filter: brightness(.92); }
+.whatsnew { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+.whatsnew summary { cursor: pointer; color: var(--faint); text-decoration: underline; text-underline-offset: 3px; width: max-content; margin: 0 auto; }
+.whatsnew ul { margin: 6px 0 0; padding-left: 18px; text-align: left; }
 .setup { margin: 14px 0 0; }
 .setup ol { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
 .setup li { display: grid; grid-template-columns: 18px 1fr; gap: 0 8px; font-size: 13px; color: var(--muted); }

@@ -313,6 +313,7 @@
       $('srv-name').textContent = pending.server.name;
       $('srv-addr').textContent = `${pending.server.ip}:${pending.server.port}`;
       $('srv-build').textContent = pending.build;
+      showWhatsNew(pending.files || pending.remove ? pending.notes : null);
       if (pending.files || pending.remove) {
         busy = false;
         if (state.config.backgroundUpdates || verifyAll) return await update(verifyAll);
@@ -336,6 +337,16 @@
     } finally {
       busy = false;
     }
+  }
+
+  // What's new beside the Update button: the lines staff wrote, or the files
+  // about to change. Never a dialog, and gone once there is nothing to update.
+  function showWhatsNew(lines) {
+    const box = $('whatsnew');
+    if (!box) return;
+    const list = Array.isArray(lines) ? lines.filter(l => typeof l === 'string' && l) : [];
+    box.hidden = !list.length;
+    $('whatsnew-list').innerHTML = list.map(l => `<li>${esc(l)}</li>`).join('');
   }
 
   async function update(verifyAll = false) {
@@ -379,6 +390,7 @@
       await invoke('update', { verifyAll });
       // The update command completed and verified the pending file changes.
       pending = { ...pending, files: 0, remove: 0 };
+      showWhatsNew(null);
       await ready();
     } catch (e) {
       setPlay('retry', 'RETRY');
