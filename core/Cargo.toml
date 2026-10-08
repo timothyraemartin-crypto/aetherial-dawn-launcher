@@ -35,8 +35,8 @@ webpki-roots = "1"
 futures-util = { version = "0.3", features = ["sink"] }
 ed25519-dalek = { version = "2", default-features = false, features = ["std", "pkcs8", "pem"] }
 
-# Encodes the portrait (a small RGBA picture) as PNG.
-png = { version = "0.17", default-features = false }
+# Encodes the portrait (a small RGBA picture) as lossless WebP.
+image-webp = { version = "0.2", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

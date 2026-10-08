@@ -1,6 +1,6 @@
 //! Capture test for the character portrait, to run on a real PC with Skyrim
 //! open: `cargo run -p launcher-core --example portrait_grab`. Click the game
-//! window within 10 seconds; the portrait is saved as portrait-test.png in the
+//! window within 10 seconds; the portrait is saved as portrait-test.webp in the
 //! current folder and its size is printed.
 
 #[cfg(windows)]
@@ -10,8 +10,8 @@ fn main() {
     for _ in 0..20 {
         match portrait::grab::portrait() {
             Ok(png) => {
-                std::fs::write("portrait-test.png", &png).expect("can't write portrait-test.png");
-                println!("OK: portrait-test.png, {} bytes, {:?}", png.len(), portrait::check_png(&png).unwrap());
+                std::fs::write("portrait-test.webp", &png).expect("can't write portrait-test.webp");
+                println!("OK: portrait-test.webp, {} bytes, {:?}", png.len(), portrait::check_webp(&png).unwrap());
                 return;
             }
             Err(e) => {
