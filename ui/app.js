@@ -53,6 +53,7 @@
   let page = 'home';
 
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  const timeLeft = sec => sec < 90 ? `${Math.max(1, Math.round(sec))} sec` : `${Math.round(sec / 60)} min`;
   const mb = n => (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + ' MB';
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -62,7 +63,22 @@
     $('play-label').textContent = label;
     $('play').disabled = mode === 'wait';
     $('play-wrap').classList.toggle('off', mode === 'wait');
+    // For styling only: busy = the launcher is working, ready = PLAY starts the game,
+    // anything else is a step the player takes first (sign in, fix mods, retry).
+    const busy = mode === 'wait' && /ING$|CHECKING/.test(label);
+    $('play-wrap').dataset.state = busy ? 'busy' : mode === 'play' || mode === 'downgrade' ? 'ready' : mode === 'wait' ? 'off' : 'action';
+    showHint();
   }
+  // First-time players are told where the menu is, until they have started the game once.
+  const HINT_KEY = 'ad.f3hint';
+  const hintSeen = () => { try { return localStorage.getItem(HINT_KEY) === '1'; } catch (_) { return false; } };
+  function showHint() {
+    const hint = $('play-hint');
+    if (!hint || hintSeen()) { if (hint) hint.hidden = true; return; }
+    hint.hidden = false;
+    hint.style.visibility = $('play-wrap').dataset.state === 'ready' ? 'visible' : 'hidden';
+  }
+  function markHintSeen() { try { localStorage.setItem(HINT_KEY, '1'); } catch (_) {} showHint(); }
   let statusMsg = null;
   function setStatus(msg, isError) {
     statusMsg = msg ? { msg, isError } : null;
@@ -332,16 +348,28 @@
     setStatus(`Updating to build ${pending.build} · ${mb(pending.bytes)}`);
     $('progress').hidden = false;
     $('p-progress').setAttribute('aria-valuenow', '0');
-    let last = { t: performance.now(), b: 0 };
+    let last = { t: performance.now(), b: 0 }, speed = 0;
+    const began = last.t;
+    let lastEvent = began;
+    const stallTimer = setInterval(() => { if (performance.now() - lastEvent > 3000) $('p-speed').textContent = 'Waiting for the server…'; }, 1000);
     const off = await T.event.listen('sync-progress', ({ payload: p }) => {
       const pct = p.bytesTotal ? (p.bytesDone / p.bytesTotal) * 100 : 100;
       $('p-bar').style.width = pct.toFixed(1) + '%';
       $('p-progress').setAttribute('aria-valuenow', String(Math.round(Math.min(100, pct))));
       $('p-num').textContent = `${Math.min(p.filesDone + (p.file ? 1 : 0), p.filesTotal)} / ${plural(p.filesTotal, 'file')} · ${Math.round(pct)}%`;
-      $('p-file').textContent = p.file || 'All files match the server';
+      $('p-file').textContent = p.file ? p.file.split(/[\\/]/).pop() : 'All files match the server';
+      $('p-file').title = p.file || '';
       const now = performance.now();
+      lastEvent = now;
       if (now - last.t > 500) {
-        $('p-speed').textContent = mb(((p.bytesDone - last.b) / (now - last.t)) * 1000) + '/s';
+        const rate = ((p.bytesDone - last.b) / (now - last.t)) * 1000;
+        // Weighted by time, so a long gap counts for more than a burst of quick events.
+        const alpha = 1 - Math.exp(-(now - last.t) / 5000);
+        speed = speed ? speed + alpha * (rate - speed) : rate;
+        const left = speed > 0 && p.bytesTotal > p.bytesDone ? (p.bytesTotal - p.bytesDone) / speed : 0;
+        // Not a guess before three seconds of samples.
+        const guess = left > 0 && now - began >= 3000 ? ` · ${left > 99 * 60 ? 'over 99 min' : 'about ' + timeLeft(left)} left` : '';
+        $('p-speed').textContent = mb(speed) + '/s' + guess;
         last = { t: now, b: p.bytesDone };
       }
     });
@@ -357,6 +385,7 @@
       pending = null;
     } finally {
       off();
+      clearInterval(stallTimer);
       $('progress').hidden = true;
       busy = false;
     }
@@ -824,6 +853,7 @@
       const warns = await invokePlay();
       helperWarning = Array.isArray(warns) && warns.length ? warns.join(' ') : null;
       gameRunning = true;
+      markHintSeen();
       setPlay('wait', 'IN GAME');
       setStatus(helperWarning || 'Skyrim is running.', !!helperWarning);
     } catch (e) {

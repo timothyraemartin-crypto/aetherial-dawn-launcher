@@ -136,7 +136,7 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .play-box { padding: 14px 16px 12px; display: grid; gap: 10px; justify-items: center; }
 .progress { width: 100%; display: grid; gap: 6px; }
 .bar { height: 4px; background: rgba(255,255,255,.1); border-radius: 2px; overflow: hidden; }
-.bar i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, #2C7DB5, var(--frost)); box-shadow: 0 0 12px var(--glow); transition: width .25s linear; }
+.bar i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, #2C7DB5, var(--frost)); box-shadow: 0 0 12px var(--glow); transition: width .6s ease-out; }
 .prow { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .prow .file { font: 400 11px var(--mono); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -247,6 +247,30 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--text); transition: transform .18s; }
 .switch[aria-checked="true"] { background: #2C7DB5; }
 .switch[aria-checked="true"]::after { transform: translateX(16px); }
+
+/* ---------- enter motion ---------- */
+/* Sheets and pages start their animation when [hidden] comes off, so no JS is
+   needed. Enter only: leaving is instant so Play and Escape never feel slow.
+   The reduced-motion rule below turns every one of these off. */
+.sheet:not([hidden]) { animation: sheet-in .22s ease-out both; }
+.sheet:not([hidden]) .panel { animation: panel-in .32s cubic-bezier(.2, .8, .2, 1) both; }
+.page:not([hidden]) { animation: page-in .26s cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes sheet-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes panel-in { from { opacity: 0; transform: translateY(14px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes page-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+/* ---------- Play button states (data-state on #play-wrap) ---------- */
+
+.play::before { content: ""; position: absolute; inset: 0; opacity: 0; pointer-events: none;
+  background: linear-gradient(100deg, transparent 30%, rgba(169,214,242,.28) 50%, transparent 70%); background-size: 220% 100%; }
+.play-wrap[data-state="busy"] .play::before { opacity: 1; animation: play-shimmer 1.6s linear infinite; }
+/* Ready glow: opacity only on a pseudo-element, so hover can still raise the wrapper's own glow. */
+.play::after { content: ""; position: absolute; inset: 0; opacity: 0; pointer-events: none; background: radial-gradient(ellipse at 50% 120%, rgba(169,214,242,.4), transparent 65%); }
+.play-wrap[data-state="ready"] .play::after { animation: ready-glow 3.2s ease-in-out infinite; }
+.play:not(:disabled):active { transform: translateY(1px) scale(.992); filter: brightness(.92); }
+.play-hint { margin: -2px 0 0; font-size: 12px; color: var(--muted); text-align: center; }
+@keyframes ready-glow { 0%, 100% { opacity: .15; } 50% { opacity: .7; } }
+@keyframes play-shimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }
 
 @media (max-width: 1240px) { .about { display: none; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

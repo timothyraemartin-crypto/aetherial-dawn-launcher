@@ -37,7 +37,7 @@ function fakeBackEnd() {
     const every = window.setInterval.bind(window);
     window.setInterval = (fn, ms, ...args) => every(fn, ms === 10 * 60 * 1000 ? S.authIntervalMs : ms, ...args);
   }
-  try { localStorage.clear(); if (S.seed) localStorage.setItem('ad.lastReady', JSON.stringify(S.seed)); } catch (_) {}
+  try { localStorage.clear(); if (S.seed) localStorage.setItem('ad.lastReady', JSON.stringify(S.seed)); if (S.hintSeen) localStorage.setItem('ad.f3hint', '1'); } catch (_) {}
   const game = Object.assign({ needed: false, installed: '1.6.1170.0', target: '1.6.1170.0', skseOk: true, canDowngrade: true }, S.game || {});
   const answers = {
     get_state: () => ({ launcherVersion: S.version, config: { gameDir: S.dir, closeOnLaunch: false, backgroundUpdates: !!S.backgroundUpdates, shareHealth: true, music: false, onlyServerMods: true }, game: S.gameGone ? null : { dir: S.dir, hasSkse: S.hasSkse !== false }, gameError: S.gameGone || null }),
@@ -45,7 +45,7 @@ function fakeBackEnd() {
     check: () => Object.assign({ build: 'B2', server: { name: 'Aetherial Dawn', ip: '127.0.0.1', port: 7777 }, files: 0, remove: 0, bytes: 0, strays: [], game }, (S.checkSequence && S.checkSequence.shift()) || S.check || {}),
     update: () => null,
     server_status: () => ({ online: true, players: 1, maxPlayers: 50, discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
-    files: () => [], game_check: () => game, play: () => S.playWarnings || null,
+    files: () => [], play: () => S.playWarnings || null,
     patch_game: () => S.patchResult || { ...game, needed: false },
     game_running: () => !!S.outsideGame,
     self_update_begin: () => !S.updateReservationFails,
@@ -132,6 +132,13 @@ function fakeBackEnd() {
       const playBtn = document.getElementById('play');
       playBtn.focus({ focusVisible: true });
       log.playRing = playBtn.matches(':focus-visible') ? getComputedStyle(document.getElementById('play-wrap')).outlineStyle : 'not focus-visible';
+      const wrap = document.getElementById('play-wrap'), hint = document.getElementById('play-hint');
+      log.playState = wrap.dataset.state || null;
+      log.hint = hint && !hint.hidden && getComputedStyle(hint).visibility !== 'hidden' ? hint.textContent : null;
+      log.hintBox = hint && !hint.hidden ? hint.getBoundingClientRect().height > 0 : false;
+      try { log.hintStored = localStorage.getItem('ad.f3hint'); } catch (_) {}
+      log.progress = { file: document.getElementById('p-file').textContent, speed: document.getElementById('p-speed').textContent, num: document.getElementById('p-num').textContent };
+      log.readyAnim = getComputedStyle(document.getElementById('play-wrap')).animationName;
       log.gameRow = document.querySelector('#c-game small').textContent;
       const join = document.getElementById('si-join');
       log.join = join.hidden ? null : join.textContent;
@@ -525,6 +532,55 @@ scenarios.push({ name: 'a sign-in that can never be saved says why', s: { ...sig
   ['the sign-in window says the save failed', /Couldn't save your sign-in: Access is denied/.test(r.signInError || ''), JSON.stringify(r.signInError)],
   ['the player is not signed in', r.me === null],
   ['the save is tried again until the wait ends', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'auth_poll').length > 100, String(r.invokes.filter(i => i[1] === 'ask' && i[2] === 'auth_poll').length)],
+] });
+scenarios.push({ name: 'Play states: busy while checking, ready when it can start', s: { ...base, clicks: [], end: 400 }, expect: r => [
+  ['PLAY shows the busy state while the checks run', r.playState === 'busy', String(r.playState)],
+] });
+scenarios.push({ name: 'Play states: ready, and a first-time player is told about F3', s: { ...base, clicks: [] }, expect: r => [
+  ['PLAY shows the ready state', r.playState === 'ready', String(r.playState)],
+  ['the F3 hint shows', r.hint === 'In game, press F3 for the menu.', String(r.hint)],
+] });
+scenarios.push({ name: 'Play states: a returning player gets no F3 hint and no gap for it', s: { ...base, clicks: [], hintSeen: true }, expect: r => [
+  ['no hint text', r.hint === null, String(r.hint)],
+  ['no space is kept for it', r.hintBox === false],
+] });
+scenarios.push({ name: 'Play states: starting the game counts as having seen the F3 hint', s: base, expect: r => [
+  ['the hint is remembered after Play', r.hintStored === '1', String(r.hintStored)],
+] });
+
+scenarios.push({ name: 'download progress: friendly file name, speed and time left', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, delay: { update: 20000 }, end: 5200, actions: [
+  { at: 2000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 0, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 3000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 1000000, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 4000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 2000000, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 5000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 3000000, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+] }, expect: r => [
+  ['the file shows by its own name, not the long path', r.progress.file === 'face.dds', JSON.stringify(r.progress.file)],
+  ['speed and time left show together once 3 s of samples exist', /^\d+(\.\d)? MB\/s · about \d+ (sec|min) left$/.test(r.progress.speed), JSON.stringify(r.progress.speed)],
+] });
+scenarios.push({ name: 'download progress: no time-left guess in the first seconds', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, delay: { update: 20000 }, end: 3300, actions: [
+  { at: 2000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 0, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 2700, kind: 'event', name: 'sync-progress', payload: { bytesDone: 1000000, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+] }, expect: r => [
+  ['the speed shows without a time left', /^\d+(\.\d)? MB\/s$/.test(r.progress.speed), JSON.stringify(r.progress.speed)],
+] });
+scenarios.push({ name: 'download progress: a huge time left is capped', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, delay: { update: 20000 }, end: 6300, actions: [
+  { at: 2000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 0, bytesTotal: 10000000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 3000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 1000000, bytesTotal: 10000000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 4000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 2000000, bytesTotal: 10000000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 5000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 3000000, bytesTotal: 10000000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 6000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 4000000, bytesTotal: 10000000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+] }, expect: r => [
+  ['the time left reads "over 99 min", not thousands of minutes', / · over 99 min left$/.test(r.progress.speed), JSON.stringify(r.progress.speed)],
+] });
+scenarios.push({ name: 'download progress: no news for 3 s says it is waiting for the server', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, delay: { update: 20000 }, end: 8000, actions: [
+  { at: 2000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 0, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 3000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 1000000, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 4000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 2000000, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+] }, expect: r => [
+  ['a stall says it is waiting, not a stale time left', r.progress.speed === 'Waiting for the server…', JSON.stringify(r.progress.speed)],
+] });
+scenarios.push({ name: 'Play ready glow animates opacity or transform only, so hover still brightens it', s: { ...base, clicks: [] }, expect: r => [
+  ['the ready state does not animate a filter on the wrapper', r.readyAnim === 'none' || r.readyAnim === null, String(r.readyAnim)],
 ] });
 
 const chrome = findChrome();
