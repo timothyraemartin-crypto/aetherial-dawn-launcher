@@ -186,6 +186,7 @@
     $('news-box').hidden = p !== 'home';
     $('tagline').hidden = p !== 'home';
     applySetup();
+    showMinNotice();
     if (p === 'mods') loadFiles();
   }
   function showSheet(id) {
@@ -1090,6 +1091,7 @@
     statusAsked = true;
     if (status) remember({ news: Array.isArray(status.news) ? status.news.slice(0, 20) : lastSeen.news, invite: status.discordInvite || lastSeen.invite });
     renderInvite();
+    keepLauncherNote();
     renderStatus();
     showMinNotice();
     gateTick();
@@ -1143,7 +1145,11 @@
   // last for ever); minVersion only shows the message, it never blocks Play.
   const numbers = v => String(v).split('.').map(n => parseInt(n, 10) || 0);
   const olderThan = (a, b) => { const x = numbers(a), y = numbers(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) < (y[i] || 0); } return false; };
-  const launcherNote = () => (status && status.launcher && typeof status.launcher === 'object') ? status.launcher : {};
+  // The last launcher block that staff's status file really had. A status answer without the file (it couldn't
+  // be fetched just now) leaves it alone, so a hold doesn't lift on a bad minute.
+  let lastLauncher = {};
+  const keepLauncherNote = () => { if (status && status.fromFile === true) lastLauncher = (status.launcher && typeof status.launcher === 'object') ? status.launcher : {}; };
+  const launcherNote = () => lastLauncher;
   const heldByStaff = version => {
     const l = launcherNote();
     const until = Date.parse(l.holdUntil);
@@ -1152,8 +1158,13 @@
   function showMinNotice() {
     const l = launcherNote(), n = $('min-notice');
     const old = state && typeof l.minVersion === 'string' && olderThan(state.launcherVersion, l.minVersion);
-    n.hidden = !old;
-    if (old) n.textContent = typeof l.message === 'string' && l.message.trim() ? l.message.trim().slice(0, 200) : 'A newer launcher is needed for the latest server changes. It updates by itself when you are not playing.';
+    // Home only: the notice floats over the page, and the other pages have their own headers there.
+    n.hidden = !(old && page === 'home');
+    if (!n.hidden) {
+      const m = typeof l.message === 'string' ? l.message.trim() : '';
+      n.textContent = !m ? 'A newer launcher is needed for the latest server changes. It updates by itself when you are not playing.'
+        : m.length <= 200 ? m : m.slice(0, 200).replace(/\s+\S*$/, '').replace(/[\s.,;:!?-]+$/, '') + '…';
+    }
   }
   async function checkSelfUpdate(byHand) {
     if (updating || updateWaits()) return byHand ? 'busy' : undefined;
