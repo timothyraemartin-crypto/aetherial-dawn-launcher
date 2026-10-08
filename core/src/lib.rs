@@ -13,6 +13,7 @@ pub mod community;
 pub mod detach;
 pub mod downgrade;
 pub mod faces;
+pub mod portrait;
 pub mod feedsig;
 pub mod fetch;
 pub mod game;
