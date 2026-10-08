@@ -45,6 +45,7 @@ function fakeBackEnd() {
     check: () => Object.assign({ build: 'B2', server: { name: 'Aetherial Dawn', ip: '127.0.0.1', port: 7777 }, files: 0, remove: 0, bytes: 0, strays: [], game }, (S.checkSequence && S.checkSequence.shift()) || S.check || {}),
     update: () => null,
     server_status: () => ({ online: true, players: 1, maxPlayers: 50, ...(typeof S.statusNow === 'object' ? S.statusNow : {}), discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
+    setup_state: () => S.setup || [{ id: 'folder', title: 'Choose your Skyrim folder', hint: 'x', done: true }],
     files: () => [], play: () => S.playWarnings || null,
     patch_game: () => S.patchResult || { ...game, needed: false },
     game_running: () => !!S.outsideGame,
@@ -126,6 +127,7 @@ function fakeBackEnd() {
       if (action.kind === 'open') document.getElementById(action.id).open = true;
       if (action.kind === 'focus') document.getElementById(action.id).focus();
       if (action.kind === 'key') document.dispatchEvent(new KeyboardEvent('keydown', { key: action.key, shiftKey: !!action.shiftKey, bubbles: true, cancelable: true }));
+      (log.setupHidden ||= []).push(document.getElementById('setup').hidden);
       log.actions.push([at(), action.kind, action.id || action.name || action.key, document.activeElement && document.activeElement.id]);
     }, action.at);
     setTimeout(() => {
@@ -163,6 +165,8 @@ function fakeBackEnd() {
       log.vortexConnect = !document.getElementById('rq-vortex-connect').hidden;
       log.installerControl = !!document.querySelector('#rq-all, #rq-stop, #rq-sso-go, #rq-signin');
       log.playDisabled = btn.disabled;
+      const setupBox = document.getElementById('setup');
+      log.setup = setupBox.hidden ? null : [...document.querySelectorAll('#setup-list li')].map(li => li.className + ':' + li.querySelector('b').textContent);
       const gate = document.getElementById('play-gate');
       log.gate = gate.hidden ? null : { msg: document.getElementById('play-gate-msg').textContent, anyway: !document.getElementById('gate-anyway').hidden, wait: !document.getElementById('gate-wait').hidden };
       log.modal = [...document.querySelectorAll('.sheet')].find(el => !el.hidden)?.id || null;
@@ -198,6 +202,24 @@ const firstLabel = (r, text) => (r.labels.find(l => l[1] === text) || [null])[0]
 const lastLabel = r => r.labels[r.labels.length - 1][1];
 
 const scenarios = [
+  { name: 'new player: the setup checklist lists what is still open', s: { ...base, clicks: [], seed: null, setup: [
+    { id: 'folder', title: 'Choose your Skyrim folder', hint: 'Open Settings.', done: true },
+    { id: 'skse', title: 'SKSE is installed', hint: 'Press Play.', done: false },
+    { id: 'signin', title: 'Sign in with Discord', hint: 'Press Sign in.', done: false } ], end: 4000 }, expect: r => [
+    ['the checklist is shown with each step', !!r.setup && r.setup.length === 3],
+    ['done steps are marked and open ones are not', !!r.setup && r.setup[0].startsWith('done:') && r.setup[1].startsWith('todo:') && r.setup[2].startsWith('todo:')],
+  ] },
+  { name: 'setup checklist: only on Home, back when the player returns', s: { ...base, clicks: [], setup: [{ id: 'skse', title: 'SKSE is installed', hint: 'Press Play.', done: false }], end: 5000,
+    actions: [{ kind: 'click', id: 'nav-server', at: 3000 }, { kind: 'click', id: 'nav-mods', at: 3300 }, { kind: 'click', id: 'nav-news', at: 3600 }, { kind: 'click', id: 'nav-home', at: 4200 }, { kind: 'click', id: 'nav-home', at: 4300 }] }, expect: r => [
+    ['the checklist is hidden on the Server, Mods and News pages', r.setupHidden.slice(0, 3).every(h => h === true)],
+    ['it is back on Home', !!r.setup && r.setup.length === 1],
+  ] },
+  { name: 'setup checklist: hidden once the game has been started before', s: { ...base, clicks: [], hintSeen: true, setup: [{ id: 'skse', title: 'SKSE is installed', hint: 'Press Play.', done: false }], end: 4000 }, expect: r => [
+    ['the checklist is not shown', r.setup === null],
+  ] },
+  { name: 'setup checklist: nothing to show when every step is done', s: { ...base, clicks: [], end: 4000 }, expect: r => [
+    ['the checklist is not shown', r.setup === null],
+  ] },
   { name: 'server offline at Play: warned, the game waits for Play anyway', s: { ...base, statusNow: { online: false }, actions: [{ kind: 'click', id: 'gate-anyway', at: 3500 }], end: 5000 }, expect: r => [
     ['the game starts only after Play anyway', askedAt(r, 'play') > 3500],
   ] },
@@ -223,7 +245,8 @@ const scenarios = [
     ['the game never starts', !played(r)],
     ['the message is shown and only Wait and join is offered', !!r.gate && /Back at 18:00/.test(r.gate.msg) && !r.gate.anyway && r.gate.wait],
     ['the status line carries the message', /Back at 18:00/.test(r.status)],
-  ] },  { name: 'returning player: Play waits for fresh game, Discord and Vortex checks', s: base, expect: r => [
+  ] },
+  { name: 'returning player: Play waits for fresh game, Discord and Vortex checks', s: base, expect: r => [
     ['PLAY is not enabled before fresh checks answer', firstLabel(r, 'PLAY') !== null && firstLabel(r, 'PLAY') >= Math.max(answeredAt(r, 'auth_status'), answeredAt(r, 'check'), answeredAt(r, 'mods_state'))],
     ['the game starts once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
     ['the game starts only after the Discord answer', askedAt(r, 'play') >= answeredAt(r, 'auth_status')],
