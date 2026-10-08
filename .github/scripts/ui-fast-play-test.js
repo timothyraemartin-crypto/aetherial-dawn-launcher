@@ -137,6 +137,8 @@ function fakeBackEnd() {
       log.hint = hint && !hint.hidden && getComputedStyle(hint).visibility !== 'hidden' ? hint.textContent : null;
       log.hintBox = hint && !hint.hidden ? hint.getBoundingClientRect().height > 0 : false;
       try { log.hintStored = localStorage.getItem('ad.f3hint'); } catch (_) {}
+      log.progress = { file: document.getElementById('p-file').textContent, speed: document.getElementById('p-speed').textContent, num: document.getElementById('p-num').textContent };
+      log.readyAnim = getComputedStyle(document.getElementById('play-wrap')).animationName;
       log.gameRow = document.querySelector('#c-game small').textContent;
       const join = document.getElementById('si-join');
       log.join = join.hidden ? null : join.textContent;
@@ -544,6 +546,41 @@ scenarios.push({ name: 'Play states: a returning player gets no F3 hint and no g
 ] });
 scenarios.push({ name: 'Play states: starting the game counts as having seen the F3 hint', s: base, expect: r => [
   ['the hint is remembered after Play', r.hintStored === '1', String(r.hintStored)],
+] });
+
+scenarios.push({ name: 'download progress: friendly file name, speed and time left', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, delay: { update: 20000 }, end: 5200, actions: [
+  { at: 2000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 0, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 3000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 1000000, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 4000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 2000000, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 5000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 3000000, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+] }, expect: r => [
+  ['the file shows by its own name, not the long path', r.progress.file === 'face.dds', JSON.stringify(r.progress.file)],
+  ['speed and time left show together once 3 s of samples exist', /^\d+(\.\d)? MB\/s · about \d+ (sec|min) left$/.test(r.progress.speed), JSON.stringify(r.progress.speed)],
+] });
+scenarios.push({ name: 'download progress: no time-left guess in the first seconds', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, delay: { update: 20000 }, end: 3300, actions: [
+  { at: 2000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 0, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 2700, kind: 'event', name: 'sync-progress', payload: { bytesDone: 1000000, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+] }, expect: r => [
+  ['the speed shows without a time left', /^\d+(\.\d)? MB\/s$/.test(r.progress.speed), JSON.stringify(r.progress.speed)],
+] });
+scenarios.push({ name: 'download progress: a huge time left is capped', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, delay: { update: 20000 }, end: 6300, actions: [
+  { at: 2000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 0, bytesTotal: 10000000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 3000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 1000000, bytesTotal: 10000000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 4000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 2000000, bytesTotal: 10000000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 5000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 3000000, bytesTotal: 10000000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 6000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 4000000, bytesTotal: 10000000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+] }, expect: r => [
+  ['the time left reads "over 99 min", not thousands of minutes', / · over 99 min left$/.test(r.progress.speed), JSON.stringify(r.progress.speed)],
+] });
+scenarios.push({ name: 'download progress: no news for 3 s says it is waiting for the server', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, delay: { update: 20000 }, end: 8000, actions: [
+  { at: 2000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 0, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 3000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 1000000, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 4000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 2000000, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+] }, expect: r => [
+  ['a stall says it is waiting, not a stale time left', r.progress.speed === 'Waiting for the server…', JSON.stringify(r.progress.speed)],
+] });
+scenarios.push({ name: 'Play ready glow animates opacity or transform only, so hover still brightens it', s: { ...base, clicks: [] }, expect: r => [
+  ['the ready state does not animate a filter on the wrapper', r.readyAnim === 'none' || r.readyAnim === null, String(r.readyAnim)],
 ] });
 
 const chrome = findChrome();
