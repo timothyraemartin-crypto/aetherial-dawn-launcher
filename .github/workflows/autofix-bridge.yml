@@ -1,0 +1,60 @@
+name: Auto-fix bridge
+
+# Connects auto-fix pull requests to the Discord bot. Every 5 minutes (and when a pull request is labelled):
+# tell the bot about a pull request labelled `auto-fix-ready`, then act on the owner's Apply / Skip presses.
+# Apply merges with this workflow's own token after re-checking CI and the commit, then starts the repo's tests
+# and deploy. Does nothing until the AD_SSH_* secrets exist. dry_run prints what it would do and changes nothing.
+on:
+  schedule:
+    - cron: '3,8,13,18,23,28,33,38,43,48,53,58 * * * *'
+  pull_request_target:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Print what would happen; change nothing
+        type: boolean
+        default: false
+
+permissions:
+  contents: write       # merge the pull request
+  pull-requests: write
+  issues: write         # labels and comments
+  actions: write        # start the tests and the deploy after a merge
+  checks: read
+  statuses: read
+
+concurrency:
+  group: autofix-bridge
+  cancel-in-progress: false
+
+jobs:
+  bridge:
+    # Runs the default branch's copy of the script only; pull request code is never checked out.
+    if: github.event_name != 'pull_request_target' || github.event.label.name == 'auto-fix-ready'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run the bridge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+          K: ${{ secrets.AD_SSH_KEY }}
+          H: ${{ secrets.AD_SSH_HOST }}
+          U: ${{ secrets.AD_SSH_USER }}
+          KH: ${{ secrets.AD_SSH_KNOWN_HOSTS }}
+        run: |
+          set -uo pipefail
+          if [ -z "$K" ] || [ -z "$H" ] || [ -z "$U" ] || [ -z "$KH" ]; then echo 'AD_SSH_* secrets missing; nothing to do'; exit 0; fi
+          install -d -m 700 ~/.ssh
+          ( umask 077; printf '%s\n' "$K" | tr -d '\r' | sed '1s/^\xEF\xBB\xBF//' > ~/.ssh/id_ed25519 )
+          printf '%s\n' "$KH" | tr -d '\r' | sed '1s/^\xEF\xBB\xBF//' > ~/.ssh/known_hosts
+          export SSH_TARGET="$(printf '%s' "$U" | tr -d '[:space:]')@$(printf '%s' "$H" | tr -d '[:space:]')"
+          node .github/autofix-bridge.cjs
