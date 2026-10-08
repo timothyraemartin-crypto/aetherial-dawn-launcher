@@ -53,6 +53,7 @@
   let page = 'home';
 
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  const timeLeft = sec => sec < 90 ? `${Math.max(1, Math.round(sec))} sec` : `${Math.round(sec / 60)} min`;
   const mb = n => (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + ' MB';
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -347,16 +348,21 @@
     setStatus(`Updating to build ${pending.build} · ${mb(pending.bytes)}`);
     $('progress').hidden = false;
     $('p-progress').setAttribute('aria-valuenow', '0');
-    let last = { t: performance.now(), b: 0 };
+    let last = { t: performance.now(), b: 0 }, speed = 0;
     const off = await T.event.listen('sync-progress', ({ payload: p }) => {
       const pct = p.bytesTotal ? (p.bytesDone / p.bytesTotal) * 100 : 100;
       $('p-bar').style.width = pct.toFixed(1) + '%';
       $('p-progress').setAttribute('aria-valuenow', String(Math.round(Math.min(100, pct))));
       $('p-num').textContent = `${Math.min(p.filesDone + (p.file ? 1 : 0), p.filesTotal)} / ${plural(p.filesTotal, 'file')} · ${Math.round(pct)}%`;
-      $('p-file').textContent = p.file || 'All files match the server';
+      $('p-file').textContent = p.file ? p.file.split(/[\\/]/).pop() : 'All files match the server';
+      $('p-file').title = p.file || '';
       const now = performance.now();
       if (now - last.t > 500) {
-        $('p-speed').textContent = mb(((p.bytesDone - last.b) / (now - last.t)) * 1000) + '/s';
+        const rate = ((p.bytesDone - last.b) / (now - last.t)) * 1000;
+        // Smoothed so the time left doesn't jump around with every burst.
+        speed = speed ? speed * 0.6 + rate * 0.4 : rate;
+        const left = speed > 0 && p.bytesTotal > p.bytesDone ? (p.bytesTotal - p.bytesDone) / speed : 0;
+        $('p-speed').textContent = mb(speed) + '/s' + (left > 0 ? ` · about ${timeLeft(left)} left` : '');
         last = { t: now, b: p.bytesDone };
       }
     });
