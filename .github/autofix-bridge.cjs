@@ -56,7 +56,13 @@ async function run({ gh, bot, graphql, repo, dry = false, log = console.log, now
   const asked = await gh('GET', `/issues?labels=${ASKED}&state=open&per_page=30`);
   const ready = await gh('GET', `/issues?labels=${READY}&state=open&per_page=30`);
   const prs = [...ready, ...asked].filter((x) => x.pull_request).filter((x, i, a) => a.findIndex((y) => y.number === x.number) === i);
-  if (!prs.length) { log('no auto-fix pull requests; nothing to do'); return; }
+  if (!prs.length) {
+    log('no auto-fix pull requests; nothing to do');
+    if (dry) { // a manual check: one read-only call proves the SSH login, sudo, the token and the bot's route
+      try { const { decisions } = bot('GET', '/internal/autofix/decisions'); log(`bot reachable; ${decisions.length} pending decision(s)`); } catch (e) { if (e.code === 'not_found') log('auto-fix is not switched on in the bot'); else throw e; }
+    }
+    return;
+  }
 
   try {
     // Ask about every labelled pull request. The bot ignores one it already asked about at the same commit and
