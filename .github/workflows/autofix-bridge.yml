@@ -32,7 +32,7 @@ jobs:
   bridge:
     # Runs the default branch's copy of the script only; pull request code is never checked out.
     if: github.event_name != 'pull_request_target' || github.event.label.name == 'auto-fix-ready'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4

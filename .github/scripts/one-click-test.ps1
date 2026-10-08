@@ -12,6 +12,11 @@ $uninstaller = Join-Path $dir 'uninstall.exe'
 $desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Aetherial Dawn.lnk'
 $programs = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
 $failed = 0
+# This test installs, force-closes and uninstalls the launcher for the current Windows user. On a
+# self-hosted runner that must be a dedicated CI user, never a personal account with a real install.
+if ($env:RUNNER_ENVIRONMENT -eq 'self-hosted' -and $env:AD_CI_RUNNER -ne '1') {
+  throw 'Refusing to run: on a self-hosted runner this test needs AD_CI_RUNNER=1 in the runner .env, set only for a dedicated Windows user that has no real Aetherial Dawn install.'
+}
 function Check([string] $what, [bool] $ok, [string] $detail = '') {
   $mark = if ($ok) { 'PASS' } else { 'FAIL' }
   Write-Host "$mark  $what$(if ($detail) { "  ($detail)" })"
