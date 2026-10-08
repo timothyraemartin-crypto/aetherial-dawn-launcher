@@ -268,6 +268,10 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .play::after { content: ""; position: absolute; inset: 0; opacity: 0; pointer-events: none; background: radial-gradient(ellipse at 50% 120%, rgba(169,214,242,.4), transparent 65%); }
 .play-wrap[data-state="ready"] .play::after { animation: ready-glow 3.2s ease-in-out infinite; }
 .play:not(:disabled):active { transform: translateY(1px) scale(.992); filter: brightness(.92); }
+.play-gate { margin: 6px 0 0; padding: 8px 12px; border: 1px solid var(--faint); border-radius: 6px; text-align: center; font-size: 12px; color: var(--muted); }
+.play-gate p { margin: 0 0 6px; }
+.play-gate-btns { display: flex; gap: 14px; justify-content: center; }
+.play-gate .linkish { margin-left: 0; }
 .play-hint { margin: -2px 0 0; font-size: 12px; color: var(--muted); text-align: center; }
 @keyframes ready-glow { 0%, 100% { opacity: .15; } 50% { opacity: .7; } }
 @keyframes play-shimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }

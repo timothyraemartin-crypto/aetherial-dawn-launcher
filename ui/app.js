@@ -97,6 +97,7 @@
       const on = known && st.online;
       const who = on && typeof st.players === 'number' ? ` · ${typeof st.maxPlayers === 'number' && st.maxPlayers > 0 ? `${st.players} of ${plural(st.maxPlayers, 'player')}` : plural(st.players, 'player')}` : '';
       parts.push(`<span><i class="dot${on ? '' : ' off'}"></i>${!known ? (statusAsked ? 'Server status unavailable' : 'Connecting to the server') : on ? 'Server online' : 'Server offline'}${who}</span>`);
+      if (st && st.maintenance) parts.push(`<span class="error">${esc(typeof st.maintenance === 'string' ? st.maintenance : 'Server maintenance')}</span>`);
       const build = pending && pending.build;
       if (build) parts.push(`<span>Build ${esc(build)}</span>`);
     }
@@ -822,7 +823,38 @@
     try { return await invoke('play'); }
     finally { playInFlight = false; }
   }
-  async function onPlay(checked = false) {
+  // ---------- server check before launch ----------
+  // status.json may carry `maintenance` (true or a message): Play is blocked
+  // until it is gone. An offline or full server is a warning the player can
+  // override (Play anyway) or sit out (Wait and join: the 30-second status
+  // poll starts the game when the server is open). An unknown status never blocks.
+  function gateReason(st) {
+    if (!st) return null;
+    if (st.maintenance) return { kind: 'maintenance', msg: typeof st.maintenance === 'string' ? st.maintenance : 'The server is down for maintenance.' };
+    if (st.online === false) return { kind: 'offline', msg: 'The server is offline right now.' };
+    if (typeof st.players === 'number' && typeof st.maxPlayers === 'number' && st.maxPlayers > 0 && st.players >= st.maxPlayers) return { kind: 'full', msg: `The server is full (${st.players} of ${st.maxPlayers}).` };
+    return null;
+  }
+  let gateWaiting = false, gateChecking = false;
+  function showGate(reason) {
+    $('play-gate-msg').textContent = gateWaiting ? `${reason.msg} Waiting for it to open; checking every 30 seconds.` : reason.msg;
+    $('gate-anyway').hidden = reason.kind === 'maintenance';
+    $('gate-wait').hidden = gateWaiting;
+    $('play-gate').hidden = false;
+    setPlay('play', 'PLAY');
+    const live = $('status-live');
+    if (live) live.textContent = $('play-gate-msg').textContent;
+  }
+  function hideGate() { gateWaiting = false; $('play-gate').hidden = true; }
+  // Called after every status refresh while the player waits.
+  function gateTick() {
+    if (!gateWaiting) return;
+    const reason = gateReason(status);
+    if (reason) return showGate(reason);
+    hideGate();
+    onPlay(true, true);
+  }
+  async function onPlay(checked = false, gateOk = false) {
     if (gameRunning || playInFlight || updating) return;
     if (busy) return;
     // Installing the launcher update closes the launcher; Play waits for it.
@@ -844,6 +876,18 @@
       const didCheck = await check();
       return didCheck !== false && playMode === 'play' ? onPlay(true) : undefined;
     }
+    if (!gateOk) {
+      // A healthy last answer starts the game at once. A problem is re-read first,
+      // so an old answer never holds a player back.
+      if (gateReason(status)) {
+        if (gateChecking) return;
+        gateChecking = true;
+        try { await loadStatus(); } finally { gateChecking = false; }
+        const reason = gateReason(status);
+        if (reason) return showGate(reason);
+      }
+    }
+    hideGate();
     setPlay('wait', 'LAUNCHING');
     setStatus('Starting Skyrim through SKSE…');
     playing = true;
@@ -919,6 +963,7 @@
     if (status) remember({ news: Array.isArray(status.news) ? status.news.slice(0, 20) : lastSeen.news, invite: status.discordInvite || lastSeen.invite });
     renderInvite();
     renderStatus();
+    gateTick();
     const online = $('srv-online');
     if (!status) {
       online.className = 'online' + (pending ? '' : ' off');
@@ -1075,7 +1120,10 @@
   $('w-min').onclick = () => win.minimize();
   $('w-close').onclick = () => win.close();
   $('w-settings').onclick = $('nav-settings').onclick = $('t-settings').onclick = () => showSheet('settings');
-  $('play').onclick = () => onPlay();
+  $('play').onclick = () => { hideGate(); onPlay(); };
+  $('gate-anyway').onclick = () => { hideGate(); onPlay(true, true); };
+  $('gate-wait').onclick = () => { gateWaiting = true; const r = gateReason(status); if (r) showGate(r); };
+  $('gate-cancel').onclick = hideGate;
   for (const [name, nav] of Object.entries(PAGES)) $(nav).onclick = () => { if (ready_() && signedIn()) showPage(name); else leaveSheet(); };
   $('news-all').onclick = () => showPage('news');
   $('set-done').onclick = leaveSheet;
