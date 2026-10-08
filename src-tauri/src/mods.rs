@@ -2,9 +2,9 @@
 //! the Requirements rows, the Vortex pairing and opening a mod's Nexus page.
 //! Mods are installed through Vortex; the launcher no longer downloads them.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use launcher_core::{auth, modlist, modlist::ModEntry, nexus};
+use launcher_core::{modlist, modlist::ModEntry};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
@@ -16,31 +16,6 @@ pub struct ModsState {
     server_list: tokio::sync::Mutex<Option<modlist::ModList>>,
     /// Exactly which mods.json that was (sha256 of the bytes, revision).
     receipt: tokio::sync::Mutex<Option<launcher_core::inventory::FeedReceipt>>,
-}
-
-fn key_path(app: &AppHandle) -> Option<PathBuf> {
-    app.path().app_config_dir().ok().map(|d| d.join("nexus.bin"))
-}
-
-pub(crate) fn nexus_key(app: &AppHandle) -> Option<String> {
-    key_path(app).and_then(|p| auth::load_token(&p))
-}
-
-/// Where the nxm:// command that was there before is kept while the launcher
-/// holds it, so it can be put back even after a crash.
-fn previous_handler_path(app: &AppHandle) -> Option<PathBuf> {
-    app.path().app_config_dir().ok().map(|d| d.join("nxm-previous.txt"))
-}
-
-/// Gives nxm:// back to whoever had it, if a run was cut short.
-pub fn restore_left_handler(app: &AppHandle) {
-    let Some(p) = previous_handler_path(app) else { return };
-    if let Ok(prev) = std::fs::read_to_string(&p) {
-        let prev = prev.trim();
-        let _ = nexus::restore_nxm_handler(if prev.is_empty() { None } else { Some(prev) });
-        let _ = std::fs::remove_file(&p);
-        log::line("mods: gave the nxm:// links back to the program that had them");
-    }
 }
 
 /// A second launch (Windows starts the launcher again for an nxm:// link):

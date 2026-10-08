@@ -438,7 +438,6 @@ mod tests {
                 Depot { depot: 489831, manifest: "8442952117333549665".into() },
                 Depot { depot: 489833, manifest: "1914580699073641964".into() },
             ],
-            tool: None,
         }
     }
 

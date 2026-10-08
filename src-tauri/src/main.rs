@@ -2454,7 +2454,6 @@ fn main() {
             };
             let (http, faces_http) = (client(false)?, client(true)?);
             app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), game_operation: Mutex::new(()), active_session: AtomicBool::new(false), update_installing: AtomicBool::new(false), http, faces_http, mods: Default::default(), music: music::Music::new() });
-            mods::restore_left_handler(app.handle());
             // A session that ended while the launcher was closed.
             if let Some(dir) = app.state::<AppState>().config.try_lock().ok().and_then(|c| c.game_dir.clone()) {
                 if watch::find_process(watch::GAME_PROCESS).is_none() {
@@ -2472,7 +2471,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, health_check, report_problem, patch_game, game_running, self_update_begin, self_update_end, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::vortex_connect, restore_set_aside, skip_tool, window_ready, open_invite])
+        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, health_check, report_problem, patch_game, game_running, self_update_begin, self_update_end, music_start, set_music, mods::open_mod_page, export::export_key_saved, export::export_key_save, export::export_key_forget, mods::mods_state, mods::vortex_connect, restore_set_aside, skip_tool, window_ready, open_invite])
         .build(tauri::generate_context!())
         .expect("error while running the launcher")
         .run(|_, event| {
