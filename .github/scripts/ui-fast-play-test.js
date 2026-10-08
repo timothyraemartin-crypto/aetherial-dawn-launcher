@@ -193,6 +193,8 @@ function fakeBackEnd() {
         for (const [name, html] of Object.entries(samples)) { st.innerHTML = html; log.jankStatus[name] = Math.round((top() - sBase) * 10) / 10; }
         st.innerHTML = keep;
       }
+      { const cs = getComputedStyle(document.documentElement), g = n => cs.getPropertyValue(n).trim().toLowerCase(); log.tokens = { text: g('--text'), muted: g('--muted'), faint: g('--faint'), ok: g('--ok'), warn: g('--warn'), gold: g('--gold'), frost: g('--frost'), glow: g('--glow'), danger: g('--danger') }; }
+      { const probe = c => { const d = document.createElement('i'); d.style.color = c; document.body.appendChild(d); const v = getComputedStyle(d).color; d.remove(); return v; }; log.okColor = probe('var(--ok)'); log.goldColor = probe('var(--gold)'); { const e = document.createElement('span'); e.className = 'error'; document.body.appendChild(e); log.errorColor = getComputedStyle(e).color; e.remove(); const t = document.createElement('div'); t.className = 'toast bad'; document.body.appendChild(t); log.badToastColor = getComputedStyle(t).color; t.remove(); } log.faintColor = probe('var(--faint)'); }
       log.siGoLabel = document.getElementById('si-go').textContent.trim();
       log.siGoDisabled = document.getElementById('si-go').disabled;
       log.status = document.getElementById('status').textContent;
@@ -823,7 +825,7 @@ scenarios.push({ name: 'Settings: the save message stays in view at the top, not
 ] });
 scenarios.push({ name: 'Settings: a failed save is shown as a warning, not in the success colour', s: { ...base, clicks: [], setPrefsError: 'read-only', end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-bg' }] }, expect: r => [
   ['it carries the warning class', /\bbad\b/.test(r.toast.cls), r.toast.cls],
-  ['it is not green', r.toast.color !== 'rgb(92, 201, 138)', r.toast.color],
+  ['it is not green', r.toast.color !== r.okColor, r.toast.color],
 ] });
 scenarios.push({ name: 'Settings: a saved change uses the success style', s: { ...base, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-bg' }] }, expect: r => [
   ['it carries the ok class', /\bok\b/.test(r.toast.cls), r.toast.cls],
@@ -840,7 +842,7 @@ scenarios.push({ name: 'Settings: menu music that saves says Saved and stays on'
 scenarios.push({ name: 'First run and sign-in: a step indicator shows where the player is', s: { ...signedOut, end: 3000 }, expect: r => [
   ['first run lists three steps with the first current', JSON.stringify(r.steps.first) === JSON.stringify(['Your game*', 'Sign in', 'Play']), JSON.stringify(r.steps.first)],
   ['the finished step is marked done for screen readers', /done/.test((r.steps.signin || [])[0] || ''), JSON.stringify(r.steps.signin)],
-  ['steps still to do are readable (the muted colour, not the faint one)', !!r.stepColors && r.stepColors.other !== 'rgb(102, 114, 127)', JSON.stringify(r.stepColors)],
+  ['steps still to do are readable (the muted colour, not the faint one)', !!r.stepColors && r.stepColors.other !== r.faintColor, JSON.stringify(r.stepColors)],
   ['the waiting line is a status message', r.slotRole === 'status', String(r.slotRole)],
   ['sign-in lists the same steps with the second current', JSON.stringify(r.steps.signin) === JSON.stringify(['Your game done', 'Sign in*', 'Play']), JSON.stringify(r.steps.signin)],
 ] });
@@ -864,6 +866,12 @@ scenarios.push({ name: 'Status line: no separator at the start of a line', s: { 
   [`state ${n + 1}: no separator on the first item of a line`, row.every(k => !(k.rowStart && k.sep)), JSON.stringify(row)],
   [`state ${n + 1}: the other items keep theirs`, row.every(k => k.rowStart || k.error || k.sep), JSON.stringify(row)]
 ]) });
+scenarios.push({ name: 'Tokens: the launcher colours are the design system values (Dawnglass)', s: { ...base, clicks: [], end: 2000 }, expect: r => Object.entries({ text: '#ece6d6', muted: '#b3b8c0', faint: '#8a93a0', ok: '#93cf9e', warn: '#e6b866', gold: '#d8b56a', frost: '#b6dcf7', glow: '#5ea4d8', danger: '#f0998a' }).map(([k, v]) => [`--${k} is ${v}`, r.tokens[k] === v, String(r.tokens[k])]) });
+const hueOf = c => { const [r, g, b] = (c.match(/[\d.]+/g) || []).slice(0, 3).map(Number).map(v => v / 255), mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn; if (!d) return 0; const h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; return (h * 60 + 360) % 360; };
+scenarios.push({ name: 'Tokens: errors and failures are clearly not gold', s: { ...base, clicks: [], end: 2000 }, expect: r => [
+  ['an error line is far from gold in hue (25 degrees or more)', Math.abs(hueOf(r.errorColor) - hueOf(r.goldColor)) >= 25, `${r.errorColor} vs ${r.goldColor}`],
+  ['a failed-save message is far from gold too', Math.abs(hueOf(r.badToastColor) - hueOf(r.goldColor)) >= 25, `${r.badToastColor} vs ${r.goldColor}`],
+] });
 for (const sc of scenarios) {
   if (process.env.AD_UI_SCENARIO && !sc.name.includes(process.env.AD_UI_SCENARIO)) continue;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-ui-'));
