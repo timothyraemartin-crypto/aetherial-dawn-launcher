@@ -62,7 +62,8 @@ pub fn write(game_dir: &Path, s: &ClientSettings) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, merge(existing.as_deref(), s))?;
+    // These hold the game session, so no copies are kept beside them.
+    crate::atomicfile::write(&path, merge(existing.as_deref(), s).as_bytes())?;
     Ok(())
 }
 
@@ -83,7 +84,7 @@ pub fn write_auth_data(game_dir: &Path, session: &str, p: &Profile) -> Result<()
         "discordDiscriminator": p.discord_discriminator,
         "discordAvatar": p.discord_avatar,
     });
-    std::fs::write(path, format!("//{body}"))?;
+    crate::atomicfile::write(&path, format!("//{body}").as_bytes())?;
     Ok(())
 }
 
@@ -95,7 +96,7 @@ pub fn clear_login(game_dir: &Path) {
         if let Some(Value::Object(gd)) = root.get_mut("gameData") {
             gd.remove("session");
         }
-        let _ = std::fs::write(&path, serde_json::to_string_pretty(&Value::Object(root)).unwrap());
+        let _ = crate::atomicfile::write(&path, serde_json::to_string_pretty(&Value::Object(root)).unwrap().as_bytes());
     }
 }
 
