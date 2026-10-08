@@ -149,6 +149,10 @@ function fakeBackEnd() {
       log.progress = { file: document.getElementById('p-file').textContent, speed: document.getElementById('p-speed').textContent, num: document.getElementById('p-num').textContent };
       log.readyAnim = getComputedStyle(document.getElementById('play-wrap')).animationName;
       log.fileRows = [...document.querySelectorAll('#files-body tr')].map(tr => ({ skel: tr.classList.contains('skel'), name: (tr.querySelector('.fname') || {}).textContent || null, dir: (tr.querySelector('.fdir') || {}).textContent || null }));
+      const alpha = c => { const m = /rgba?\([^)]*?,\s*([\d.]+)\)$/.exec(c); return m ? parseFloat(m[1]) : 1; };
+      log.pageAlpha = alpha(getComputedStyle(document.querySelector('#page-mods .ftable-wrap')).backgroundColor);
+      const sk = document.querySelector('#files-body tr.skel i');
+      log.skelAlpha = sk ? Math.max(...(getComputedStyle(sk).backgroundImage.match(/rgba\([^)]*\)/g) || []).map(alpha)) : null;
       log.gameRow = document.querySelector('#c-game small').textContent;
       const join = document.getElementById('si-join');
       log.join = join.hidden ? null : join.textContent;
@@ -686,6 +690,11 @@ scenarios.push({ name: 'download progress: after the last byte, hashing says Che
   { at: 3000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 3000000, bytesTotal: 3000000, filesDone: 2, filesTotal: 3, file: 'Data/big.bsa' } },
 ] }, expect: r => [
   ['it says the file is being checked, not that the server is silent', r.progress.speed === 'Checking file…', JSON.stringify(r.progress.speed)],
+] });
+
+scenarios.push({ name: 'Mods page: file list is solid enough to read over the artwork, placeholders are visible', s: { ...base, clicks: [], files: [{ path: 'Data/a.esp', size: 1000 }], delay: { files: 3000 }, end: 2500, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
+  ['the file list background is at least 95% opaque, so the artwork does not cross the rows', r.pageAlpha >= 0.95, String(r.pageAlpha)],
+  ['the placeholder bars reach at least 18% white', r.skelAlpha >= 0.18, String(r.skelAlpha)],
 ] });
 
 const chrome = findChrome();
