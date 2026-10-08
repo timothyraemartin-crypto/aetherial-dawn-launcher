@@ -90,7 +90,7 @@ pub fn plain(raw: &str) -> String {
         return "A file or folder the launcher needs is missing. Check your Skyrim folder in Settings, then try again.".into();
     }
     if has(&["the server's file can't be trusted"]) {
-        return "The launcher couldn't confirm the server's files are genuine, so it did not use them. It tries again the next time you press Play; if it keeps happening, send Copy diagnostics to staff.".into();
+        return "The launcher couldn't confirm the server's files are genuine, so it did not use them. It tries again the next time you press Play.".into();
     }
     if has(&["corrupted while downloading", "hash mismatch", "invalid zip", "could not find eocd", "isn't a readable zip", "couldn't unpack", "download is damaged"]) {
         return "A download came through damaged. The launcher fetches it again the next time you press Play.".into();
@@ -200,6 +200,7 @@ mod plain_tests {
         ] {
             let w = super::plain(raw);
             assert!(w.starts_with("The launcher couldn't confirm the server's files are genuine"), "{w}");
+            assert!(!w.contains("keeps happening") && !w.contains("diagnostics"), "the advice comes from the screen, once: {w}");
             assert!(!w.contains("mods.json") && !w.contains("manifest") && !w.contains("signature") && !w.contains("http"), "{w}");
         }
         assert_eq!(super::plain("see https://x.y/z now"), "see (link hidden) now");
