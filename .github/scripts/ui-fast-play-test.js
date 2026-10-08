@@ -44,7 +44,7 @@ function fakeBackEnd() {
     auth_status: () => (S.authSequence && S.authSequence.shift()) || ((S.authAfter && (S.authCalls = (S.authCalls || 0) + 1) > 1) ? S.authAfter : S.auth),
     check: () => Object.assign({ build: 'B2', server: { name: 'Aetherial Dawn', ip: '127.0.0.1', port: 7777 }, files: 0, remove: 0, bytes: 0, strays: [], game }, (S.checkSequence && S.checkSequence.shift()) || S.check || {}),
     update: () => null,
-    server_status: () => ({ online: true, players: 1, maxPlayers: 50, ...(S.statusNow || {}), discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
+    server_status: () => ({ online: true, players: 1, maxPlayers: 50, ...(typeof S.statusNow === 'object' ? S.statusNow : {}), discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
     files: () => [], play: () => S.playWarnings || null,
     patch_game: () => S.patchResult || { ...game, needed: false },
     game_running: () => !!S.outsideGame,
@@ -67,6 +67,7 @@ function fakeBackEnd() {
       setTimeout(() => {
         log.invokes.push([at(), 'answer', cmd]);
         if (cmd === 'get_state' && S.stateFails) return rej('settings are not writable');
+        if (cmd === 'server_status' && S.statusNow === 'down') return rej('no answer');
         if (cmd === 'auth_status' && S.authFails) return rej('network down');
         if (cmd === 'game_running' && (S.gameCheckFails || (S.gameCheckFailsFrom && (S.gameChecks = (S.gameChecks || 0) + 1) >= S.gameCheckFailsFrom))) return rej('process list unavailable');
         if (cmd === 'set_game_dir' && S.setDirError) return rej(S.setDirError);
@@ -202,6 +203,11 @@ const scenarios = [
     actions: [{ kind: 'click', id: 'gate-wait', at: 3000 }, { kind: 'status', value: { online: true, players: 49, maxPlayers: 50 }, at: 4000 }], end: 6500 }, expect: r => [
     ['the game starts after the slot opens', askedAt(r, 'play') > 4000],
     ['the game starts once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
+  ] },
+  { name: 'waiting for a full server, then the status call fails: the game does not start', s: { ...base, statusNow: { online: true, players: 50, maxPlayers: 50 }, statusPollMs: 1000,
+    actions: [{ kind: 'click', id: 'gate-wait', at: 3000 }, { kind: 'status', value: 'down', at: 4000 }], end: 7000 }, expect: r => [
+    ['the game never starts', !played(r)],
+    ['the notice says it cannot reach the server and is still waiting', !!r.gate && /Cannot reach the server, still waiting/.test(r.gate.msg)],
   ] },
   { name: 'server full: still waiting, the game does not start', s: { ...base, statusNow: { online: true, players: 50, maxPlayers: 50 }, statusPollMs: 1000, actions: [{ kind: 'click', id: 'gate-wait', at: 3000 }], end: 5500 }, expect: r => [
     ['the game never starts', !played(r)],

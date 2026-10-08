@@ -851,6 +851,9 @@
     if (!gateWaiting) return;
     const reason = gateReason(status);
     if (reason) return showGate(reason);
+    // Only a real answer that says the server is up starts the game. No
+    // answer at all (the status call failed) is not "open": keep waiting.
+    if (!status || status.online !== true) return showGate({ kind: 'offline', msg: 'Cannot reach the server, still waiting.' });
     hideGate();
     onPlay(true, true);
   }
