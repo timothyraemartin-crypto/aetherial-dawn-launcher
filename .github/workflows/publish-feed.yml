@@ -1,0 +1,60 @@
+name: Publish launcher feed
+
+# Fills missing sha256 pins in the server's mods.json, signs mods.json and client/manifest.json,
+# and verifies them: the one step that must run after every change to those files, and before
+# players get a launcher that expects signatures. Manual only; does nothing without AD_SSH_* secrets.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: check = only report; pin-only = fill missing sha256 before a launcher release (no signing); publish = pin, sign, verify (after the release)
+        type: choice
+        options: [check, pin-only, publish]
+        default: check
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-feed
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: [self-hosted, linux, x64]
+    environment: live-server
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check secrets
+        id: have
+        env:
+          K: ${{ secrets.AD_SSH_KEY }}
+          H: ${{ secrets.AD_SSH_HOST }}
+          U: ${{ secrets.AD_SSH_USER }}
+          KH: ${{ secrets.AD_SSH_KNOWN_HOSTS }}
+        run: |
+          if [ -n "$K" ] && [ -n "$H" ] && [ -n "$U" ] && [ -n "$KH" ]; then
+            echo ready=true >> "$GITHUB_OUTPUT"
+          else
+            echo ready=false >> "$GITHUB_OUTPUT"
+            echo 'Skipped: add AD_SSH_HOST, AD_SSH_USER, AD_SSH_KEY and AD_SSH_KNOWN_HOSTS (see docs/signing-feeds.md).' | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Run scripts/publish-feed.sh on the server
+        if: steps.have.outputs.ready == 'true'
+        env:
+          K: ${{ secrets.AD_SSH_KEY }}
+          H: ${{ secrets.AD_SSH_HOST }}
+          U: ${{ secrets.AD_SSH_USER }}
+          KH: ${{ secrets.AD_SSH_KNOWN_HOSTS }}
+          WEB_ROOT: ${{ vars.AD_WEB_ROOT }}
+          FEED_KEY: ${{ vars.AD_FEED_KEY }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$K" > ~/.ssh/id_ed25519; chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KH" > ~/.ssh/known_hosts
+          flag=""; [ "$MODE" = check ] && flag="--check"; [ "$MODE" = pin-only ] && flag="--pin-only"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$U@$H" \
+            "sudo env AD_WEB_ROOT='$WEB_ROOT' AD_FEED_KEY='$FEED_KEY' bash -s -- $flag" < scripts/publish-feed.sh

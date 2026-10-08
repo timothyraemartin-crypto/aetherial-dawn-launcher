@@ -100,10 +100,15 @@ fn in_step(a: &Path, b: &Path) -> bool {
     }
 }
 
-fn link(from: &Path, to: &Path) -> std::io::Result<()> {
+fn link(from: &Path, to: &Path, ours: bool) -> std::io::Result<()> {
     if to.exists() {
         if in_step(from, to) {
             return Ok(());
+        }
+        // Only a file the launcher made may be replaced; a dash-named file
+        // the player or a mod put there is theirs.
+        if !ours {
+            return Err(std::io::Error::other(format!("{} is already in Data and isn't the launcher's; not replacing it", to.display())));
         }
         std::fs::remove_file(to)?;
     }
@@ -514,7 +519,8 @@ pub fn companions(data: &Path, plugin: &str, alias: &str) -> Vec<(String, String
 /// place; drops `from` when `to` is already listed. Returns whether it
 /// changed the file. The old file is kept next to it.
 fn rename_in(txt: &Path, from: &str, to: &str) -> std::io::Result<bool> {
-    let Ok(text) = std::fs::read_to_string(txt) else { return Ok(false) };
+    let Some(file) = crate::loadorder::ListFile::read(txt)? else { return Ok(false) };
+    let text = file.text.as_str();
     let name = |l: &str| l.trim().trim_start_matches('*').trim().to_ascii_lowercase();
     let (f, t) = (from.to_ascii_lowercase(), to.to_ascii_lowercase());
     if !text.lines().any(|l| name(l) == f) {
@@ -533,8 +539,7 @@ fn rename_in(txt: &Path, from: &str, to: &str) -> std::io::Result<bool> {
         }
     }
     out.push(String::new());
-    crate::loadorder::keep_backup(txt, &text)?;
-    std::fs::write(txt, out.join(if text.contains("\r\n") { "\r\n" } else { "\n" }))?;
+    crate::loadorder::write_list(txt, Some(&file), &out.join(if text.contains("\r\n") { "\r\n" } else { "\n" }))?;
     Ok(true)
 }
 
@@ -625,8 +630,8 @@ pub fn ensure_full(game_dir: &Path, plugins_txt: Option<&Path>, full: &[String])
             rec.links.push(a);
         }
         for (from, to) in pairs {
-            link(&data.join(&from), &data.join(&to))?;
             let a = Alias { from: format!("Data/{from}"), to: format!("Data/{to}") };
+            link(&data.join(&from), &data.join(&to), rec.links.contains(&a))?;
             if !rec.links.contains(&a) {
                 rec.links.push(a);
             }
@@ -665,6 +670,19 @@ mod tests {
         b.extend(sub);
         b.extend(b"GRUPrest-of-file");
         b
+    }
+
+    #[test]
+    fn a_dash_named_file_the_launcher_did_not_make_is_not_deleted() {
+        let t = tempfile::tempdir().unwrap();
+        let (from, to) = (t.path().join("A B.esp"), t.path().join("A-B.esp"));
+        std::fs::write(&from, b"original").unwrap();
+        std::fs::write(&to, b"players own file").unwrap();
+        assert!(link(&from, &to, false).is_err());
+        assert_eq!(std::fs::read(&to).unwrap(), b"players own file");
+        // One the launcher made is refreshed.
+        link(&from, &to, true).unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), b"original");
     }
 
     #[test]

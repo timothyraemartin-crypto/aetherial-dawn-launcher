@@ -101,9 +101,9 @@ pub fn repair(ini: &Path, data_dir: &Path) -> Result<Repair> {
     if !rep.is_empty() {
         let backup = ini.with_file_name(format!("{}.aetherial-dawn-backup", ini.file_name().unwrap().to_string_lossy()));
         if !backup.exists() {
-            std::fs::write(&backup, &text)?;
+            crate::loadorder::atomic_write(&backup, text.as_bytes())?;
         }
-        std::fs::write(ini, new)?;
+        crate::loadorder::atomic_write(ini, new.as_bytes())?;
     }
     Ok(rep)
 }

@@ -33,6 +33,7 @@ tokio-tungstenite = { version = "0.26", default-features = false, features = ["c
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
 futures-util = { version = "0.3", features = ["sink"] }
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "pkcs8", "pem"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

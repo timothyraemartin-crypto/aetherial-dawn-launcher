@@ -141,7 +141,7 @@ pub fn parse_xwma(b: &[u8]) -> Result<Xwma> {
         let body = b.get(at + 8..at + 8 + len).ok_or_else(|| bad("xWMA chunk cut short"))?;
         match id {
             b"fmt " => format = Some(body.to_vec()),
-            b"dpds" => dpds = Some(body.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect::<Vec<u32>>()),
+            b"dpds" => dpds = Some(body.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect::<Vec<u32>>()),
             b"data" => data = Some(body.to_vec()),
             _ => {}
         }
