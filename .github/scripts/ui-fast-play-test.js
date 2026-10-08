@@ -193,8 +193,8 @@ function fakeBackEnd() {
         for (const [name, html] of Object.entries(samples)) { st.innerHTML = html; log.jankStatus[name] = Math.round((top() - sBase) * 10) / 10; }
         st.innerHTML = keep;
       }
-      { const cs = getComputedStyle(document.documentElement), g = n => cs.getPropertyValue(n).trim().toLowerCase(); log.tokens = { text: g('--text'), muted: g('--muted'), faint: g('--faint'), ok: g('--ok'), warn: g('--warn'), gold: g('--gold'), frost: g('--frost'), glow: g('--glow') }; }
-      { const probe = c => { const d = document.createElement('i'); d.style.color = c; document.body.appendChild(d); const v = getComputedStyle(d).color; d.remove(); return v; }; log.okColor = probe('var(--ok)'); log.faintColor = probe('var(--faint)'); }
+      { const cs = getComputedStyle(document.documentElement), g = n => cs.getPropertyValue(n).trim().toLowerCase(); log.tokens = { text: g('--text'), muted: g('--muted'), faint: g('--faint'), ok: g('--ok'), warn: g('--warn'), gold: g('--gold'), frost: g('--frost'), glow: g('--glow'), danger: g('--danger') }; }
+      { const probe = c => { const d = document.createElement('i'); d.style.color = c; document.body.appendChild(d); const v = getComputedStyle(d).color; d.remove(); return v; }; log.okColor = probe('var(--ok)'); log.goldColor = probe('var(--gold)'); { const e = document.createElement('span'); e.className = 'error'; document.body.appendChild(e); log.errorColor = getComputedStyle(e).color; e.remove(); const t = document.createElement('div'); t.className = 'toast bad'; document.body.appendChild(t); log.badToastColor = getComputedStyle(t).color; t.remove(); } log.faintColor = probe('var(--faint)'); }
       log.siGoLabel = document.getElementById('si-go').textContent.trim();
       log.siGoDisabled = document.getElementById('si-go').disabled;
       log.status = document.getElementById('status').textContent;
@@ -866,7 +866,12 @@ scenarios.push({ name: 'Status line: no separator at the start of a line', s: { 
   [`state ${n + 1}: no separator on the first item of a line`, row.every(k => !(k.rowStart && k.sep)), JSON.stringify(row)],
   [`state ${n + 1}: the other items keep theirs`, row.every(k => k.rowStart || k.error || k.sep), JSON.stringify(row)]
 ]) });
-scenarios.push({ name: 'Tokens: the launcher colours are the design system values (Dawnglass)', s: { ...base, clicks: [], end: 2000 }, expect: r => Object.entries({ text: '#ece6d6', muted: '#b3b8c0', faint: '#8a93a0', ok: '#93cf9e', warn: '#e6b866', gold: '#d8b56a', frost: '#b6dcf7', glow: '#5ea4d8' }).map(([k, v]) => [`--${k} is ${v}`, r.tokens[k] === v, String(r.tokens[k])]) });
+scenarios.push({ name: 'Tokens: the launcher colours are the design system values (Dawnglass)', s: { ...base, clicks: [], end: 2000 }, expect: r => Object.entries({ text: '#ece6d6', muted: '#b3b8c0', faint: '#8a93a0', ok: '#93cf9e', warn: '#e6b866', gold: '#d8b56a', frost: '#b6dcf7', glow: '#5ea4d8', danger: '#f0998a' }).map(([k, v]) => [`--${k} is ${v}`, r.tokens[k] === v, String(r.tokens[k])]) });
+const hueOf = c => { const [r, g, b] = (c.match(/[\d.]+/g) || []).slice(0, 3).map(Number).map(v => v / 255), mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn; if (!d) return 0; const h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; return (h * 60 + 360) % 360; };
+scenarios.push({ name: 'Tokens: errors and failures are clearly not gold', s: { ...base, clicks: [], end: 2000 }, expect: r => [
+  ['an error line is far from gold in hue (25 degrees or more)', Math.abs(hueOf(r.errorColor) - hueOf(r.goldColor)) >= 25, `${r.errorColor} vs ${r.goldColor}`],
+  ['a failed-save message is far from gold too', Math.abs(hueOf(r.badToastColor) - hueOf(r.goldColor)) >= 25, `${r.badToastColor} vs ${r.goldColor}`],
+] });
 for (const sc of scenarios) {
   if (process.env.AD_UI_SCENARIO && !sc.name.includes(process.env.AD_UI_SCENARIO)) continue;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-ui-'));

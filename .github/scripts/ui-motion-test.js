@@ -50,6 +50,12 @@ const checks = [
   ['reduced motion: panel does not animate', reduced.panel === 'none'],
 ];
 let failed = 0;
+// Decorative glows and strokes use the design system's values, not the older blues and gold.
+for (const [old, now] of [['74,163,220', 'glow #5EA4D8'], ['169,214,242', 'frost #B6DCF7'], ['110,190,240', 'aether #8FC3EC'], ['120,180,220', 'aether #8FC3EC'], ['217,194,154', 'gold #D8B56A']]) {
+  const left = (css.match(new RegExp(old.replace(/,/g, ',\\s*'), 'g')) || []).length;
+  console.log(`${left === 0 ? 'ok  ' : 'FAIL'} no leftover ${old} (use ${now}): ${left}`);
+  if (left) failed++;
+}
 for (const [name, ok] of checks) { console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}`); if (!ok) failed++; }
 fs.rmSync(dir, { recursive: true, force: true });
 if (failed) { console.error(`${failed} check(s) failed`, JSON.stringify({ normal, reduced })); process.exit(1); }
