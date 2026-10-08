@@ -1281,7 +1281,7 @@ fn read_xml_text(path: &Path) -> Result<String> {
     let b = std::fs::read(path)?;
     if b.starts_with(&[0xFF, 0xFE]) || b.starts_with(&[0xFE, 0xFF]) {
         let le = b[0] == 0xFF;
-        let units: Vec<u16> = b[2..].chunks_exact(2).map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) }).collect();
+        let units: Vec<u16> = b[2..].as_chunks::<2>().0.iter().map(|c| if le { u16::from_le_bytes(*c) } else { u16::from_be_bytes(*c) }).collect();
         return Ok(String::from_utf16_lossy(&units));
     }
     let s = String::from_utf8_lossy(&b).into_owned();
