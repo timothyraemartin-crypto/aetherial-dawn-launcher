@@ -291,6 +291,32 @@ pub(crate) mod tests {
         assert!(again.check(Feed::Mods, BODY, None).is_ok());
     }
 
+    /// The trust the launcher builds for real (pinned keys), as it would be with `REQUIRE_SIGNED` on.
+    fn strict() -> Trust {
+        Trust::new(pinned_keys(), true, None)
+    }
+
+    #[test]
+    fn strict_trust_refuses_unsigned_foreign_signed_and_tampered_feeds_but_never_panics() {
+        let t = strict();
+        assert!(!pinned_keys().is_empty(), "no pinned key would refuse every feed");
+        for feed in [Feed::Mods, Feed::Manifest] {
+            // No .sig at all, an empty one, a page in its place, and a signature from another key.
+            assert!(matches!(t.check(feed, BODY, None), Err(Error::FeedSignature(_))));
+            assert!(matches!(t.check(feed, BODY, Some(b"")), Err(Error::FeedSignature(_))));
+            assert!(matches!(t.check(feed, BODY, Some(b"<html>404</html>")), Err(Error::FeedSignature(_))));
+            assert!(matches!(t.check(feed, BODY, Some(&sign(&key(9), feed, BODY))), Err(Error::FeedSignature(_))));
+        }
+    }
+
+    #[test]
+    fn a_feed_error_names_the_file_for_the_log_and_the_player_sees_words() {
+        let Err(e) = strict().check(Feed::Mods, BODY, None) else { panic!("unsigned feed accepted") };
+        let raw = e.to_string();
+        assert!(raw.contains("mods.json"), "{raw}");
+        assert!(crate::plain_ui(&raw).starts_with("The launcher couldn't confirm"), "{raw}");
+    }
+
     #[test]
     fn the_pinned_key_is_the_servers_script_key() {
         use ed25519_dalek::pkcs8::DecodePublicKey;

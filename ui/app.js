@@ -376,6 +376,10 @@
       if (String(e).includes("hasn't published")) {
         setChip('warn', 'Server not ready');
         setStatus("The server is still being set up. The launcher will check again in a minute.");
+      } else if (String(e).includes("couldn't confirm the server's files")) {
+        // A signed file that failed its check is not a connection problem, and the launcher says so.
+        setChip('warn', 'Files not confirmed');
+        setStatus(String(e) + HELP, true);
       } else {
         setChip('warn', 'Not checked');
         setStatus(`Couldn't reach the Aetherial Dawn server. Check your internet; the launcher tries again every minute.` + HELP, true);
