@@ -57,4 +57,4 @@ jobs:
           ( umask 077; printf '%s\n' "$K" | tr -d '\r' | sed '1s/^\xEF\xBB\xBF//' > ~/.ssh/id_ed25519 )
           printf '%s\n' "$KH" | tr -d '\r' | sed '1s/^\xEF\xBB\xBF//' > ~/.ssh/known_hosts
           export SSH_TARGET="$(printf '%s' "$U" | tr -d '[:space:]')@$(printf '%s' "$H" | tr -d '[:space:]')"
-          node .github/autofix-bridge.js
+          node .github/autofix-bridge.cjs

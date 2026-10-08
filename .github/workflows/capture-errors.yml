@@ -12,6 +12,10 @@ permissions:
   issues: write
   contents: read
 
+concurrency:
+  group: capture-errors
+  cancel-in-progress: false
+
 jobs:
   capture:
     if: >-
@@ -40,4 +44,4 @@ jobs:
           { echo "Workflow **$WF** failed ($EVT) at \`${SHA:0:7}\`: $RUN_URL"; echo; echo 'Failed step output (last lines):'; echo '```';
             gh run view "$RUN_ID" --repo "$REPO" --log-failed 2>/dev/null | tail -n 60 | cut -c1-300 | sed -E 's/^[^\t]*\t[^\t]*\t[0-9TZ:.-]+ //' ;
             echo '```'; } > body.md
-          KEY="workflow:$WF" TITLE="[auto-error] $WF is failing" BODY_FILE=body.md node .github/auto-issue.js
+          KEY="workflow:$WF" TITLE="[auto-error] $WF is failing" BODY_FILE=body.md node .github/auto-issue.cjs

@@ -1,6 +1,6 @@
 'use strict';
 // Open (or update) one GitHub issue per error, so the same error never makes a second open issue.
-//   GH_TOKEN=... REPO=owner/name KEY=<stable id> TITLE=... BODY_FILE=path node .github/auto-issue.js
+//   GH_TOKEN=... REPO=owner/name KEY=<stable id> TITLE=... BODY_FILE=path node .github/auto-issue.cjs
 // The issue carries the `auto-error` label and a hidden marker with KEY. An open issue with that marker gets
 // a comment (at most one every 6 hours); none open makes a new one, so a fix that regressed is reported again.
 const fs = require('fs');
