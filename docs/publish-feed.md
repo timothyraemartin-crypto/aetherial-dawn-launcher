@@ -11,8 +11,8 @@ web root when the address is ours, else by downloading it) and pins it in a temp
 The two paths above are the defaults and are guesses: set the real ones.
 
 Before the launcher release that first expects pins and signatures (0.1.106) the newest release has no
-`sign-feed` yet, so run `scripts/publish-feed.sh --check` (reports entries without `sha256` or without
-`https`, which the launcher drops) and then `--pin-only` (fills the missing `sha256`, signs nothing, needs
+`sign-feed` yet, so run `scripts/publish-feed.sh --check` (reports entries whose `sha256` is not 64 hex characters, or that lack
+`https`, which the launcher drops) and then `--pin-only` (fills missing or invalid `sha256`, signs nothing, needs
 no key or tool; refuses when a `.sig` exists). After the release, run it with no flag to sign.
 
 Or from GitHub (choose mode check, pin-only or publish): Actions > Publish launcher feed > Run workflow (needs secrets `AD_SSH_HOST`,

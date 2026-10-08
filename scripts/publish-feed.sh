@@ -35,7 +35,7 @@ WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 
 # 1. Preflight, before anything is touched. The launcher drops a direct download that has no full sha256
 # or isn't https, so those are found first and named; they are what makes players lose mods.
-UNPINNED='.mods[] | select(.url != null and .nexus == null and (.sha256 // "") == "") | .id'
+UNPINNED='.mods[] | select(.url != null and .nexus == null and ((.sha256 // "") | tostring | test("^[0-9a-fA-F]{64}$") | not)) | .id'
 PLAIN='.mods[] | select(.url != null and (.url | startswith("https://") | not)) | .id'
 plain=$(jq -r "$PLAIN" "$MODS")
 [ -z "$plain" ] || { echo "Entries whose address is not https (the launcher drops them): $(echo $plain | tr '\n' ' ')"; exit 1; }
