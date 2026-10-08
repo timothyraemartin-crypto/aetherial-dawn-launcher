@@ -7,10 +7,11 @@ name: Publish launcher feed
 on:
   workflow_dispatch:
     inputs:
-      check_only:
-        description: Only report (no changes, no signing)
-        type: boolean
-        default: true
+      mode:
+        description: check = only report; pin-only = fill missing sha256 before a launcher release (no signing); publish = pin, sign, verify (after the release)
+        type: choice
+        options: [check, pin-only, publish]
+        default: check
 
 permissions:
   contents: read
@@ -48,12 +49,12 @@ jobs:
           KH: ${{ secrets.AD_SSH_KNOWN_HOSTS }}
           WEB_ROOT: ${{ vars.AD_WEB_ROOT }}
           FEED_KEY: ${{ vars.AD_FEED_KEY }}
-          CHECK_ONLY: ${{ inputs.check_only }}
+          MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
           install -d -m 700 ~/.ssh
           printf '%s\n' "$K" > ~/.ssh/id_ed25519; chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$KH" > ~/.ssh/known_hosts
-          flag=""; [ "$CHECK_ONLY" = true ] && flag="--check"
+          flag=""; [ "$MODE" = check ] && flag="--check"; [ "$MODE" = pin-only ] && flag="--pin-only"
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$U@$H" \
             "sudo env AD_WEB_ROOT='$WEB_ROOT' AD_FEED_KEY='$FEED_KEY' bash -s -- $flag" < scripts/publish-feed.sh

@@ -49,7 +49,8 @@ apart, so replacing the file and its `.sig` together is fine.
 ## Rollout order
 
 1. Before the launcher release, check the live `mods.json`: every entry with a
-   `url` and no `nexus` needs `sha256`. Check the `remove` list only names files
+   `url` and no `nexus` needs `sha256` and an `https` address (`publish-feed.sh --check`, then
+   `--pin-only` fills the pins; the newest release has no `sign-feed` before this one). Check the `remove` list only names files
    the launcher itself put there.
 2. Release the launcher. Unsigned files still work, so nothing breaks.
 3. On the server run `sign-feed sign` and `verify`. Older launchers ignore the

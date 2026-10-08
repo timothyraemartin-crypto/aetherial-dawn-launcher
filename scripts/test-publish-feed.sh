@@ -54,4 +54,31 @@ FAIL_SIGN=1 "$here/publish-feed.sh" >/dev/null 2>&1 && { echo "FAIL: failing sig
 fresh; before=$(snap)
 AD_SIGN_URL=x SIGN_FEED=/nonexistent "$here/publish-feed.sh" >/dev/null 2>&1 && { echo "FAIL: missing tool should fail"; exit 1; }
 [ "$before" = "$(snap)" ] || { echo "FAIL: missing tool changed live files"; exit 1; }
+
+# Before the launcher release there is no sign-feed to download yet (the newest release predates it):
+# --check must still report unpinned and non-https entries instead of dying on the download.
+export AD_RELEASE_BASE=file:///nonexistent
+fresh; before=$(snap)
+out=$(SIGN_FEED= PATH="$T/nobin:$PATH" "$here/publish-feed.sh" --check 2>&1) && { echo "FAIL: --check without a tool should still flag the unpinned entry"; exit 1; }
+echo "$out" | grep -q "Entries without sha256: local" || { echo "FAIL: unpinned entry not named without a tool: $out"; exit 1; }
+[ "$before" = "$(snap)" ] || { echo "FAIL: --check changed files"; exit 1; }
+fresh; jq '.mods[0].sha256="abc" | .mods += [{"id":"plain","name":"H","url":"http://x.test/h.zip","sha256":"abc"}]' "$T/root/mods.json" > "$T/m" && mv "$T/m" "$T/root/mods.json"
+out=$(SIGN_FEED= "$here/publish-feed.sh" --check 2>&1) && { echo "FAIL: --check should flag the non-https url"; exit 1; }
+echo "$out" | grep -q "not https (the launcher drops them): plain" || { echo "FAIL: non-https entry not named: $out"; exit 1; }
+fresh; jq '.mods[0].sha256="abc"' "$T/root/mods.json" > "$T/m" && mv "$T/m" "$T/root/mods.json"
+out=$(SIGN_FEED= "$here/publish-feed.sh" --check 2>&1) || { echo "FAIL: all pinned, --check should pass without a tool: $out"; exit 1; }
+echo "$out" | grep -q "signatures not checked" || { echo "FAIL: skipped signature check not said: $out"; exit 1; }
+
+# --pin-only: the step to run BEFORE the release. Needs no tool and no key, fills sha256 and nothing else.
+fresh; rm -f "$T/root/mods.json.sig" "$T/root/client/manifest.json.sig"; : > "$T/root/untouched"
+cp "$T/root/client/manifest.json" "$T/manifest.before"
+SIGN_FEED= AD_FEED_KEY=/nonexistent "$here/publish-feed.sh" --pin-only >/dev/null || { echo "FAIL: --pin-only should work with no tool and no key"; exit 1; }
+[ "$(jq -r '.mods[0].sha256' "$T/root/mods.json")" = "$want" ] || { echo "FAIL: --pin-only did not pin"; exit 1; }
+[ ! -e "$T/root/mods.json.sig" ] && [ ! -e "$T/root/client/manifest.json.sig" ] || { echo "FAIL: --pin-only must not sign"; exit 1; }
+cmp -s "$T/root/client/manifest.json" "$T/manifest.before" || { echo "FAIL: --pin-only touched the manifest"; exit 1; }
+[ -f "$T/bk/mods.json" ] || { echo "FAIL: --pin-only kept no backup"; exit 1; }
+# a list that already has a signature would be left with a stale one: refuse and change nothing
+fresh; before=$(snap)
+SIGN_FEED= "$here/publish-feed.sh" --pin-only >/dev/null 2>&1 && { echo "FAIL: --pin-only must refuse a signed list"; exit 1; }
+[ "$before" = "$(snap)" ] || { echo "FAIL: refused --pin-only changed files"; exit 1; }
 echo "publish-feed test ok"
