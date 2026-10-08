@@ -78,6 +78,8 @@ function fakeBackEnd() {
         if (cmd === 'auth_status' && S.authFails) return rej('network down');
         if (cmd === 'game_running' && (S.gameCheckFails || (S.gameCheckFailsFrom && (S.gameChecks = (S.gameChecks || 0) + 1) >= S.gameCheckFailsFrom))) return rej('process list unavailable');
         if (cmd === 'export_key_save' && S.keyError) { log.keySent = args.key; return rej(S.keyError); }
+        if (cmd === 'set_music' && S.setMusicError) return rej(S.setMusicError);
+        if (cmd === 'set_prefs' && S.setPrefsError) return rej(S.setPrefsError);
         if (cmd === 'set_game_dir' && S.setDirError) return rej(S.setDirError);
         if (cmd === 'set_game_dir' && S.picks && S.picks.find(p => p.dir === args.dir && p.error)) return rej(S.picks.find(p => p.dir === args.dir).error);
         if (cmd === 'update' && S.updateError) return rej(S.updateError);
@@ -161,6 +163,20 @@ function fakeBackEnd() {
       log.pageAlpha = alpha(getComputedStyle(document.querySelector('#page-mods .ftable-wrap')).backgroundColor);
       const sk = document.querySelector('#files-body tr.skel i');
       log.skelAlpha = sk ? Math.max(...(getComputedStyle(sk).backgroundImage.match(/rgba\([^)]*\)/g) || []).map(alpha)) : null;
+      const groupOf = id => { const el = document.getElementById(id); const hs = [...document.querySelectorAll('#settings h3')]; let found = null; for (const h of hs) if (h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) found = h.textContent; return found; };
+      log.settingsGroups = { heads: [...document.querySelectorAll('#settings h3')].map(h => h.textContent), close: groupOf('set-close'), bg: groupOf('set-bg'), share: groupOf('set-share'), only: groupOf('set-only'), folder: groupOf('set-path') };
+      const saved = document.getElementById('set-saved'), failed = document.getElementById('set-failed');
+      log.saved = (failed && failed.textContent) || (saved ? saved.textContent : null);
+      const okEl = document.getElementById('set-saved'), badEl = document.getElementById('set-failed');
+      const toast = badEl && badEl.textContent ? badEl : okEl;
+      log.toastRoles = { ok: okEl.getAttribute('role'), bad: badEl ? badEl.getAttribute('role') : null, emptyDisplay: getComputedStyle(badEl || okEl).display, emptyOpacity: getComputedStyle(badEl || okEl).opacity };
+      log.toastInModal = !!okEl.closest('[aria-modal="true"]') && !!badEl.closest('[aria-modal="true"]');
+      { const sc = document.querySelector('#settings .sheet-scroll'); log.toastOutsideBlur = !sc || (!sc.contains(okEl) && !sc.contains(badEl)); }
+      if (S.scrollSettings) { const sh = document.getElementById('settings'); sh.querySelector('.panel').style.minHeight = '2000px'; sh.scrollTop = sh.scrollHeight; }
+      const tr = toast.getBoundingClientRect();
+      log.toast = { top: Math.round(tr.top), bottom: Math.round(tr.bottom), fixed: getComputedStyle(toast).position, color: getComputedStyle(toast).color, cls: toast.className, shown: tr.width > 0 && tr.height > 0 };
+      log.musicChecked = document.getElementById('set-music').getAttribute('aria-checked');
+      log.bgChecked = document.getElementById('set-bg').getAttribute('aria-checked');
       log.gameRow = document.querySelector('#c-game small').textContent;
       const join = document.getElementById('si-join');
       log.join = join.hidden ? null : join.textContent;
@@ -727,6 +743,49 @@ scenarios.push({ name: 'download progress: after the last byte, hashing says Che
 scenarios.push({ name: 'Mods page: file list is solid enough to read over the artwork, placeholders are visible', s: { ...base, clicks: [], files: [{ path: 'Data/a.esp', size: 1000 }], delay: { files: 3000 }, end: 2500, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
   ['the file list background is at least 95% opaque, so the artwork does not cross the rows', r.pageAlpha >= 0.95, String(r.pageAlpha)],
   ['the placeholder bars reach at least 18% white', r.skelAlpha >= 0.18, String(r.skelAlpha)],
+] });
+
+scenarios.push({ name: 'Settings: grouped under headings', s: { ...base, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }] }, expect: r => [
+  ['three headings in order', JSON.stringify(r.settingsGroups.heads) === JSON.stringify(['Game', 'Launcher', 'Privacy and mods']), JSON.stringify(r.settingsGroups.heads)],
+  ['the Skyrim folder is under Game', r.settingsGroups.folder === 'Game', String(r.settingsGroups.folder)],
+  ['close and automatic updates are under Launcher', r.settingsGroups.close === 'Launcher' && r.settingsGroups.bg === 'Launcher', JSON.stringify([r.settingsGroups.close, r.settingsGroups.bg])],
+  ['health reports and server-only mods are under Privacy and mods', r.settingsGroups.share === 'Privacy and mods' && r.settingsGroups.only === 'Privacy and mods', JSON.stringify([r.settingsGroups.share, r.settingsGroups.only])],
+] });
+scenarios.push({ name: 'Settings: a changed setting says Saved', s: { ...base, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-bg' }] }, expect: r => [
+  ['it says Saved', r.saved === 'Saved', String(r.saved)],
+  ['the switch changed to on', r.bgChecked === 'true', String(r.bgChecked)],
+] });
+scenarios.push({ name: 'Settings: a setting that cannot be saved flips back and says so', s: { ...base, clicks: [], setPrefsError: 'settings are read-only', end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-bg' }] }, expect: r => [
+  ['it says it could not save', /Couldn't save/.test(r.saved || ''), String(r.saved)],
+  ['the switch is back where it was (off)', r.bgChecked === 'false', String(r.bgChecked)],
+] });
+
+scenarios.push({ name: 'Settings: the save message stays in view at the top, not below the fold', s: { ...base, scrollSettings: true, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-bg' }] }, expect: r => [
+  ['the message is on screen near the top', r.toast.shown && r.toast.top >= 0 && r.toast.bottom <= 120, JSON.stringify(r.toast)],
+  ['the live regions are inside the aria-modal dialog', r.toastInModal === true, String(r.toastInModal)],
+  ['and outside the blurred scroller', r.toastOutsideBlur === true, String(r.toastOutsideBlur)],
+  ['it stays put when the settings scroll', r.toast.fixed === 'fixed', String(r.toast.fixed)],
+] });
+scenarios.push({ name: 'Settings: a failed save is shown as a warning, not in the success colour', s: { ...base, clicks: [], setPrefsError: 'read-only', end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-bg' }] }, expect: r => [
+  ['it carries the warning class', /\bbad\b/.test(r.toast.cls), r.toast.cls],
+  ['it is not green', r.toast.color !== 'rgb(92, 201, 138)', r.toast.color],
+] });
+scenarios.push({ name: 'Settings: a saved change uses the success style', s: { ...base, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-bg' }] }, expect: r => [
+  ['it carries the ok class', /\bok\b/.test(r.toast.cls), r.toast.cls],
+] });
+scenarios.push({ name: 'Settings: menu music that cannot be saved flips back and says so', s: { ...base, clicks: [], setMusicError: 'no audio device', end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-music' }] }, expect: r => [
+  ['it says it could not save', /Couldn't save/.test(r.saved || ''), String(r.saved)],
+  ['the switch is back where it was', r.musicChecked === 'false', String(r.musicChecked)],
+] });
+scenarios.push({ name: 'Settings: menu music that saves says Saved and stays on', s: { ...base, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-music' }] }, expect: r => [
+  ['it says Saved', r.saved === 'Saved', String(r.saved)],
+  ['the switch is on', r.musicChecked === 'true', String(r.musicChecked)],
+] });
+
+scenarios.push({ name: 'Settings: screen readers hear Saved politely and a failure as an alert', s: { ...base, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }] }, expect: r => [
+  ['Saved is a status message', r.toastRoles.ok === 'status', String(r.toastRoles.ok)],
+  ['a failure is an alert', r.toastRoles.bad === 'alert', String(r.toastRoles.bad)],
+  ['an empty message stays in the page, hidden by opacity, so it can be announced', r.toastRoles.emptyDisplay !== 'none' && r.toastRoles.emptyOpacity === '0', JSON.stringify(r.toastRoles)],
 ] });
 
 const chrome = findChrome();

@@ -279,19 +279,25 @@
 
   <!-- ===== settings ===== -->
   <div class="sheet" id="settings" role="dialog" aria-modal="true" aria-label="Settings" tabindex="-1" hidden>
+    <div class="sheet-scroll">
     <div class="panel">
       <h2>Settings</h2>
       <div class="account" id="set-account" hidden><span class="avatar" id="acc-avatar"></span><div><b id="acc-name"></b><small id="acc-note">Signed in with Discord</small></div><button class="btn" id="acc-signout">Sign out</button></div>
+      <h3 class="set-h">Game</h3>
       <div class="field">
         <label for="set-path">Skyrim folder</label>
         <div class="line"><input id="set-path" readonly><button class="btn" id="set-browse">Browse</button></div>
         <span class="error" id="set-error" role="alert" hidden></span>
       </div>
+      <h3 class="set-h">Launcher</h3>
       <div>
         <div class="toggle"><div>Close launcher when the game starts<small>Keeps the launcher out of the way while you play.</small></div><button class="switch" id="set-close" role="switch" aria-checked="true" aria-label="Close launcher when the game starts"></button></div>
         <div class="toggle"><div>Menu music<small>Skyrim's main theme, played quietly from your own game files while the launcher is open. It stops when the game starts.</small></div><button class="switch" id="set-music" role="switch" aria-checked="true" aria-label="Menu music"></button></div>
         <div class="toggle"><div>Animated background<small>Snow, northern lights, castle lights and waterfalls. Turn off to save power on older PCs.</small></div><button class="switch" id="set-anim" role="switch" aria-checked="true" aria-label="Animated background"></button></div>
         <div class="toggle"><div>Update automatically<small>Downloads new files as soon as the launcher opens.</small></div><button class="switch" id="set-bg" role="switch" aria-checked="true" aria-label="Update automatically"></button></div>
+      </div>
+      <h3 class="set-h">Privacy and mods</h3>
+      <div>
         <div class="toggle"><div>Send game health reports to staff<small>Before Play when something is wrong, and after a crash, with the game's crash log (your Windows user folder hidden). Never your password, login or settings file. The checks that are sent show under Check my game.</small></div><button class="switch" id="set-share" role="switch" aria-checked="true" aria-label="Send game health reports to staff"></button></div>
         <div class="toggle"><div>Only the server's mods<small>Before Play, other mods (ones not on the server's list) are set aside so they can't clash with the server. Nothing is deleted, and the mods the server needs are never touched.</small></div><button class="switch" id="set-only" role="switch" aria-checked="true" aria-label="Only the server's mods"></button></div>
         <small class="note">When you press Play, staff are told which of the server's mods and required mods this PC is missing, by mod name only.</small>
@@ -312,6 +318,10 @@
       </div>
       <div class="actions"><button class="btn primary" id="set-done">DONE</button><button class="btn" id="set-update">Check for updates</button><span class="note" id="set-version"></span></div>
     </div>
+    </div>
+    <!-- Live regions sit inside the aria-modal dialog (outside it they are inert) but beside, not inside, the blurred scroller: backdrop-filter makes the scroller the containing block for position: fixed. -->
+    <div class="toast" id="set-saved" role="status" aria-live="polite"></div>
+    <div class="toast" id="set-failed" role="alert" aria-live="assertive"></div>
   </div>
 </div>
 <script src="ambient.js"></script>
