@@ -129,6 +129,7 @@ mod tests {
             files: vec![entry("Data/SKSE/Plugins/MpClientPlugin.dll"), entry("Data/Platform/Plugins/skymp5-client.js")],
             remove: vec![],
             game: None,
+            notes: vec![],
         };
         let s = find(&tmp, &m);
         assert_eq!(

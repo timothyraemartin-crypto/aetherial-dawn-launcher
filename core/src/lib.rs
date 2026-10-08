@@ -11,7 +11,6 @@ pub mod camera;
 pub mod clientstatus;
 pub mod community;
 pub mod detach;
-pub mod downgrade;
 pub mod faces;
 pub mod portrait;
 pub mod feedsig;
@@ -32,14 +31,15 @@ pub mod requirements;
 pub mod serverlane;
 pub mod serverorder;
 pub mod settings;
+pub mod setup;
 pub mod skse;
-pub mod steamapp;
 pub mod strays;
 pub mod sync;
 pub mod tools;
 pub mod ussep;
 pub mod version;
 pub mod watch;
+pub mod whatsnew;
 pub mod window;
 
 #[cfg(test)]

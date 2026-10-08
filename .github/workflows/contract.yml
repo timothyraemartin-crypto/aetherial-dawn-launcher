@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   calls-match-contract:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v4
       - name: Every server call is in the contract, and the contract has no stale entry
@@ -28,7 +28,7 @@ jobs:
   # contents: read); without it the step is skipped with a notice. A pull request is compared with the
   # discord branch of the same name first, then with main, so a contract change can go up in both repos at once.
   contract-in-sync:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v4
       - name: Compare with the discord repo's copy

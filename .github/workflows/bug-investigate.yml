@@ -14,6 +14,9 @@
 # Same tests as build.yml (which runs on Windows). Untested on the Ubuntu runner here: if they fail there, no fix is proposed, so set BUG_TEST_COMMAND if needed.
 # Actions are pinned to tags like the other workflows in these repos. Pinning to commit SHAs
 # (and Dependabot to update them) is a good follow-up.
+# Stays on GitHub-hosted runners on purpose: the verify job runs code from a model-written patch
+# that was shaped by player text, which must not run on a personal PC. It fails while GitHub billing
+# is blocked; it is label-triggered and rare.
 name: bug-investigate
 on:
   issues:

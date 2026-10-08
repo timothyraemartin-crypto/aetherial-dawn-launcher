@@ -112,7 +112,7 @@ pub fn save(game_dir: &Path, spec: &GameSpec) -> Result<usize> {
     }
     let (version, depots) = spec_key(spec);
     let n = files.len();
-    std::fs::write(root.join(INDEX), serde_json::to_vec_pretty(&Index { version, depots, files })?)?;
+    crate::atomicfile::write(&root.join(INDEX), &serde_json::to_vec_pretty(&Index { version, depots, files })?)?;
     Ok(n)
 }
 
@@ -183,7 +183,7 @@ mod tests {
     use crate::manifest::Depot;
 
     fn spec() -> GameSpec {
-        GameSpec { version: Some("1.6.1170.0".into()), skse_version: None, app: 489830, depots: vec![Depot { depot: 489831, manifest: "1".into() }], tool: None }
+        GameSpec { version: Some("1.6.1170.0".into()), skse_version: None, app: 489830, depots: vec![Depot { depot: 489831, manifest: "1".into() }] }
     }
 
     #[test]

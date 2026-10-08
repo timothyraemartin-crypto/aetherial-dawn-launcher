@@ -22,6 +22,10 @@ pub struct Manifest {
     /// The Skyrim build the server needs, and where Steam keeps it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub game: Option<GameSpec>,
+    /// Optional plain lines for "What's new" in the update bar (staff write
+    /// them; nothing depends on them).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -39,10 +43,6 @@ pub struct GameSpec {
     /// because they don't fit in a JSON number.
     #[serde(default)]
     pub depots: Vec<Depot>,
-    /// Pinned DepotDownloader build for Windows. Without it the launcher uses
-    /// the latest release from github.com/SteamRE/DepotDownloader.
-    #[serde(default)]
-    pub tool: Option<Tool>,
 }
 
 fn default_app() -> u32 {
@@ -53,13 +53,6 @@ fn default_app() -> u32 {
 pub struct Depot {
     pub depot: u32,
     pub manifest: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Tool {
-    pub url: String,
-    #[serde(default)]
-    pub sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

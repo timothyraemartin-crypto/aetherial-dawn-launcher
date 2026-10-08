@@ -33,25 +33,28 @@ function fakeBackEnd() {
   const listeners = {};
   if (S.pageSize) Object.assign(document.documentElement.style, { width: S.pageSize[0] + 'px', height: S.pageSize[1] + 'px' });
   const at = () => Math.round(performance.now() - t0);
-  if (S.authIntervalMs) {
+  if (S.authIntervalMs || S.statusPollMs) {
     const every = window.setInterval.bind(window);
-    window.setInterval = (fn, ms, ...args) => every(fn, ms === 10 * 60 * 1000 ? S.authIntervalMs : ms, ...args);
+    window.setInterval = (fn, ms, ...args) => every(fn, ms === 10 * 60 * 1000 && S.authIntervalMs ? S.authIntervalMs : ms === 30 * 1000 && S.statusPollMs ? S.statusPollMs : ms, ...args);
   }
-  try { localStorage.clear(); if (S.seed) localStorage.setItem('ad.lastReady', JSON.stringify(S.seed)); } catch (_) {}
+  try { localStorage.clear(); if (S.seed) localStorage.setItem('ad.lastReady', JSON.stringify(S.seed)); if (S.hintSeen) localStorage.setItem('ad.f3hint', '1'); } catch (_) {}
   const game = Object.assign({ needed: false, installed: '1.6.1170.0', target: '1.6.1170.0', skseOk: true, canDowngrade: true }, S.game || {});
   const answers = {
     get_state: () => ({ launcherVersion: S.version, config: { gameDir: S.dir, closeOnLaunch: false, backgroundUpdates: !!S.backgroundUpdates, shareHealth: true, music: false, onlyServerMods: true }, game: S.gameGone ? null : { dir: S.dir, hasSkse: S.hasSkse !== false }, gameError: S.gameGone || null }),
     auth_status: () => (S.authSequence && S.authSequence.shift()) || ((S.authAfter && (S.authCalls = (S.authCalls || 0) + 1) > 1) ? S.authAfter : S.auth),
     check: () => Object.assign({ build: 'B2', server: { name: 'Aetherial Dawn', ip: '127.0.0.1', port: 7777 }, files: 0, remove: 0, bytes: 0, strays: [], game }, (S.checkSequence && S.checkSequence.shift()) || S.check || {}),
     update: () => null,
-    server_status: () => ({ online: true, players: 1, maxPlayers: 50, discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
+    server_status: () => ({ online: true, players: 1, maxPlayers: 50, ...(typeof S.statusNow === 'object' ? S.statusNow : {}), discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
+    setup_state: () => S.setup || [{ id: 'folder', title: 'Choose your Skyrim folder', hint: 'x', done: true }],
     files: () => [], play: () => S.playWarnings || null,
     patch_game: () => S.patchResult || { ...game, needed: false },
     game_running: () => !!S.outsideGame,
     self_update_begin: () => !S.updateReservationFails,
     self_update_end: () => null,
-    mods_state: () => Object.assign({ mods: [], nexus: null, vortex: true, vortex_ready: true, vortex_paired: true, running: false, sso: false }, S.modsState || {}),
-    download_all_mods: () => ({ installed: [], failed: [], cancelled: false }),
+    mods_state: () => Object.assign({ mods: [], vortex: true, vortex_ready: true, vortex_paired: true }, S.modsState || {}),
+    export_key_saved: () => !!S.keySaved,
+    export_key_save: a => { log.keySent = a.key; S.keySaved = true; return 'Saved for Staffer (Premium).'; },
+    export_key_forget: () => { S.keySaved = false; return null; },
     plain_error: a => a.text,
     auth_begin: () => 'st',
     // S.signIn: when the launcher has the answer, and an error each poll gives.
@@ -67,8 +70,10 @@ function fakeBackEnd() {
       setTimeout(() => {
         log.invokes.push([at(), 'answer', cmd]);
         if (cmd === 'get_state' && S.stateFails) return rej('settings are not writable');
+        if (cmd === 'server_status' && S.statusNow === 'down') return rej('no answer');
         if (cmd === 'auth_status' && S.authFails) return rej('network down');
         if (cmd === 'game_running' && (S.gameCheckFails || (S.gameCheckFailsFrom && (S.gameChecks = (S.gameChecks || 0) + 1) >= S.gameCheckFailsFrom))) return rej('process list unavailable');
+        if (cmd === 'export_key_save' && S.keyError) { log.keySent = args.key; return rej(S.keyError); }
         if (cmd === 'set_game_dir' && S.setDirError) return rej(S.setDirError);
         if (cmd === 'set_game_dir' && S.picks && S.picks.find(p => p.dir === args.dir && p.error)) return rej(S.picks.find(p => p.dir === args.dir).error);
         if (cmd === 'play' && S.playError && !S.played) { S.played = true; return rej(S.playError); }
@@ -117,8 +122,12 @@ function fakeBackEnd() {
     for (const action of S.actions || []) setTimeout(() => {
       if (action.kind === 'click') document.getElementById(action.id).click();
       if (action.kind === 'event') for (const callback of listeners[action.name] || []) callback({ payload: action.payload });
+      if (action.kind === 'status') S.statusNow = action.value;
+      if (action.kind === 'type') document.getElementById(action.id).value = action.text;
+      if (action.kind === 'open') document.getElementById(action.id).open = true;
       if (action.kind === 'focus') document.getElementById(action.id).focus();
       if (action.kind === 'key') document.dispatchEvent(new KeyboardEvent('keydown', { key: action.key, shiftKey: !!action.shiftKey, bubbles: true, cancelable: true }));
+      (log.setupHidden ||= []).push(document.getElementById('setup').hidden);
       log.actions.push([at(), action.kind, action.id || action.name || action.key, document.activeElement && document.activeElement.id]);
     }, action.at);
     setTimeout(() => {
@@ -132,6 +141,13 @@ function fakeBackEnd() {
       const playBtn = document.getElementById('play');
       playBtn.focus({ focusVisible: true });
       log.playRing = playBtn.matches(':focus-visible') ? getComputedStyle(document.getElementById('play-wrap')).outlineStyle : 'not focus-visible';
+      const wrap = document.getElementById('play-wrap'), hint = document.getElementById('play-hint');
+      log.playState = wrap.dataset.state || null;
+      log.hint = hint && !hint.hidden && getComputedStyle(hint).visibility !== 'hidden' ? hint.textContent : null;
+      log.hintBox = hint && !hint.hidden ? hint.getBoundingClientRect().height > 0 : false;
+      try { log.hintStored = localStorage.getItem('ad.f3hint'); } catch (_) {}
+      log.progress = { file: document.getElementById('p-file').textContent, speed: document.getElementById('p-speed').textContent, num: document.getElementById('p-num').textContent };
+      log.readyAnim = getComputedStyle(document.getElementById('play-wrap')).animationName;
       log.gameRow = document.querySelector('#c-game small').textContent;
       const join = document.getElementById('si-join');
       log.join = join.hidden ? null : join.textContent;
@@ -149,6 +165,12 @@ function fakeBackEnd() {
       log.vortexConnect = !document.getElementById('rq-vortex-connect').hidden;
       log.installerControl = !!document.querySelector('#rq-all, #rq-stop, #rq-sso-go, #rq-signin');
       log.playDisabled = btn.disabled;
+      const wn = document.getElementById('whatsnew');
+      log.whatsNew = wn.hidden ? null : { lines: [...document.querySelectorAll('#whatsnew-list li')].map(li => li.textContent), open: wn.open };
+      const setupBox = document.getElementById('setup');
+      log.setup = setupBox.hidden ? null : [...document.querySelectorAll('#setup-list li')].map(li => li.className + ':' + li.querySelector('b').textContent);
+      const gate = document.getElementById('play-gate');
+      log.gate = gate.hidden ? null : { msg: document.getElementById('play-gate-msg').textContent, anyway: !document.getElementById('gate-anyway').hidden, wait: !document.getElementById('gate-wait').hidden };
       log.modal = [...document.querySelectorAll('.sheet')].find(el => !el.hidden)?.id || null;
       log.navInert = document.getElementById('nav-home').closest('.nav').inert;
       log.titlebarInert = document.querySelector('.titlebar').inert;
@@ -161,6 +183,7 @@ function fakeBackEnd() {
       const rect = sel => { const b = document.querySelector(sel).getBoundingClientRect(); return [Math.round(b.top), Math.round(b.bottom)]; };
       log.layout = { height: document.querySelector('.app').offsetHeight, width: document.querySelector('.app').offsetWidth, titlebar: rect('.titlebar'), dock: rect('.dock'), play: rect('#play') };
       log.signInError = document.getElementById('si-error').hidden ? null : document.getElementById('si-error').textContent;
+      log.xk = { note: document.getElementById('xk-note').textContent, forget: !document.getElementById('xk-forget').hidden, field: document.getElementById('xk-key').value, type: document.getElementById('xk-key').type };
       log.me = document.getElementById('me').hidden ? null : document.getElementById('me-name').textContent;
       const pre = document.createElement('pre');
       pre.id = 'ui-test-result';
@@ -181,6 +204,65 @@ const firstLabel = (r, text) => (r.labels.find(l => l[1] === text) || [null])[0]
 const lastLabel = r => r.labels[r.labels.length - 1][1];
 
 const scenarios = [
+  { name: 'update available: the notes are listed under the update, closed, with no dialog', s: { ...base, clicks: [], check: { files: 2, bytes: 5000000, notes: ['New tavern in Whiterun', 'Fixed <b>crash</b> at the docks'] }, end: 4000 }, expect: r => [
+    ['the lines are listed', !!r.whatsNew && r.whatsNew.lines.length === 2 && r.whatsNew.lines[0] === 'New tavern in Whiterun'],
+    ['markup in a note is shown as text', !!r.whatsNew && r.whatsNew.lines[1].includes('<b>crash</b>')],
+    ['it starts closed', !!r.whatsNew && r.whatsNew.open === false],
+    ['no sheet or dialog is open', r.modal === null],
+    ['the button offers UPDATE', lastLabel(r) === 'UPDATE'],
+  ] },
+  { name: 'update finished: the notes go away and the button returns to PLAY', s: { ...base, clicks: [1250], seedPlay: true, check: { files: 2, bytes: 5000000, notes: ['New tavern in Whiterun'] }, end: 7000 }, expect: r => [
+    ['the update ran', askedAt(r, 'update') !== null],
+    ['the notes are gone once it finished', r.whatsNew === null],
+    ['the button returns to PLAY after the update', r.labels.some(l => l[0] > askedAt(r, 'update') && l[1].startsWith('PLAY'))],
+  ] },
+  { name: 'no update: the notes are not shown', s: { ...base, clicks: [], check: { files: 0, notes: ['Old note'] }, end: 4000 }, expect: r => [
+    ['it is hidden', r.whatsNew === null],
+  ] },
+  { name: 'new player: the setup checklist lists what is still open', s: { ...base, clicks: [], seed: null, setup: [
+    { id: 'folder', title: 'Choose your Skyrim folder', hint: 'Open Settings.', done: true },
+    { id: 'skse', title: 'SKSE is installed', hint: 'Press Play.', done: false },
+    { id: 'signin', title: 'Sign in with Discord', hint: 'Press Sign in.', done: false } ], end: 4000 }, expect: r => [
+    ['the checklist is shown with each step', !!r.setup && r.setup.length === 3],
+    ['done steps are marked and open ones are not', !!r.setup && r.setup[0].startsWith('done:') && r.setup[1].startsWith('todo:') && r.setup[2].startsWith('todo:')],
+  ] },
+  { name: 'setup checklist: only on Home, back when the player returns', s: { ...base, clicks: [], setup: [{ id: 'skse', title: 'SKSE is installed', hint: 'Press Play.', done: false }], end: 5000,
+    actions: [{ kind: 'click', id: 'nav-server', at: 3000 }, { kind: 'click', id: 'nav-mods', at: 3300 }, { kind: 'click', id: 'nav-news', at: 3600 }, { kind: 'click', id: 'nav-home', at: 4200 }, { kind: 'click', id: 'nav-home', at: 4300 }] }, expect: r => [
+    ['the checklist is hidden on the Server, Mods and News pages', r.setupHidden.slice(0, 3).every(h => h === true)],
+    ['it is back on Home', !!r.setup && r.setup.length === 1],
+  ] },
+  { name: 'setup checklist: hidden once the game has been started before', s: { ...base, clicks: [], hintSeen: true, setup: [{ id: 'skse', title: 'SKSE is installed', hint: 'Press Play.', done: false }], end: 4000 }, expect: r => [
+    ['the checklist is not shown', r.setup === null],
+  ] },
+  { name: 'setup checklist: nothing to show when every step is done', s: { ...base, clicks: [], end: 4000 }, expect: r => [
+    ['the checklist is not shown', r.setup === null],
+  ] },
+  { name: 'server offline at Play: warned, the game waits for Play anyway', s: { ...base, statusNow: { online: false }, actions: [{ kind: 'click', id: 'gate-anyway', at: 3500 }], end: 5000 }, expect: r => [
+    ['the game starts only after Play anyway', askedAt(r, 'play') > 3500],
+  ] },
+  { name: 'server offline at Play: the warning stays and the game never starts', s: { ...base, statusNow: { online: false }, end: 3200 }, expect: r => [
+    ['the game never starts', !played(r)],
+    ['the warning names the offline server and offers both choices', !!r.gate && /offline/.test(r.gate.msg) && r.gate.anyway && r.gate.wait],
+  ] },
+  { name: 'server full: Wait and join starts the game once a slot opens', s: { ...base, statusNow: { online: true, players: 50, maxPlayers: 50 }, statusPollMs: 1000,
+    actions: [{ kind: 'click', id: 'gate-wait', at: 3000 }, { kind: 'status', value: { online: true, players: 49, maxPlayers: 50 }, at: 4000 }], end: 6500 }, expect: r => [
+    ['the game starts after the slot opens', askedAt(r, 'play') > 4000],
+    ['the game starts once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
+  ] },
+  { name: 'waiting for a full server, then the status call fails: the game does not start', s: { ...base, statusNow: { online: true, players: 50, maxPlayers: 50 }, statusPollMs: 1000,
+    actions: [{ kind: 'click', id: 'gate-wait', at: 3000 }, { kind: 'status', value: 'down', at: 4000 }], end: 7000 }, expect: r => [
+    ['the game never starts', !played(r)],
+    ['the notice says it cannot reach the server and is still waiting', !!r.gate && /Cannot reach the server, still waiting/.test(r.gate.msg)],
+  ] },
+  { name: 'server full: still waiting, the game does not start', s: { ...base, statusNow: { online: true, players: 50, maxPlayers: 50 }, statusPollMs: 1000, actions: [{ kind: 'click', id: 'gate-wait', at: 3000 }], end: 5500 }, expect: r => [
+    ['the game never starts', !played(r)],
+    ['the warning says it is waiting', !!r.gate && /Waiting/.test(r.gate.msg) && !r.gate.wait],
+  ] },
+  { name: 'maintenance: Play is blocked and Play anyway is not offered', s: { ...base, statusNow: { maintenance: 'Back at 18:00 UTC.' }, end: 3500 }, expect: r => [
+    ['the game never starts', !played(r)],
+    ['the message is shown and only Wait and join is offered', !!r.gate && /Back at 18:00/.test(r.gate.msg) && !r.gate.anyway && r.gate.wait],
+    ['the status line carries the message', /Back at 18:00/.test(r.status)],
+  ] },
   { name: 'returning player: Play waits for fresh game, Discord and Vortex checks', s: base, expect: r => [
     ['PLAY is not enabled before fresh checks answer', firstLabel(r, 'PLAY') !== null && firstLabel(r, 'PLAY') >= Math.max(answeredAt(r, 'auth_status'), answeredAt(r, 'check'), answeredAt(r, 'mods_state'))],
     ['the game starts once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
@@ -496,6 +578,19 @@ const scenarios = [
     ['focus returns to Settings button', r.focus === 'nav-settings', r.focus],
     ['background navigation is active again', !r.navInert],
   ] },
+  { name: 'staff Nexus key: saved, shown only as saved, field cleared, Remove offered', s: { ...base, clicks: [], actions: [
+      { at: 1500, kind: 'open', id: 'xk' }, { at: 1800, kind: 'type', id: 'xk-key', text: 'abcDEF123+/=abcDEF123+/=abcDEF123--xyz--QQ==' }, { at: 2000, kind: 'click', id: 'xk-save' }] }, expect: r => [
+    ['the key goes to the launcher once', r.keySent === 'abcDEF123+/=abcDEF123+/=abcDEF123--xyz--QQ=='],
+    ['the page names the account', r.xk.note === 'Saved for Staffer (Premium).', r.xk.note],
+    ['the key is not left in the field or the note', r.xk.field === '' && !r.xk.note.includes('abcDEF')],
+    ['the field hides what is typed', r.xk.type === 'password'],
+    ['Remove key is offered', r.xk.forget === true],
+  ] },
+  { name: 'staff Nexus key: a refused key says why and is not saved', s: { ...base, clicks: [], keyError: 'Nexus Mods didn\'t accept the API key', actions: [
+      { at: 1500, kind: 'open', id: 'xk' }, { at: 1800, kind: 'type', id: 'xk-key', text: 'abcDEF123+/=abcDEF123+/=abcDEF123--xyz--QQ==' }, { at: 2000, kind: 'click', id: 'xk-save' }] }, expect: r => [
+    ['the note gives the reason', r.xk.note === 'Nexus Mods didn\'t accept the API key', r.xk.note],
+    ['Remove key stays hidden', r.xk.forget === false],
+  ] },
 ];
 
 // The smallest window the launcher allows (core/src/window.rs MIN), which is
@@ -525,6 +620,55 @@ scenarios.push({ name: 'a sign-in that can never be saved says why', s: { ...sig
   ['the sign-in window says the save failed', /Couldn't save your sign-in: Access is denied/.test(r.signInError || ''), JSON.stringify(r.signInError)],
   ['the player is not signed in', r.me === null],
   ['the save is tried again until the wait ends', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'auth_poll').length > 100, String(r.invokes.filter(i => i[1] === 'ask' && i[2] === 'auth_poll').length)],
+] });
+scenarios.push({ name: 'Play states: busy while checking, ready when it can start', s: { ...base, clicks: [], end: 400 }, expect: r => [
+  ['PLAY shows the busy state while the checks run', r.playState === 'busy', String(r.playState)],
+] });
+scenarios.push({ name: 'Play states: ready, and a first-time player is told about F3', s: { ...base, clicks: [] }, expect: r => [
+  ['PLAY shows the ready state', r.playState === 'ready', String(r.playState)],
+  ['the F3 hint shows', r.hint === 'In game, press F3 for the menu.', String(r.hint)],
+] });
+scenarios.push({ name: 'Play states: a returning player gets no F3 hint and no gap for it', s: { ...base, clicks: [], hintSeen: true }, expect: r => [
+  ['no hint text', r.hint === null, String(r.hint)],
+  ['no space is kept for it', r.hintBox === false],
+] });
+scenarios.push({ name: 'Play states: starting the game counts as having seen the F3 hint', s: base, expect: r => [
+  ['the hint is remembered after Play', r.hintStored === '1', String(r.hintStored)],
+] });
+
+scenarios.push({ name: 'download progress: friendly file name, speed and time left', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, delay: { update: 20000 }, end: 5200, actions: [
+  { at: 2000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 0, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 3000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 1000000, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 4000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 2000000, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 5000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 3000000, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+] }, expect: r => [
+  ['the file shows by its own name, not the long path', r.progress.file === 'face.dds', JSON.stringify(r.progress.file)],
+  ['speed and time left show together once 3 s of samples exist', /^\d+(\.\d)? MB\/s · about \d+ (sec|min) left$/.test(r.progress.speed), JSON.stringify(r.progress.speed)],
+] });
+scenarios.push({ name: 'download progress: no time-left guess in the first seconds', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, delay: { update: 20000 }, end: 3300, actions: [
+  { at: 2000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 0, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 2700, kind: 'event', name: 'sync-progress', payload: { bytesDone: 1000000, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+] }, expect: r => [
+  ['the speed shows without a time left', /^\d+(\.\d)? MB\/s$/.test(r.progress.speed), JSON.stringify(r.progress.speed)],
+] });
+scenarios.push({ name: 'download progress: a huge time left is capped', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, delay: { update: 20000 }, end: 6300, actions: [
+  { at: 2000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 0, bytesTotal: 10000000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 3000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 1000000, bytesTotal: 10000000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 4000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 2000000, bytesTotal: 10000000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 5000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 3000000, bytesTotal: 10000000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 6000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 4000000, bytesTotal: 10000000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+] }, expect: r => [
+  ['the time left reads "over 99 min", not thousands of minutes', / · over 99 min left$/.test(r.progress.speed), JSON.stringify(r.progress.speed)],
+] });
+scenarios.push({ name: 'download progress: no news for 3 s says it is waiting for the server', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, delay: { update: 20000 }, end: 8000, actions: [
+  { at: 2000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 0, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 3000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 1000000, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+  { at: 4000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 2000000, bytesTotal: 5000000, filesDone: 1, filesTotal: 3, file: 'Data/Textures/actors/character/face.dds' } },
+] }, expect: r => [
+  ['a stall says it is waiting, not a stale time left', r.progress.speed === 'Waiting for the server…', JSON.stringify(r.progress.speed)],
+] });
+scenarios.push({ name: 'Play ready glow animates opacity or transform only, so hover still brightens it', s: { ...base, clicks: [] }, expect: r => [
+  ['the ready state does not animate a filter on the wrapper', r.readyAnim === 'none' || r.readyAnim === null, String(r.readyAnim)],
 ] });
 
 const chrome = findChrome();

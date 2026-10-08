@@ -219,7 +219,7 @@ pub fn record(game_dir: &Path, spec: &GameSpec, manual: bool) -> Result<()> {
     };
     let path = game_dir.join(MARKER);
     std::fs::create_dir_all(path.parent().unwrap())?;
-    std::fs::write(path, serde_json::to_vec_pretty(&m)?)?;
+    crate::atomicfile::write(&path, &serde_json::to_vec_pretty(&m)?)?;
     Ok(())
 }
 
@@ -438,7 +438,6 @@ mod tests {
                 Depot { depot: 489831, manifest: "8442952117333549665".into() },
                 Depot { depot: 489833, manifest: "1914580699073641964".into() },
             ],
-            tool: None,
         }
     }
 

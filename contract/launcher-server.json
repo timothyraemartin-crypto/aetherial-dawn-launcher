@@ -88,7 +88,8 @@
       "auth": "token",
       "request": {
         "required": { "launcher": "string", "mods": "object", "required": "object" },
-        "example": { "launcher": "0.1.103", "mods": { "served": 3, "installed": 2, "missing": ["Some Mod"] }, "required": { "ok": true, "missing": [] } }
+        "optional": { "play": "object" },
+        "example": { "launcher": "0.1.103", "mods": { "served": 3, "installed": 2, "missing": ["Some Mod"] }, "required": { "ok": true, "missing": [] }, "play": { "stage": "Getting your mods ready", "failedAt": "Getting your mods ready", "gameVersionOk": true, "timingsMs": { "Starting": 40, "Getting your mods ready": 900 } } }
       },
       "success": 202,
       "launcherHandles": [202, 404, 429]

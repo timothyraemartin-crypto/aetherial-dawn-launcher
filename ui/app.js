@@ -4,7 +4,7 @@
   // Every command's failure (and the outcome of the important ones) goes to the
   // launcher log, so Copy diagnostics shows what happened. Nothing secret
   // reaches the UI, so nothing secret can be logged from here.
-  const QUIET = new Set(['log_ui', 'diagnostics', 'files', 'server_status', 'auth_poll', 'game_running']);
+  const QUIET = new Set(['log_ui', 'diagnostics', 'files', 'server_status', 'setup_state', 'auth_poll', 'game_running']);
   const logUi = msg => { try { T.core.invoke('log_ui', { msg: String(msg) }).catch(() => {}); } catch {} };
   const invoke = async (cmd, args) => {
     const t = performance.now();
@@ -53,6 +53,7 @@
   let page = 'home';
 
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  const timeLeft = sec => sec < 90 ? `${Math.max(1, Math.round(sec))} sec` : `${Math.round(sec / 60)} min`;
   const mb = n => (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + ' MB';
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -62,7 +63,22 @@
     $('play-label').textContent = label;
     $('play').disabled = mode === 'wait';
     $('play-wrap').classList.toggle('off', mode === 'wait');
+    // For styling only: busy = the launcher is working, ready = PLAY starts the game,
+    // anything else is a step the player takes first (sign in, fix mods, retry).
+    const busy = mode === 'wait' && /ING$|CHECKING/.test(label);
+    $('play-wrap').dataset.state = busy ? 'busy' : mode === 'play' || mode === 'downgrade' ? 'ready' : mode === 'wait' ? 'off' : 'action';
+    showHint();
   }
+  // First-time players are told where the menu is, until they have started the game once.
+  const HINT_KEY = 'ad.f3hint';
+  const hintSeen = () => { try { return localStorage.getItem(HINT_KEY) === '1'; } catch (_) { return false; } };
+  function showHint() {
+    const hint = $('play-hint');
+    if (!hint || hintSeen()) { if (hint) hint.hidden = true; return; }
+    hint.hidden = false;
+    hint.style.visibility = $('play-wrap').dataset.state === 'ready' ? 'visible' : 'hidden';
+  }
+  function markHintSeen() { try { localStorage.setItem(HINT_KEY, '1'); } catch (_) {} showHint(); setupWanted = false; applySetup(); }
   let statusMsg = null;
   function setStatus(msg, isError) {
     statusMsg = msg ? { msg, isError } : null;
@@ -81,6 +97,7 @@
       const on = known && st.online;
       const who = on && typeof st.players === 'number' ? ` · ${typeof st.maxPlayers === 'number' && st.maxPlayers > 0 ? `${st.players} of ${plural(st.maxPlayers, 'player')}` : plural(st.players, 'player')}` : '';
       parts.push(`<span><i class="dot${on ? '' : ' off'}"></i>${!known ? (statusAsked ? 'Server status unavailable' : 'Connecting to the server') : on ? 'Server online' : 'Server offline'}${who}</span>`);
+      if (st && st.maintenance) parts.push(`<span class="error">${esc(typeof st.maintenance === 'string' ? st.maintenance : 'Server maintenance')}</span>`);
       const build = pending && pending.build;
       if (build) parts.push(`<span>Build ${esc(build)}</span>`);
     }
@@ -121,6 +138,7 @@
     $('nav-settings').removeAttribute('aria-current');
     $('news-box').hidden = p !== 'home';
     $('tagline').hidden = p !== 'home';
+    applySetup();
     if (p === 'mods') loadFiles();
     if (p === 'home') loadCharCard(); else $('char-card').hidden = true;
   }
@@ -312,6 +330,7 @@
       $('srv-name').textContent = pending.server.name;
       $('srv-addr').textContent = `${pending.server.ip}:${pending.server.port}`;
       $('srv-build').textContent = pending.build;
+      showWhatsNew(pending.files || pending.remove ? pending.notes : null);
       if (pending.files || pending.remove) {
         busy = false;
         if (state.config.backgroundUpdates || verifyAll) return await update(verifyAll);
@@ -337,6 +356,16 @@
     }
   }
 
+  // What's new beside the Update button: the lines staff wrote, or the files
+  // about to change. Never a dialog, and gone once there is nothing to update.
+  function showWhatsNew(lines) {
+    const box = $('whatsnew');
+    if (!box) return;
+    const list = Array.isArray(lines) ? lines.filter(l => typeof l === 'string' && l) : [];
+    box.hidden = !list.length;
+    $('whatsnew-list').innerHTML = list.map(l => `<li>${esc(l)}</li>`).join('');
+  }
+
   async function update(verifyAll = false) {
     if (gameRunning || playInFlight || updating) {
       setStatus('Finish the current game or download before updating game files.');
@@ -349,16 +378,28 @@
     setStatus(`Updating to build ${pending.build} · ${mb(pending.bytes)}`);
     $('progress').hidden = false;
     $('p-progress').setAttribute('aria-valuenow', '0');
-    let last = { t: performance.now(), b: 0 };
+    let last = { t: performance.now(), b: 0 }, speed = 0;
+    const began = last.t;
+    let lastEvent = began;
+    const stallTimer = setInterval(() => { if (performance.now() - lastEvent > 3000) $('p-speed').textContent = 'Waiting for the server…'; }, 1000);
     const off = await T.event.listen('sync-progress', ({ payload: p }) => {
       const pct = p.bytesTotal ? (p.bytesDone / p.bytesTotal) * 100 : 100;
       $('p-bar').style.width = pct.toFixed(1) + '%';
       $('p-progress').setAttribute('aria-valuenow', String(Math.round(Math.min(100, pct))));
       $('p-num').textContent = `${Math.min(p.filesDone + (p.file ? 1 : 0), p.filesTotal)} / ${plural(p.filesTotal, 'file')} · ${Math.round(pct)}%`;
-      $('p-file').textContent = p.file || 'All files match the server';
+      $('p-file').textContent = p.file ? p.file.split(/[\\/]/).pop() : 'All files match the server';
+      $('p-file').title = p.file || '';
       const now = performance.now();
+      lastEvent = now;
       if (now - last.t > 500) {
-        $('p-speed').textContent = mb(((p.bytesDone - last.b) / (now - last.t)) * 1000) + '/s';
+        const rate = ((p.bytesDone - last.b) / (now - last.t)) * 1000;
+        // Weighted by time, so a long gap counts for more than a burst of quick events.
+        const alpha = 1 - Math.exp(-(now - last.t) / 5000);
+        speed = speed ? speed + alpha * (rate - speed) : rate;
+        const left = speed > 0 && p.bytesTotal > p.bytesDone ? (p.bytesTotal - p.bytesDone) / speed : 0;
+        // Not a guess before three seconds of samples.
+        const guess = left > 0 && now - began >= 3000 ? ` · ${left > 99 * 60 ? 'over 99 min' : 'about ' + timeLeft(left)} left` : '';
+        $('p-speed').textContent = mb(speed) + '/s' + guess;
         last = { t: now, b: p.bytesDone };
       }
     });
@@ -366,6 +407,7 @@
       await invoke('update', { verifyAll });
       // The update command completed and verified the pending file changes.
       pending = { ...pending, files: 0, remove: 0 };
+      showWhatsNew(null);
       await ready();
     } catch (e) {
       setPlay('retry', 'RETRY');
@@ -374,13 +416,30 @@
       pending = null;
     } finally {
       off();
+      clearInterval(stallTimer);
       $('progress').hidden = true;
       busy = false;
     }
   }
 
   let helperWarning = null;
+  // The first-run checklist on Home: shown until the player has started the
+  // game once, or while every step is done there is nothing to show.
+  let setupSeq = 0, setupWanted = false;
+  // The checklist belongs to Home only.
+  function applySetup() { const box = $('setup'); if (box) box.hidden = !(setupWanted && page === 'home'); }
+  async function refreshSetup() {
+    const box = $('setup'), seq = ++setupSeq;
+    if (!box || hintSeen()) { setupWanted = false; applySetup(); return; }
+    const steps = await invoke('setup_state').catch(() => null);
+    if (seq !== setupSeq) return;
+    if (!Array.isArray(steps) || steps.every(s => s.done)) { setupWanted = false; applySetup(); return; }
+    $('setup-list').innerHTML = steps.map(s => `<li class="${s.done ? 'done' : 'todo'}"><i aria-hidden="true"></i><b>${esc(s.title)}${s.done ? ' (done)' : ''}</b><small>${esc(s.hint)}</small></li>`).join('');
+    setupWanted = true;
+    applySetup();
+  }
   function ready() {
+    refreshSetup();
     // Only a current check or a completed update can claim file readiness.
     if (!pending || pending.files || pending.remove) {
       setPlay('retry', 'RECHECK');
@@ -810,7 +869,41 @@
     try { return await invoke('play'); }
     finally { playInFlight = false; }
   }
-  async function onPlay(checked = false) {
+  // ---------- server check before launch ----------
+  // status.json may carry `maintenance` (true or a message): Play is blocked
+  // until it is gone. An offline or full server is a warning the player can
+  // override (Play anyway) or sit out (Wait and join: the 30-second status
+  // poll starts the game when the server is open). An unknown status never blocks.
+  function gateReason(st) {
+    if (!st) return null;
+    if (st.maintenance) return { kind: 'maintenance', msg: typeof st.maintenance === 'string' ? st.maintenance : 'The server is down for maintenance.' };
+    if (st.online === false) return { kind: 'offline', msg: 'The server is offline right now.' };
+    if (typeof st.players === 'number' && typeof st.maxPlayers === 'number' && st.maxPlayers > 0 && st.players >= st.maxPlayers) return { kind: 'full', msg: `The server is full (${st.players} of ${st.maxPlayers}).` };
+    return null;
+  }
+  let gateWaiting = false, gateChecking = false;
+  function showGate(reason) {
+    $('play-gate-msg').textContent = gateWaiting ? `${reason.msg} Waiting for it to open; checking every 30 seconds.` : reason.msg;
+    $('gate-anyway').hidden = reason.kind === 'maintenance';
+    $('gate-wait').hidden = gateWaiting;
+    $('play-gate').hidden = false;
+    setPlay('play', 'PLAY');
+    const live = $('status-live');
+    if (live) live.textContent = $('play-gate-msg').textContent;
+  }
+  function hideGate() { gateWaiting = false; $('play-gate').hidden = true; }
+  // Called after every status refresh while the player waits.
+  function gateTick() {
+    if (!gateWaiting) return;
+    const reason = gateReason(status);
+    if (reason) return showGate(reason);
+    // Only a real answer that says the server is up starts the game. No
+    // answer at all (the status call failed) is not "open": keep waiting.
+    if (!status || status.online !== true) return showGate({ kind: 'offline', msg: 'Cannot reach the server, still waiting.' });
+    hideGate();
+    onPlay(true, true);
+  }
+  async function onPlay(checked = false, gateOk = false) {
     if (gameRunning || playInFlight || updating) return;
     if (busy) return;
     // Installing the launcher update closes the launcher; Play waits for it.
@@ -832,6 +925,18 @@
       const didCheck = await check();
       return didCheck !== false && playMode === 'play' ? onPlay(true) : undefined;
     }
+    if (!gateOk) {
+      // A healthy last answer starts the game at once. A problem is re-read first,
+      // so an old answer never holds a player back.
+      if (gateReason(status)) {
+        if (gateChecking) return;
+        gateChecking = true;
+        try { await loadStatus(); } finally { gateChecking = false; }
+        const reason = gateReason(status);
+        if (reason) return showGate(reason);
+      }
+    }
+    hideGate();
     setPlay('wait', 'LAUNCHING');
     setStatus('Starting Skyrim through SKSE…');
     playing = true;
@@ -841,6 +946,7 @@
       const warns = await invokePlay();
       helperWarning = Array.isArray(warns) && warns.length ? warns.join(' ') : null;
       gameRunning = true;
+      markHintSeen();
       setPlay('wait', 'IN GAME');
       setStatus(helperWarning || 'Skyrim is running.', !!helperWarning);
     } catch (e) {
@@ -906,6 +1012,7 @@
     if (status) remember({ news: Array.isArray(status.news) ? status.news.slice(0, 20) : lastSeen.news, invite: status.discordInvite || lastSeen.invite });
     renderInvite();
     renderStatus();
+    gateTick();
     const online = $('srv-online');
     if (!status) {
       online.className = 'online' + (pending ? '' : ' off');
@@ -1062,7 +1169,10 @@
   $('w-min').onclick = () => win.minimize();
   $('w-close').onclick = () => win.close();
   $('w-settings').onclick = $('nav-settings').onclick = $('t-settings').onclick = () => showSheet('settings');
-  $('play').onclick = () => onPlay();
+  $('play').onclick = () => { hideGate(); onPlay(); };
+  $('gate-anyway').onclick = () => { hideGate(); onPlay(true, true); };
+  $('gate-wait').onclick = () => { gateWaiting = true; const r = gateReason(status); if (r) showGate(r); };
+  $('gate-cancel').onclick = hideGate;
   for (const [name, nav] of Object.entries(PAGES)) $(nav).onclick = () => { if (ready_() && signedIn()) showPage(name); else leaveSheet(); };
   $('news-all').onclick = () => showPage('news');
   $('set-done').onclick = leaveSheet;
@@ -1123,6 +1233,26 @@
     asideNote(n);
     logUi(`set aside ${n} file(s) from other mods before Play`);
   });
+  // ---------- staff: Nexus key for the server-mod export ----------
+  const xkShow = (saved, note) => {
+    $('xk-forget').hidden = !saved;
+    $('xk-key').value = '';
+    $('xk-note').textContent = note || (saved ? 'A key is saved on this PC.' : 'No key saved.');
+  };
+  const xkRefresh = () => invoke('export_key_saved').then(v => xkShow(!!v)).catch(() => {});
+  $('xk').addEventListener('toggle', () => { if ($('xk').open) xkRefresh(); });
+  $('xk-save').onclick = async () => {
+    const b = $('xk-save');
+    b.disabled = true;
+    $('xk-note').textContent = 'Checking the key with Nexus…';
+    try { xkShow(true, await invoke('export_key_save', { key: $('xk-key').value })); }
+    catch (e) { $('xk-note').textContent = String(e); }
+    b.disabled = false;
+  };
+  $('xk-forget').onclick = async () => {
+    try { await invoke('export_key_forget'); xkShow(false, 'Key removed.'); }
+    catch (e) { $('xk-note').textContent = String(e); }
+  };
   $('aside-restore').onclick = async () => {
     const b = $('aside-restore');
     b.disabled = true;
