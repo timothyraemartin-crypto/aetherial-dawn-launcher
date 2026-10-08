@@ -180,6 +180,8 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .page .lead { margin: -8px 0 0; color: var(--muted); }
 .section { display: grid; gap: 10px; }
 .section + .section { padding-top: 16px; border-top: 1px solid var(--line); }
+.srv-head > div { min-width: 0; }
+#mods-summary { line-height: 1.5; min-height: 3em; }
 .srv-head { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
 .online { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--ok); margin-top: 6px; }
 .online i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 3px rgba(147,207,158,.18); }
@@ -212,7 +214,7 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .ftable td:last-child, .ftable th:last-child { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .page-foot { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .note { color: var(--faint); font-size: 12.5px; }
-.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ok); }
+.chip { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ok); }
 .chip.warn { color: var(--warn); } .chip.busy { color: var(--frost); }
 .chip svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
@@ -317,6 +319,7 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .ftable td.fstate { white-space: nowrap; font-family: var(--body); font-size: 12px; }
 .ftable td.fstate.ok { color: var(--ok); }
 .ftable td.fstate.warn { color: var(--warn); }
+.ftable td.fstate.bad { color: var(--danger); }
 .ftable td.fstate.none { color: var(--faint); }
 .ftable .fdir { color: var(--faint); }
 .ftable .fname { color: var(--text); }

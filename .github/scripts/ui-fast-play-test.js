@@ -60,6 +60,7 @@ function fakeBackEnd() {
     export_key_save: a => { log.keySent = a.key; S.keySaved = true; return 'Saved for Staffer (Premium).'; },
     export_key_forget: () => { S.keySaved = false; return null; },
     plain_error: a => a.text,
+    log_ui: a => { (log.uiLogs = log.uiLogs || []).push(String(a.msg)); return null; },
     auth_begin: () => 'st',
     // S.signIn: when the launcher has the answer, and an error each poll gives.
     auth_poll: () => !S.signIn ? { status: 'done', account: { discordUsername: 'Player' } } : S.signIn.error ? { status: 'save_failed', kind: 'denied', message: S.signIn.error } : S.signIn.refuseFirst && !S.refused ? (S.refused = true, { status: 'refused', message: 'An old refusal.' })
@@ -217,6 +218,17 @@ function fakeBackEnd() {
       log.statusUi = { text: status.textContent, copy: !!document.getElementById('status-copy'), errorClass: !!document.querySelector('#status .error'), minH: parseFloat(getComputedStyle(status).minHeight) || 0, lineH: parseFloat(getComputedStyle(status).lineHeight) || 0, dividerAfterError: (() => { const e = document.querySelector('#status .error'); const n = e && e.nextElementSibling && e.nextElementSibling.tagName === 'SPAN' ? e.nextElementSibling : null; return n ? getComputedStyle(n, '::before').content : null; })() };
       log.fileRows = [...document.querySelectorAll('#files-body tr')].map(tr => ({ skel: tr.classList.contains('skel'), name: (tr.querySelector('.fname') || {}).textContent || null, dir: (tr.querySelector('.fdir') || {}).textContent || null, cells: tr.children.length, state: (tr.querySelector('.fstate') || {}).textContent || null, stateCls: (tr.querySelector('.fstate') || {}).className || null }));
       log.modsSummary = document.getElementById('mods-summary').textContent;
+      { const chip = document.getElementById('mods-chip'), sum = document.getElementById('mods-summary'), wrap = document.querySelector('#page-mods .ftable-wrap');
+        log.chip = { text: chip.querySelector('span').textContent, cls: chip.className, h: Math.round(chip.getBoundingClientRect().height), lineH: parseFloat(getComputedStyle(chip).lineHeight) || 18 };
+        log.fileColors = [...document.querySelectorAll('#files-body .fstate')].map(td => getComputedStyle(td).color);
+        const page = document.getElementById('page-mods');
+        if (S.modsJank && !page.hidden) {
+          const top = () => wrap.getBoundingClientRect().top, keep = sum.textContent, was = top();
+          log.modsJank = {};
+          const words = 'The server decides which mods and files every player needs.';
+          for (const [name, text] of Object.entries({ loading: words, plain: 'Build B2 · 3 files · 0.0 MB. ' + words, attention: 'Build B2 · 3 files · 0.0 MB · 2 need attention. ' + words })) { sum.textContent = text; log.modsJank[name] = Math.round((top() - was) * 10) / 10; }
+          sum.textContent = keep;
+        } }
       const alpha = c => { const m = /rgba?\([^)]*?,\s*([\d.]+)\)$/.exec(c); return m ? parseFloat(m[1]) : 1; };
       log.pageAlpha = alpha(getComputedStyle(document.querySelector('#page-mods .ftable-wrap')).backgroundColor);
       const sk = document.querySelector('#files-body tr.skel i');
@@ -873,7 +885,7 @@ scenarios.push({ name: 'Mods page: each file says whether it is up to date, need
   ['a current file says Up to date', r.fileRows[0] && r.fileRows[0].state === 'Up to date', JSON.stringify(r.fileRows[0])],
   ['a changed file says Update needed', r.fileRows[1] && r.fileRows[1].state === 'Update needed', JSON.stringify(r.fileRows[1])],
   ['a missing file says Missing', r.fileRows[2] && r.fileRows[2].state === 'Missing', JSON.stringify(r.fileRows[2])],
-  ['only files that need attention use the warning style', /\bok\b/.test(r.fileRows[0].stateCls) && /\bwarn\b/.test(r.fileRows[1].stateCls) && /\bwarn\b/.test(r.fileRows[2].stateCls), JSON.stringify(r.fileRows.map(x => x.stateCls))],
+  ['only files that need attention use the warning style', /\bok\b/.test(r.fileRows[0].stateCls) && /\bwarn\b/.test(r.fileRows[1].stateCls) && /\bbad\b/.test(r.fileRows[2].stateCls), JSON.stringify(r.fileRows.map(x => x.stateCls))],
   ['the summary counts what needs attention', /2 need attention/.test(r.modsSummary), r.modsSummary],
   ['every row has the same three cells', r.fileRows.every(x => x.cells === 3), JSON.stringify(r.fileRows.map(x => x.cells))],
 ] });
@@ -884,6 +896,34 @@ scenarios.push({ name: 'Mods page: when the state cannot be read the list still 
 ] });
 scenarios.push({ name: 'Mods page: placeholder rows have all three cells', s: { ...base, clicks: [], files: stateFiles, delay: { files: 3000 }, end: 2500, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
   ['placeholder rows keep the three columns', r.fileRows.length >= 3 && r.fileRows.every(x => x.skel && x.cells === 3), JSON.stringify(r.fileRows.map(x => x.cells))],
+] });
+scenarios.push({ name: 'Mods page: the chip does not say ready while files need attention', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }, { path: 'Data/SKSE/new.dll', state: 'missing' }], end: 4000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
+  ['the chip names the files', /2 files? need attention/i.test(r.chip.text), r.chip.text],
+  ['the chip uses the warning style', /\bwarn\b/.test(r.chip.cls), r.chip.cls],
+] });
+scenarios.push({ name: 'Mods page: the chip still shows the files when the mods check ends last', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }], delay: { mods_state: 3000 }, end: 6000, actions: [{ at: 600, kind: 'click', id: 'nav-mods' }] }, expect: r => [
+  ['the chip names the file', /1 file needs attention/i.test(r.chip.text), r.chip.text],
+] });
+scenarios.push({ name: 'Mods page: Missing is the error colour, Update needed stays amber', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Data/Meshes/rock.nif', state: 'current' }, { path: 'Readme.txt', state: 'changed' }, { path: 'Data/SKSE/new.dll', state: 'missing' }], end: 4000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => {
+  const hex = c => '#' + (c.match(/\d+/g) || []).slice(0, 3).map(n => Number(n).toString(16).padStart(2, '0')).join('');
+  return [
+    ['Missing uses --danger', hex(r.fileColors[2]) === r.tokens.danger, r.fileColors[2] + ' vs ' + r.tokens.danger],
+    ['Update needed uses --warn', hex(r.fileColors[1]) === r.tokens.warn, r.fileColors[1] + ' vs ' + r.tokens.warn],
+  ]; } });
+scenarios.push({ name: 'Mods page: the chip stays on one line and the table does not move', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }, { path: 'Data/SKSE/new.dll', state: 'missing' }], modsJank: true, end: 4000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
+  ['the chip is one line high', r.chip.h <= r.chip.lineH + 4, `${r.chip.h}px vs line ${r.chip.lineH}px`],
+  ...Object.entries(r.modsJank || {}).map(([k, d]) => [`the ${k} summary moves the table by ${d}px`, Math.abs(d) < 1, String(d)]),
+] });
+scenarios.push({ name: 'Mods page: the file list does not log every file state', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }], end: 3000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
+  ['no log line carries the per-file states', !(r.uiLogs || []).some(l => /^files_state/.test(l)), JSON.stringify((r.uiLogs || []).filter(l => /^files_state/.test(l)))],
+] });
+scenarios.push({ name: 'Mods page: the list shows before the file states are known', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }], delay: { files_state: 4000 }, end: 3000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
+  ['the real file names are listed, not placeholders', r.fileRows.length === 3 && r.fileRows.every(x => !x.skel && x.name), JSON.stringify(r.fileRows.map(x => x.name))],
+  ['their states show a dash meanwhile', r.fileRows.every(x => x.state === '–'), JSON.stringify(r.fileRows.map(x => x.state))],
+] });
+scenarios.push({ name: 'Mods page: the states fill in when they arrive', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }], delay: { files_state: 1500 }, end: 5000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
+  ['the changed file says Update needed', r.fileRows[1] && r.fileRows[1].state === 'Update needed', JSON.stringify(r.fileRows[1])],
+  ['the summary counts it', /1 needs? attention/.test(r.modsSummary), r.modsSummary],
 ] });
 scenarios.push({ name: 'Tokens: the launcher colours are the design system values (Dawnglass)', s: { ...base, clicks: [], end: 2000 }, expect: r => Object.entries({ text: '#ece6d6', muted: '#b3b8c0', faint: '#8a93a0', ok: '#93cf9e', warn: '#e6b866', gold: '#d8b56a', frost: '#b6dcf7', glow: '#5ea4d8', danger: '#f0998a' }).map(([k, v]) => [`--${k} is ${v}`, r.tokens[k] === v, String(r.tokens[k])]) });
 const hueOf = c => { const [r, g, b] = (c.match(/[\d.]+/g) || []).slice(0, 3).map(Number).map(v => v / 255), mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn; if (!d) return 0; const h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; return (h * 60 + 360) % 360; };
