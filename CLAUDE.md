@@ -7,4 +7,6 @@ here. Check `wc -c CLAUDE.md` before committing.
 
 See README.md for the project overview.
 
-@.claude/ad-hook/BOOTSTRAP.md
+
+# Aetherial Dawn hook v2
+@.claude/ad-system/BOOTSTRAP.md

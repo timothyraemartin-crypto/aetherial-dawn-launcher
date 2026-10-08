@@ -1,0 +1,29 @@
+{
+  "template_only": true,
+  "deployment_id": null,
+  "observed_at": null,
+  "environment": null,
+  "target_identity": null,
+  "authorization_reference": null,
+  "components": [
+    {
+      "repository": null,
+      "source_commit": null,
+      "source_dirty": null,
+      "build_environment": null,
+      "artifact_path_or_id": null,
+      "artifact_sha256": null,
+      "installed_sha256": null,
+      "configuration_version": null
+    }
+  ],
+  "compatibility_evidence": [],
+  "preflight_evidence": [],
+  "runtime_evidence": [],
+  "manual_uploads": [],
+  "previous_known_good_artifacts": [],
+  "rollback_steps": [],
+  "data_migration_and_restore_limits": [],
+  "outcome": "UNKNOWN",
+  "unverified": []
+}
