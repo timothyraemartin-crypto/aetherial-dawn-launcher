@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aetherial-dawn-launcher"
-version = "0.1.108"
+version = "0.1.109"
 dependencies = [
  "futures-util",
  "hex",
@@ -2222,7 +2222,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-core"
-version = "0.1.108"
+version = "0.1.109"
 dependencies = [
  "ed25519-dalek",
  "futures-util",
