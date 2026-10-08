@@ -41,6 +41,12 @@ plain=$(jq -r "$PLAIN" "$MODS")
 [ -z "$plain" ] || { echo "Entries whose address is not https (the launcher drops them): $(echo $plain | tr '\n' ' ')"; exit 1; }
 missing=$(jq -r "$UNPINNED" "$MODS")
 if [ "$CHECK" = 1 ] && [ -n "$missing" ]; then echo "Entries without sha256: $(echo $missing | tr '\n' ' ')"; exit 1; fi
+# The launcher also drops any entry that names a single `file` to check or copy unless it carries a full
+# 64-character sha256 (core/src/modlist.rs). A nexus entry is not covered by the direct-download check
+# above, so it would vanish from every player's list without a word.
+NOFILEPIN='.mods[] | select(.file != null and ((.sha256 // "") | tostring | length) != 64) | .id'
+nofilepin=$(jq -r "$NOFILEPIN" "$MODS")
+if [ "$CHECK" = 1 ] && [ -n "$nofilepin" ]; then echo "Entries with a file but no full sha256 (the launcher drops them): $(echo $nofilepin | tr '\n' ' ')"; exit 1; fi
 if [ "$PIN_ONLY" = 0 ]; then
   tool=${SIGN_FEED:-$(command -v sign-feed || true)}
   if [ -z "$tool" ]; then
