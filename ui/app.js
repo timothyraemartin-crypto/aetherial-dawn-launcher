@@ -1207,7 +1207,10 @@
   // A short confirmation next to DONE after a setting changes.
   let savedTimer = null;
   function flashSaved(text, bad) {
-    const el = $('set-saved');
+    // Good news is a polite status; a failure is an alert, so screen readers interrupt for it.
+    const el = $(bad ? 'set-failed' : 'set-saved'), other = $(bad ? 'set-saved' : 'set-failed');
+    other.textContent = '';
+    other.className = 'toast';
     el.textContent = text;
     el.className = 'toast ' + (bad ? 'bad' : 'ok');
     clearTimeout(savedTimer);

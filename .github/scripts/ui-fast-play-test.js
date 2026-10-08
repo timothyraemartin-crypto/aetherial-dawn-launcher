@@ -165,9 +165,12 @@ function fakeBackEnd() {
       log.skelAlpha = sk ? Math.max(...(getComputedStyle(sk).backgroundImage.match(/rgba\([^)]*\)/g) || []).map(alpha)) : null;
       const groupOf = id => { const el = document.getElementById(id); const hs = [...document.querySelectorAll('#settings h3')]; let found = null; for (const h of hs) if (h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) found = h.textContent; return found; };
       log.settingsGroups = { heads: [...document.querySelectorAll('#settings h3')].map(h => h.textContent), close: groupOf('set-close'), bg: groupOf('set-bg'), share: groupOf('set-share'), only: groupOf('set-only'), folder: groupOf('set-path') };
-      const saved = document.getElementById('set-saved');
-      log.saved = saved ? saved.textContent : null;
-      const toast = document.getElementById('set-saved');
+      const saved = document.getElementById('set-saved'), failed = document.getElementById('set-failed');
+      log.saved = (failed && failed.textContent) || (saved ? saved.textContent : null);
+      const okEl = document.getElementById('set-saved'), badEl = document.getElementById('set-failed');
+      const toast = badEl && badEl.textContent ? badEl : okEl;
+      log.toastRoles = { ok: okEl.getAttribute('role'), bad: badEl ? badEl.getAttribute('role') : null, emptyDisplay: getComputedStyle(badEl || okEl).display, emptyOpacity: getComputedStyle(badEl || okEl).opacity };
+      if (S.scrollSettings) { const sh = document.getElementById('settings'); sh.querySelector('.panel').style.minHeight = '2000px'; sh.scrollTop = sh.scrollHeight; }
       const tr = toast.getBoundingClientRect();
       log.toast = { top: Math.round(tr.top), bottom: Math.round(tr.bottom), fixed: getComputedStyle(toast).position, color: getComputedStyle(toast).color, cls: toast.className, shown: tr.width > 0 && tr.height > 0 };
       log.musicChecked = document.getElementById('set-music').getAttribute('aria-checked');
@@ -755,7 +758,7 @@ scenarios.push({ name: 'Settings: a setting that cannot be saved flips back and 
   ['the switch is back where it was (off)', r.bgChecked === 'false', String(r.bgChecked)],
 ] });
 
-scenarios.push({ name: 'Settings: the save message stays in view at the top, not below the fold', s: { ...base, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-bg' }] }, expect: r => [
+scenarios.push({ name: 'Settings: the save message stays in view at the top, not below the fold', s: { ...base, scrollSettings: true, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-bg' }] }, expect: r => [
   ['the message is on screen near the top', r.toast.shown && r.toast.top >= 0 && r.toast.bottom <= 120, JSON.stringify(r.toast)],
   ['it stays put when the settings scroll', r.toast.fixed === 'fixed', String(r.toast.fixed)],
 ] });
@@ -773,6 +776,12 @@ scenarios.push({ name: 'Settings: menu music that cannot be saved flips back and
 scenarios.push({ name: 'Settings: menu music that saves says Saved and stays on', s: { ...base, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-music' }] }, expect: r => [
   ['it says Saved', r.saved === 'Saved', String(r.saved)],
   ['the switch is on', r.musicChecked === 'true', String(r.musicChecked)],
+] });
+
+scenarios.push({ name: 'Settings: screen readers hear Saved politely and a failure as an alert', s: { ...base, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }] }, expect: r => [
+  ['Saved is a status message', r.toastRoles.ok === 'status', String(r.toastRoles.ok)],
+  ['a failure is an alert', r.toastRoles.bad === 'alert', String(r.toastRoles.bad)],
+  ['an empty message stays in the page, hidden by opacity, so it can be announced', r.toastRoles.emptyDisplay !== 'none' && r.toastRoles.emptyOpacity === '0', JSON.stringify(r.toastRoles)],
 ] });
 
 const chrome = findChrome();

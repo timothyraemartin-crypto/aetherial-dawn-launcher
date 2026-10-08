@@ -305,7 +305,7 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 /* ---------- settings groups ---------- */
 .set-h { margin: 6px 0 -6px; font: 500 11.5px var(--display); letter-spacing: .2em; text-transform: uppercase; color: var(--frost); }
 .toast { position: fixed; z-index: 30; top: 56px; left: calc(var(--nav) + (100vw - var(--nav)) / 2); transform: translateX(-50%); padding: 8px 16px; border-radius: 6px; font-size: 13px; background: var(--panel-solid); border: 1px solid var(--line-strong); box-shadow: 0 12px 30px -12px #000; pointer-events: none; }
-.toast:empty { display: none; }
+.toast:empty { opacity: 0; } /* stays in the tree so the live region can announce */
 .toast.ok { color: var(--ok); border-color: rgba(92, 201, 138, .5); }
 .toast.bad { color: var(--warn); border-color: rgba(227, 149, 106, .6); }
 

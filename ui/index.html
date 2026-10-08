@@ -279,7 +279,6 @@
 
   <!-- ===== settings ===== -->
   <div class="sheet" id="settings" role="dialog" aria-modal="true" aria-label="Settings" tabindex="-1" hidden>
-    <div class="toast" id="set-saved" role="status" aria-live="polite"></div>
     <div class="panel">
       <h2>Settings</h2>
       <div class="account" id="set-account" hidden><span class="avatar" id="acc-avatar"></span><div><b id="acc-name"></b><small id="acc-note">Signed in with Discord</small></div><button class="btn" id="acc-signout">Sign out</button></div>
@@ -322,5 +321,8 @@
 </div>
 <script src="ambient.js"></script>
 <script src="app.js"></script>
+<!-- Outside the sheets: a scrolling sheet with backdrop-filter becomes the containing block for position: fixed. -->
+<div class="toast" id="set-saved" role="status" aria-live="polite"></div>
+<div class="toast" id="set-failed" role="alert" aria-live="assertive"></div>
 </body>
 </html>
