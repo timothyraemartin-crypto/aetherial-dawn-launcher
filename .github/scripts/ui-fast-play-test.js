@@ -39,6 +39,10 @@ function fakeBackEnd() {
   }
   try { localStorage.clear(); if (S.seed) localStorage.setItem('ad.lastReady', JSON.stringify(S.seed)); if (S.hintSeen) localStorage.setItem('ad.f3hint', '1'); } catch (_) {}
   const game = Object.assign({ needed: false, installed: '1.6.1170.0', target: '1.6.1170.0', skseOk: true, canDowngrade: true }, S.game || {});
+  if (S.clipboard) {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async t => { if (S.clipboard !== 'ok') throw new Error('denied'); log.copied = t; } } });
+    document.execCommand = cmd => { if (cmd === 'copy' && S.clipboard === 'fallback') { log.copied = document.activeElement && document.activeElement.value; return true; } return false; };
+  }
   const answers = {
     get_state: () => ({ launcherVersion: S.version, config: { gameDir: S.dir, closeOnLaunch: false, backgroundUpdates: !!S.backgroundUpdates, shareHealth: true, music: false, onlyServerMods: true }, game: S.gameGone ? null : { dir: S.dir, hasSkse: S.hasSkse !== false }, gameError: S.gameGone || null }),
     auth_status: () => (S.authSequence && S.authSequence.shift()) || ((S.authAfter && (S.authCalls = (S.authCalls || 0) + 1) > 1) ? S.authAfter : S.auth),
@@ -76,6 +80,8 @@ function fakeBackEnd() {
         if (cmd === 'export_key_save' && S.keyError) { log.keySent = args.key; return rej(S.keyError); }
         if (cmd === 'set_game_dir' && S.setDirError) return rej(S.setDirError);
         if (cmd === 'set_game_dir' && S.picks && S.picks.find(p => p.dir === args.dir && p.error)) return rej(S.picks.find(p => p.dir === args.dir).error);
+        if (cmd === 'update' && S.updateError) return rej(S.updateError);
+        if (cmd === 'diagnostics') return res('diagnostics text');
         if (cmd === 'play' && S.playError && !S.played) { S.played = true; return rej(S.playError); }
         res(answers[cmd] ? answers[cmd](args || {}) : null);
       }, pickDelay || (delay[cmd] ?? delay.default));
@@ -103,7 +109,7 @@ function fakeBackEnd() {
     new MutationObserver(note).observe(label, { childList: true, characterData: true, subtree: true });
     new MutationObserver(note).observe(btn, { attributes: true, attributeFilter: ['disabled'] });
     const status = document.getElementById('status');
-    const noteStatus = () => log.statuses.push([at(), status.textContent]);
+    const noteStatus = () => { log.statuses.push([at(), status.textContent]); (log.statusH ||= []).push([at(), status.offsetHeight, !!document.getElementById('status-copy')]); };
     noteStatus();
     new MutationObserver(noteStatus).observe(status, { childList: true, characterData: true, subtree: true });
     const box = () => log.newsHeights.push([at(), document.getElementById('news-box').offsetHeight]);
@@ -148,6 +154,8 @@ function fakeBackEnd() {
       try { log.hintStored = localStorage.getItem('ad.f3hint'); } catch (_) {}
       log.progress = { file: document.getElementById('p-file').textContent, speed: document.getElementById('p-speed').textContent, num: document.getElementById('p-num').textContent };
       log.readyAnim = getComputedStyle(document.getElementById('play-wrap')).animationName;
+      log.copied = log.copied || null;
+      log.statusUi = { text: status.textContent, copy: !!document.getElementById('status-copy'), errorClass: !!document.querySelector('#status .error'), minH: parseFloat(getComputedStyle(status).minHeight) || 0, lineH: parseFloat(getComputedStyle(status).lineHeight) || 0, dividerAfterError: (() => { const e = document.querySelector('#status .error'); const n = e && e.nextElementSibling && e.nextElementSibling.tagName === 'SPAN' ? e.nextElementSibling : null; return n ? getComputedStyle(n, '::before').content : null; })() };
       log.fileRows = [...document.querySelectorAll('#files-body tr')].map(tr => ({ skel: tr.classList.contains('skel'), name: (tr.querySelector('.fname') || {}).textContent || null, dir: (tr.querySelector('.fdir') || {}).textContent || null }));
       const alpha = c => { const m = /rgba?\([^)]*?,\s*([\d.]+)\)$/.exec(c); return m ? parseFloat(m[1]) : 1; };
       log.pageAlpha = alpha(getComputedStyle(document.querySelector('#page-mods .ftable-wrap')).backgroundColor);
@@ -678,6 +686,30 @@ scenarios.push({ name: 'Play ready glow animates opacity or transform only, so h
   ['the ready state does not animate a filter on the wrapper', r.readyAnim === 'none' || r.readyAnim === null, String(r.readyAnim)],
 ] });
 
+scenarios.push({ name: 'errors: a failed update says what happened and offers Copy details, not a paragraph of steps', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, updateError: 'disk is full', end: 5000 }, expect: r => [
+  ['the message says what stopped and what to click', /The game file update stopped: disk is full\. Click Retry\./.test(r.statusUi.text), JSON.stringify(r.statusUi.text)],
+  ['the long "open Settings" instructions are gone', !/open Settings/.test(r.statusUi.text), JSON.stringify(r.statusUi.text)],
+  ['a Copy details button is there', r.statusUi.copy],
+] });
+scenarios.push({ name: 'errors: Copy details copies the diagnostics and says so', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, updateError: 'disk is full', end: 7500, actions: [{ at: 3000, kind: 'click', id: 'status-copy' }], clipboard: 'ok' }, expect: r => [
+  ['the diagnostics text reached the clipboard', r.copied === 'diagnostics text', String(r.copied)],
+  ['the Copy button is still there to press again', r.statusUi.copy],
+  ['the status area keeps one height from the error to the result', new Set(r.statusH.filter(h => h[2]).map(h => h[1])).size === 1, JSON.stringify(r.statusH.filter(h => h[2]).map(h => h[1]))],
+  ['the line confirms the copy', /Copied\. Paste it in Discord/.test(r.statusUi.text) && !/Couldn't copy/.test(r.statusUi.text), JSON.stringify(r.statusUi.text)],
+  ['no divider bar is left before the version', r.statusUi.dividerAfterError === null || r.statusUi.dividerAfterError === 'none' || r.statusUi.dividerAfterError === 'normal', String(r.statusUi.dividerAfterError)],
+] });
+scenarios.push({ name: 'errors: Copy details falls back to the older copy command when the clipboard API refuses', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, updateError: 'disk is full', end: 7500, actions: [{ at: 3000, kind: 'click', id: 'status-copy' }], clipboard: 'fallback' }, expect: r => [
+  ['the diagnostics text was copied the other way', r.copied === 'diagnostics text', String(r.copied)],
+  ['the line confirms the copy', /Copied\. Paste it in Discord/.test(r.statusUi.text), JSON.stringify(r.statusUi.text)],
+] });
+scenarios.push({ name: 'errors: when nothing can copy, the line says where to find the log instead', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, updateError: 'disk is full', end: 7500, actions: [{ at: 3000, kind: 'click', id: 'status-copy' }], clipboard: 'fail' }, expect: r => [
+  ['the Copy button is still there to press again', r.statusUi.copy],
+  ['the status area keeps one height from the error to the result', new Set(r.statusH.filter(h => h[2]).map(h => h[1])).size === 1, JSON.stringify(r.statusH.filter(h => h[2]).map(h => h[1]))],
+  ['it says in one short line where to find the log', /Couldn't copy\. Use Settings > Open log folder\.$/.test(r.statusUi.text.replace(/v\d[\d.]*$/, '')) && !/Copied\./.test(r.statusUi.text), JSON.stringify(r.statusUi.text)],
+] });
+scenarios.push({ name: 'errors: a normal status line has no Copy details button', s: { ...base, clicks: [] }, expect: r => [
+  ['no button on a healthy status', !r.statusUi.copy],
+] });
 scenarios.push({ name: 'Mods page: placeholder rows while the file list loads', s: { ...base, clicks: [], files: [{ path: 'Data/a.esp', size: 1000 }], delay: { files: 3000 }, end: 2500, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
   ['placeholder rows show while waiting', r.fileRows.length >= 3 && r.fileRows.every(x => x.skel), JSON.stringify(r.fileRows)],
 ] });
