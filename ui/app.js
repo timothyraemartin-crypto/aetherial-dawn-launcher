@@ -62,7 +62,22 @@
     $('play-label').textContent = label;
     $('play').disabled = mode === 'wait';
     $('play-wrap').classList.toggle('off', mode === 'wait');
+    // For styling only: busy = the launcher is working, ready = PLAY starts the game,
+    // anything else is a step the player takes first (sign in, fix mods, retry).
+    const busy = mode === 'wait' && /ING$|CHECKING/.test(label);
+    $('play-wrap').dataset.state = busy ? 'busy' : mode === 'play' || mode === 'downgrade' ? 'ready' : mode === 'wait' ? 'off' : 'action';
+    showHint();
   }
+  // First-time players are told where the menu is, until they have started the game once.
+  const HINT_KEY = 'ad.f3hint';
+  const hintSeen = () => { try { return localStorage.getItem(HINT_KEY) === '1'; } catch (_) { return false; } };
+  function showHint() {
+    const hint = $('play-hint');
+    if (!hint || hintSeen()) { if (hint) hint.hidden = true; return; }
+    hint.hidden = false;
+    hint.style.visibility = $('play-wrap').dataset.state === 'ready' ? 'visible' : 'hidden';
+  }
+  function markHintSeen() { try { localStorage.setItem(HINT_KEY, '1'); } catch (_) {} showHint(); }
   let statusMsg = null;
   function setStatus(msg, isError) {
     statusMsg = msg ? { msg, isError } : null;
@@ -824,6 +839,7 @@
       const warns = await invokePlay();
       helperWarning = Array.isArray(warns) && warns.length ? warns.join(' ') : null;
       gameRunning = true;
+      markHintSeen();
       setPlay('wait', 'IN GAME');
       setStatus(helperWarning || 'Skyrim is running.', !!helperWarning);
     } catch (e) {
