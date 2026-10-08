@@ -1,0 +1,74 @@
+{
+  "version": "2.0.0",
+  "exclude_files": [],
+  "inject": [
+    "PROGRESS.md",
+    ".claude/memory/INDEX.md"
+  ],
+  "source_roots": [
+    "core",
+    "src-tauri",
+    "ui",
+    "vortex-extension",
+    "contract",
+    "scripts",
+    "docs",
+    "Cargo.toml",
+    "Cargo.lock",
+    ".github"
+  ],
+  "exclude_dirs": ["docs/operations", 
+    "node_modules",
+    ".git",
+    "runtime",
+    "target",
+    "gen"
+  ],
+  "limits": {
+    "max_files": 3000,
+    "max_total_bytes": 40000000,
+    "max_file_bytes": 10000000,
+    "max_seconds": 20,
+    "inject_budget_bytes": 12000
+  },
+  "checks": [
+    {
+      "id": "core",
+      "argv": [
+        "cargo",
+        "check",
+        "-p",
+        "launcher-core",
+        "--tests",
+        "--quiet"
+      ],
+      "cwd": ".",
+      "timeout": 900,
+      "required": true
+    },
+    {
+      "id": "memory-lint",
+      "argv": [
+        "bash",
+        ".claude/memory-lint.sh"
+      ],
+      "cwd": ".",
+      "timeout": 60,
+      "required": true
+    },
+    {
+      "id": "ad-hook-tests",
+      "argv": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        ".claude/ad-hook/tests"
+      ],
+      "cwd": ".",
+      "timeout": 120,
+      "required": false
+    }
+  ]
+}

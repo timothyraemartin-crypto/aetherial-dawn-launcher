@@ -6,3 +6,5 @@ lives only in aetherial-dawn-ingame-ui. Put detail in on-demand files, not
 here. Check `wc -c CLAUDE.md` before committing.
 
 See README.md for the project overview.
+
+@.claude/ad-hook/BOOTSTRAP.md
