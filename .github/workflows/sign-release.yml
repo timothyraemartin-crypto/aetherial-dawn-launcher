@@ -50,6 +50,8 @@ jobs:
       - name: Download the unsigned installer
         run: |
           set -euo pipefail
+          # the self-hosted runner keeps its workspace between runs: start from an empty dist/
+          rm -rf dist
           mkdir dist
           name="AetherialDawn-Launcher-$VERSION-setup.exe"
           asset=$(gh api "repos/$GITHUB_REPOSITORY/releases/${{ steps.rel.outputs.id }}" --jq ".assets[] | select(.name == \"$name\") | .id")
@@ -92,3 +94,6 @@ jobs:
         run: gh release edit "$TAG" --draft=false --latest
       - name: Publish the launcher feed
         run: gh workflow run publish-feed.yml -f mode=publish
+      - name: Remove the downloaded files
+        if: always()
+        run: rm -rf dist
