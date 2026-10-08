@@ -80,7 +80,25 @@
   }
   function markHintSeen() { try { localStorage.setItem(HINT_KEY, '1'); } catch (_) {} showHint(); setupWanted = false; applySetup(); }
   let statusMsg = null;
+  let copyNote = '';
+  // The clipboard API first; the older copy command when the page may not use it.
+  async function copyText(text) {
+    try {
+      await Promise.race([navigator.clipboard.writeText(text), new Promise((_, no) => setTimeout(() => no(new Error('clipboard timeout')), 2000))]);
+      return true;
+    } catch (_) {
+      const box = document.createElement('textarea');
+      box.value = text;
+      box.setAttribute('readonly', '');
+      box.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+      document.body.appendChild(box);
+      box.focus();
+      box.select();
+      try { return document.execCommand('copy'); } catch (_) { return false; } finally { box.remove(); }
+    }
+  }
   function setStatus(msg, isError) {
+    copyNote = '';
     statusMsg = msg ? { msg, isError } : null;
     renderStatus();
     const live = $('status-live');
@@ -89,7 +107,14 @@
   let toolRunning = false;
   function renderStatus() {
     const parts = [];
-    if (statusMsg) parts.push(`<span${statusMsg.isError ? ' class="error"' : ''}>${esc(statusMsg.msg)}</span>`);
+    if (statusMsg) {
+      // An error that ends in the help line shows the message plus one button, instead of the paragraph of steps.
+      const help = statusMsg.isError && statusMsg.msg.endsWith(HELP);
+      const text = help ? statusMsg.msg.slice(0, -HELP.length) : statusMsg.msg;
+      parts.push(`<span${statusMsg.isError ? ' class="error"' : ''}>${esc(text)}</span>`);
+      // The button stays so it can be pressed again; its result sits beside it on a row of fixed height.
+      if (help) parts.push(`<span class="copy-row"><button class="btn small" id="status-copy">Copy details for staff</button><span class="copy-note">${esc(copyNote)}</span></span>`);
+    }
     else {
       // Only a current /health answer can claim the server is online.
       const st = status;
@@ -1229,6 +1254,16 @@
     else renderStatus();
   });
   $('status').addEventListener('click', e => {
+    if (e.target && e.target.id === 'status-copy') {
+      e.target.disabled = true;
+      invoke('diagnostics').then(copyText).then(ok => {
+        copyNote = ok ? 'Copied. Paste it in Discord (Ctrl+V).' : "Couldn't copy. Use Settings > Open log folder.";
+      }, () => { copyNote = "Couldn't copy. Use Settings > Open log folder."; }).then(() => {
+        renderStatus();
+        $('status-live').textContent = copyNote;
+      });
+      return;
+    }
     if (e.target && e.target.id === 'tool-skip') {
       e.target.disabled = true;
       invoke('skip_tool').catch(() => {});
