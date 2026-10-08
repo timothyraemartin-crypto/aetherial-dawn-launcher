@@ -2,6 +2,12 @@ name: Build launcher
 
 # Build and test on main and pull requests. Only an explicit vX.Y.Z tag can
 # publish a signed release, after both platform artifacts have passed.
+#
+# Jobs run on self-hosted runners on Timothy's PC (GitHub-hosted minutes are
+# blocked by billing): [self-hosted, windows, x64] is a native Windows runner,
+# [self-hosted, linux, x64] runs inside WSL2 Ubuntu. Required tools for each
+# are listed in docs/self-hosted-runners.md; the preflight steps below fail
+# fast with a clear message when one is missing.
 
 on:
   push:
@@ -15,13 +21,25 @@ permissions:
 
 jobs:
   windows:
-    runs-on: windows-latest
+    runs-on: [self-hosted, windows, x64]
     env:
       # Where the server publishes launcher files, and the Discord login service.
       # Override with repository variables if the server moves.
       AD_BASE_URL: ${{ vars.AD_BASE_URL || 'https://vps-d38c928e.vps.ovh.us/launcher' }}
       AD_AUTH_URL: ${{ vars.AD_AUTH_URL || 'https://vps-d38c928e.vps.ovh.us/ad' }}
     steps:
+      - name: Preflight (tools this runner must have)
+        shell: pwsh
+        run: |
+          $missing = @('git', 'node', 'rustup', 'cargo', 'pwsh') | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) }
+          if (-not (Test-Path 'C:\Program Files\Git\bin\bash.exe')) { $missing += 'Git for Windows (bash.exe)' }
+          if (-not ((Test-Path 'C:\Program Files\Google\Chrome\Application\chrome.exe') -or (Test-Path 'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'))) { $missing += 'Google Chrome' }
+          if (-not (Get-Command link.exe -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe")) { $missing += 'Visual Studio Build Tools (C++)' }
+          if ($missing) { throw "This runner is missing: $($missing -join ', '). See docs/self-hosted-runners.md." }
+          # `shell: bash` must be Git's bash, not WSL's C:\Windows\System32\bash.exe.
+          $b = (Get-Command bash -ErrorAction SilentlyContinue).Source
+          Write-Host "bash resolves to $b"
+          if ($b -and $b -like '*\System32\bash.exe') { throw 'bash resolves to WSL; put C:\Program Files\Git\bin before C:\Windows\System32 in the runner user PATH.' }
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -145,6 +163,16 @@ jobs:
       - name: Install like a new player
         shell: pwsh
         run: ./.github/scripts/one-click-test.ps1 -Setup "dist/AetherialDawn-Launcher-$env:VERSION-setup.exe" -Version $env:VERSION
+      # A cancelled or crashed run can leave the test install behind on a runner that keeps its profile.
+      # Only on the dedicated CI user (AD_CI_RUNNER=1 in the runner's .env), never on a personal account.
+      - name: Remove the test install
+        if: always() && env.AD_CI_RUNNER == '1'
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:LOCALAPPDATA 'Aetherial Dawn'
+          Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -like "$dir\*" } | Stop-Process -Force
+          $u = Join-Path $dir 'uninstall.exe'
+          if (Test-Path $u) { Start-Process $u -ArgumentList '/S' -Wait }
       - uses: actions/upload-artifact@v4
         with:
           name: aetherial-dawn-launcher-windows
@@ -156,15 +184,17 @@ jobs:
   # (musl), so it runs on any Linux x86_64. Both artifacts are checked before
   # the single release job publishes either.
   canonical-plugins-linux:
-    runs-on: ubuntu-22.04
+    runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
+      # musl-tools is preinstalled on the self-hosted runner (docs/self-hosted-runners.md); only install
+      # if it is missing and passwordless sudo exists.
       - name: Install musl
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+        run: command -v musl-gcc >/dev/null || sudo -n sh -c 'apt-get update && apt-get install -y musl-tools'
       - name: Build
         shell: bash
         run: |
@@ -183,7 +213,7 @@ jobs:
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [windows, canonical-plugins-linux]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     permissions:
       contents: write
     concurrency:
@@ -332,7 +362,7 @@ jobs:
   release-failed-notice:
     if: failure() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [windows, canonical-plugins-linux, release]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v4
       - name: Staff feed - release failed
