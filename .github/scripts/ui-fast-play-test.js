@@ -122,7 +122,7 @@ function fakeBackEnd() {
     // The player picks a folder in the first-run sheet.
     if (S.pickDir) setTimeout(() => document.getElementById('c-game-pick').click(), 3000);
     for (const p of S.picks || []) setTimeout(() => document.getElementById('c-game-pick').click(), p.at);
-    if (S.signIn) setTimeout(() => { S.signInAt = at(); document.getElementById('si-go').click(); }, 1500);
+    if (S.signIn) setTimeout(() => { S.signInAt = at(); const pn = document.querySelector('#signin .panel'); log.siBefore = pn.getBoundingClientRect().height; document.getElementById('si-go').click(); }, 1500);
     // Cancel while the first answer is on its way, then sign in again.
     if (S.signIn && S.signIn.cancelAt) setTimeout(() => document.getElementById('si-cancel').click(), S.signIn.cancelAt);
     if (S.signIn && S.signIn.restartAt) setTimeout(() => { document.getElementById('si-cancel').click(); document.getElementById('si-go').click(); }, S.signIn.restartAt);
@@ -141,6 +141,11 @@ function fakeBackEnd() {
     setTimeout(() => {
       try { log.lastReady = JSON.parse(localStorage.getItem('ad.lastReady')); } catch (_) {}
       log.signinShown = !document.getElementById('signin').hidden;
+      const stepsOf = id => { const ol = document.querySelector('#' + id + ' .steps'); return ol ? [...ol.children].map(li => li.textContent.trim() + (li.getAttribute('aria-current') ? '*' : '')) : null; };
+      log.steps = { first: stepsOf('first'), signin: stepsOf('signin') };
+      log.siAfter = document.querySelector('#signin .panel').getBoundingClientRect().height;
+      log.siGoLabel = document.getElementById('si-go').textContent.trim();
+      log.siGoDisabled = document.getElementById('si-go').disabled;
       log.status = document.getElementById('status').textContent;
       const live = document.getElementById('status-live');
       log.announced = live ? live.textContent : null;
@@ -782,6 +787,15 @@ scenarios.push({ name: 'Settings: menu music that saves says Saved and stays on'
   ['the switch is on', r.musicChecked === 'true', String(r.musicChecked)],
 ] });
 
+scenarios.push({ name: 'First run and sign-in: a step indicator shows where the player is', s: { ...signedOut, end: 3000 }, expect: r => [
+  ['first run lists three steps with the first current', JSON.stringify(r.steps.first) === JSON.stringify(['Your game*', 'Sign in', 'Play']), JSON.stringify(r.steps.first)],
+  ['sign-in lists the same steps with the second current', JSON.stringify(r.steps.signin) === JSON.stringify(['Your game', 'Sign in*', 'Play']), JSON.stringify(r.steps.signin)],
+] });
+scenarios.push({ name: 'Sign-in: waiting for the browser keeps the dialog the same size and says so on the button', s: { ...signedOut, signIn: { doneAfter: 60 * 1000 }, end: 5000 }, expect: r => [
+  ['the dialog does not change height while waiting', Math.abs(r.siAfter - r.siBefore) < 1, JSON.stringify([r.siBefore, r.siAfter])],
+  ['the button says what it is waiting for', /WAITING FOR DISCORD/.test(r.siGoLabel), r.siGoLabel],
+  ['the button is disabled while waiting', r.siGoDisabled === true, String(r.siGoDisabled)],
+] });
 scenarios.push({ name: 'Settings: screen readers hear Saved politely and a failure as an alert', s: { ...base, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }] }, expect: r => [
   ['Saved is a status message', r.toastRoles.ok === 'status', String(r.toastRoles.ok)],
   ['a failure is an alert', r.toastRoles.bad === 'alert', String(r.toastRoles.bad)],

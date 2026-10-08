@@ -106,6 +106,15 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .btn.discord:hover { background: linear-gradient(180deg, #7580F7, #505BD0); }
 .btn.discord:disabled { opacity: .5; cursor: default; }
 .btn.discord svg { width: 22px; height: 22px; fill: #fff; stroke: none; }
+.steps { display: flex; gap: 6px; list-style: none; margin: 0; padding: 0; counter-reset: step; font: 500 11px var(--display); letter-spacing: .14em; text-transform: uppercase; color: var(--faint); }
+.steps li { counter-increment: step; display: flex; align-items: center; gap: 6px; }
+.steps li::before { content: counter(step); display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line-strong); font-size: 10px; letter-spacing: 0; }
+.steps li + li::after { content: none; }
+.steps li:not(:last-child)::after { content: ''; width: 18px; height: 1px; background: var(--line-strong); margin-left: 2px; }
+.steps li[aria-current] { color: var(--frost); }
+.steps li[aria-current]::before { background: var(--frost); color: #07101a; border-color: var(--frost); }
+.signin .steps { justify-content: center; }
+.si-slot { min-height: 40px; display: grid; align-items: center; }
 .signin .dg-progress { justify-content: center; flex-wrap: wrap; }
 .signin .linkish { margin-left: 0; }
 .nav .ver { margin-top: auto; padding: 0 14px 4px; font: 400 11px var(--mono); color: var(--faint); }
