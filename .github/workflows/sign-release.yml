@@ -1,0 +1,94 @@
+name: Sign and publish launcher release
+
+# For a release whose installer was built outside Actions (hosted runners
+# blocked): a DRAFT release for the tag holds the unsigned installer. This
+# signs it with the updater key from the repository secrets, adds the .sig and
+# latest.json, publishes the draft and starts "Publish launcher feed" (publish).
+# Manual only. The key and its password reach one step, as env, and are never printed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of the draft release, such as v0.1.107 (must match Cargo.toml at the release's commit)
+        required: true
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: sign-release
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    runs-on: [self-hosted, linux, x64]
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Find the draft release
+        id: rel
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Tag must look like v1.2.3"; exit 1; }
+          VERSION=${TAG#v}
+          json=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq "[.[] | select(.tag_name == \"$TAG\")]")
+          [ "$(echo "$json" | jq length)" = 1 ] || { echo "Need exactly one release for $TAG"; exit 1; }
+          [ "$(echo "$json" | jq -r '.[0].draft')" = true ] || { echo "$TAG is already published; nothing to sign"; exit 1; }
+          echo "id=$(echo "$json" | jq -r '.[0].id')" >> "$GITHUB_OUTPUT"
+          echo "commit=$(echo "$json" | jq -r '.[0].target_commitish')" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+      - name: The release's commit is on main and has this version
+        run: |
+          set -euo pipefail
+          sha="${{ steps.rel.outputs.commit }}"
+          gh api "repos/$GITHUB_REPOSITORY/compare/$sha...main" --jq '.status' | grep -Eq '^(ahead|identical)$' || { echo "$sha is not on main"; exit 1; }
+          cargo_version=$(gh api "repos/$GITHUB_REPOSITORY/contents/Cargo.toml?ref=$sha" --jq .content | base64 -d | sed -n 's/^version = "\(.*\)"/\1/p' | head -n 1)
+          [ "$cargo_version" = "$VERSION" ] || { echo "Cargo.toml says $cargo_version, the tag says $VERSION"; exit 1; }
+      - name: Download the unsigned installer
+        run: |
+          set -euo pipefail
+          mkdir dist
+          name="AetherialDawn-Launcher-$VERSION-setup.exe"
+          asset=$(gh api "repos/$GITHUB_REPOSITORY/releases/${{ steps.rel.outputs.id }}" --jq ".assets[] | select(.name == \"$name\") | .id")
+          [ -n "$asset" ] || { echo "$name is not attached to the draft"; exit 1; }
+          gh api -H "Accept: application/octet-stream" "repos/$GITHUB_REPOSITORY/releases/assets/$asset" > "dist/$name"
+          [ -s "dist/$name" ] || { echo "empty download"; exit 1; }
+      - name: Sign it
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "TAURI_SIGNING_PRIVATE_KEY is not set"; exit 1; }
+          npx --yes @tauri-apps/cli@2.12.0 signer sign --app-version "$VERSION" "dist/AetherialDawn-Launcher-$VERSION-setup.exe" > /dev/null
+          [ -s "dist/AetherialDawn-Launcher-$VERSION-setup.exe.sig" ] || { echo "No signature was made"; exit 1; }
+      - name: Write latest.json and upload
+        run: |
+          set -euo pipefail
+          setup="AetherialDawn-Launcher-$VERSION-setup.exe"
+          SETUP_NAME="$setup" SIGNATURE_FILE="dist/$setup.sig" node <<'NODE'
+          const fs = require('node:fs');
+          const version = process.env.VERSION;
+          const signature = fs.readFileSync(process.env.SIGNATURE_FILE, 'utf8').trim();
+          if (!signature) throw new Error('Empty updater signature');
+          const feed = {
+            version,
+            notes: `Aetherial Dawn launcher ${version}`,
+            pub_date: new Date().toISOString(),
+            platforms: {
+              'windows-x86_64': {
+                signature,
+                url: `https://github.com/${process.env.GITHUB_REPOSITORY}/releases/download/v${version}/${process.env.SETUP_NAME}`
+              }
+            }
+          };
+          fs.writeFileSync('dist/latest.json', JSON.stringify(feed, null, 2) + '\n');
+          NODE
+          gh release upload "$TAG" "dist/$setup.sig" dist/latest.json --clobber
+      - name: Publish the release
+        run: gh release edit "$TAG" --draft=false --latest
+      - name: Publish the launcher feed
+        run: gh workflow run publish-feed.yml -f mode=publish
