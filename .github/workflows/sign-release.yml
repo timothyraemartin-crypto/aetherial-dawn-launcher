@@ -50,7 +50,8 @@ jobs:
       - name: Download the unsigned installer
         run: |
           set -euo pipefail
-          mkdir dist
+          mkdir -p dist
+          find dist -mindepth 1 -delete
           name="AetherialDawn-Launcher-$VERSION-setup.exe"
           asset=$(gh api "repos/$GITHUB_REPOSITORY/releases/${{ steps.rel.outputs.id }}" --jq ".assets[] | select(.name == \"$name\") | .id")
           [ -n "$asset" ] || { echo "$name is not attached to the draft"; exit 1; }
