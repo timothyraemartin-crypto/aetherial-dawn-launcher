@@ -291,7 +291,9 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 /* ---------- error line ---------- */
 .status .error::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: var(--warn); vertical-align: 1px; }
 .btn.small { height: 26px; padding: 0 10px; font-size: 12px; }
-.status .btn.small + span::before, .status span + .btn.small { margin-left: 2px; }
+.status .copy-row { flex-basis: 100%; display: flex; gap: 10px; align-items: center; justify-content: center; min-height: 26px; }
+.status .copy-row::before, .status .error + .copy-row ~ span::before { content: none; }
+.copy-note { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
 
 /* ---------- mods page rows ---------- */
 .ftable .fdir { color: var(--faint); }
