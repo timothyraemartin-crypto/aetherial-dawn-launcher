@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 
 mod export;
 mod faces;
+mod portrait;
 mod log;
 // The old "Download all mods" code in mods.rs is unreachable; the thread that
 // deletes it should also delete this allow so clippy covers the file again.
@@ -684,8 +685,16 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
                 let http = app.state::<AppState>().faces_http.clone();
                 tokio::spawn(faces::run(http, AUTH_URL.to_string(), t, game_dir.clone(), stop.clone()))
             });
+            // The character portrait: a grab after each finished race menu.
+            let pictures = token(&app).map(|t| {
+                let http = app.state::<AppState>().faces_http.clone();
+                tokio::spawn(portrait::run(http, AUTH_URL.to_string(), t, game_dir.clone(), stop.clone()))
+            });
             let code = tokio::task::spawn_blocking(move || watch::wait_exit(pid)).await.ok().flatten();
             stop.store(true, Ordering::SeqCst);
+            if let Some(h) = pictures {
+                let _ = h.await;
+            }
             let last = match sharing {
                 Some(h) => h.await.ok().flatten(),
                 None => None,
@@ -2117,6 +2126,18 @@ async fn files(state: State<'_, AppState>) -> CmdResult<Vec<launcher_core::manif
     m.as_ref().map(|m| m.files.clone()).ok_or_else(|| "The file list hasn't loaded yet.".to_string())
 }
 
+/// The character card on Home: the character seen most recently, refreshed
+/// from the server when signed in, else what the last refresh saved.
+#[tauri::command]
+async fn character_card(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Option<portrait::Card>> {
+    let dir = game_dir(&state).await?;
+    if let Some(t) = token(&app) {
+        let http = state.faces_http.clone();
+        portrait::refresh(&http, AUTH_URL, &t, &dir).await;
+    }
+    Ok(portrait::card(&dir))
+}
+
 #[tauri::command]
 async fn open_game_folder(state: State<'_, AppState>) -> CmdResult<()> {
     let dir = game_dir(&state).await?;
@@ -2430,7 +2451,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, health_check, report_problem, patch_game, game_running, self_update_begin, self_update_end, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::vortex_connect, restore_set_aside, skip_tool, window_ready, open_invite])
+        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, character_card, server_status, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, health_check, report_problem, patch_game, game_running, self_update_begin, self_update_end, music_start, set_music, mods::open_mod_page, mods::mods_state, mods::vortex_connect, restore_set_aside, skip_tool, window_ready, open_invite])
         .build(tauri::generate_context!())
         .expect("error while running the launcher")
         .run(|_, event| {

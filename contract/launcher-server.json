@@ -132,6 +132,30 @@
       "path": "/faces/f/{name}.jslot",
       "auth": "token",
       "server": "external"
+    },
+    {
+      "id": "characters-mine",
+      "note": "Not served by the discord repo; the ingame-ui faces module serves it. The signed-in account's characters as the shared record {characters:[{actor,name,race,sex,hold,playtimeMin,lastSeen,bio,portrait:{version,url,takenAt}|null}]}, also read by the in-game Character window. The launcher card shows the one seen last.",
+      "method": "GET",
+      "path": "/characters/mine",
+      "auth": "token",
+      "server": "external"
+    },
+    {
+      "id": "portrait-self",
+      "note": "The player's own portrait (WebP, at most 400 KB, 64 to 512 px a side), grabbed by the launcher after a finished race menu. Not served by the discord repo, see characters-mine.",
+      "method": "PUT",
+      "path": "/portrait/self",
+      "auth": "token",
+      "server": "external"
+    },
+    {
+      "id": "portrait-file",
+      "note": "A character's portrait; the launcher refetches when the record's portrait.version changes. Not served by the discord repo, see characters-mine.",
+      "method": "GET",
+      "path": "/portrait/{actor}.webp",
+      "auth": "token",
+      "server": "external"
     }
   ],
   "knownGaps": []
