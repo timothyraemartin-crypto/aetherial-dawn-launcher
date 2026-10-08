@@ -93,3 +93,6 @@ jobs:
         run: gh release edit "$TAG" --draft=false --latest
       - name: Publish the launcher feed
         run: gh workflow run publish-feed.yml -f mode=publish
+      - name: Remove the downloaded files
+        if: always()
+        run: rm -rf dist

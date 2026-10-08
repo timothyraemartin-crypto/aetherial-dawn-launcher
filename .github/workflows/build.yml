@@ -206,6 +206,8 @@ jobs:
         run: node .github/scripts/ui-contract-test.js
       - name: Discord notice checks
         run: node --test .github/scripts/patch-notes.test.js
+      - name: Sign-release workflow test
+        run: node --test .github/scripts/sign-release.test.js
       - name: Vortex extension checks
         run: node --test "vortex-extension/test/*.test.js"
 
