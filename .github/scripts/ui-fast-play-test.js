@@ -122,6 +122,27 @@ function fakeBackEnd() {
     // The player picks a folder in the first-run sheet.
     if (S.pickDir) setTimeout(() => document.getElementById('c-game-pick').click(), 3000);
     for (const p of S.picks || []) setTimeout(() => document.getElementById('c-game-pick').click(), p.at);
+    if (S.seps) {
+      const states = [
+        '<span><i class="dot"></i>Server online · 12 of 100 players</span><span>Build B2</span><span>v9.9.9</span>',
+        '<span>Skyrim 1.6.1170 matches the server version. You are ready to play and the launcher checked every file.</span><span>Build B2</span><span>v9.9.9</span>',
+        '<span><i class="dot"></i>Server online</span><span class="error">Server maintenance: back at 18:00 UTC, thanks for waiting here</span><span>Build B2</span><span>v9.9.9</span>',
+      ];
+      log.seps = [];
+      states.forEach((html, n) => {
+        setTimeout(() => { document.getElementById('status').innerHTML = html; }, 1300 + n * 500);
+        setTimeout(() => {
+          const kids = [...document.getElementById('status').children].filter(el => el.tagName === 'SPAN' && !el.classList.contains('copy-row'));
+          let prevTop = null;
+          log.seps.push(kids.map((el, i) => {
+            const top = el.getBoundingClientRect().top, rowStart = prevTop === null || top > prevTop + 2;
+            if (prevTop === null || top > prevTop) prevTop = top;
+            const c = getComputedStyle(el, '::before').content;
+            return { text: el.textContent.slice(0, 14), rowStart, sep: c === '"|"' };
+          }));
+        }, 1300 + n * 500 + 250);
+      });
+    }
     if (S.signIn) setTimeout(() => { S.signInAt = at(); const pn = document.querySelector('#signin .panel'); log.siBefore = pn.getBoundingClientRect().height; document.getElementById('si-go').click(); }, 1500);
     // Cancel while the first answer is on its way, then sign in again.
     if (S.signIn && S.signIn.cancelAt) setTimeout(() => document.getElementById('si-cancel').click(), S.signIn.cancelAt);
@@ -834,6 +855,10 @@ const chrome = findChrome();
 let failed = 0;
 scenarios.push({ name: 'Home: optional rows do not move the Play button', s: { ...base, clicks: [], jank: true, end: 3000 }, expect: r => [...Object.entries(r.jank).filter(([k]) => k !== 'base').map(([k, d]) => [`showing ${k} moves Play by ${d}px`, Math.abs(d) < 1, String(d)]),
   ...Object.entries(r.jankStatus).map(([k, d]) => [`${k} moves Play by ${d}px`, Math.abs(d) < 1, String(d)])] });
+scenarios.push({ name: 'Status line: no separator at the start of a line', s: { ...base, clicks: [], seps: true, end: 3200 }, expect: r => r.seps.flatMap((row, n) => [
+  [`state ${n + 1}: the line wraps (so this checks something)`, n === 0 || row.some(k => k.rowStart && k !== row[0]), JSON.stringify(row)],
+  [`state ${n + 1}: no separator on the first item of a line`, row.every(k => !(k.rowStart && k.sep)), JSON.stringify(row)]
+]) });
 for (const sc of scenarios) {
   if (process.env.AD_UI_SCENARIO && !sc.name.includes(process.env.AD_UI_SCENARIO)) continue;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-ui-'));

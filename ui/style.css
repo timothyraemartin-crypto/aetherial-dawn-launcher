@@ -164,6 +164,7 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .play:disabled { cursor: default; color: rgba(234,246,255,.55); text-shadow: none; }
 .status { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 10px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .status span + span::before { content: "|"; margin-right: 10px; color: var(--faint); }
+.status span.row-start:not(.error)::before { content: none; } /* a separator at the start of a wrapped line would dangle */
 .status .error { color: var(--warn); }
 .status .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); margin-right: 6px; vertical-align: 1px; box-shadow: 0 0 0 3px rgba(92,201,138,.18); }
 .status .dot.off { background: var(--faint); box-shadow: none; }
