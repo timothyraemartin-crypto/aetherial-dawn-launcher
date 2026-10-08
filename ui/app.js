@@ -132,6 +132,18 @@
     if (html !== shownStatus) $('status').innerHTML = shownStatus = html;
   }
   let shownStatus = '';
+  // The "|" between status items is dropped from whichever item starts a line, so a wrapped line never begins with one.
+  // The separator takes no width (it sits in the flex gap), so one measurement is enough.
+  function markRowStarts() {
+    let prev = null;
+    for (const el of $('status').children) {
+      if (el.tagName !== 'SPAN' || el.classList.contains('copy-row')) continue;
+      const top = el.getBoundingClientRect().top;
+      el.classList.toggle('row-start', prev === null || top > prev + 2);
+      if (prev === null || top > prev) prev = top;
+    }
+  }
+  new MutationObserver(markRowStarts).observe($('status'), { childList: true });
   // Saved news and Discord invite can fill their panels while current checks
   // run. Saved readiness and server health are never shown as current.
   const LAST = 'ad.lastReady';
