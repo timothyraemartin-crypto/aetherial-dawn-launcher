@@ -2,8 +2,9 @@
 //! so staff can see which mods a player is missing without asking for logs.
 //! Names and counts only: never a file path, folder or account detail.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::time::Instant;
 
 use serde::Serialize;
 
@@ -19,6 +20,74 @@ pub struct Report {
     pub launcher: String,
     pub mods: Mods,
     pub required: Required,
+    /// Where this Play attempt got to and where it stopped; only sent when
+    /// the player shares health reports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub play: Option<PlayTrace>,
+}
+
+/// How far one Play attempt got, so staff can tell where a player got stuck.
+/// Stage names are the fixed step names the launcher shows ("Getting your
+/// mods ready"); times are milliseconds spent in each. No paths or accounts.
+#[derive(Serialize, Debug, Clone, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayTrace {
+    /// The step the attempt was in when it was last updated.
+    pub stage: String,
+    /// The step that failed; absent while the attempt is going well.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_at: Option<String>,
+    /// Whether the installed Skyrim is the version the server needs; null if unknown.
+    pub game_version_ok: Option<bool>,
+    pub timings_ms: BTreeMap<String, u64>,
+    #[serde(skip)]
+    entered: Option<Instant>,
+}
+
+impl PlayTrace {
+    pub fn new() -> PlayTrace {
+        let mut t = PlayTrace::default();
+        t.enter("Starting");
+        t
+    }
+
+    fn close(&mut self) {
+        if let Some(at) = self.entered.take() {
+            let ms = at.elapsed().as_millis() as u64;
+            *self.timings_ms.entry(self.stage.clone()).or_insert(0) += ms;
+        }
+    }
+
+    /// The attempt moves on to the next step.
+    pub fn enter(&mut self, stage: &str) {
+        self.close();
+        self.stage = clean(stage);
+        self.entered = Some(Instant::now());
+    }
+
+    pub fn game_version(&mut self, ok: bool) {
+        self.game_version_ok = Some(ok);
+    }
+
+    /// The attempt stopped in the current step.
+    pub fn fail(&mut self) {
+        self.close();
+        self.failed_at = Some(self.stage.clone());
+    }
+
+    /// A copy with the running step's time counted so far.
+    pub fn snapshot(&self) -> PlayTrace {
+        let mut t = self.clone();
+        t.close();
+        t
+    }
+}
+
+impl Report {
+    pub fn with_play(mut self, trace: PlayTrace) -> Report {
+        self.play = Some(trace);
+        self
+    }
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -73,7 +142,7 @@ pub fn report(launcher: &str, list: &[ModEntry], served: Option<&BTreeSet<String
         None => Mods { served: None, installed: None, missing: vec![] },
     };
     let req_missing: Vec<String> = required.iter().filter(|(_, ok)| !ok).map(|(n, _)| clean(n)).collect();
-    Report { launcher: launcher.to_string(), mods, required: Required { ok: req_missing.is_empty(), missing: req_missing } }
+    Report { launcher: launcher.to_string(), mods, required: Required { ok: req_missing.is_empty(), missing: req_missing }, play: None }
 }
 
 #[cfg(test)]
@@ -112,6 +181,37 @@ mod tests {
         let none = report("0.1.81", &list, None, |_| false, &[]);
         let json = serde_json::to_value(&none).unwrap();
         assert!(json["mods"]["served"].is_null() && json["mods"]["installed"].is_null());
+    }
+
+    #[test]
+    fn a_play_trace_names_the_step_it_stopped_in_and_times_each() {
+        let mut t = PlayTrace::new();
+        t.game_version(true);
+        t.enter("Installing SKSE");
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        t.enter("Getting your mods ready");
+        t.fail();
+        assert_eq!(t.stage, "Getting your mods ready");
+        assert_eq!(t.failed_at.as_deref(), Some("Getting your mods ready"));
+        assert!(t.timings_ms["Installing SKSE"] >= 10);
+        assert!(t.timings_ms.contains_key("Starting") && t.timings_ms.contains_key("Getting your mods ready"));
+        let list = vec![entry("skyui", "SkyUI")];
+        let json = serde_json::to_value(report("0.1.99", &list, None, |_| false, &[]).with_play(t)).unwrap();
+        assert_eq!(json["play"]["stage"], "Getting your mods ready");
+        assert_eq!(json["play"]["failedAt"], "Getting your mods ready");
+        assert_eq!(json["play"]["gameVersionOk"], true);
+        assert!(json["play"]["timingsMs"]["Installing SKSE"].as_u64().is_some());
+        assert!(!json["play"].to_string().contains('/') && !json["play"].to_string().contains('\\'));
+    }
+
+    #[test]
+    fn a_report_without_a_trace_has_no_play_key_and_a_good_attempt_has_no_failed_at() {
+        let list = vec![entry("skyui", "SkyUI")];
+        assert!(serde_json::to_value(report("0.1.99", &list, None, |_| false, &[])).unwrap().get("play").is_none());
+        let mut t = PlayTrace::new();
+        t.enter("Starting Skyrim through SKSE");
+        let json = serde_json::to_value(t.snapshot()).unwrap();
+        assert!(json.get("failedAt").is_none() && json["gameVersionOk"].is_null());
     }
 
     #[test]
