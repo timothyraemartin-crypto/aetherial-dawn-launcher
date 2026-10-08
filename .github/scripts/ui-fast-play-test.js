@@ -219,6 +219,7 @@ function fakeBackEnd() {
       log.statusUi = { text: status.textContent, copy: !!document.getElementById('status-copy'), errorClass: !!document.querySelector('#status .error'), minH: parseFloat(getComputedStyle(status).minHeight) || 0, lineH: parseFloat(getComputedStyle(status).lineHeight) || 0, dividerAfterError: (() => { const e = document.querySelector('#status .error'); const n = e && e.nextElementSibling && e.nextElementSibling.tagName === 'SPAN' ? e.nextElementSibling : null; return n ? getComputedStyle(n, '::before').content : null; })() };
       log.fileRows = [...document.querySelectorAll('#files-body tr')].map(tr => ({ skel: tr.classList.contains('skel'), name: (tr.querySelector('.fname') || {}).textContent || null, dir: (tr.querySelector('.fdir') || {}).textContent || null, cells: tr.children.length, state: (tr.querySelector('.fstate') || {}).textContent || null, stateCls: (tr.querySelector('.fstate') || {}).className || null }));
       log.modsSummary = document.getElementById('mods-summary').textContent;
+      { const n = document.getElementById('min-notice'); log.minNotice = n && !n.hidden ? n.textContent : null; }
       { const chip = document.getElementById('mods-chip'), sum = document.getElementById('mods-summary'), wrap = document.querySelector('#page-mods .ftable-wrap');
         log.chip = { text: chip.querySelector('span').textContent, cls: chip.className, h: Math.round(chip.getBoundingClientRect().height), lineH: parseFloat(getComputedStyle(chip).lineHeight) || 18 };
         log.fileColors = [...document.querySelectorAll('#files-body .fstate')].map(td => getComputedStyle(td).color);
@@ -901,6 +902,26 @@ scenarios.push({ name: 'Mods page: placeholder rows have all three cells', s: { 
 scenarios.push({ name: 'Feed refused (unsigned or tampered): the launcher update still installs and the words are plain', s: { ...base, update: '9.9.10', clicks: [], checkError: "The launcher couldn't confirm the server's files are genuine, so it did not use them. It tries again the next time you press Play.", end: 5000 }, expect: r => [
   ['the launcher update installs', askedAt(r, 'updater_install') !== null],
   ['the player reads the plain words, no file names', /couldn't confirm the server's files/.test(r.statusUi.text) && !/signature|mods\.json|manifest/i.test(r.statusUi.text), r.statusUi.text],
+] });
+const holdOf = (versions, until) => { const l = { hold: versions }; if (until) l.holdUntil = until; return { launcher: l }; };
+scenarios.push({ name: 'Release hold: a held launcher version is not installed while the hold lasts', s: { ...base, update: '9.9.10', clicks: [], statusNow: holdOf(['9.9.10'], new Date(Date.now() + 36e5).toISOString()), end: 4000 }, expect: r => [
+  ['nothing is downloaded or installed', askedAt(r, 'updater_download') === null && askedAt(r, 'updater_install') === null],
+] });
+scenarios.push({ name: 'Release hold: a hold that has run out does not stop the update', s: { ...base, update: '9.9.10', clicks: [], statusNow: holdOf(['9.9.10'], new Date(Date.now() - 36e5).toISOString()), end: 4000 }, expect: r => [
+  ['the update installs', askedAt(r, 'updater_install') !== null],
+] });
+scenarios.push({ name: 'Release hold: without an end time it is ignored, so it can never hold updates for good', s: { ...base, update: '9.9.10', clicks: [], statusNow: holdOf(['9.9.10']), end: 4000 }, expect: r => [
+  ['the update installs', askedAt(r, 'updater_install') !== null],
+] });
+scenarios.push({ name: 'Release hold: another version is not held', s: { ...base, update: '9.9.10', clicks: [], statusNow: holdOf(['9.9.11'], new Date(Date.now() + 36e5).toISOString()), end: 4000 }, expect: r => [
+  ['the update installs', askedAt(r, 'updater_install') !== null],
+] });
+scenarios.push({ name: 'Minimum launcher version: an older launcher shows staff\'s message and Play is not blocked', s: { ...base, clicks: [], statusNow: { launcher: { minVersion: '99.0.0', message: 'Server changes need a newer launcher.' } }, end: 4000 }, expect: r => [
+  ['the notice shows with the message', /Server changes need a newer launcher/.test(r.minNotice || ''), r.minNotice],
+  ['Play is still available', r.playState === 'ready', r.playState],
+] });
+scenarios.push({ name: 'Minimum launcher version: a current launcher shows no notice', s: { ...base, clicks: [], statusNow: { launcher: { minVersion: '0.0.1', message: 'Old.' } }, end: 4000 }, expect: r => [
+  ['no notice', !r.minNotice, r.minNotice],
 ] });
 scenarios.push({ name: 'Mods page: the chip does not say ready while files need attention', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }, { path: 'Data/SKSE/new.dll', state: 'missing' }], end: 4000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
   ['the chip names the files', /2 files? need attention/i.test(r.chip.text), r.chip.text],

@@ -1091,6 +1091,7 @@
     if (status) remember({ news: Array.isArray(status.news) ? status.news.slice(0, 20) : lastSeen.news, invite: status.discordInvite || lastSeen.invite });
     renderInvite();
     renderStatus();
+    showMinNotice();
     gateTick();
     const online = $('srv-online');
     if (!status) {
@@ -1137,9 +1138,28 @@
     catch (e) { gameCheckFailed = true; logUi('game_running failed, the launcher update waits: ' + e); return true; }
   };
   const waitReason = () => gameCheckFailed ? 'unknown' : 'busy';
+  // Staff can say, in status.json, `launcher: { hold: ["0.1.120"], holdUntil: "<ISO time>", minVersion: "0.1.115", message }`.
+  // A hold pauses installing those versions until holdUntil (without an end time it is ignored, so a hold can't
+  // last for ever); minVersion only shows the message, it never blocks Play.
+  const numbers = v => String(v).split('.').map(n => parseInt(n, 10) || 0);
+  const olderThan = (a, b) => { const x = numbers(a), y = numbers(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) < (y[i] || 0); } return false; };
+  const launcherNote = () => (status && status.launcher && typeof status.launcher === 'object') ? status.launcher : {};
+  const heldByStaff = version => {
+    const l = launcherNote();
+    const until = Date.parse(l.holdUntil);
+    return Array.isArray(l.hold) && l.hold.includes(version) && Number.isFinite(until) && until > Date.now();
+  };
+  function showMinNotice() {
+    const l = launcherNote(), n = $('min-notice');
+    const old = state && typeof l.minVersion === 'string' && olderThan(state.launcherVersion, l.minVersion);
+    n.hidden = !old;
+    if (old) n.textContent = typeof l.message === 'string' && l.message.trim() ? l.message.trim().slice(0, 200) : 'A newer launcher is needed for the latest server changes. It updates by itself when you are not playing.';
+  }
   async function checkSelfUpdate(byHand) {
     if (updating || updateWaits()) return byHand ? 'busy' : undefined;
     if (await skyrimUp()) return byHand ? waitReason() : undefined;
+    // Staff's hold list comes with the server status, so the first check waits briefly for it.
+    for (let i = 0; i < 30 && !statusAsked; i++) await new Promise(r => setTimeout(r, 100));
     try {
       const upd = downloaded || await T.updater.check();
       if (!upd) {
@@ -1148,6 +1168,10 @@
       }
       // Play may have started while the check was out.
       if (updating || updateWaits()) return byHand ? 'busy' : undefined;
+      if (!downloaded && heldByStaff(upd.version)) {
+        if (byHand || Date.now() - lastUpToDateLog > 30 * 60 * 1000) { logUi(`launcher ${upd.version} is on hold from staff`); lastUpToDateLog = Date.now(); }
+        return 'latest';
+      }
       updating = true;
       $('self-update-text').textContent = `Updating the launcher to ${upd.version}…`;
       $('self-update').hidden = false;
