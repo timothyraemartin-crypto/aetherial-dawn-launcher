@@ -921,6 +921,15 @@ scenarios.push({ name: 'Mods page: the list shows before the file states are kno
   ['the real file names are listed, not placeholders', r.fileRows.length === 3 && r.fileRows.every(x => !x.skel && x.name), JSON.stringify(r.fileRows.map(x => x.name))],
   ['their states show a dash meanwhile', r.fileRows.every(x => x.state === '–'), JSON.stringify(r.fileRows.map(x => x.state))],
 ] });
+scenarios.push({ name: 'Mods page: before any file state is known the chip is neutral, not ready', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }], delay: { files_state: 2500 }, end: 2000, actions: [{ at: 300, kind: 'click', id: 'nav-mods' }] }, expect: r => [
+  ['the chip says it is checking files', /Checking files/.test(r.chip.text), r.chip.text],
+  ['it does not use the ready style', /\bbusy\b/.test(r.chip.cls), r.chip.cls],
+] });
+scenarios.push({ name: 'Mods page: reopening it keeps the last known states while they refresh', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }, { path: 'Data/SKSE/new.dll', state: 'missing' }], delay: { files_state: 2500 }, end: 5600, actions: [{ at: 600, kind: 'click', id: 'nav-mods' }, { at: 4000, kind: 'click', id: 'nav-home' }, { at: 4500, kind: 'click', id: 'nav-mods' }] }, expect: r => [
+  ['the chip still says files need attention', /2 files need attention/.test(r.chip.text), r.chip.text],
+  ['the rows keep their words', r.fileRows.map(x => x.state).join() === '–,Update needed,Missing', JSON.stringify(r.fileRows.map(x => x.state))],
+  ['the summary still counts them', /2 need attention/.test(r.modsSummary), r.modsSummary],
+] });
 scenarios.push({ name: 'Mods page: the states fill in when they arrive', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }], delay: { files_state: 1500 }, end: 5000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
   ['the changed file says Update needed', r.fileRows[1] && r.fileRows[1].state === 'Update needed', JSON.stringify(r.fileRows[1])],
   ['the summary counts it', /1 needs? attention/.test(r.modsSummary), r.modsSummary],

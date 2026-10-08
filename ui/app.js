@@ -162,10 +162,12 @@
   }
 
   // Files that are out of date or missing take the "ready" chip's place, so it never says ready beside them.
-  let readyChipText = null, filesAttention = 0;
+  let readyChipText = null, filesAttention = 0, filesPending = false;
+  const CHECKING_FILES = 'Checking files…';
   const attentionText = n => `${plural(n, 'file')} ${n === 1 ? 'needs' : 'need'} attention`;
   function showReadyChip() {
-    if (filesAttention > 0) setChip('warn', attentionText(filesAttention));
+    if (filesPending) setChip('busy', CHECKING_FILES);
+    else if (filesAttention > 0) setChip('warn', attentionText(filesAttention));
     else if (readyChipText) setChip('ok', readyChipText);
   }
 
@@ -1022,7 +1024,7 @@
   }
 
   // ---------- mods page ----------
-  let filesSeq = 0;
+  let filesSeq = 0, lastMarks = new Map(), lastMarksKey = '';
   async function loadFiles() {
     const seq = ++filesSeq;
     // Placeholder rows keep the table's height steady while the list loads.
@@ -1033,16 +1035,25 @@
     const files = await invoke('files').catch(() => null);
     if (seq !== filesSeq) return;
     if (!files) {
+      filesPending = false;
+      if (/^(\d+ files? needs? attention|Checking files…)$/.test($('mods-chip').querySelector('span').textContent) && readyChipText) setChip('ok', readyChipText);
       $('files-body').innerHTML = '<tr><td colspan="3">The file list loads after the launcher reaches the server.</td></tr>';
       return;
     }
-    draw(files, new Map());
+    // Until fresh states arrive the last known ones stay on screen, and only a draw with real states may touch the chip.
+    const key = `${pending ? pending.build : ''}|${state && state.config ? state.config.gameDir : ''}`;
+    if (key !== lastMarksKey) { lastMarks = new Map(); lastMarksKey = key; }
+    // With no known states yet the chip stays neutral instead of claiming ready.
+    filesPending = lastMarks.size === 0;
+    if (filesPending && readyChipText && !$('mods-chip').classList.contains('busy') && !$('mods-chip').classList.contains('warn')) setChip('busy', CHECKING_FILES);
+    draw(files, lastMarks, false);
     const marks = await marksAsked;
     if (seq !== filesSeq) return;
     // Each file's state on this PC. If it can't be read the rows keep their dash and the page claims nothing.
-    draw(files, new Map(Array.isArray(marks) ? marks.map(m => [m.path, m.state]) : []));
+    if (Array.isArray(marks)) lastMarks = new Map(marks.map(m => [m.path, m.state]));
+    draw(files, Array.isArray(marks) ? lastMarks : new Map(), true);
   }
-  function draw(files, stateOf) {
+  function draw(files, stateOf, final) {
     const LABEL = { current: ['Up to date', 'ok'], changed: ['Update needed', 'warn'], missing: ['Missing', 'bad'] };
     const attention = [...stateOf.values()].filter(v => v === 'changed' || v === 'missing').length;
     const total = files.reduce((n, f) => n + f.size, 0);
@@ -1053,11 +1064,14 @@
       const [label, cls] = LABEL[stateOf.get(f.path)] || ['–', 'none'];
       return `<tr><td title="${esc(f.path)}"><span class="fdir">${esc(f.path.slice(0, cut))}</span><span class="fname">${esc(f.path.slice(cut))}</span></td><td class="fstate ${cls}">${label}</td><td>${mb(f.size)}</td></tr>`;
     }).join('');
+    if (!final) return;
+    filesPending = false;
     filesAttention = attention;
-    // Only a finished mods check owns the chip: a busy or already-warning chip is left as it is.
-    const chip = $('mods-chip');
-    if (attention > 0 && readyChipText && !chip.classList.contains('busy')) setChip('warn', attentionText(attention));
-    else if (attention === 0 && readyChipText && /^\d+ files? needs? attention$/.test(chip.querySelector('span').textContent)) setChip('ok', readyChipText);
+    // Only a finished mods check owns the chip: a busy-for-other-reasons or already-warning chip is left as it is.
+    const chip = $('mods-chip'), shown = chip.querySelector('span').textContent;
+    const ours = shown === CHECKING_FILES || /^\d+ files? needs? attention$/.test(shown);
+    if (readyChipText && ours) { if (attention > 0) setChip('warn', attentionText(attention)); else setChip('ok', readyChipText); }
+    else if (readyChipText && attention > 0 && !chip.classList.contains('busy') && !chip.classList.contains('warn')) setChip('warn', attentionText(attention));
   }
 
   // ---------- server status.json (optional) ----------
