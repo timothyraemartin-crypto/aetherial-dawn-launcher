@@ -33,9 +33,9 @@ function fakeBackEnd() {
   const listeners = {};
   if (S.pageSize) Object.assign(document.documentElement.style, { width: S.pageSize[0] + 'px', height: S.pageSize[1] + 'px' });
   const at = () => Math.round(performance.now() - t0);
-  if (S.authIntervalMs) {
+  if (S.authIntervalMs || S.statusPollMs) {
     const every = window.setInterval.bind(window);
-    window.setInterval = (fn, ms, ...args) => every(fn, ms === 10 * 60 * 1000 ? S.authIntervalMs : ms, ...args);
+    window.setInterval = (fn, ms, ...args) => every(fn, ms === 10 * 60 * 1000 && S.authIntervalMs ? S.authIntervalMs : ms === 30 * 1000 && S.statusPollMs ? S.statusPollMs : ms, ...args);
   }
   try { localStorage.clear(); if (S.seed) localStorage.setItem('ad.lastReady', JSON.stringify(S.seed)); if (S.hintSeen) localStorage.setItem('ad.f3hint', '1'); } catch (_) {}
   const game = Object.assign({ needed: false, installed: '1.6.1170.0', target: '1.6.1170.0', skseOk: true, canDowngrade: true }, S.game || {});
@@ -44,7 +44,7 @@ function fakeBackEnd() {
     auth_status: () => (S.authSequence && S.authSequence.shift()) || ((S.authAfter && (S.authCalls = (S.authCalls || 0) + 1) > 1) ? S.authAfter : S.auth),
     check: () => Object.assign({ build: 'B2', server: { name: 'Aetherial Dawn', ip: '127.0.0.1', port: 7777 }, files: 0, remove: 0, bytes: 0, strays: [], game }, (S.checkSequence && S.checkSequence.shift()) || S.check || {}),
     update: () => null,
-    server_status: () => ({ online: true, players: 1, maxPlayers: 50, discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
+    server_status: () => ({ online: true, players: 1, maxPlayers: 50, ...(typeof S.statusNow === 'object' ? S.statusNow : {}), discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
     setup_state: () => S.setup || [{ id: 'folder', title: 'Choose your Skyrim folder', hint: 'x', done: true }],
     files: () => [], play: () => S.playWarnings || null,
     patch_game: () => S.patchResult || { ...game, needed: false },
@@ -70,6 +70,7 @@ function fakeBackEnd() {
       setTimeout(() => {
         log.invokes.push([at(), 'answer', cmd]);
         if (cmd === 'get_state' && S.stateFails) return rej('settings are not writable');
+        if (cmd === 'server_status' && S.statusNow === 'down') return rej('no answer');
         if (cmd === 'auth_status' && S.authFails) return rej('network down');
         if (cmd === 'game_running' && (S.gameCheckFails || (S.gameCheckFailsFrom && (S.gameChecks = (S.gameChecks || 0) + 1) >= S.gameCheckFailsFrom))) return rej('process list unavailable');
         if (cmd === 'export_key_save' && S.keyError) { log.keySent = args.key; return rej(S.keyError); }
@@ -121,6 +122,7 @@ function fakeBackEnd() {
     for (const action of S.actions || []) setTimeout(() => {
       if (action.kind === 'click') document.getElementById(action.id).click();
       if (action.kind === 'event') for (const callback of listeners[action.name] || []) callback({ payload: action.payload });
+      if (action.kind === 'status') S.statusNow = action.value;
       if (action.kind === 'type') document.getElementById(action.id).value = action.text;
       if (action.kind === 'open') document.getElementById(action.id).open = true;
       if (action.kind === 'focus') document.getElementById(action.id).focus();
@@ -165,6 +167,8 @@ function fakeBackEnd() {
       log.playDisabled = btn.disabled;
       const setupBox = document.getElementById('setup');
       log.setup = setupBox.hidden ? null : [...document.querySelectorAll('#setup-list li')].map(li => li.className + ':' + li.querySelector('b').textContent);
+      const gate = document.getElementById('play-gate');
+      log.gate = gate.hidden ? null : { msg: document.getElementById('play-gate-msg').textContent, anyway: !document.getElementById('gate-anyway').hidden, wait: !document.getElementById('gate-wait').hidden };
       log.modal = [...document.querySelectorAll('.sheet')].find(el => !el.hidden)?.id || null;
       log.navInert = document.getElementById('nav-home').closest('.nav').inert;
       log.titlebarInert = document.querySelector('.titlebar').inert;
@@ -215,6 +219,32 @@ const scenarios = [
   ] },
   { name: 'setup checklist: nothing to show when every step is done', s: { ...base, clicks: [], end: 4000 }, expect: r => [
     ['the checklist is not shown', r.setup === null],
+  ] },
+  { name: 'server offline at Play: warned, the game waits for Play anyway', s: { ...base, statusNow: { online: false }, actions: [{ kind: 'click', id: 'gate-anyway', at: 3500 }], end: 5000 }, expect: r => [
+    ['the game starts only after Play anyway', askedAt(r, 'play') > 3500],
+  ] },
+  { name: 'server offline at Play: the warning stays and the game never starts', s: { ...base, statusNow: { online: false }, end: 3200 }, expect: r => [
+    ['the game never starts', !played(r)],
+    ['the warning names the offline server and offers both choices', !!r.gate && /offline/.test(r.gate.msg) && r.gate.anyway && r.gate.wait],
+  ] },
+  { name: 'server full: Wait and join starts the game once a slot opens', s: { ...base, statusNow: { online: true, players: 50, maxPlayers: 50 }, statusPollMs: 1000,
+    actions: [{ kind: 'click', id: 'gate-wait', at: 3000 }, { kind: 'status', value: { online: true, players: 49, maxPlayers: 50 }, at: 4000 }], end: 6500 }, expect: r => [
+    ['the game starts after the slot opens', askedAt(r, 'play') > 4000],
+    ['the game starts once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
+  ] },
+  { name: 'waiting for a full server, then the status call fails: the game does not start', s: { ...base, statusNow: { online: true, players: 50, maxPlayers: 50 }, statusPollMs: 1000,
+    actions: [{ kind: 'click', id: 'gate-wait', at: 3000 }, { kind: 'status', value: 'down', at: 4000 }], end: 7000 }, expect: r => [
+    ['the game never starts', !played(r)],
+    ['the notice says it cannot reach the server and is still waiting', !!r.gate && /Cannot reach the server, still waiting/.test(r.gate.msg)],
+  ] },
+  { name: 'server full: still waiting, the game does not start', s: { ...base, statusNow: { online: true, players: 50, maxPlayers: 50 }, statusPollMs: 1000, actions: [{ kind: 'click', id: 'gate-wait', at: 3000 }], end: 5500 }, expect: r => [
+    ['the game never starts', !played(r)],
+    ['the warning says it is waiting', !!r.gate && /Waiting/.test(r.gate.msg) && !r.gate.wait],
+  ] },
+  { name: 'maintenance: Play is blocked and Play anyway is not offered', s: { ...base, statusNow: { maintenance: 'Back at 18:00 UTC.' }, end: 3500 }, expect: r => [
+    ['the game never starts', !played(r)],
+    ['the message is shown and only Wait and join is offered', !!r.gate && /Back at 18:00/.test(r.gate.msg) && !r.gate.anyway && r.gate.wait],
+    ['the status line carries the message', /Back at 18:00/.test(r.status)],
   ] },
   { name: 'returning player: Play waits for fresh game, Discord and Vortex checks', s: base, expect: r => [
     ['PLAY is not enabled before fresh checks answer', firstLabel(r, 'PLAY') !== null && firstLabel(r, 'PLAY') >= Math.max(answeredAt(r, 'auth_status'), answeredAt(r, 'check'), answeredAt(r, 'mods_state'))],

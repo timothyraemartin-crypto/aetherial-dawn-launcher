@@ -133,6 +133,14 @@
         </button>
       </div>
       <p class="play-hint" id="play-hint" hidden>In game, press F3 for the menu.</p>
+      <div class="play-gate" id="play-gate" role="alert" hidden>
+        <p id="play-gate-msg"></p>
+        <div class="play-gate-btns">
+          <button class="linkish" id="gate-anyway" type="button">Play anyway</button>
+          <button class="linkish" id="gate-wait" type="button">Wait and join</button>
+          <button class="linkish" id="gate-cancel" type="button">Cancel</button>
+        </div>
+      </div>
       <div class="status" id="status"><span>Checking for updates…</span></div>
       <!-- What screen readers announce: only the launcher's own messages, not the player count refreshed every 30 s. -->
       <div class="sr-only" id="status-live" role="status" aria-live="polite"></div>

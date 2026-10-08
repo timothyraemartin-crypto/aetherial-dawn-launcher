@@ -219,7 +219,7 @@ pub fn record(game_dir: &Path, spec: &GameSpec, manual: bool) -> Result<()> {
     };
     let path = game_dir.join(MARKER);
     std::fs::create_dir_all(path.parent().unwrap())?;
-    std::fs::write(path, serde_json::to_vec_pretty(&m)?)?;
+    crate::atomicfile::write(&path, &serde_json::to_vec_pretty(&m)?)?;
     Ok(())
 }
 

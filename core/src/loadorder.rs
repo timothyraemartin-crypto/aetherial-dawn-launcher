@@ -302,14 +302,7 @@ pub fn write_list(path: &Path, old: Option<&ListFile>, new: &str) -> std::io::Re
 
 /// Writes `bytes` to a temp file next to `path`, then renames it over `path`.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".aetherial-dawn-tmp");
-    let tmp = std::path::PathBuf::from(tmp);
-    let res = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
-    if res.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    res
+    crate::atomicfile::write(path, bytes)
 }
 
 /// Keeps `old`, the list as it was before the launcher changed it, beside it.

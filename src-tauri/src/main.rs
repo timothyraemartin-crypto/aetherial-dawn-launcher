@@ -161,7 +161,7 @@ fn save_config(app: &AppHandle, c: &Config) -> CmdResult<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    launcher_core::atomicfile::write(&path, &serde_json::to_vec_pretty(c).unwrap()).map_err(|e| e.to_string())
+    launcher_core::atomicfile::safe_write(&path, &serde_json::to_vec_pretty(c).unwrap()).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
@@ -363,7 +363,23 @@ async fn update(app: AppHandle, state: State<'_, AppState>, verify_all: bool) ->
 /// Returns warnings to show once the game is starting (a helper mod that
 /// couldn't be installed).
 async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<String>> {
-    let _operation = begin_game_operation(&state)?;
+    trace_start();
+    let out = play_run(&app, &state).await;
+    // One report per attempt (the service takes one per Play): a failed one
+    // tells staff where it stopped, sharing permitting.
+    if out.is_err() {
+        trace_fail();
+    }
+    let dir = state.config.lock().await.game_dir.clone();
+    if let Some(dir) = dir {
+        send_client_status(&app, &dir);
+    }
+    out
+}
+
+async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
+    let app = app.clone();
+    let _operation = begin_game_operation(state)?;
     let config = state.config.lock().await.clone();
     let dir = config.game_dir.clone().ok_or("Pick your Skyrim folder first.")?;
     // Play must use the current server list, even after the launcher idled.
@@ -371,6 +387,7 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<Strin
     *state.manifest.lock().await = Some(m.clone());
     let gc = auto_version(&dir, m.game.as_ref());
     log::line(&format!("play: game folder {}, build {}, version needed={} skseOk={}", dir.display(), m.build, gc.needed, gc.skse_ok));
+    trace_game_version(!gc.needed);
     if gc.needed {
         return Err(gc.reason.unwrap_or_else(|| "Your Skyrim version doesn't match the server.".into()));
     }
@@ -381,29 +398,26 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<Strin
             play_step(&app, "Installing the launcher's helper mods…");
         }
         // Its warnings are given by the second pass below.
-        if let Err(e) = install_missing_mods(&state.http, &dir).await {
-            send_client_status(&app, &dir);
-            return Err(e);
-        }
+        install_missing_mods(&state.http, &dir).await?;
     }
     game::inspect(&dir).map_err(err)?;
     play_step(&app, "Getting your mods ready…");
     // The mod list as the server has it now (it may have changed while the
     // launcher was open, as on cutover day); the last one when it doesn't
     // answer.
-    if !mods::refresh_server_list(&state).await {
+    if !mods::refresh_server_list(state).await {
         return Err("Couldn't get the server's mod list. Check your internet connection, then press Play again.".into());
     }
     // The Vortex gate runs only when the server switches it on
     // (vortexRequired in aetherial-collection.json); off, Play checks the
     // game files as 0.1.87 did.
     // Fetched once; the Vortex check below reads its collection from it.
-    let served = mods::served_client_set(&state).await;
+    let served = mods::served_client_set(state).await;
     let vortex_required = launcher_core::vortex::gate_on(served.as_ref());
     let collection = served.and_then(|s| s.collection);
     log::line(&format!("play: Vortex gate {}", if vortex_required { "on" } else { "off" }));
     if vortex_required {
-        require_vortex_profile(&app, &state, &dir, collection.clone()).await?;
+        require_vortex_profile(&app, state, &dir, collection.clone()).await?;
     }
     // One masters.json per Play, fetched before anything changes on the PC:
     // its plugin names decide which light plugins run as full "<stem>.esm"
@@ -425,10 +439,10 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<Strin
     // this PC doesn't have yet, and the order check would refuse Play
     // before the downloads were ever offered.
     // Helpers still missing after this pass are shown once the game starts.
-    let warnings = ensure_requirements(&app, &state, &dir, vortex_required, collection).await?;
+    let warnings = ensure_requirements(&app, state, &dir, vortex_required, collection).await?;
     // Each listed mod's settings as the server sets them, once; the
     // player's later changes stay.
-    let list = mods::full_list(&state).await;
+    let list = mods::full_list(state).await;
     for l in launcher_core::presets::apply_all(&dir, &list) {
         log::line(&format!("play: preset {l}"));
     }
@@ -541,11 +555,11 @@ async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<Strin
             p.session
         }
         auth::Answer::SignedOut(msg) => {
-            sign_out(&app, &state).await;
+            sign_out(&app, state).await;
             return Err(format!("SIGNED_OUT:{msg}"));
         }
         auth::Answer::Refused { message, .. } => {
-            sign_out(&app, &state).await;
+            sign_out(&app, state).await;
             return Err(format!("SIGNED_OUT:{message}"));
         }
         auth::Answer::Offline(msg) => return Err(format!("Couldn't get you into the game: {msg}. Try again in a minute.")),
@@ -1597,14 +1611,39 @@ async fn install_missing_mods(http: &reqwest::Client, dir: &std::path::Path) -> 
 /// long step (a first SKSE download, the pre-Play health check) never looks
 /// like the launcher hung.
 fn play_step(app: &AppHandle, text: &str) {
+    trace_enter(text);
     let _ = app.emit("play-step", text);
+}
+
+/// The Play attempt in progress, for the install report (clientstatus.rs).
+fn play_trace() -> &'static std::sync::Mutex<launcher_core::clientstatus::PlayTrace> {
+    static T: std::sync::OnceLock<std::sync::Mutex<launcher_core::clientstatus::PlayTrace>> = std::sync::OnceLock::new();
+    T.get_or_init(|| std::sync::Mutex::new(launcher_core::clientstatus::PlayTrace::new()))
+}
+
+fn with_trace(f: impl FnOnce(&mut launcher_core::clientstatus::PlayTrace)) {
+    f(&mut play_trace().lock().unwrap_or_else(|e| e.into_inner()));
+}
+
+fn trace_start() {
+    with_trace(|t| *t = launcher_core::clientstatus::PlayTrace::new());
+}
+
+fn trace_enter(text: &str) {
+    with_trace(|t| t.enter(text.trim_end_matches(['…', '.'])));
+}
+
+fn trace_game_version(ok: bool) {
+    with_trace(|t| t.game_version(ok));
+}
+
+fn trace_fail() {
+    with_trace(|t| t.fail());
 }
 
 async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path::Path, vortex_required: bool, collection: Option<launcher_core::vortex::CollectionRef>) -> CmdResult<Vec<String>> {
     let got = install_missing_mods(&state.http, dir).await;
-    // Sent whether or not the installs worked: a failed one is the case
-    // staff most want to see.
-    send_client_status(app, dir);
+    // The install report is sent once, by play(), when the attempt ends.
     let warnings = got?;
     let list = mods::full_list(state).await;
     // Which listed mods count as present follows the Vortex gate
@@ -1674,6 +1713,8 @@ fn send_client_status(app: &AppHandle, dir: &std::path::Path) {
         let server = mods::fetched_server_list(&state).await;
         let version = state.manifest.lock().await.as_ref().and_then(|m| m.game.as_ref()).and_then(|g| g.version.clone());
         let launcher = app.package_info().version.to_string();
+        // Where the attempt got to goes only to players who share health reports.
+        let play = state.config.lock().await.share_health.then(|| play_trace().lock().unwrap_or_else(|e| e.into_inner()).snapshot());
         let report = tauri::async_runtime::spawn_blocking(move || {
             let list = launcher_core::modlist::merged(version.as_deref(), server.as_ref());
             let served: Option<std::collections::BTreeSet<String>> = server.map(|l| l.mods.into_iter().map(|m| m.id).collect());
@@ -1682,6 +1723,7 @@ fn send_client_status(app: &AppHandle, dir: &std::path::Path) {
         })
         .await;
         let Ok(report) = report else { return };
+        let report = match play { Some(trace) => report.with_play(trace), None => report };
         let (http, url) = (state.http.clone(), format!("{}/api/client-status", AUTH_URL.trim_end_matches('/')));
         match http.post(&url).header("authorization", token).json(&report).timeout(std::time::Duration::from_secs(10)).send().await {
             Ok(r) if r.status().is_success() || r.status().as_u16() == 404 => {}
