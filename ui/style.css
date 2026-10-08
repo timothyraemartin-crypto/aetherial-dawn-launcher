@@ -248,6 +248,17 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .switch[aria-checked="true"] { background: #2C7DB5; }
 .switch[aria-checked="true"]::after { transform: translateX(16px); }
 
+/* ---------- enter motion ---------- */
+/* Sheets and pages start their animation when [hidden] comes off, so no JS is
+   needed. Enter only: leaving is instant so Play and Escape never feel slow.
+   The reduced-motion rule below turns every one of these off. */
+.sheet:not([hidden]) { animation: sheet-in .22s ease-out both; }
+.sheet:not([hidden]) .panel { animation: panel-in .32s cubic-bezier(.2, .8, .2, 1) both; }
+.page:not([hidden]) { animation: page-in .26s cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes sheet-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes panel-in { from { opacity: 0; transform: translateY(14px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes page-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
 @media (max-width: 1240px) { .about { display: none; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 /* With the background moving, live blur behind panels would be re-rendered every frame; use solid glass instead. */

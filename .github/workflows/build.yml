@@ -68,6 +68,9 @@ jobs:
       # or a wrong game version, and the news box never jumps.
       - name: Fast Play checks
         run: node .github/scripts/ui-fast-play-test.js
+      # Sheets and pages animate in, and not at all for reduced motion.
+      - name: UI motion checks
+        run: node .github/scripts/ui-motion-test.js
       # The page and the Rust side still share the same command, event and
       # error-code names (commands, events, and the SIGNED_OUT: style
       # error prefixes), which nothing else checks. See ui-contract-test.js.
