@@ -203,6 +203,11 @@ const scenarios = [
     ['no sheet or dialog is open', r.modal === null],
     ['the button offers UPDATE', lastLabel(r) === 'UPDATE'],
   ] },
+  { name: 'update finished: the notes go away and the button returns to PLAY', s: { ...base, clicks: [1250], seedPlay: true, check: { files: 2, bytes: 5000000, notes: ['New tavern in Whiterun'] }, end: 7000 }, expect: r => [
+    ['the update ran', askedAt(r, 'update') !== null],
+    ['the notes are gone once it finished', r.whatsNew === null],
+    ['the button returns to PLAY after the update', r.labels.some(l => l[0] > askedAt(r, 'update') && l[1].startsWith('PLAY'))],
+  ] },
   { name: 'no update: the notes are not shown', s: { ...base, clicks: [], check: { files: 0, notes: ['Old note'] }, end: 4000 }, expect: r => [
     ['it is hidden', r.whatsNew === null],
   ] },

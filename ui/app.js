@@ -388,6 +388,7 @@
       await invoke('update', { verifyAll });
       // The update command completed and verified the pending file changes.
       pending = { ...pending, files: 0, remove: 0 };
+      showWhatsNew(null);
       await ready();
     } catch (e) {
       setPlay('retry', 'RETRY');
