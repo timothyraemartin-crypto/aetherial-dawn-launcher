@@ -74,6 +74,7 @@ function fakeBackEnd() {
         if (cmd === 'auth_status' && S.authFails) return rej('network down');
         if (cmd === 'game_running' && (S.gameCheckFails || (S.gameCheckFailsFrom && (S.gameChecks = (S.gameChecks || 0) + 1) >= S.gameCheckFailsFrom))) return rej('process list unavailable');
         if (cmd === 'export_key_save' && S.keyError) { log.keySent = args.key; return rej(S.keyError); }
+        if (cmd === 'set_prefs' && S.setPrefsError) return rej(S.setPrefsError);
         if (cmd === 'set_game_dir' && S.setDirError) return rej(S.setDirError);
         if (cmd === 'set_game_dir' && S.picks && S.picks.find(p => p.dir === args.dir && p.error)) return rej(S.picks.find(p => p.dir === args.dir).error);
         if (cmd === 'play' && S.playError && !S.played) { S.played = true; return rej(S.playError); }
@@ -153,6 +154,11 @@ function fakeBackEnd() {
       log.pageAlpha = alpha(getComputedStyle(document.querySelector('#page-mods .ftable-wrap')).backgroundColor);
       const sk = document.querySelector('#files-body tr.skel i');
       log.skelAlpha = sk ? Math.max(...(getComputedStyle(sk).backgroundImage.match(/rgba\([^)]*\)/g) || []).map(alpha)) : null;
+      const groupOf = id => { const el = document.getElementById(id); const hs = [...document.querySelectorAll('#settings h3')]; let found = null; for (const h of hs) if (h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) found = h.textContent; return found; };
+      log.settingsGroups = { heads: [...document.querySelectorAll('#settings h3')].map(h => h.textContent), close: groupOf('set-close'), bg: groupOf('set-bg'), share: groupOf('set-share'), only: groupOf('set-only'), folder: groupOf('set-path') };
+      const saved = document.getElementById('set-saved');
+      log.saved = saved ? saved.textContent : null;
+      log.bgChecked = document.getElementById('set-bg').getAttribute('aria-checked');
       log.gameRow = document.querySelector('#c-game small').textContent;
       const join = document.getElementById('si-join');
       log.join = join.hidden ? null : join.textContent;
@@ -695,6 +701,21 @@ scenarios.push({ name: 'download progress: after the last byte, hashing says Che
 scenarios.push({ name: 'Mods page: file list is solid enough to read over the artwork, placeholders are visible', s: { ...base, clicks: [], files: [{ path: 'Data/a.esp', size: 1000 }], delay: { files: 3000 }, end: 2500, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
   ['the file list background is at least 95% opaque, so the artwork does not cross the rows', r.pageAlpha >= 0.95, String(r.pageAlpha)],
   ['the placeholder bars reach at least 18% white', r.skelAlpha >= 0.18, String(r.skelAlpha)],
+] });
+
+scenarios.push({ name: 'Settings: grouped under headings', s: { ...base, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }] }, expect: r => [
+  ['three headings in order', JSON.stringify(r.settingsGroups.heads) === JSON.stringify(['Game', 'Launcher', 'Privacy and mods']), JSON.stringify(r.settingsGroups.heads)],
+  ['the Skyrim folder is under Game', r.settingsGroups.folder === 'Game', String(r.settingsGroups.folder)],
+  ['close and automatic updates are under Launcher', r.settingsGroups.close === 'Launcher' && r.settingsGroups.bg === 'Launcher', JSON.stringify([r.settingsGroups.close, r.settingsGroups.bg])],
+  ['health reports and server-only mods are under Privacy and mods', r.settingsGroups.share === 'Privacy and mods' && r.settingsGroups.only === 'Privacy and mods', JSON.stringify([r.settingsGroups.share, r.settingsGroups.only])],
+] });
+scenarios.push({ name: 'Settings: a changed setting says Saved', s: { ...base, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-bg' }] }, expect: r => [
+  ['it says Saved', r.saved === 'Saved', String(r.saved)],
+  ['the switch changed to on', r.bgChecked === 'true', String(r.bgChecked)],
+] });
+scenarios.push({ name: 'Settings: a setting that cannot be saved flips back and says so', s: { ...base, clicks: [], setPrefsError: 'settings are read-only', end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-bg' }] }, expect: r => [
+  ['it says it could not save', /Couldn't save/.test(r.saved || ''), String(r.saved)],
+  ['the switch is back where it was (off)', r.bgChecked === 'false', String(r.bgChecked)],
 ] });
 
 const chrome = findChrome();

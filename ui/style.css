@@ -295,6 +295,10 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .ftable tr.skel i { display: block; height: 12px; border-radius: 3px; background: linear-gradient(100deg, rgba(255,255,255,.1) 30%, rgba(255,255,255,.22) 50%, rgba(255,255,255,.1) 70%); background-size: 220% 100%; animation: play-shimmer 1.6s linear infinite; }
 .ftable tr.skel td:last-child i { width: 48px; margin-left: auto; }
 
+/* ---------- settings groups ---------- */
+.set-h { margin: 6px 0 -6px; font: 500 11.5px var(--display); letter-spacing: .2em; text-transform: uppercase; color: var(--frost); }
+.saved { color: var(--ok); font-size: 12.5px; margin-left: auto; min-width: 7em; text-align: right; }
+
 @media (max-width: 1240px) { .about { display: none; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 /* With the background moving, live blur behind panels would be re-rendered every frame; use solid glass instead. */

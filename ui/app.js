@@ -1179,19 +1179,33 @@
     catch { label.textContent = addr; }
     setTimeout(() => { label.textContent = 'Copy address'; }, 1800);
   };
+  // A short confirmation next to DONE after a setting changes.
+  let savedTimer = null;
+  function flashSaved(text) {
+    const el = $('set-saved');
+    el.textContent = text;
+    clearTimeout(savedTimer);
+    savedTimer = setTimeout(() => { el.textContent = ''; }, 2500);
+  }
   $('set-anim').setAttribute('aria-checked', Ambient.enabled);
-  $('set-anim').onclick = () => { Ambient.set(!Ambient.enabled); $('set-anim').setAttribute('aria-checked', Ambient.enabled); };
+  $('set-anim').onclick = () => { Ambient.set(!Ambient.enabled); $('set-anim').setAttribute('aria-checked', Ambient.enabled); flashSaved('Saved'); };
   const setMusic = async on => {
     $('set-music').setAttribute('aria-checked', on);
     state.config.music = on;
-    await invoke('set_music', { on }).catch(() => {});
+    await invoke('set_music', { on }).then(() => flashSaved('Saved'), () => {});
   };
   $('set-music').onclick = () => setMusic($('set-music').getAttribute('aria-checked') !== 'true');
   document.querySelectorAll('.switch:not(#set-anim):not(#set-music)').forEach(s => s.onclick = async () => {
     s.setAttribute('aria-checked', s.getAttribute('aria-checked') !== 'true');
     const prefs = { closeOnLaunch: $('set-close').getAttribute('aria-checked') === 'true', backgroundUpdates: $('set-bg').getAttribute('aria-checked') === 'true', shareHealth: $('set-share').getAttribute('aria-checked') === 'true', onlyServerMods: $('set-only').getAttribute('aria-checked') === 'true' };
-    await invoke('set_prefs', { prefs });
-    Object.assign(state.config, prefs);
+    try {
+      await invoke('set_prefs', { prefs });
+      Object.assign(state.config, prefs);
+      flashSaved('Saved');
+    } catch (_) {
+      s.setAttribute('aria-checked', s.getAttribute('aria-checked') !== 'true');
+      flashSaved("Couldn't save that setting");
+    }
   });
   $('c-game-pick').onclick = pickFolder;
   $('g-downgrade').onclick = openDowngrade;
