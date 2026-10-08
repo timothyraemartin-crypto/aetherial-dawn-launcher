@@ -170,6 +170,8 @@ function fakeBackEnd() {
       const okEl = document.getElementById('set-saved'), badEl = document.getElementById('set-failed');
       const toast = badEl && badEl.textContent ? badEl : okEl;
       log.toastRoles = { ok: okEl.getAttribute('role'), bad: badEl ? badEl.getAttribute('role') : null, emptyDisplay: getComputedStyle(badEl || okEl).display, emptyOpacity: getComputedStyle(badEl || okEl).opacity };
+      log.toastInModal = !!okEl.closest('[aria-modal="true"]') && !!badEl.closest('[aria-modal="true"]');
+      { const sc = document.querySelector('#settings .sheet-scroll'); log.toastOutsideBlur = !sc || (!sc.contains(okEl) && !sc.contains(badEl)); }
       if (S.scrollSettings) { const sh = document.getElementById('settings'); sh.querySelector('.panel').style.minHeight = '2000px'; sh.scrollTop = sh.scrollHeight; }
       const tr = toast.getBoundingClientRect();
       log.toast = { top: Math.round(tr.top), bottom: Math.round(tr.bottom), fixed: getComputedStyle(toast).position, color: getComputedStyle(toast).color, cls: toast.className, shown: tr.width > 0 && tr.height > 0 };
@@ -760,6 +762,8 @@ scenarios.push({ name: 'Settings: a setting that cannot be saved flips back and 
 
 scenarios.push({ name: 'Settings: the save message stays in view at the top, not below the fold', s: { ...base, scrollSettings: true, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-bg' }] }, expect: r => [
   ['the message is on screen near the top', r.toast.shown && r.toast.top >= 0 && r.toast.bottom <= 120, JSON.stringify(r.toast)],
+  ['the live regions are inside the aria-modal dialog', r.toastInModal === true, String(r.toastInModal)],
+  ['and outside the blurred scroller', r.toastOutsideBlur === true, String(r.toastOutsideBlur)],
   ['it stays put when the settings scroll', r.toast.fixed === 'fixed', String(r.toast.fixed)],
 ] });
 scenarios.push({ name: 'Settings: a failed save is shown as a warning, not in the success colour', s: { ...base, clicks: [], setPrefsError: 'read-only', end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-bg' }] }, expect: r => [

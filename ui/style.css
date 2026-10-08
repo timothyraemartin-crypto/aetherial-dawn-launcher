@@ -212,6 +212,8 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 
 /* ---------- sheets (first run, settings) ---------- */
 .sheet { position: absolute; z-index: 15; top: 0; bottom: 0; right: 0; left: var(--nav); background: rgba(4,7,10,.82); backdrop-filter: blur(8px); display: grid; place-items: center; padding: 60px 24px 24px; overflow: auto; }
+#settings { overflow: hidden; backdrop-filter: none; display: block; padding: 0; }
+#settings .sheet-scroll { position: absolute; inset: 0; display: grid; place-items: center; padding: 60px 24px 24px; overflow: auto; backdrop-filter: blur(8px); }
 .sheet .panel { width: min(540px, 100%); display: grid; gap: 18px; background: var(--panel-solid); border: 1px solid var(--line-strong); border-radius: 8px; padding: 28px; box-shadow: 0 40px 80px -30px #000; }
 .sheet h2 { margin: 0; font: 500 24px/1.2 var(--display); letter-spacing: .04em; }
 .sheet .lead { margin: -8px 0 0; color: var(--muted); line-height: 1.55; }
