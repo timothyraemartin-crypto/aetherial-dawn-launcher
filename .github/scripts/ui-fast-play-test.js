@@ -127,6 +127,10 @@ function fakeBackEnd() {
         '<span><i class="dot"></i>Server online · 12 of 100 players</span><span>Build B2</span><span>v9.9.9</span>',
         '<span>Skyrim 1.6.1170 matches the server version. You are ready to play and the launcher checked every file.</span><span>Build B2</span><span>v9.9.9</span>',
         '<span><i class="dot"></i>Server online</span><span class="error">Server maintenance: back at 18:00 UTC, thanks for waiting here</span><span>Build B2</span><span>v9.9.9</span>',
+        '<span><i class="dot"></i>Server online · 1 of 50 players</span><span class="error">Maintenance in 5 min</span><span>Build B2</span><span>v9.9.9</span>',
+        '<span><i class="dot"></i>Server online · 1 of 50 players</span><span class="error">Maintenance at 18:00 UTC</span><span>Build B2</span><span>v9.9.9</span>',
+        '<span><i class="dot"></i>Server online · 1 of 50 players</span><span class="error">Server maintenance 18:00 UTC</span><span>Build B2</span><span>v9.9.9</span>',
+        '<span><i class="dot"></i>Server online · 1 of 50 players</span><span class="error">Server maintenance at 18:00 UTC</span><span>Build B2</span><span>v9.9.9</span>',
       ];
       log.seps = [];
       states.forEach((html, n) => {
@@ -138,7 +142,7 @@ function fakeBackEnd() {
             const top = el.getBoundingClientRect().top, rowStart = prevTop === null || top > prevTop + 2;
             if (prevTop === null || top > prevTop) prevTop = top;
             const c = getComputedStyle(el, '::before').content;
-            return { text: el.textContent.slice(0, 14), rowStart, sep: c === '"|"' };
+            return { text: el.textContent.slice(0, 14), rowStart, sep: c === '"|"', error: el.classList.contains('error') };
           }));
         }, 1300 + n * 500 + 250);
       });
@@ -855,9 +859,10 @@ const chrome = findChrome();
 let failed = 0;
 scenarios.push({ name: 'Home: optional rows do not move the Play button', s: { ...base, clicks: [], jank: true, end: 3000 }, expect: r => [...Object.entries(r.jank).filter(([k]) => k !== 'base').map(([k, d]) => [`showing ${k} moves Play by ${d}px`, Math.abs(d) < 1, String(d)]),
   ...Object.entries(r.jankStatus).map(([k, d]) => [`${k} moves Play by ${d}px`, Math.abs(d) < 1, String(d)])] });
-scenarios.push({ name: 'Status line: no separator at the start of a line', s: { ...base, clicks: [], seps: true, end: 3200 }, expect: r => r.seps.flatMap((row, n) => [
+scenarios.push({ name: 'Status line: no separator at the start of a line', s: { ...base, clicks: [], seps: true, end: 4600 }, expect: r => r.seps.flatMap((row, n) => [
   [`state ${n + 1}: the line wraps (so this checks something)`, n === 0 || row.some(k => k.rowStart && k !== row[0]), JSON.stringify(row)],
-  [`state ${n + 1}: no separator on the first item of a line`, row.every(k => !(k.rowStart && k.sep)), JSON.stringify(row)]
+  [`state ${n + 1}: no separator on the first item of a line`, row.every(k => !(k.rowStart && k.sep)), JSON.stringify(row)],
+  [`state ${n + 1}: the other items keep theirs`, row.every(k => k.rowStart || k.error || k.sep), JSON.stringify(row)]
 ]) });
 for (const sc of scenarios) {
   if (process.env.AD_UI_SCENARIO && !sc.name.includes(process.env.AD_UI_SCENARIO)) continue;

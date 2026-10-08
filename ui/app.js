@@ -133,20 +133,14 @@
   }
   let shownStatus = '';
   // The "|" between status items is dropped from whichever item starts a line, so a wrapped line never begins with one.
+  // The separator takes no width (it sits in the flex gap), so one measurement is enough.
   function markRowStarts() {
-    const items = [...$('status').children].filter(el => el.tagName === 'SPAN' && !el.classList.contains('copy-row'));
-    // Measure with every separator present, then re-measure: removing one can let the next item move up.
-    for (let pass = 0; pass < 3; pass++) {
-      items.forEach(el => el.classList.remove('row-start'));
-      let prev = null, changed = false;
-      for (const el of items) {
-        const top = el.getBoundingClientRect().top, start = prev === null || top > prev + 2;
-        if (start) { el.classList.add('row-start'); changed = true; }
-        if (prev === null || top > prev) prev = top;
-      }
-      if (!changed) break;
-      const after = items.map(el => el.getBoundingClientRect().top);
-      if (items.every((el, i) => el.classList.contains('row-start') === (i === 0 || after[i] > after[i - 1] + 2))) break;
+    let prev = null;
+    for (const el of $('status').children) {
+      if (el.tagName !== 'SPAN' || el.classList.contains('copy-row')) continue;
+      const top = el.getBoundingClientRect().top;
+      el.classList.toggle('row-start', prev === null || top > prev + 2);
+      if (prev === null || top > prev) prev = top;
     }
   }
   new MutationObserver(markRowStarts).observe($('status'), { childList: true });
