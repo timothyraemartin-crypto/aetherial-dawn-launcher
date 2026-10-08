@@ -1,8 +1,8 @@
 //! Tools a listed mod ships that normally need a person to press a button:
-//! BodySlide fitting armor to the bodies, Pandora building animation
-//! behaviors (TOOLS-AND-BODIES.md). The launcher runs them itself, minimized,
-//! after the mods install and before the game starts, and only again when
-//! something they read changes (Timothy's one-button rule).
+//! BodySlide fitting armor to the bodies (TOOLS-AND-BODIES.md). The launcher
+//! runs it itself, minimized, after the mods install and before the game
+//! starts, and only again when something it reads changes (Timothy's
+//! one-button rule). Pandora is not supported: it is not on the allow-list.
 //!
 //! The program must be a file of that same mod, installed by the launcher or
 //! named in the mod's own checks (installed through Vortex), so a list can

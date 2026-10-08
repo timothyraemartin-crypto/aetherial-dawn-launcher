@@ -1,6 +1,7 @@
 //! The server-mods export (staging runbook A1): when the server publishes
 //! server-lane.json naming this PC's Discord account, the launcher fetches
-//! those pinned Nexus files with the signed-in Premium account, in the
+//! those pinned Nexus files with the Premium account whose API key staff
+//! pasted in Settings (kept encrypted on this PC), in the
 //! background, into %LOCALAPPDATA%\gg.aetherialdawn.launcher\server-lane
 //! (never the Skyrim folder), keeps their plugins and zips them to
 //! server-lane.zip next to a sha256 line. It uploads nothing: the zip stays
@@ -48,6 +49,48 @@ async fn in_time<T, E: std::fmt::Display>(what: &str, f: impl std::future::Futur
     match tokio::time::timeout(STALL, f).await {
         Ok(r) => r.map_err(|e| e.to_string()),
         Err(_) => Err(format!("{what} didn't answer within {} seconds", STALL.as_secs())),
+    }
+}
+
+// ---------- the staff's Nexus API key ----------
+
+fn key_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+    app.path().app_config_dir().ok().map(|d| d.join("nexus.bin"))
+}
+
+/// The saved key (encrypted for this Windows user, same file as before).
+/// Only the export reads it; it is never logged or sent to the page.
+fn nexus_key(app: &AppHandle) -> Option<String> {
+    key_path(app).and_then(|p| launcher_core::auth::load_token(&p))
+}
+
+/// Is a key saved? The page only ever learns yes or no.
+#[tauri::command]
+pub fn export_key_saved(app: AppHandle) -> bool {
+    nexus_key(&app).is_some()
+}
+
+/// Checks a pasted Nexus API key with Nexus and keeps it, encrypted. Returns
+/// a line for the page naming the account; the key itself is not echoed.
+#[tauri::command]
+pub async fn export_key_save(app: AppHandle, state: tauri::State<'_, AppState>, key: String) -> Result<String, String> {
+    let key = nexus::clean_key(&key).map_err(|e| e.to_string())?;
+    let version = app.package_info().version.to_string();
+    let user = in_time("Nexus", nexus::Client { http: &state.http, key: &key, app_version: &version }.validate()).await?;
+    let path = key_path(&app).ok_or("Couldn't find the launcher's settings folder.")?;
+    launcher_core::auth::save_token(&path, &key).map_err(|e| e.to_string())?;
+    say(&format!("export: Nexus key saved for {} ({})", user.name, if user.is_premium { "Premium" } else { "free" }));
+    start(&app);
+    Ok(format!("Saved for {} ({}).{}", user.name, if user.is_premium { "Premium" } else { "free account" },
+        if user.is_premium { "" } else { " The export needs a Premium account." }))
+}
+
+/// Forgets the saved key.
+#[tauri::command]
+pub fn export_key_forget(app: AppHandle) {
+    if let Some(p) = key_path(&app) {
+        launcher_core::auth::forget_token(&p);
+        say("export: Nexus key removed");
     }
 }
 
@@ -115,8 +158,8 @@ async fn run(app: &AppHandle) -> Result<(), String> {
     if serverlane::done(&root, &hash) || serverlane::gave_up(&root, &hash) {
         return Ok(());
     }
-    let Some(key) = crate::mods::nexus_key(app) else {
-        say("export: the server lane waits for a Nexus sign-in");
+    let Some(key) = nexus_key(app) else {
+        say("export: the server lane waits for a Nexus API key (Settings, staff section)");
         return Ok(());
     };
     let version = app.package_info().version.to_string();
@@ -237,7 +280,7 @@ async fn one(api: &nexus::Client<'_>, root: &Path, m: &serverlane::LaneMod) -> R
             p
         }
         None => {
-            let url = in_time("Nexus", api.download_link(modlist::NEXUS_GAME, n.mod_id, file, None)).await?;
+            let url = in_time("Nexus", api.download_link(modlist::NEXUS_GAME, n.mod_id, file)).await?;
             let name = url.split('?').next().unwrap_or("").rsplit('/').next().unwrap_or("");
             let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).filter(|e| e.len() <= 4 && e.bytes().all(|b| b.is_ascii_alphanumeric())).unwrap_or_else(|| "bin".into());
             let path = downloads.join(format!("{prefix}{ext}"));
