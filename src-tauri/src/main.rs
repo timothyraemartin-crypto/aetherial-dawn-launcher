@@ -2165,6 +2165,15 @@ async fn files(state: State<'_, AppState>) -> CmdResult<Vec<launcher_core::manif
     m.as_ref().map(|m| m.files.clone()).ok_or_else(|| "The file list hasn't loaded yet.".to_string())
 }
 
+/// Which listed files are current, changed or missing on this PC, for the
+/// per-row marks on the Game files page. Changes nothing.
+#[tauri::command]
+async fn files_state(state: State<'_, AppState>) -> CmdResult<Vec<sync::FileState>> {
+    let dir = game_dir(&state).await?;
+    let m = state.manifest.lock().await.clone().ok_or_else(|| "The file list hasn't loaded yet.".to_string())?;
+    sync::file_states(&dir, &m).await.map_err(err)
+}
+
 #[tauri::command]
 async fn open_game_folder(state: State<'_, AppState>) -> CmdResult<()> {
     let dir = game_dir(&state).await?;
@@ -2505,7 +2514,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, open_game_folder, server_status, setup_state, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, health_check, report_problem, patch_game, game_running, self_update_begin, self_update_end, music_start, set_music, mods::open_mod_page, export::export_key_saved, export::export_key_save, export::export_key_forget, mods::mods_state, mods::vortex_connect, restore_set_aside, skip_tool, window_ready, open_invite])
+        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, files_state, open_game_folder, server_status, setup_state, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, move_strays, health_check, report_problem, patch_game, game_running, self_update_begin, self_update_end, music_start, set_music, mods::open_mod_page, export::export_key_saved, export::export_key_save, export::export_key_forget, mods::mods_state, mods::vortex_connect, restore_set_aside, skip_tool, window_ready, open_invite])
         .build(tauri::generate_context!())
         .expect("error while running the launcher")
         .run(|_, event| {

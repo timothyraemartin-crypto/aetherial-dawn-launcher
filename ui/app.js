@@ -4,7 +4,7 @@
   // Every command's failure (and the outcome of the important ones) goes to the
   // launcher log, so Copy diagnostics shows what happened. Nothing secret
   // reaches the UI, so nothing secret can be logged from here.
-  const QUIET = new Set(['log_ui', 'diagnostics', 'files', 'server_status', 'setup_state', 'auth_poll', 'game_running']);
+  const QUIET = new Set(['log_ui', 'diagnostics', 'files', 'files_state', 'server_status', 'setup_state', 'auth_poll', 'game_running']);
   const logUi = msg => { try { T.core.invoke('log_ui', { msg: String(msg) }).catch(() => {}); } catch {} };
   const invoke = async (cmd, args) => {
     const t = performance.now();
@@ -159,6 +159,16 @@
     c.className = 'chip ' + (kind === 'ok' ? '' : kind);
     c.querySelector('svg').innerHTML = kind === 'ok' ? ICON_OK : kind === 'warn' ? ICON_BAD : ICON_BUSY;
     c.querySelector('span').textContent = text;
+  }
+
+  // Files that are out of date or missing take the "ready" chip's place, so it never says ready beside them.
+  let readyChipText = null, filesAttention = 0, filesPending = false;
+  const CHECKING_FILES = 'Checking files…';
+  const attentionText = n => `${plural(n, 'file')} ${n === 1 ? 'needs' : 'need'} attention`;
+  function showReadyChip() {
+    if (filesPending) setChip('busy', CHECKING_FILES);
+    else if (filesAttention > 0) setChip('warn', attentionText(filesAttention));
+    else if (readyChipText) setChip('ok', readyChipText);
   }
 
   // ---------- pages + sheets ----------
@@ -523,7 +533,8 @@
       // A helper mod that couldn't be installed: Play still starts, and the
       // reason stays on the status line.
       if (helperWarning && !(gameCheck && gameCheck.warning)) setStatus(helperWarning, true);
-      setChip('ok', view.vortex_required === false ? 'Ready to play' : 'Client and Vortex ready');
+      readyChipText = view.vortex_required === false ? 'Ready to play' : 'Client and Vortex ready';
+      showReadyChip();
     } else {
       setPlay('mods', 'MODS NEEDED');
       setChip('warn', 'Mods need attention');
@@ -1013,21 +1024,54 @@
   }
 
   // ---------- mods page ----------
+  let filesSeq = 0, lastMarks = new Map(), lastMarksKey = '';
   async function loadFiles() {
+    const seq = ++filesSeq;
     // Placeholder rows keep the table's height steady while the list loads.
-    if (!$('files-body').children.length) $('files-body').innerHTML = '<tr class="skel"><td><i></i></td><td><i></i></td></tr>'.repeat(5);
+    if (!$('files-body').children.length) $('files-body').innerHTML = '<tr class="skel"><td><i></i></td><td><i></i></td><td><i></i></td></tr>'.repeat(5);
+    // Hashing every file can take a while on a cold cache, so the list is drawn
+    // as soon as it arrives and the states fill in afterwards.
+    const marksAsked = invoke('files_state').catch(() => null);
     const files = await invoke('files').catch(() => null);
+    if (seq !== filesSeq) return;
     if (!files) {
-      $('files-body').innerHTML = '<tr><td colspan="2">The file list loads after the launcher reaches the server.</td></tr>';
+      filesPending = false;
+      if (/^(\d+ files? needs? attention|Checking files…)$/.test($('mods-chip').querySelector('span').textContent) && readyChipText) setChip('ok', readyChipText);
+      $('files-body').innerHTML = '<tr><td colspan="3">The file list loads after the launcher reaches the server.</td></tr>';
       return;
     }
+    // Until fresh states arrive the last known ones stay on screen, and only a draw with real states may touch the chip.
+    const key = `${pending ? pending.build : ''}|${state && state.config ? state.config.gameDir : ''}`;
+    if (key !== lastMarksKey) { lastMarks = new Map(); lastMarksKey = key; }
+    // With no known states yet the chip stays neutral instead of claiming ready.
+    filesPending = lastMarks.size === 0;
+    if (filesPending && readyChipText && !$('mods-chip').classList.contains('busy') && !$('mods-chip').classList.contains('warn')) setChip('busy', CHECKING_FILES);
+    draw(files, lastMarks, false);
+    const marks = await marksAsked;
+    if (seq !== filesSeq) return;
+    // Each file's state on this PC. If it can't be read the rows keep their dash and the page claims nothing.
+    if (Array.isArray(marks)) lastMarks = new Map(marks.map(m => [m.path, m.state]));
+    draw(files, Array.isArray(marks) ? lastMarks : new Map(), true);
+  }
+  function draw(files, stateOf, final) {
+    const LABEL = { current: ['Up to date', 'ok'], changed: ['Update needed', 'warn'], missing: ['Missing', 'bad'] };
+    const attention = [...stateOf.values()].filter(v => v === 'changed' || v === 'missing').length;
     const total = files.reduce((n, f) => n + f.size, 0);
-    $('mods-summary').textContent = `Build ${pending ? pending.build : ''} · ${plural(files.length, 'file')} · ${mb(total)}. The server decides which files every player needs.`;
+    $('mods-summary').textContent = `Build ${pending ? pending.build : ''} · ${plural(files.length, 'file')} · ${mb(total)}${attention ? ` · ${attention} ${attention === 1 ? 'needs' : 'need'} attention` : ''}. The server decides which files every player needs.`;
     // The file's own name stands out; its folder sits dimmed in front of it.
     $('files-body').innerHTML = files.map(f => {
       const cut = f.path.lastIndexOf('/') + 1;
-      return `<tr><td title="${esc(f.path)}"><span class="fdir">${esc(f.path.slice(0, cut))}</span><span class="fname">${esc(f.path.slice(cut))}</span></td><td>${mb(f.size)}</td></tr>`;
+      const [label, cls] = LABEL[stateOf.get(f.path)] || ['–', 'none'];
+      return `<tr><td title="${esc(f.path)}"><span class="fdir">${esc(f.path.slice(0, cut))}</span><span class="fname">${esc(f.path.slice(cut))}</span></td><td class="fstate ${cls}">${label}</td><td>${mb(f.size)}</td></tr>`;
     }).join('');
+    if (!final) return;
+    filesPending = false;
+    filesAttention = attention;
+    // Only a finished mods check owns the chip: a busy-for-other-reasons or already-warning chip is left as it is.
+    const chip = $('mods-chip'), shown = chip.querySelector('span').textContent;
+    const ours = shown === CHECKING_FILES || /^\d+ files? needs? attention$/.test(shown);
+    if (readyChipText && ours) { if (attention > 0) setChip('warn', attentionText(attention)); else setChip('ok', readyChipText); }
+    else if (readyChipText && attention > 0 && !chip.classList.contains('busy') && !chip.classList.contains('warn')) setChip('warn', attentionText(attention));
   }
 
   // ---------- server status.json (optional) ----------
