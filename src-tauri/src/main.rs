@@ -365,13 +365,14 @@ async fn update(app: AppHandle, state: State<'_, AppState>, verify_all: bool) ->
 async fn play(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<String>> {
     trace_start();
     let out = play_run(&app, &state).await;
+    // One report per attempt (the service takes one per Play): a failed one
+    // tells staff where it stopped, sharing permitting.
     if out.is_err() {
-        // Every failed attempt tells staff where it stopped (sharing permitting).
         trace_fail();
-        let dir = state.config.lock().await.game_dir.clone();
-        if let Some(dir) = dir {
-            send_client_status(&app, &dir);
-        }
+    }
+    let dir = state.config.lock().await.game_dir.clone();
+    if let Some(dir) = dir {
+        send_client_status(&app, &dir);
     }
     out
 }
@@ -1642,10 +1643,7 @@ fn trace_fail() {
 
 async fn ensure_requirements(app: &AppHandle, state: &AppState, dir: &std::path::Path, vortex_required: bool, collection: Option<launcher_core::vortex::CollectionRef>) -> CmdResult<Vec<String>> {
     let got = install_missing_mods(&state.http, dir).await;
-    // A failed install is reported by play() together with where it stopped.
-    if got.is_ok() {
-        send_client_status(app, dir);
-    }
+    // The install report is sent once, by play(), when the attempt ends.
     let warnings = got?;
     let list = mods::full_list(state).await;
     // Which listed mods count as present follows the Vortex gate
