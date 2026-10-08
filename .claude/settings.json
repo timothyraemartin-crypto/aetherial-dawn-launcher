@@ -1,10 +1,26 @@
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/progress-hook.sh\" start" } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/ad-system/hook.py\" session-start",
+            "timeout": 30
+          }
+        ]
+      }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/progress-hook.sh\" stop", "timeout": 600 } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/ad-system/hook.py\" stop",
+            "timeout": 30
+          }
+        ]
+      }
     ]
   }
 }

@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "source_roots": [
+    "core",
+    "src-tauri",
+    "ui",
+    "vortex-extension",
+    "contract",
+    "scripts",
+    "docs",
+    "Cargo.toml",
+    "Cargo.lock",
+    ".github"
+  ],
+  "exclude_globs": [
+    ".git",
+    ".git/**",
+    "node_modules",
+    "node_modules/**",
+    "**/node_modules",
+    "**/node_modules/**",
+    ".venv",
+    ".venv/**",
+    "venv",
+    "venv/**",
+    "**/__pycache__",
+    "**/__pycache__/**",
+    "__pycache__/**",
+    "dist",
+    "dist/**",
+    "build",
+    "build/**",
+    "coverage",
+    "coverage/**",
+    ".claude/runtime",
+    ".claude/runtime/**",
+    ".claude/memory/**",
+    "PROGRESS.md",
+    "docs/operations/**",
+    "target/**",
+    "src-tauri/gen/**",
+    "**/target/**"
+  ],
+  "startup_files": [
+    "PROGRESS.md",
+    ".claude/memory/INDEX.md"
+  ],
+  "startup_budget_bytes": 16000,
+  "snapshot_timeout_seconds": 6,
+  "max_files": 10000,
+  "max_file_bytes": 16777216,
+  "max_total_bytes": 134217728,
+  "require_progress_update": true,
+  "require_check_for_source_change": true,
+  "checks": [
+    {
+      "id": "core",
+      "argv": [
+        "cargo",
+        "check",
+        "-p",
+        "launcher-core",
+        "--tests",
+        "--quiet"
+      ],
+      "cwd": ".",
+      "timeout_seconds": 900,
+      "required": true
+    },
+    {
+      "id": "memory-lint",
+      "argv": [
+        "bash",
+        ".claude/memory-lint.sh"
+      ],
+      "cwd": ".",
+      "timeout_seconds": 60,
+      "required": true
+    }
+  ]
+}

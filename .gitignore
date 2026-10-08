@@ -1,3 +1,6 @@
 /target
 node_modules
 /src-tauri/gen
+
+# Aetherial Dawn local evidence and install backups
+/.claude/runtime/
