@@ -48,7 +48,7 @@ function fakeBackEnd() {
     auth_status: () => (S.authSequence && S.authSequence.shift()) || ((S.authAfter && (S.authCalls = (S.authCalls || 0) + 1) > 1) ? S.authAfter : S.auth),
     check: () => Object.assign({ build: 'B2', server: { name: 'Aetherial Dawn', ip: '127.0.0.1', port: 7777 }, files: 0, remove: 0, bytes: 0, strays: [], game }, (S.checkSequence && S.checkSequence.shift()) || S.check || {}),
     update: () => null,
-    server_status: () => ({ online: true, players: 1, maxPlayers: 50, ...(typeof S.statusNow === 'object' ? S.statusNow : {}), discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
+    server_status: () => ({ online: true, players: 1, maxPlayers: 50, ...(typeof S.statusNow === 'object' ? S.statusNow : {}), ...(S.statusFileDown ? { launcher: undefined } : { fromFile: true }), discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
     setup_state: () => S.setup || [{ id: 'folder', title: 'Choose your Skyrim folder', hint: 'x', done: true }],
     files: () => S.files || [], files_state: () => S.fileStates || [], play: () => S.playWarnings || null,
     patch_game: () => S.patchResult || { ...game, needed: false },
@@ -159,6 +159,7 @@ function fakeBackEnd() {
       if (action.kind === 'click') document.getElementById(action.id).click();
       if (action.kind === 'event') for (const callback of listeners[action.name] || []) callback({ payload: action.payload });
       if (action.kind === 'status') S.statusNow = action.value;
+      if (action.kind === 'statusFile') S.statusFileDown = action.value;
       if (action.kind === 'type') document.getElementById(action.id).value = action.text;
       if (action.kind === 'open') document.getElementById(action.id).open = true;
       if (action.kind === 'focus') document.getElementById(action.id).focus();
@@ -219,6 +220,7 @@ function fakeBackEnd() {
       log.statusUi = { text: status.textContent, copy: !!document.getElementById('status-copy'), errorClass: !!document.querySelector('#status .error'), minH: parseFloat(getComputedStyle(status).minHeight) || 0, lineH: parseFloat(getComputedStyle(status).lineHeight) || 0, dividerAfterError: (() => { const e = document.querySelector('#status .error'); const n = e && e.nextElementSibling && e.nextElementSibling.tagName === 'SPAN' ? e.nextElementSibling : null; return n ? getComputedStyle(n, '::before').content : null; })() };
       log.fileRows = [...document.querySelectorAll('#files-body tr')].map(tr => ({ skel: tr.classList.contains('skel'), name: (tr.querySelector('.fname') || {}).textContent || null, dir: (tr.querySelector('.fdir') || {}).textContent || null, cells: tr.children.length, state: (tr.querySelector('.fstate') || {}).textContent || null, stateCls: (tr.querySelector('.fstate') || {}).className || null }));
       log.modsSummary = document.getElementById('mods-summary').textContent;
+      { const n = document.getElementById('min-notice'); log.minNotice = n && !n.hidden ? n.textContent : null; }
       { const chip = document.getElementById('mods-chip'), sum = document.getElementById('mods-summary'), wrap = document.querySelector('#page-mods .ftable-wrap');
         log.chip = { text: chip.querySelector('span').textContent, cls: chip.className, h: Math.round(chip.getBoundingClientRect().height), lineH: parseFloat(getComputedStyle(chip).lineHeight) || 18 };
         log.fileColors = [...document.querySelectorAll('#files-body .fstate')].map(td => getComputedStyle(td).color);
@@ -902,6 +904,40 @@ scenarios.push({ name: 'Feed refused (unsigned or tampered): the launcher update
   ['the launcher update installs', askedAt(r, 'updater_install') !== null],
   ['the sentence gives no second set of advice; the Copy details button is the way to staff', !/keeps happening|diagnostics/.test(r.statusUi.text) && r.statusUi.copy, r.statusUi.text],
   ['the player reads the plain words, no file names', /couldn't confirm the server's files/.test(r.statusUi.text) && !/signature|mods\.json|manifest/i.test(r.statusUi.text), r.statusUi.text],
+] });
+const holdOf = (versions, until) => { const l = { hold: versions }; if (until) l.holdUntil = until; return { launcher: l }; };
+scenarios.push({ name: 'Release hold: a held launcher version is not installed while the hold lasts', s: { ...base, update: '9.9.10', clicks: [], statusNow: holdOf(['9.9.10'], new Date(Date.now() + 36e5).toISOString()), end: 4000 }, expect: r => [
+  ['nothing is downloaded or installed', askedAt(r, 'updater_download') === null && askedAt(r, 'updater_install') === null],
+] });
+scenarios.push({ name: 'Release hold: a hold that has run out does not stop the update', s: { ...base, update: '9.9.10', clicks: [], statusNow: holdOf(['9.9.10'], new Date(Date.now() - 36e5).toISOString()), end: 4000 }, expect: r => [
+  ['the update installs', askedAt(r, 'updater_install') !== null],
+] });
+scenarios.push({ name: 'Release hold: without an end time it is ignored, so it can never hold updates for good', s: { ...base, update: '9.9.10', clicks: [], statusNow: holdOf(['9.9.10']), end: 4000 }, expect: r => [
+  ['the update installs', askedAt(r, 'updater_install') !== null],
+] });
+scenarios.push({ name: 'Release hold: another version is not held', s: { ...base, update: '9.9.10', clicks: [], statusNow: holdOf(['9.9.11'], new Date(Date.now() + 36e5).toISOString()), end: 4000 }, expect: r => [
+  ['the update installs', askedAt(r, 'updater_install') !== null],
+] });
+scenarios.push({ name: 'Release hold: if the status file cannot be read the last hold stays', s: { ...base, update: '9.9.10', clicks: [], statusNow: holdOf(['9.9.10'], new Date(Date.now() + 36e5).toISOString()), updaterDelay: 33000, actions: [{ at: 3000, kind: 'statusFile', value: true }], end: 37000 }, expect: r => [
+  ['still nothing is installed', askedAt(r, 'updater_install') === null && askedAt(r, 'updater_download') === null],
+] });
+scenarios.push({ name: 'Release hold: staff removing the hold lets the update through', s: { ...base, update: '9.9.10', clicks: [], statusNow: holdOf(['9.9.10'], new Date(Date.now() + 36e5).toISOString()), updaterDelay: 33000, actions: [{ at: 3000, kind: 'status', value: {} }], end: 37000 }, expect: r => [
+  ['the update installs', askedAt(r, 'updater_install') !== null],
+] });
+scenarios.push({ name: 'Minimum launcher version: the notice shows on Home only, not over the Mods page', s: { ...base, clicks: [], statusNow: { launcher: { minVersion: '99.0.0', message: 'Server changes need a newer launcher.' } }, end: 4000, actions: [{ at: 1500, kind: 'click', id: 'nav-mods' }] }, expect: r => [
+  ['no notice on the Mods page', !r.minNotice, r.minNotice],
+] });
+scenarios.push({ name: 'Minimum launcher version: a long message is cut at a word with an ellipsis', s: { ...base, clicks: [], statusNow: { launcher: { minVersion: '99.0.0', message: 'Server changes need a newer launcher. '.repeat(10).trim() } }, end: 4000 }, expect: r => [
+  ['it ends with an ellipsis', /…$/.test(r.minNotice || ''), r.minNotice],
+  ['it is no longer than 201 characters', (r.minNotice || '').length <= 201, String((r.minNotice || '').length)],
+  ['it does not stop in the middle of a word', /(launcher|Server|changes|need|a|newer)…$/.test(r.minNotice || ''), (r.minNotice || '').slice(-20)],
+] });
+scenarios.push({ name: 'Minimum launcher version: an older launcher shows staff\'s message and Play is not blocked', s: { ...base, clicks: [], statusNow: { launcher: { minVersion: '99.0.0', message: 'Server changes need a newer launcher.' } }, end: 4000 }, expect: r => [
+  ['the notice shows with the message', /Server changes need a newer launcher/.test(r.minNotice || ''), r.minNotice],
+  ['Play is still available', r.playState === 'ready', r.playState],
+] });
+scenarios.push({ name: 'Minimum launcher version: a current launcher shows no notice', s: { ...base, clicks: [], statusNow: { launcher: { minVersion: '0.0.1', message: 'Old.' } }, end: 4000 }, expect: r => [
+  ['no notice', !r.minNotice, r.minNotice],
 ] });
 scenarios.push({ name: 'Mods page: the chip does not say ready while files need attention', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }, { path: 'Data/SKSE/new.dll', state: 'missing' }], end: 4000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
   ['the chip names the files', /2 files? need attention/i.test(r.chip.text), r.chip.text],

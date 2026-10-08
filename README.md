@@ -27,6 +27,7 @@ The server serves static files under one base URL, for example `https://vps-d38c
 - `client/manifest.json` and `client/files/<sha256>`. Build these with `make-manifest.py` from the SkyMP client build folder. Both this and `mods.json` must have a `.sig` next to them (`sign-feed`, [docs/signing-feeds.md](docs/signing-feeds.md)); launchers that have seen a signature refuse the file without one.
 - `app/latest.json` and the installer (optional): a second source for launcher self-updates. The first is the latest GitHub release of this public repo.
 - `status.json` (optional), which feeds the side panel: `{ "online": true, "players": 7, "maxPlayers": 100, "sinceReset": "1d", "news": [{ "date": "26 Sep 2026", "title": "…", "body": "…" }] }`
+  Optional `launcher` block: `{ "hold": ["0.1.120"], "holdUntil": "2026-10-09T12:00:00Z", "minVersion": "0.1.115", "message": "…" }`. A hold pauses installing those launcher versions until `holdUntil` (ignored without it, so it can't last for ever); `minVersion` only shows `message` on Home, it never blocks Play.
 
 ## Building
 

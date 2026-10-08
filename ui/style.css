@@ -225,6 +225,7 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .news-full p { -webkit-line-clamp: 6; font-size: 13.5px; }
 
 /* ---------- self-update banner ---------- */
+#min-notice { top: 92px; max-width: 80%; padding: 7px 14px; }
 .banner { position: absolute; z-index: 21; top: 50px; left: 50%; transform: translateX(-50%); display: flex; gap: 12px; align-items: center; padding: 7px 8px 7px 14px; border-radius: 6px; background: rgba(11,17,24,.95); border: 1px solid var(--line-strong); font-size: 12.5px; color: var(--muted); }
 
 /* ---------- sheets (first run, settings) ---------- */

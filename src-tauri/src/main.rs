@@ -2219,10 +2219,15 @@ async fn server_status(state: State<'_, AppState>) -> CmdResult<Option<serde_jso
     let file_url = format!("{}/status.json", base.trim_end_matches('/'));
     let health_url = format!("{}/health", AUTH_URL.trim_end_matches('/'));
     let (file, health) = tokio::join!(get_json(&state.http, &file_url), get_json(&state.http, &health_url));
+    let file_ok = matches!(&file, Some(serde_json::Value::Object(_)));
     let mut out = match file {
         Some(serde_json::Value::Object(m)) => m,
         _ => serde_json::Map::new(),
     };
+    // Tells the UI the status file itself was read, so a missing `launcher` block means staff removed it
+    // and not that the file couldn't be fetched just now. A file can't set this itself.
+    out.remove("fromFile");
+    if file_ok { out.insert("fromFile".into(), true.into()); }
     let seen = health.as_ref().and_then(|h| h.get("gameServerSeen")).and_then(|v| v.as_bool());
     // Log only changes, so a 30-second poll doesn't flood the log.
     if HEALTH_OK.swap(seen.is_some(), Ordering::Relaxed) != seen.is_some() {

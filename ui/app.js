@@ -186,6 +186,7 @@
     $('news-box').hidden = p !== 'home';
     $('tagline').hidden = p !== 'home';
     applySetup();
+    showMinNotice();
     if (p === 'mods') loadFiles();
   }
   function showSheet(id) {
@@ -1090,7 +1091,9 @@
     statusAsked = true;
     if (status) remember({ news: Array.isArray(status.news) ? status.news.slice(0, 20) : lastSeen.news, invite: status.discordInvite || lastSeen.invite });
     renderInvite();
+    keepLauncherNote();
     renderStatus();
+    showMinNotice();
     gateTick();
     const online = $('srv-online');
     if (!status) {
@@ -1137,9 +1140,37 @@
     catch (e) { gameCheckFailed = true; logUi('game_running failed, the launcher update waits: ' + e); return true; }
   };
   const waitReason = () => gameCheckFailed ? 'unknown' : 'busy';
+  // Staff can say, in status.json, `launcher: { hold: ["0.1.120"], holdUntil: "<ISO time>", minVersion: "0.1.115", message }`.
+  // A hold pauses installing those versions until holdUntil (without an end time it is ignored, so a hold can't
+  // last for ever); minVersion only shows the message, it never blocks Play.
+  const numbers = v => String(v).split('.').map(n => parseInt(n, 10) || 0);
+  const olderThan = (a, b) => { const x = numbers(a), y = numbers(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) < (y[i] || 0); } return false; };
+  // The last launcher block that staff's status file really had. A status answer without the file (it couldn't
+  // be fetched just now) leaves it alone, so a hold doesn't lift on a bad minute.
+  let lastLauncher = {};
+  const keepLauncherNote = () => { if (status && status.fromFile === true) lastLauncher = (status.launcher && typeof status.launcher === 'object') ? status.launcher : {}; };
+  const launcherNote = () => lastLauncher;
+  const heldByStaff = version => {
+    const l = launcherNote();
+    const until = Date.parse(l.holdUntil);
+    return Array.isArray(l.hold) && l.hold.includes(version) && Number.isFinite(until) && until > Date.now();
+  };
+  function showMinNotice() {
+    const l = launcherNote(), n = $('min-notice');
+    const old = state && typeof l.minVersion === 'string' && olderThan(state.launcherVersion, l.minVersion);
+    // Home only: the notice floats over the page, and the other pages have their own headers there.
+    n.hidden = !(old && page === 'home');
+    if (!n.hidden) {
+      const m = typeof l.message === 'string' ? l.message.trim() : '';
+      n.textContent = !m ? 'A newer launcher is needed for the latest server changes. It updates by itself when you are not playing.'
+        : m.length <= 200 ? m : m.slice(0, 200).replace(/\s+\S*$/, '').replace(/[\s.,;:!?-]+$/, '') + '…';
+    }
+  }
   async function checkSelfUpdate(byHand) {
     if (updating || updateWaits()) return byHand ? 'busy' : undefined;
     if (await skyrimUp()) return byHand ? waitReason() : undefined;
+    // Staff's hold list comes with the server status, so the first check waits briefly for it.
+    for (let i = 0; i < 30 && !statusAsked; i++) await new Promise(r => setTimeout(r, 100));
     try {
       const upd = downloaded || await T.updater.check();
       if (!upd) {
@@ -1148,6 +1179,10 @@
       }
       // Play may have started while the check was out.
       if (updating || updateWaits()) return byHand ? 'busy' : undefined;
+      if (!downloaded && heldByStaff(upd.version)) {
+        if (byHand || Date.now() - lastUpToDateLog > 30 * 60 * 1000) { logUi(`launcher ${upd.version} is on hold from staff`); lastUpToDateLog = Date.now(); }
+        return 'latest';
+      }
       updating = true;
       $('self-update-text').textContent = `Updating the launcher to ${upd.version}…`;
       $('self-update').hidden = false;
