@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: check = only report; pin-only = fill missing sha256 before a launcher release (no signing); publish = pin, sign, verify (after the release)
+        description: check = only report; pin-only = fill missing sha256 before a launcher release (no signing); publish = pin, sign, verify (after the release); strip-mods-preview / strip-mods = drop third-party mods (keep AD_KEEP_IDS) and move their hosted files to the backup folder (only after the mod-free launcher is released)
         type: choice
-        options: [check, pin-only, publish]
+        options: [check, pin-only, publish, strip-mods-preview, strip-mods]
         default: check
 
 permissions:
@@ -49,6 +49,7 @@ jobs:
           KH: ${{ secrets.AD_SSH_KNOWN_HOSTS }}
           WEB_ROOT: ${{ vars.AD_WEB_ROOT }}
           FEED_KEY: ${{ vars.AD_FEED_KEY }}
+          KEEP_IDS: ${{ vars.AD_KEEP_IDS }}
           MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
@@ -56,5 +57,6 @@ jobs:
           printf '%s\n' "$K" > ~/.ssh/id_ed25519; chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$KH" > ~/.ssh/known_hosts
           flag=""; [ "$MODE" = check ] && flag="--check"; [ "$MODE" = pin-only ] && flag="--pin-only"
+          [ "$MODE" = strip-mods-preview ] && flag="--strip-mods-preview"; [ "$MODE" = strip-mods ] && flag="--strip-mods"
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$U@$H" \
-            "sudo env AD_WEB_ROOT='$WEB_ROOT' AD_FEED_KEY='$FEED_KEY' bash -s -- $flag" < scripts/publish-feed.sh
+            "sudo env AD_WEB_ROOT='$WEB_ROOT' AD_FEED_KEY='$FEED_KEY' AD_KEEP_IDS='$KEEP_IDS' bash -s -- $flag" < scripts/publish-feed.sh
