@@ -13,7 +13,8 @@ use std::time::UNIX_EPOCH;
 
 use crate::game::GAME_EXE;
 use crate::manifest::Manifest;
-use crate::{gameini, loadorder, requirements, strays, version, watch};
+use crate::aside::DISABLED_DIR;
+use crate::{gameini, loadorder, requirements, version, watch};
 
 pub const MASTERS: [&str; 5] = ["Skyrim.esm", "Update.esm", "Dawnguard.esm", "HearthFires.esm", "Dragonborn.esm"];
 
@@ -84,24 +85,16 @@ pub fn run(i: &Inputs) -> Report {
         exe(i),
         masters(i),
         creation_club_light(i),
-        required_files(i),
-        max_stdio(i),
-        skse_builds(i),
-        wanted_off(i),
-        camera_preset(i),
-        ussep_version(i),
         load_order(i),
         server_order(i),
-        plugin_names(i),
         load_order_file(i),
         stub_plugins(i),
         newer_plugins(i),
         ini_archives(i),
-        stray_plugins(i),
         injectors(i),
         overlays(),
         steam_updates(i),
-        crash_logger(i),
+        requirements_check(i),
     ];
     if let Some(home) = i.home {
         let h = home.display().to_string();
@@ -307,27 +300,6 @@ fn server_order(i: &Inputs) -> Check {
     }
 }
 
-/// Plugins running under a dash-named copy because the SkyMP client can't
-/// load their own names (aliases.rs). Information, not a fault.
-fn plugin_names(i: &Inputs) -> Check {
-    let mut items: Vec<String> = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(i.game_dir.join("Data")) {
-        for e in rd.flatten() {
-            let n = e.file_name().to_string_lossy().into_owned();
-            let l = n.to_ascii_lowercase();
-            if (l.ends_with(".esp") || l.ends_with(".esm") || l.ends_with(".esl")) && !loadorder::client_can_load_name(&n) {
-                items.push(format!("{n} loads as {} so the game accepts it", crate::aliases::run_as(i.game_dir, &n)));
-            }
-        }
-    }
-    items.sort();
-    if items.is_empty() {
-        check("pluginnames", "Plugin names", Status::Ok, "Every plugin's name is one the game client accepts.", vec![])
-    } else {
-        check("pluginnames", "Plugin names", Status::Info, "The game can't load these plugin names as they are, so before Play the launcher loads a copy under a name it accepts. Nothing is renamed.", items)
-    }
-}
-
 /// loadorder.txt only records the order; the game loads the five masters
 /// first whatever it says, so this is kept apart from plugins switched on.
 fn load_order_file(i: &Inputs) -> Check {
@@ -356,170 +328,6 @@ fn load_order_file(i: &Inputs) -> Check {
     }
 }
 
-/// Support files a required mod can't start without, and required mods'
-/// files sitting in the launcher's backup folder (2026-09-26: 0.1.38 moved
-/// SKSE Menu Framework's fonts and settings, and the game crashed 3 s in).
-pub fn missing_required_files(game_dir: &Path) -> Vec<String> {
-    let plugins = game_dir.join("Data/SKSE/Plugins");
-    let mut items = Vec::new();
-    let has_ext = |d: &Path, ext: &str| std::fs::read_dir(d).map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().to_ascii_lowercase().ends_with(ext))).unwrap_or(false);
-    if plugins.join(requirements::MENU_FRAMEWORK_DLL).is_file() {
-        if !plugins.join("SKSEMenuFrameworkStrings_EN.json").is_file() && !plugins.join("SKSEMenuFrameworkStrings.json").is_file() {
-            items.push("SKSE Menu Framework: its strings file (SKSEMenuFrameworkStrings_EN.json) is missing".to_string());
-        }
-        if !has_ext(&plugins.join("fonts"), ".ttf") {
-            items.push("SKSE Menu Framework: its fonts (Data\\SKSE\\Plugins\\fonts) are missing".to_string());
-        }
-        if !has_ext(&plugins.join("SKSEMenuFrameworkThemes"), ".json") {
-            items.push("SKSE Menu Framework: its themes (SKSEMenuFrameworkThemes) are missing".to_string());
-        }
-    }
-    if plugins.join("EngineFixes.dll").is_file() && !plugins.join("EngineFixes.toml").is_file() {
-        items.push("SSE Engine Fixes: EngineFixes.toml is missing".to_string());
-    }
-    let root = game_dir.join(strays::DISABLED_DIR);
-    let mut aside = std::collections::BTreeSet::new();
-    let mut stack = vec![root.clone()];
-    while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                // A too-new or wrong build set aside on purpose (e.g. the
-                // Unofficial Patch 4.3.9c) isn't a file to put back.
-                let name = e.file_name().to_string_lossy().to_ascii_lowercase();
-                if d == root && (name.contains("-too-new") || name.contains("-wrong-build")) {
-                    continue;
-                }
-                stack.push(p);
-                continue;
-            }
-            // <stamp>/Data/...
-            let Ok(rel) = p.strip_prefix(&root) else { continue };
-            let rel: PathBuf = rel.components().skip(1).collect();
-            let rel_s = rel.to_string_lossy().replace('\\', "/");
-            if crate::allowlist::required_file(&rel_s) && !game_dir.join(&rel).exists() {
-                aside.insert(rel_s);
-            }
-        }
-    }
-    items.extend(aside.into_iter().map(|r| format!("a required mod's file is in the launcher's backup folder: {r}")));
-    items
-}
-
-/// Engine Fixes' open-file limit. At Windows' default of 512 the game can
-/// run out of file handles and report a save as corrupted (references KB
-/// §1.6, §5 #9). Engine Fixes 7's own file sets `bMaxStdIO = true`; an old
-/// or hand-edited one may not.
-fn max_stdio(i: &Inputs) -> Check {
-    let plugins = i.game_dir.join("Data/SKSE/Plugins");
-    let Ok(text) = std::fs::read_to_string(plugins.join("EngineFixes.toml")) else {
-        return check("maxstdio", "Open-file limit", Status::Info, "Checked once SSE Engine Fixes and its settings file are installed.", vec![]);
-    };
-    match engine_fixes_max_stdio(&text) {
-        Some(MaxStdio::Raised) => check("maxstdio", "Open-file limit", Status::Ok, "Engine Fixes raises it to the most Windows allows.", vec![]),
-        Some(MaxStdio::Limit(n)) if n > 512 => check("maxstdio", "Open-file limit", Status::Ok, format!("Engine Fixes raises it to {n}."), vec![]),
-        Some(_) => check("maxstdio", "Open-file limit", Status::Warn, "Engine Fixes' settings file leaves it at Windows' default, so saves can wrongly look corrupted. Reinstall SSE Engine Fixes in Vortex to get its own settings file, or set bMaxStdIO = true in Data\\SKSE\\Plugins\\EngineFixes.toml.", vec![]),
-        None => check("maxstdio", "Open-file limit", Status::Info, "EngineFixes.toml doesn't set it, so Engine Fixes uses its built-in value.", vec![]),
-    }
-}
-
-#[derive(Debug, PartialEq)]
-pub enum MaxStdio {
-    /// `bMaxStdIO = true` (Engine Fixes 7): the most Windows allows.
-    Raised,
-    /// `bMaxStdIO = false`: Windows' default stays.
-    Off,
-    /// An older file's `MaxStdio = <n>`.
-    Limit(u64),
-}
-
-/// The open-file setting in EngineFixes.toml (any section), when it's set.
-pub fn engine_fixes_max_stdio(toml: &str) -> Option<MaxStdio> {
-    toml.lines().find_map(|l| {
-        let l = l.split('#').next()?.trim();
-        let (k, v) = l.split_once('=')?;
-        let (k, v) = (k.trim(), v.trim());
-        if k.eq_ignore_ascii_case("bMaxStdIO") {
-            match v {
-                "true" => Some(MaxStdio::Raised),
-                "false" => Some(MaxStdio::Off),
-                _ => None,
-            }
-        } else if k.eq_ignore_ascii_case("MaxStdio") {
-            v.parse().ok().map(MaxStdio::Limit)
-        } else {
-            None
-        }
-    })
-}
-
-fn required_files(i: &Inputs) -> Check {
-    let items = missing_required_files(i.game_dir);
-    if items.is_empty() {
-        check("requiredfiles", "Required mods' files", Status::Ok, "Every required mod has its support files.", vec![])
-    } else {
-        check("requiredfiles", "Required mods' files", Status::Fail, "A required mod is missing files it needs to start, which crashes the game a few seconds in. Before Play the launcher puts back files it set aside and reinstalls the mod if anything is still missing.", items)
-    }
-}
-
-/// SKSE DLLs built for another Skyrim, named by mod where the mod list
-/// checks for them.
-fn skse_builds(i: &Inputs) -> Check {
-    let list = crate::modlist::builtin(None);
-    let items: Vec<String> = crate::skse::wrong_builds(i.game_dir)
-        .into_iter()
-        .map(|(rel, why)| match list.iter().find(|m| m.check.iter().any(|c| c.eq_ignore_ascii_case(&rel))) {
-            Some(m) => format!("{} ({}): {why}; the launcher sets it aside and installs the 1.6.1170 build", m.name, rel.rsplit('/').next().unwrap_or(&rel)),
-            None => format!("{}: {why}; the launcher sets it aside before Play", rel.rsplit('/').next().unwrap_or(&rel)),
-        })
-        .collect();
-    if items.is_empty() {
-        check("sksebuilds", "SKSE mod builds", Status::Ok, "Every SKSE mod is the build for Skyrim 1.6.1170.", vec![])
-    } else {
-        check("sksebuilds", "SKSE mod builds", Status::Fail, "An SKSE mod is the build for another Skyrim, so SKSE stops the game with \"only compatible with versions earlier than 1.6.629\".", items)
-    }
-}
-
-/// Required mods' plugins switched off in the load order (their menus, like
-/// SmoothCam's settings page, don't show then).
-fn wanted_off(i: &Inputs) -> Check {
-    let off = i.appdata.map(|a| loadorder::wanted_but_off(i.game_dir, &a.join("plugins.txt"))).unwrap_or_default();
-    if off.is_empty() {
-        check("requiredoff", "Required mods switched on", Status::Ok, "Every required mod's plugin is switched on.", vec![])
-    } else {
-        check("requiredoff", "Required mods switched on", Status::Info, "A required mod's plugin is switched off in Vortex's Plugins tab. The launcher switches it on before every Play, since its settings page in Mod Configuration needs it.", off)
-    }
-}
-
-/// The Unofficial Patch must be the one for Skyrim 1.6.1170 (4.3.8a).
-fn ussep_version(i: &Inputs) -> Check {
-    match crate::ussep::too_new(i.game_dir) {
-        Some(why) => check("ussepversion", "Unofficial Patch version", Status::Fail, format!("{why}. It crashes the game while drawing land, so the launcher sets it aside and installs 4.3.8a."), vec![]),
-        None => check("ussepversion", "Unofficial Patch version", Status::Ok, "The Unofficial Patch is the version for Skyrim 1.6.1170.", vec![]),
-    }
-}
-
-/// Whether the Souls-style camera preset has been applied.
-fn camera_preset(i: &Inputs) -> Check {
-    let name = "SmoothCam's Modern Camera Preset";
-    match (crate::camera::applied(i.game_dir), crate::camera::find_modern(i.game_dir)) {
-        (Some(_), _) => check("camerapreset", "Camera preset", Status::Ok, format!("{name} is your camera. Fine-tune it in Esc > Mod Configuration > SmoothCam; the launcher won't undo your changes."), vec![]),
-        (None, Some((f, _))) => check("camerapreset", "Camera preset", Status::Info, format!("{name} ({f}) becomes your camera on the next Play. Your current SmoothCam settings are backed up first."), vec![]),
-        (None, None) => check("camerapreset", "Camera preset", Status::Info, format!("{name} isn't installed yet; the launcher installs it with the other required mods."), vec![]),
-    }
-}
-
-/// A cause read from the crash log itself, which beats the checks: the
-/// 23:50 reports blamed a parked MCMHelper.esp for a terrain crash.
-pub fn crash_cause(crash: &str) -> Option<String> {
-    let l = crash.to_ascii_lowercase();
-    if l.contains("bgsterrainmanager") || (l.contains("tesobjectland") && l.contains("unofficial")) {
-        return Some("The game crashed drawing land changed by the Unofficial Patch (terrain update)".into());
-    }
-    None
-}
-
 /// The launcher's own best guess at a crash's cause, from the checks, most
 /// specific first. None when nothing points anywhere.
 /// What Play says when the server's masters don't match. Steam's own files
@@ -534,7 +342,7 @@ pub fn masters_fix_message(game_dir: &Path, items: &[String], exe_is_servers: bo
     };
     let steam = |n: &str| crate::patcher::patchable(&format!("Data/{n}")) || crate::aliases::shipped_with_game(n) || n.to_ascii_lowercase().starts_with("_resourcepack.");
     let set_aside = |n: &str| {
-        std::fs::read_dir(game_dir.join(strays::DISABLED_DIR)).into_iter().flatten().flatten()
+        std::fs::read_dir(game_dir.join(DISABLED_DIR)).into_iter().flatten().flatten()
             .any(|e| e.file_name().to_string_lossy().ends_with("-plugins") && e.path().join("Data").join(n).is_file())
     };
     let which = items.iter().take(3).cloned().collect::<Vec<_>>().join("; ");
@@ -550,7 +358,7 @@ pub fn masters_fix_message(game_dir: &Path, items: &[String], exe_is_servers: bo
         return format!("Steam updated {} for a newer Skyrim, so the launcher set it aside. {fix}, then try Play: {which}", join(newer));
     }
     if all.is_empty() || !all.iter().all(|(n, _)| steam(n)) {
-        return format!("Some files the server needs don't match yours. For a mod's file, install or update that mod in Vortex; for one of Skyrim's own files, click Fix version. Then try Play: {which}");
+        return format!("Some files the server needs don't match yours. For a file the server sends, check for updates; for one of Skyrim's own files, click Fix version. Then try Play: {which}");
     }
     let gone: Vec<&String> = all.iter().filter(|(_, missing)| *missing).map(|(n, _)| n).collect();
     // With SkyrimSE.exe already the server's build, Fix version has nothing
@@ -567,27 +375,17 @@ pub fn masters_fix_message(game_dir: &Path, items: &[String], exe_is_servers: bo
 
 pub fn likely_cause(r: &Report) -> Option<String> {
     let failed = |id: &str, st: Status| r.checks.iter().find(|c| c.id == id && c.status >= st);
-    if let Some(c) = failed("requiredfiles", Status::Fail) {
-        return Some(format!("A required mod is missing its support files: {}", c.items.first().cloned().unwrap_or_default()));
-    }
-    if let Some(c) = failed("ussepversion", Status::Fail) {
-        return Some(c.detail.split(". ").next().unwrap_or("Unofficial Patch made for a newer Skyrim").to_string());
-    }
-    if let Some(c) = failed("sksebuilds", Status::Fail) {
-        return Some(format!("An SKSE mod is the build for another Skyrim: {}", c.items.first().cloned().unwrap_or_default()));
-    }
     for (id, why) in [
         ("exe", "Wrong Skyrim version"),
         ("masters", "Base game files don't match the server"),
         ("newer", "Plugins made for a newer Skyrim"),
-        ("strays", "SKSE plugins or loose menus from other mods"),
     ] {
         if failed(id, Status::Warn).is_some() {
             return Some(why.to_string());
         }
     }
     if failed("loadorder", Status::Warn).is_some() {
-        return Some("Plugins from other mods are switched on".to_string());
+        return Some("Plugins the game can't load are switched on".to_string());
     }
     None
 }
@@ -642,18 +440,6 @@ fn ini_archives(i: &Inputs) -> Check {
         check("ini", "Game settings file", Status::Ok, "Every file Skyrim's settings file lists is there.", vec![])
     } else {
         check("ini", "Game settings file", Status::Warn, "Skyrim's settings file lists files that aren't there. The launcher cleans this before Play.", items)
-    }
-}
-
-fn stray_plugins(i: &Inputs) -> Check {
-    let Some(m) = i.manifest else {
-        return check("strays", "Other mods' files", Status::Info, "Checked after the server file list loads.", vec![]);
-    };
-    let list = strays::find(i.game_dir, m);
-    if list.is_empty() {
-        check("strays", "Other mods' files", Status::Ok, "No SKSE plugins, Platform scripts or loose menus from other mods.", vec![])
-    } else {
-        check("strays", "Other mods' files", Status::Warn, "The launcher moves these to a backup folder before Play.", list)
     }
 }
 
@@ -728,10 +514,9 @@ fn steam_updates(i: &Inputs) -> Check {
     }
 }
 
-/// The mods every player needs: SKSE64, the Address Library with the file for
-/// the server's build, Crash Logger, Skyrim Souls RE and its dependencies.
-fn crash_logger(i: &Inputs) -> Check {
-    let dir = i.game_dir.join("Data").join("SKSE").join("Plugins");
+/// What SkyMP needs from the PC: SKSE64 and the Address Library file for the
+/// server's build.
+fn requirements_check(i: &Inputs) -> Check {
     let target = i.manifest.and_then(|m| m.game.as_ref()).and_then(|g| g.version.clone());
     let mut missing = Vec::new();
     let mut have = Vec::new();
@@ -742,47 +527,20 @@ fn crash_logger(i: &Inputs) -> Check {
         Some(_) => have.push("Address Library"),
         None => {}
     }
-    // The same test Play uses: a copy SKSE wouldn't load doesn't count.
-    if requirements::crash_logger_ok(i.game_dir) {
-        have.push("Crash Logger");
-    } else if dir.join("CrashLogger.dll").is_file() {
-        missing.push("Crash Logger: the copy there won't load on this Skyrim (the launcher replaces it before Play)".to_string());
-    } else {
-        missing.push("Crash Logger: not installed (the launcher installs it before Play)".to_string());
-    }
-    if requirements::souls_ok(i.game_dir) {
-        have.push("Skyrim Souls RE");
-    } else {
-        missing.push("Skyrim Souls RE: not installed (the launcher installs it before Play)".to_string());
-    }
-    for m in requirements::missing_nexus_mods(i.game_dir, None) {
-        missing.push(format!("{}: {} is missing", m.name, m.looks_for));
-    }
-    for (ok, name) in [
-        (requirements::engine_fixes_ok(i.game_dir) && requirements::engine_fixes_preload_ok(i.game_dir), "SSE Engine Fixes"),
-        (requirements::ussep_ok(i.game_dir), "Unofficial Skyrim Special Edition Patch"),
-        (requirements::menu_framework_ok(i.game_dir), "SKSE Menu Framework"),
-        (requirements::imgui_icons_ok(i.game_dir), "ImGui Icons"),
-        (requirements::skyui_ok(i.game_dir), "SkyUI"),
-    ] {
-        if ok {
-            have.push(name);
-        }
-    }
-    if i.game_dir.join("skse64_loader.exe").is_file() {
+    if requirements::skse_ok(i.game_dir) {
         have.push("SKSE64");
     } else {
-        missing.push("SKSE64: skse64_loader.exe is missing".to_string());
+        missing.push("SKSE64: not installed (the launcher installs it before Play)".to_string());
     }
     if missing.is_empty() {
-        check("requirements", "Required mods", Status::Ok, format!("{} installed.", have.join(", ")), vec![])
+        check("requirements", "Required files", Status::Ok, format!("{} installed.", have.join(", ")), vec![])
     } else {
         let fail = missing.iter().any(|m| !m.contains("(the launcher installs it before Play)"));
         check(
             "requirements",
-            "Required mods",
+            "Required files",
             if fail { Status::Fail } else { Status::Warn },
-            "Aetherial Dawn needs SKSE64 2.2.6, the Address Library, Crash Logger, Skyrim Souls RE, SSE Engine Fixes (main file and SKSE64 Preloader), the Unofficial Skyrim Special Edition Patch, SKSE Menu Framework and ImGui Icons.",
+            "Aetherial Dawn needs SKSE64 2.2.6 and the Address Library for SKSE Plugins.",
             missing,
         )
     }
@@ -835,24 +593,6 @@ mod tests {
     }
 
     #[test]
-    fn max_stdio_is_read_from_any_section_and_ignores_comments() {
-        // Engine Fixes 7's shipped line.
-        assert_eq!(engine_fixes_max_stdio("[Patches]\nbMaxStdIO = true                                # sets the maximum number\n"), Some(MaxStdio::Raised));
-        assert_eq!(engine_fixes_max_stdio("bmaxstdio=false\n"), Some(MaxStdio::Off));
-        assert_eq!(engine_fixes_max_stdio("[Patches]\nMaxStdio = 8192\n"), Some(MaxStdio::Limit(8192)));
-        assert_eq!(engine_fixes_max_stdio("# bMaxStdIO = true\n[Fixes]\nbMaxStdIOX = true\n"), None);
-        let t = tempfile::tempdir().unwrap();
-        let p = t.path().join("Data/SKSE/Plugins");
-        std::fs::create_dir_all(&p).unwrap();
-        let inputs = |g: &Path| max_stdio(&Inputs { game_dir: g, manifest: None, masters: None, appdata: None, documents: None, hash_cache: None, home: None }).status;
-        assert_eq!(inputs(t.path()), Status::Info);
-        std::fs::write(p.join("EngineFixes.toml"), "MaxStdio = 512\n").unwrap();
-        assert_eq!(inputs(t.path()), Status::Warn);
-        std::fs::write(p.join("EngineFixes.toml"), "bMaxStdIO = true\n").unwrap();
-        assert_eq!(inputs(t.path()), Status::Ok);
-    }
-
-    #[test]
     fn a_steam_master_mismatch_points_to_verify_and_fix_version_not_a_mod() {
         let tmp = tempfile::tempdir().unwrap();
         let g = tmp.path();
@@ -868,8 +608,8 @@ mod tests {
         let m = masters_fix_message(g, &changed, true);
         assert!(m.contains("Verify integrity") && m.contains("then click Fix version"), "{m}");
         let modded = vec!["ccBGSSSE001-Fish.esm: missing".to_string(), "JKs-Skyrim.esp: missing".to_string()];
-        assert!(masters_fix_message(g, &modded, false).contains("install or update that mod in Vortex"));
-        let aside = g.join(strays::DISABLED_DIR).join("2026-09-30-19-40-00-plugins/Data");
+        assert!(masters_fix_message(g, &modded, false).contains("check for updates"));
+        let aside = g.join(DISABLED_DIR).join("2026-09-30-19-40-00-plugins/Data");
         std::fs::create_dir_all(&aside).unwrap();
         std::fs::write(aside.join("ccBGSSSE001-Fish.esm"), b"newer").unwrap();
         let m = masters_fix_message(g, &["ccBGSSSE001-Fish.esm: missing".to_string()], false);
@@ -927,31 +667,5 @@ mod tests {
         let base = serde_json::json!({"masters":[{"name":"Skyrim.esm","size":1}]});
         let c = server_order(&Inputs { masters: Some(&base), ..i });
         assert_eq!(c.status, Status::Ok);
-    }
-
-    #[test]
-    fn names_menu_framework_files_as_the_cause() {
-        let t = tempfile::tempdir().unwrap();
-        let g = t.path();
-        let pl = g.join("Data/SKSE/Plugins");
-        std::fs::create_dir_all(pl.join("fonts")).unwrap();
-        std::fs::write(pl.join("SKSEMenuFramework.dll"), b"x").unwrap();
-        std::fs::write(pl.join("fonts/fa-solid-900.ttf"), b"x").unwrap();
-        crate::strays::move_aside(g, &["Data/SKSE/Plugins/fonts/fa-solid-900.ttf".into()], "s-other-mods").unwrap();
-        let items = missing_required_files(g);
-        assert_eq!(items.len(), 4, "{items:?}");
-        assert!(items[3].ends_with("Data/SKSE/Plugins/fonts/fa-solid-900.ttf"));
-        let r = Report { checks: vec![check("loadorder", "Load order", Status::Warn, "", vec![]), check("requiredfiles", "Required mods' files", Status::Fail, "", items)], worst: Status::Fail };
-        assert!(likely_cause(&r).unwrap().starts_with("A required mod is missing"));
-        crate::allowlist::restore_kept(g).unwrap();
-        std::fs::create_dir_all(pl.join("SKSEMenuFrameworkThemes")).unwrap();
-        std::fs::write(pl.join("SKSEMenuFrameworkThemes/modern.json"), b"{}").unwrap();
-        std::fs::write(pl.join("SKSEMenuFrameworkStrings_EN.json"), b"{}").unwrap();
-        assert!(missing_required_files(g).is_empty());
-        // A too-new Unofficial Patch parked on purpose isn't missing.
-        std::fs::create_dir_all(g.join("Data/BashTags")).unwrap();
-        std::fs::write(g.join("Data/BashTags/unofficial skyrim special edition patch.txt"), b"x").unwrap();
-        crate::strays::move_aside(g, &["Data/BashTags/unofficial skyrim special edition patch.txt".into()], "1-too-new-ussep").unwrap();
-        assert!(missing_required_files(g).is_empty());
     }
 }

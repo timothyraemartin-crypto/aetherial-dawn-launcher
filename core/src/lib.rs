@@ -3,46 +3,32 @@
 //! finding the game. The Tauri app in `src-tauri` is a thin shell over this.
 
 pub mod aliases;
-pub mod allowlist;
+pub mod aside;
 pub mod auth;
 pub mod atomicfile;
 pub mod bsa;
-pub mod camera;
 pub mod clientstatus;
 pub mod community;
 pub mod detach;
 pub mod faces;
 pub mod feedsig;
-pub mod fetch;
 pub mod game;
 pub mod gameini;
 pub mod health;
-pub mod inventory;
-pub mod vortex;
 pub mod loadorder;
 pub mod manifest;
-pub mod modlist;
-pub mod nexus;
 pub mod patcher;
-pub mod presets;
 pub mod pristine;
 pub mod requirements;
-pub mod serverlane;
 pub mod serverorder;
 pub mod settings;
 pub mod setup;
 pub mod skse;
-pub mod strays;
 pub mod sync;
-pub mod tools;
-pub mod ussep;
 pub mod version;
 pub mod watch;
 pub mod whatsnew;
 pub mod window;
-
-#[cfg(test)]
-mod rehearsal;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -75,10 +61,10 @@ pub fn plain(raw: &str) -> String {
     let l = raw.to_ascii_lowercase();
     let has = |k: &[&str]| k.iter().any(|k| l.contains(k));
     if has(&["os error 5)", "access is denied", "permission denied"]) {
-        return "Windows wouldn't let the launcher change a game file. Close Skyrim and Vortex, then try again.".into();
+        return "Windows wouldn't let the launcher change a game file. Close Skyrim, then try again.".into();
     }
     if has(&["os error 32)", "being used by another process"]) {
-        return "A game file is in use by another program. Close Skyrim and Vortex, then try again.".into();
+        return "A game file is in use by another program. Close Skyrim, then try again.".into();
     }
     if has(&["os error 112)", "not enough space", "no space left"]) {
         return "The drive with Skyrim is full. Free some space, then try again.".into();
@@ -95,18 +81,12 @@ pub fn plain(raw: &str) -> String {
     if has(&["corrupted while downloading", "hash mismatch", "invalid zip", "could not find eocd", "isn't a readable zip", "couldn't unpack", "download is damaged"]) {
         return "A download came through damaged. The launcher fetches it again the next time you press Play.".into();
     }
-    if has(&["fomod"]) {
-        return "This mod's installer couldn't be read. The launcher tries again the next time you press Play; if it repeats, send Copy diagnostics to staff.".into();
-    }
     // Before the general network case: these carry signed download addresses.
     if has(&["http status client error", "http status server error"]) {
         return "The server refused the download just now. The launcher tries again the next time you press Play.".into();
     }
     if has(&["timed out", "deadline has elapsed"]) {
         return "The connection was too slow. The launcher tries again the next time you press Play.".into();
-    }
-    if has(&["websocket", "nexus sign-in:"]) {
-        return "Couldn't reach Nexus to sign in. Check your internet and try again.".into();
     }
     if has(&["error sending request", "dns error", "connection refused", "connection reset", "network error", "error decoding response", "tcp connect", "couldn't reach"]) {
         return "The launcher couldn't reach the internet just now. Check your connection; it tries again the next time you press Play.".into();
@@ -121,7 +101,7 @@ pub fn plain(raw: &str) -> String {
         return "That stopped unexpectedly. Try again; if it repeats, send Copy diagnostics to staff.".into();
     }
     if raw.starts_with("file error: ") {
-        return "A game file couldn't be changed. Close Skyrim and Vortex, then try again.".into();
+        return "A game file couldn't be changed. Close Skyrim, then try again.".into();
     }
     scrub(raw)
 }
@@ -155,13 +135,9 @@ pub fn scrub(raw: &str) -> String {
     out
 }
 
-/// `plain` for a command's error as the UI gets it: coded answers
-/// ("NEEDS_NEXUS_MODS:[...]") pass through; for "CODE:text" only the text is
-/// reworded.
+/// `plain` for a command's error as the UI gets it: for "CODE:text" only the
+/// text is reworded.
 pub fn plain_ui(raw: &str) -> String {
-    if raw.starts_with("NEEDS_NEXUS_MODS:") || raw == "NEEDS_NEXUS_SIGN_IN" {
-        return raw.to_string();
-    }
     if let Some((code, rest)) = raw.split_once(':') {
         if !code.is_empty() && code.bytes().all(|b| b.is_ascii_uppercase() || b == b'_') {
             return format!("{code}:{}", plain(rest));
@@ -187,31 +163,25 @@ mod plain_tests {
         assert!(super::plain("network error: error sending request for url (https://x/y)").contains("couldn't reach"));
         assert!(!super::plain("Data/x.dll was corrupted while downloading (expected ab, got cd)").contains("ab"));
         assert_eq!(super::plain("Pick your Skyrim folder first."), "Pick your Skyrim folder first.");
-        let cdn = super::plain("HTTP status client error (403 Forbidden) for url (https://cf-files.nexusmods.com/x?md5=a&expires=1)");
-        assert!(cdn.contains("refused") && !cdn.contains("nexus-cdn") && !cdn.contains("md5"));
+        let cdn = super::plain("HTTP status client error (403 Forbidden) for url (https://cdn.example/x?md5=a&expires=1)");
+        assert!(cdn.contains("refused") && !cdn.contains("cdn.example") && !cdn.contains("md5"));
         assert!(super::plain("file error: The system cannot find the path specified. (os error 3)").contains("missing"));
         assert!(super::plain("The requested operation requires elevation. (os error 740)").contains("administrator"));
         assert!(!super::plain("file error: something odd").contains("odd"));
         // A file the server sent that failed its signature check: the reason names a file path, the player gets words.
         for raw in [
-            "The server's file can't be trusted: mods.json: the signature doesn't match, so the file was changed or isn't from the server",
+            "The server's file can't be trusted: masters.json: the signature doesn't match, so the file was changed or isn't from the server",
             "The server's file can't be trusted: client/manifest.json: it has no valid signature, and this launcher only uses signed files",
             "The server's file can't be trusted: the server address http://x.example doesn't use https, so its files aren't used",
         ] {
             let w = super::plain(raw);
             assert!(w.starts_with("The launcher couldn't confirm the server's files are genuine"), "{w}");
             assert!(!w.contains("keeps happening") && !w.contains("diagnostics"), "the advice comes from the screen, once: {w}");
-            assert!(!w.contains("mods.json") && !w.contains("manifest") && !w.contains("signature") && !w.contains("http"), "{w}");
+            assert!(!w.contains("masters.json") && !w.contains("manifest") && !w.contains("signature") && !w.contains("http"), "{w}");
         }
         assert_eq!(super::plain("see https://x.y/z now"), "see (link hidden) now");
-        // The export log's error lines (a Nexus CDN link names the account).
-        let e = super::scrub("export: failed JK: error sending request for url (https://cf-files.nexusmods.com/cdn/1704/x.7z?md5=abc&expires=17&user_id=42)");
-        assert!(!e.contains("md5") && !e.contains("user_id") && e.contains("(link hidden)"), "{e}");
         assert_eq!(super::plain("appeal at https://discord.gg/abc now"), "appeal at https://discord.gg/abc now");
         assert_eq!(super::plain_ui("NO_PATCH:network error: error sending request"), "NO_PATCH:The launcher couldn't reach the internet just now. Check your connection; it tries again the next time you press Play.");
-        assert_eq!(super::plain_ui("NEEDS_NEXUS_MODS:[{\"a\":1}]"), "NEEDS_NEXUS_MODS:[{\"a\":1}]");
         assert!(super::plain_ui("SIGNED_OUT:Please sign in again.").starts_with("SIGNED_OUT:Please"));
     }
 }
-#[cfg(all(test, feature = "rar"))]
-mod testrar;

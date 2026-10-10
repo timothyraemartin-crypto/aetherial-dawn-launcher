@@ -173,35 +173,10 @@ pub fn with_archives(game_dir: &Path, plugin: &str) -> Vec<String> {
     out
 }
 
-/// Plugins of required SKSE mods, switched on when they're in Data
-/// (Timothy, 2026-09-26: SmoothCam, True Directional Movement, TrueHUD and
-/// MCM Helper, which they need).
-// TrueHUD ships TrueHUD.esl (seen on Timothy's PC); .esp kept for older builds.
-pub const COMPANION_PLUGINS: [&str; 5] = ["MCMHelper.esp", "SmoothCam.esp", "TrueDirectionalMovement.esp", "TrueHUD.esl", "TrueHUD.esp"];
-
+/// Plugin names the launcher leaves switched on: the base game, Creation
+/// Club content and the plugins the server's file list ships.
 fn allowed(game_dir: &Path, manifest: &Manifest) -> Vec<String> {
     let mut ok: Vec<String> = BASE.iter().map(|s| s.to_string()).collect();
-    ok.extend(COMPANION_PLUGINS.iter().map(|p| p.to_ascii_lowercase()));
-    // A required mod, from Nexus Mods.
-    ok.push(crate::requirements::USSEP_PLUGIN.to_ascii_lowercase());
-    ok.push(crate::requirements::SKYUI_PLUGIN.to_ascii_lowercase());
-    // Plugins of other mods on the server's list.
-    ok.extend(crate::allowlist::kept_plugins(&crate::allowlist::keep_set(game_dir)));
-    // Plugins whose names the client can't load run under a dash-named
-    // copy (aliases.rs); that copy is allowed wherever its original is.
-    let also: Vec<String> = ok.iter().filter(|n| !client_can_load_name(n)).map(|n| crate::aliases::alias_name(n).to_ascii_lowercase()).collect();
-    ok.extend(also);
-    // Rewritten copies (a plugin whose masters run under an alias) run in
-    // their original's place; the original itself must stay off.
-    for l in crate::aliases::links(game_dir) {
-        let (Some(f), Some(t)) = (l.from.strip_prefix("Data/"), l.to.strip_prefix("Data/")) else { continue };
-        if ok.contains(&f.to_ascii_lowercase()) {
-            ok.push(t.to_ascii_lowercase());
-            if client_can_load_name(f) && crate::aliases::run_as(game_dir, f) != f {
-                ok.retain(|n| n != &f.to_ascii_lowercase());
-            }
-        }
-    }
     for ccc in [game_dir.join("Data").join("Skyrim.ccc"), game_dir.join("Skyrim.ccc")] {
         if let Ok(t) = std::fs::read_to_string(ccc) {
             ok.extend(t.lines().map(|l| l.trim().to_ascii_lowercase()).filter(|l| !l.is_empty()));
@@ -217,7 +192,9 @@ fn allowed(game_dir: &Path, manifest: &Manifest) -> Vec<String> {
     ok
 }
 
-/// Active plugins that shouldn't load with Aetherial Dawn.
+/// Active plugins the SkyMP client can't load: a name with spaces (it stops
+/// the client's load-order check), or a plugin file that is broken. Other
+/// active plugins are the player's own business.
 pub fn extras(game_dir: &Path, plugins_txt: &Path, manifest: &Manifest) -> Vec<Extra> {
     let Ok(text) = read_text(plugins_txt) else { return Vec::new() };
     let ok = allowed(game_dir, manifest);
@@ -229,9 +206,11 @@ pub fn extras(game_dir: &Path, plugins_txt: &Path, manifest: &Manifest) -> Vec<E
             let why = if client_can_load_name(n) { broken(&game_dir.join("Data").join(n)) } else { Some(BAD_NAME.to_string()) };
             Extra { name: n.to_string(), broken: why }
         })
-        // Allowed plugins stay on unless they're broken, like the SkyUI stub
-        // from the first live test, or have a name the client can't load.
-        .filter(|e| !ok.contains(&e.name.to_ascii_lowercase()) || !client_can_load_name(&e.name) || (e.broken.is_some() && game_dir.join("Data").join(&e.name).is_file()))
+        // The server's own and base plugins stay on unless they are broken.
+        .filter(|e| {
+            let broken_file = e.broken.is_some() && game_dir.join("Data").join(&e.name).is_file();
+            if ok.contains(&e.name.to_ascii_lowercase()) { broken_file } else { !client_can_load_name(&e.name) || broken_file }
+        })
         .collect()
 }
 
@@ -343,145 +322,6 @@ pub fn switch_off(plugins_txt: &Path, names: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Listed Nexus packages approved by the Vortex gate
-/// whose exact deployment source still has a live file in the game. The
-/// direct-install ledger may name every FOMOD plugin choice, even though
-/// Vortex deliberately switched all but one of them off.
-fn exact_vortex_mods(game_dir: &Path) -> std::collections::HashSet<(u64, u64)> {
-    let path = game_dir.join(crate::modlist::MODS_DIR).join("vortex-approved.json");
-    let Ok(bytes) = std::fs::read(path) else { return std::collections::HashSet::new() };
-    let Ok(approved) = serde_json::from_slice::<Vec<crate::allowlist::Approved>>(&bytes) else { return std::collections::HashSet::new() };
-    let deployed = crate::allowlist::vortex_files(game_dir);
-    approved.into_iter()
-        .filter(|a| !a.vortex_id.is_empty() && deployed.iter().any(|f| {
-            f.source == a.vortex_id && crate::modlist::safe_rel(&f.rel).is_some_and(|rel| game_dir.join(rel).is_file())
-        }))
-        .filter_map(|a| a.nexus_file_id.map(|file| (a.nexus_mod_id, file)))
-        .collect()
-}
-
-/// Plugins of required and listed mods that are in Data and sound, which
-/// must be switched on for the mod to work (SkyUI's menus live in its
-/// archive, which only loads with its plugin). A listed mod's optional
-/// plugins follow Vortex's active choice when its exact package was approved.
-pub fn wanted(game_dir: &Path) -> Vec<String> {
-    wanted_with_ledger(game_dir, true)
-}
-
-/// The health preview has no live Vortex approval before first Play. In a
-/// Vortex-managed game, an old direct-install ledger cannot say which of a
-/// Nexus package's optional plugins the player selected in Vortex.
-fn wanted_with_ledger(game_dir: &Path, trust_nexus_ledger: bool) -> Vec<String> {
-    let mut names: Vec<String> = vec![crate::requirements::USSEP_PLUGIN.into(), crate::requirements::SKYUI_PLUGIN.into()];
-    names.extend(COMPANION_PLUGINS.iter().map(|p| p.to_string()));
-    let rec = crate::modlist::load_installed(game_dir);
-    let exact_vortex = exact_vortex_mods(game_dir);
-    for m in crate::allowlist::listed(game_dir) {
-        // Plugins the launcher installed for a listed mod whose checks name
-        // no plugin (FOMOD installers pick them), when their masters are here.
-        // The old ledger is not a Vortex plugin selection: SMIM, for example,
-        // records three mutually exclusive ESPs from one direct install.
-        let vortex_selected = m.nexus.as_ref().and_then(|n| n.file.map(|file| (n.mod_id, file)))
-            .is_some_and(|pin| exact_vortex.contains(&pin));
-        if let Some(r) = rec.mods.get(&m.id).filter(|_| !vortex_selected && (trust_nexus_ledger || m.nexus.is_none())) {
-            names.extend(crate::modlist::top_plugins(&r.files).into_iter().filter(|n| masters_present(game_dir, n)));
-        }
-        for c in &m.check {
-            if let Some(n) = c.replace('\\', "/").strip_prefix("Data/") {
-                let l = n.to_ascii_lowercase();
-                if !n.contains('/') && (l.ends_with(".esp") || l.ends_with(".esm") || l.ends_with(".esl")) {
-                    names.push(n.to_string());
-                }
-            }
-        }
-    }
-    let mut seen = std::collections::HashSet::new();
-    names
-        .into_iter()
-        .filter(|n| seen.insert(n.to_ascii_lowercase()))
-        // A patch whose master isn't installed stays off; a name the client
-        // can't load runs as its dash-named (or rewritten) copy.
-        .filter(|n| masters_present(game_dir, n))
-        .map(|n| crate::aliases::run_as(game_dir, &n))
-        .filter(|n| {
-            let p = game_dir.join("Data").join(n);
-            p.is_file() && broken(&p).is_none()
-        })
-        .collect()
-}
-
-/// Wanted plugins (SkyUI, SmoothCam, ...) that plugins.txt lists switched
-/// off, which the launcher leaves off. SmoothCam's settings page only shows
-/// with SmoothCam.esp on (Timothy, 2026-09-26).
-pub fn wanted_but_off(game_dir: &Path, plugins_txt: &Path) -> Vec<String> {
-    let text = read_text(plugins_txt).unwrap_or_default();
-    let off: std::collections::HashSet<String> = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('*') && !l.starts_with('#')).map(|l| l.to_ascii_lowercase()).collect();
-    let vortex_managed = crate::modlist::vortex_manages(game_dir) || crate::inventory::has_vortex_record(game_dir);
-    wanted_with_ledger(game_dir, !vortex_managed).into_iter().filter(|n| off.contains(&n.to_ascii_lowercase())).collect()
-}
-
-/// Switches required plugins on in plugins.txt, also when a line lists them
-/// switched off: they're the server's required mods (their menus, like
-/// SmoothCam's settings page, only show with the plugin on; Vortex had
-/// SmoothCam, TDM and TrueHUD off on Timothy's PC). Returns the ones changed;
-/// the old file is kept next to it.
-pub fn force_on(plugins_txt: &Path, names: &[String]) -> Result<Vec<String>> {
-    let file = ListFile::read(plugins_txt)?;
-    let text = file.as_ref().map_or("", |f| f.text.as_str());
-    let nl = if text.contains("\r\n") || text.is_empty() { "\r\n" } else { "\n" };
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let mut changed = Vec::new();
-    for n in names {
-        let l = n.to_ascii_lowercase();
-        match lines.iter_mut().find(|x| x.trim().trim_start_matches('*').trim().to_ascii_lowercase() == l) {
-            Some(x) if x.trim_start().starts_with('*') => {}
-            Some(x) => {
-                *x = format!("*{}", x.trim());
-                changed.push(n.clone());
-            }
-            None => {
-                lines.push(format!("*{n}"));
-                changed.push(n.clone());
-            }
-        }
-    }
-    if changed.is_empty() {
-        return Ok(changed);
-    }
-    lines.retain(|l| !l.is_empty());
-    lines.push(String::new());
-    write_list(plugins_txt, file.as_ref(), &lines.join(nl))?;
-    Ok(changed)
-}
-
-/// Switches plugins on in plugins.txt by adding the line when it's missing
-/// (the launcher's own installs). A plugin listed there switched off stays
-/// off: the player or Vortex chose that. Returns the ones it added; the old
-/// file is kept next to it.
-pub fn switch_on(plugins_txt: &Path, names: &[String]) -> Result<Vec<String>> {
-    let file = ListFile::read(plugins_txt)?;
-    let text = file.as_ref().map_or("", |f| f.text.as_str());
-    let nl = if text.contains("\r\n") || text.is_empty() { "\r\n" } else { "\n" };
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let mut changed = Vec::new();
-    for n in names {
-        let l = n.to_ascii_lowercase();
-        match lines.iter_mut().find(|x| x.trim().trim_start_matches('*').trim().to_ascii_lowercase() == l) {
-            Some(_) => {}
-            None => {
-                lines.push(format!("*{n}"));
-                changed.push(n.clone());
-            }
-        }
-    }
-    if changed.is_empty() {
-        return Ok(changed);
-    }
-    lines.push(String::new());
-    write_list(plugins_txt, file.as_ref(), &lines.join(nl))?;
-    Ok(changed)
-}
-
 /// Puts the five base masters first in loadorder.txt, in their own order,
 /// keeping everything else as it was (Vortex had the Unofficial Patch ahead
 /// of Skyrim.esm on 2026-09-26). Returns whether it changed the file.
@@ -525,7 +365,7 @@ pub mod tests {
         std::fs::write(&txt, "*Mine.esp\n*Other.esp\n").unwrap();
         switch_off(&txt, &["Mine.esp".into()]).unwrap();
         switch_off(&txt, &["Other.esp".into()]).unwrap();
-        switch_on(&txt, &["Mine.esp".into()]).unwrap();
+        switch_off(&txt, &["Mine.esp".into()]).unwrap();
         // Three changes later, the backup is still the list before the first.
         assert_eq!(std::fs::read_to_string(t.path().join("plugins.txt.aetherial-dawn-backup")).unwrap(), "*Mine.esp\n*Other.esp\n");
     }
@@ -534,23 +374,12 @@ pub mod tests {
     const ANSI: &[u8] = b"# Vortex\r\n*Caf\xE9.esp\r\n*Other.esp\r\n";
 
     #[test]
-    fn force_on_keeps_an_ansi_plugins_txt_byte_for_byte_and_backs_it_up() {
+    fn switch_off_keeps_an_ansi_plugins_txt() {
         let t = tempfile::tempdir().unwrap();
         let txt = t.path().join("plugins.txt");
         std::fs::write(&txt, ANSI).unwrap();
-        assert_eq!(force_on(&txt, &["SkyUI_SE.esp".into()]).unwrap(), ["SkyUI_SE.esp"]);
-        assert_eq!(std::fs::read(&txt).unwrap(), [ANSI, b"*SkyUI_SE.esp\r\n"].concat());
-        assert_eq!(std::fs::read(t.path().join("plugins.txt.aetherial-dawn-backup")).unwrap(), ANSI);
-    }
-
-    #[test]
-    fn switch_on_and_switch_off_keep_an_ansi_plugins_txt() {
-        let t = tempfile::tempdir().unwrap();
-        let txt = t.path().join("plugins.txt");
-        std::fs::write(&txt, ANSI).unwrap();
-        switch_on(&txt, &["New.esp".into()]).unwrap();
         switch_off(&txt, &["Other.esp".into()]).unwrap();
-        assert_eq!(std::fs::read(&txt).unwrap(), b"# Vortex\r\n*Caf\xE9.esp\r\nOther.esp\r\n*New.esp\r\n");
+        assert_eq!(std::fs::read(&txt).unwrap(), b"# Vortex\r\n*Caf\xE9.esp\r\nOther.esp\r\n");
         assert_eq!(std::fs::read(t.path().join("plugins.txt.aetherial-dawn-backup")).unwrap(), ANSI);
     }
 
@@ -560,19 +389,9 @@ pub mod tests {
         // A directory stands in for a file that can't be read (locked).
         let txt = t.path().join("plugins.txt");
         std::fs::create_dir(&txt).unwrap();
-        assert!(force_on(&txt, &["A.esp".into()]).is_err());
-        assert!(switch_on(&txt, &["A.esp".into()]).is_err());
+        assert!(switch_off(&txt, &["A.esp".into()]).is_err());
         assert!(txt.is_dir());
         assert!(!t.path().join("plugins.txt.aetherial-dawn-backup").exists());
-    }
-
-    #[test]
-    fn a_missing_plugins_txt_is_created_without_a_backup() {
-        let t = tempfile::tempdir().unwrap();
-        let txt = t.path().join("sub").join("plugins.txt");
-        assert_eq!(force_on(&txt, &["A.esp".into()]).unwrap(), ["A.esp"]);
-        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*A.esp\r\n");
-        assert!(!t.path().join("sub/plugins.txt.aetherial-dawn-backup").exists());
     }
 
     #[test]
@@ -591,7 +410,7 @@ pub mod tests {
         let txt = t.path().join("plugins.txt");
         std::fs::write(&txt, "*Mine.esp\n").unwrap();
         switch_off(&txt, &["Mine.esp".into()]).unwrap();
-        switch_on(&txt, &["New.esp".into()]).unwrap();
+        switch_off(&txt, &["Mine.esp".into()]).unwrap();
         assert_eq!(std::fs::read_to_string(t.path().join("plugins.txt.aetherial-dawn-previous")).unwrap(), "Mine.esp\n");
     }
 
@@ -662,29 +481,14 @@ pub mod tests {
         }))
         .unwrap();
         let ex = extras(tmp.path(), &txt, &m);
-        assert_eq!(ex.len(), 2);
+        // Good.esp is the player's own, loadable plugin: left alone.
+        assert_eq!(ex.len(), 1);
         assert_eq!(ex[0].name, "SkyUI_SE.esp");
         assert!(ex[0].broken.as_deref().unwrap().contains("version 0.00"));
-        assert!(ex[1].broken.is_none());
         switch_off(&txt, &ex.iter().map(|e| e.name.clone()).collect::<Vec<_>>()).unwrap();
         let after = std::fs::read_to_string(&txt).unwrap();
-        assert_eq!(after, "# Vortex\r\nSkyUI_SE.esp\r\n*ccBGSSSE001-Fish.esm\r\nGood.esp\r\nOff.esp\r\n");
+        assert_eq!(after, "# Vortex\r\nSkyUI_SE.esp\r\n*ccBGSSSE001-Fish.esm\r\n*Good.esp\r\nOff.esp\r\n");
         assert!(extras(tmp.path(), &txt, &m).is_empty());
-    }
-
-    #[test]
-    fn spots_a_wanted_plugin_switched_off() {
-        let t = tempfile::tempdir().unwrap();
-        let g = t.path();
-        std::fs::create_dir_all(g.join("Data")).unwrap();
-        std::fs::write(g.join("Data/SmoothCam.esp"), plugin(1.71, true)).unwrap();
-        std::fs::write(g.join("Data/TrueHUD.esp"), plugin(1.71, true)).unwrap();
-        let txt = g.join("plugins.txt");
-        std::fs::write(&txt, "*TrueHUD.esp\r\nSmoothCam.esp\r\n").unwrap();
-        assert_eq!(wanted_but_off(g, &txt), vec!["SmoothCam.esp".to_string()]);
-        assert_eq!(force_on(&txt, &wanted(g)).unwrap(), vec!["SmoothCam.esp".to_string()]);
-        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*TrueHUD.esp\r\n*SmoothCam.esp\r\n");
-        assert!(wanted_but_off(g, &txt).is_empty());
     }
 
     #[test]
@@ -695,148 +499,6 @@ pub mod tests {
         assert!(fix_order(&p).unwrap());
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "# Vortex\r\nSkyrim.esm\r\nUpdate.esm\r\nDawnguard.esm\r\nHearthFires.esm\r\nDragonborn.esm\r\nunofficial skyrim special edition patch.esp\r\nSkyUI_SE.esp\r\n");
         assert!(!fix_order(&p).unwrap());
-    }
-
-    #[test]
-    fn switches_on_skyui() {
-        let tmp = tempfile::tempdir().unwrap();
-        let data = tmp.path().join("Data");
-        std::fs::create_dir_all(&data).unwrap();
-        std::fs::write(data.join("SkyUI_SE.esp"), plugin(1.7, true)).unwrap();
-        assert_eq!(wanted(tmp.path()), ["SkyUI_SE.esp"]);
-        let txt = tmp.path().join("plugins.txt");
-        // Switched off in Vortex: stays off.
-        std::fs::write(&txt, "# Vortex\r\nSkyUI_SE.esp\r\n*Good.esp\r\n").unwrap();
-        assert!(switch_on(&txt, &wanted(tmp.path())).unwrap().is_empty());
-        // Not listed at all (the launcher installed it): added, switched on.
-        std::fs::write(&txt, "# Vortex\r\n*Good.esp\r\n").unwrap();
-        assert_eq!(switch_on(&txt, &wanted(tmp.path())).unwrap(), ["SkyUI_SE.esp"]);
-        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "# Vortex\r\n*Good.esp\r\n*SkyUI_SE.esp\r\n");
-        assert!(switch_on(&txt, &wanted(tmp.path())).unwrap().is_empty());
-        std::fs::remove_file(&txt).unwrap();
-        switch_on(&txt, &["SkyUI_SE.esp".into()]).unwrap();
-        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*SkyUI_SE.esp\r\n");
-    }
-
-    #[test]
-    fn exact_vortex_package_preserves_ledger_only_plugin_choices() {
-        let t = tempfile::tempdir().unwrap();
-        let game = t.path();
-        let data = game.join("Data");
-        std::fs::create_dir_all(game.join(crate::modlist::MODS_DIR)).unwrap();
-        std::fs::create_dir_all(&data).unwrap();
-        let optional = ["SMIM-SE-Merged-All.esp", "SMIM-SE-Merged-NoRiftenRopes.esp", "SMIM-SE-Merged-NoRiftenRopes-NoSolitudeRopes.esp"];
-        for name in optional.iter().chain(["EmbersXD.esp", "MCMHelper.esp"].iter()) {
-            std::fs::write(data.join(name), plugin(1.71, true)).unwrap();
-        }
-        crate::allowlist::save_server_list(game, &crate::modlist::ModList {
-            mods: vec![
-                crate::modlist::ModEntry {
-                    id: "smim".into(), name: "SMIM".into(),
-                    nexus: Some(crate::modlist::NexusRef { mod_id: 659, file: Some(59069), pick: None }),
-                    ..Default::default()
-                },
-                crate::modlist::ModEntry {
-                    id: "embers-xd".into(), name: "Embers XD".into(),
-                    nexus: Some(crate::modlist::NexusRef { mod_id: 37085, file: Some(800803), pick: None }),
-                    check: vec!["Data/EmbersXD.esp".into()], ..Default::default()
-                },
-            ], ..Default::default()
-        });
-        let ledger = serde_json::json!({"mods": {"smim": {
-            "name": "SMIM", "file_id": 59069, "files": optional.iter().map(|n| format!("Data/{n}")).collect::<Vec<_>>(), "when": 1
-        }}});
-        std::fs::write(game.join(crate::modlist::MODS_DIR).join("installed.json"), serde_json::to_vec(&ledger).unwrap()).unwrap();
-        let want = wanted(game);
-        assert!(optional.iter().all(|n| want.contains(&n.to_string())), "a direct install still uses its ledger");
-        assert!(want.contains(&"EmbersXD.esp".to_string()), "an explicit check stays required");
-
-        let approved = [crate::allowlist::Approved {
-            vortex_id: "SMIM-exact-source".into(), nexus_mod_id: 659, nexus_file_id: Some(59069),
-        }];
-        std::fs::write(game.join(crate::modlist::MODS_DIR).join("vortex-approved.json"), serde_json::to_vec(&approved).unwrap()).unwrap();
-        std::fs::write(data.join("vortex.deployment.json"), serde_json::to_vec(&serde_json::json!({"files": [
-            {"relPath": optional[0], "source": "SMIM-exact-source"}
-        ]})).unwrap()).unwrap();
-        let want = wanted(game);
-        assert!(optional.iter().all(|n| !want.contains(&n.to_string())), "Vortex's mutually exclusive optional ESPs stay as chosen");
-        assert!(want.contains(&"EmbersXD.esp".to_string()), "the explicit feed check still forces its plugin on");
-        assert!(want.contains(&"MCMHelper.esp".to_string()), "a fixed companion plugin stays required");
-        let txt = game.join("plugins.txt");
-        std::fs::write(&txt, format!("*{}\r\n{}\r\n{}\r\nEmbersXD.esp\r\nMCMHelper.esp\r\n", optional[0], optional[1], optional[2])).unwrap();
-        assert_eq!(force_on(&txt, &want).unwrap(), ["MCMHelper.esp", "EmbersXD.esp"]);
-        let after = std::fs::read_to_string(&txt).unwrap();
-        assert!(after.contains(&format!("\r\n{}\r\n", optional[1])));
-        assert!(after.contains("*EmbersXD.esp"));
-    }
-
-    #[test]
-    fn wrong_or_stale_vortex_approval_keeps_legacy_ledger_behavior() {
-        let t = tempfile::tempdir().unwrap();
-        let game = t.path();
-        std::fs::create_dir_all(game.join("Data")).unwrap();
-        std::fs::create_dir_all(game.join(crate::modlist::MODS_DIR)).unwrap();
-        let name = "Optional.esp";
-        std::fs::write(game.join("Data").join(name), plugin(1.71, true)).unwrap();
-        crate::allowlist::save_server_list(game, &crate::modlist::ModList {
-            mods: vec![crate::modlist::ModEntry {
-                id: "optional".into(), name: "Optional".into(),
-                nexus: Some(crate::modlist::NexusRef { mod_id: 659, file: Some(59069), pick: None }),
-                ..Default::default()
-            }], ..Default::default()
-        });
-        let ledger = serde_json::json!({"mods": {"optional": {"name": "Optional", "file_id": 59069, "files": ["Data/Optional.esp"], "when": 1}}});
-        std::fs::write(game.join(crate::modlist::MODS_DIR).join("installed.json"), serde_json::to_vec(&ledger).unwrap()).unwrap();
-        let approval = |file| [crate::allowlist::Approved { vortex_id: "source".into(), nexus_mod_id: 659, nexus_file_id: Some(file) }];
-        std::fs::write(game.join(crate::modlist::MODS_DIR).join("vortex-approved.json"), serde_json::to_vec(&approval(59069)).unwrap()).unwrap();
-        assert!(wanted(game).contains(&name.to_string()), "a receipt without current deployment is insufficient");
-        std::fs::write(game.join("Data/vortex.deployment.json"), serde_json::to_vec(&serde_json::json!({"files": [
-            {"relPath": name, "source": "source"}
-        ]})).unwrap()).unwrap();
-        std::fs::write(game.join(crate::modlist::MODS_DIR).join("vortex-approved.json"), serde_json::to_vec(&approval(59070)).unwrap()).unwrap();
-        assert!(wanted(game).contains(&name.to_string()), "another Nexus file does not suppress the legacy plugin");
-        std::fs::write(game.join(crate::modlist::MODS_DIR).join("vortex-approved.json"), serde_json::to_vec(&approval(59069)).unwrap()).unwrap();
-        assert!(!wanted(game).contains(&name.to_string()));
-    }
-
-    #[test]
-    fn vortex_health_preview_does_not_call_ledger_only_options_required() {
-        let t = tempfile::tempdir().unwrap();
-        let game = t.path();
-        std::fs::create_dir_all(game.join("Data")).unwrap();
-        std::fs::create_dir_all(game.join(crate::modlist::MODS_DIR)).unwrap();
-        for name in ["SMIM-All.esp", "SMIM-NoRopes.esp", "EmbersXD.esp", "MCMHelper.esp"] {
-            std::fs::write(game.join("Data").join(name), plugin(1.71, true)).unwrap();
-        }
-        crate::allowlist::save_server_list(game, &crate::modlist::ModList {
-            mods: vec![
-                crate::modlist::ModEntry {
-                    id: "smim".into(), name: "SMIM".into(),
-                    nexus: Some(crate::modlist::NexusRef { mod_id: 659, file: Some(59069), pick: None }),
-                    ..Default::default()
-                },
-                crate::modlist::ModEntry {
-                    id: "embers".into(), name: "Embers".into(),
-                    nexus: Some(crate::modlist::NexusRef { mod_id: 37085, file: Some(800803), pick: None }),
-                    check: vec!["Data/EmbersXD.esp".into()], ..Default::default()
-                },
-            ], ..Default::default()
-        });
-        let ledger = serde_json::json!({"mods": {"smim": {
-            "name": "SMIM", "file_id": 59069, "files": ["Data/SMIM-All.esp", "Data/SMIM-NoRopes.esp"], "when": 1
-        }}});
-        std::fs::write(game.join(crate::modlist::MODS_DIR).join("installed.json"), serde_json::to_vec(&ledger).unwrap()).unwrap();
-        let txt = game.join("plugins.txt");
-        std::fs::write(&txt, "SMIM-All.esp\nSMIM-NoRopes.esp\nEmbersXD.esp\nMCMHelper.esp\n").unwrap();
-        assert!(wanted_but_off(game, &txt).contains(&"SMIM-All.esp".to_string()), "direct-install preview still uses the ledger");
-
-        std::fs::write(game.join("Data/vortex.deployment.json"), b"{\"files\":[]}").unwrap();
-        let off = wanted_but_off(game, &txt);
-        assert!(!off.contains(&"SMIM-All.esp".to_string()));
-        assert!(!off.contains(&"SMIM-NoRopes.esp".to_string()));
-        assert!(off.contains(&"EmbersXD.esp".to_string()), "explicit check remains required before first Play");
-        assert!(off.contains(&"MCMHelper.esp".to_string()), "fixed companion remains required before first Play");
-        assert!(wanted(game).contains(&"SMIM-All.esp".to_string()), "Play's legacy fallback still applies without an exact approval");
     }
 
     #[test]
