@@ -11,7 +11,6 @@ Before ANY work: read project memory, PROGRESS.md and this index; name them in y
 - [repo-links](repo-links.md) - before changing auth, bans/kicks, or anything crossing repos
 - [launcher-parts](launcher-parts.md) - before editing the launcher or when asked what a part does
 - [kept-files](kept-files.md) - before deleting a file that looks unused
-- [vortex-extension-review](vortex-extension-review.md) - before changing vortex-extension/ or the Vortex bridge
 - [quality-reviews](quality-reviews.md), [-2](quality-reviews-2.md), [-3](quality-reviews-3.md), [-4](quality-reviews-4.md) - open findings: sign-in/UI (1), file sync (2), mod list/Vortex (3), Tauri shell (4)
 - [signed-feeds](signed-feeds.md) - before editing mods.json/manifest on the server or the feed signing code
 - [launcher-improvements](launcher-improvements.md) - before planning new launcher features
