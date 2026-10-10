@@ -6,8 +6,8 @@
 #   sudo scripts/publish-feed.sh --pin-only       BEFORE a launcher release: fill missing sha256 pins in mods.json,
 #                                                 no signing (needs no sign-feed and no key); refuses a signed list
 #   sudo scripts/publish-feed.sh --strip-mods-preview   list what --strip-mods would do; changes nothing
-#   sudo scripts/publish-feed.sh --strip-mods     AFTER the mod-free launcher is released: set mods.json to an empty list
-#                                                 (keeps its other keys), sign, verify, swap, then MOVE (never delete) the mod
+#   sudo scripts/publish-feed.sh --strip-mods     AFTER the mod-free launcher is released: set mods.json to only the custom entries
+#                                                 (AD_KEEP_IDS=id1,id2; default none; keeps its other keys), sign, verify, swap, then MOVE (never delete) the mod
 #                                                 files it pointed at into AD_BACKUP_DIR/files. client/ and masters.json stay.
 # Needs bash, jq, curl, sha256sum. Fetches the sign-feed tool from the newest GitHub release
 # (checked against its .sha256) unless SIGN_FEED points at one.
@@ -54,7 +54,11 @@ if [ "$CHECK" = 1 ] && [ -n "$nofilepin" ]; then echo "Entries with a file but n
 # Strip mode: hosted mod files to move after the swap = files under our address named by the old list,
 # minus anything under client/ (SkyMP file sync) and anything the client manifest mentions.
 MOVE=()
+# Custom (our own) entries survive: AD_KEEP_IDS=id1,id2. Everything else (Nexus, third party) goes.
+KEEP_JSON=$(jq -n --arg k "${AD_KEEP_IDS:-}" '$k | split(",") | map(select(length>0))')
 if [ "$STRIP" = 1 ]; then
+  echo "Keeping ids: $KEEP_JSON. Entries:"
+  jq -r --argjson keep "$KEEP_JSON" '.mods[] | "  \(if (.id as $i | $keep | index($i)) then "KEEP  " else "remove" end) \(.id)  \(.url // (.nexus|tostring))"' "$MODS"
   while IFS= read -r u; do
     [[ "$u" == "$BASE_URL"/* ]] || continue
     rel=${u#"$BASE_URL"/}; rel=${rel%%[?#]*}
@@ -62,8 +66,8 @@ if [ "$STRIP" = 1 ]; then
     [ -f "$WEB_ROOT/$rel" ] || continue
     if [ -f "$WEB_ROOT/client/manifest.json" ] && grep -qF -- "$rel" "$WEB_ROOT/client/manifest.json"; then echo "  keep (client manifest names it): $rel"; continue; fi
     MOVE+=("$rel")
-  done < <(jq -r '.mods[]? | (.url // empty), (.files[]? // empty | strings)' "$MODS" | sort -u)
-  echo "mods.json: $(jq '.mods | length' "$MODS") entries -> 0. Hosted files to move to the backup folder: ${#MOVE[@]}"
+  done < <(jq -r --argjson keep "$KEEP_JSON" '.mods[]? | select(.id as $i | $keep | index($i) | not) | (.url // empty), (.files[]? // empty | strings)' "$MODS" | sort -u)
+  echo "mods.json: $(jq '.mods | length' "$MODS") entries -> $(jq length <<<"$KEEP_JSON"). Hosted files to move to the backup folder: ${#MOVE[@]}"
   for rel in "${MOVE[@]}"; do echo "  move $rel"; done
   [ "$PREVIEW" = 0 ] || exit 0
 fi
@@ -91,7 +95,7 @@ fi
 STAGE=$WORK/stage; mkdir -p "$STAGE/client"
 for f in "${FEEDS[@]}"; do [ -f "$WEB_ROOT/$f" ] && cp "$WEB_ROOT/$f" "$STAGE/$f"; done
 if [ "$STRIP" = 1 ]; then
-  jq '.mods = []' "$STAGE/mods.json" > "$WORK/m.new" && mv "$WORK/m.new" "$STAGE/mods.json"
+  jq --argjson keep "$KEEP_JSON" '.mods |= map(select(.id as $i | $keep | index($i)))' "$STAGE/mods.json" > "$WORK/m.new" && mv "$WORK/m.new" "$STAGE/mods.json"
 fi
 for id in $missing; do
   url=$(jq -r --arg id "$id" '.mods[] | select(.id == $id) | .url' "$MODS")

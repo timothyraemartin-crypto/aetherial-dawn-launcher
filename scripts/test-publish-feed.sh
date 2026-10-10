@@ -106,4 +106,9 @@ before=$(snap); "$here/publish-feed.sh" --strip-mods-preview | grep -q "move pat
 [ ! -e "$T/root/patches/b.zip" ] && [ -f "$T/bk/files/patches/b.zip" ] || { echo "FAIL: hosted file not moved to the backup"; exit 1; }
 [ -f "$T/root/client/sync.dll" ] && [ -f "$T/root/patches/kept.ini" ] || { echo "FAIL: stripped a client or manifest-named file"; exit 1; }
 jq -e '.mods | length == 6' "$T/bk/mods.json" >/dev/null || { echo "FAIL: old list not backed up"; exit 1; }
+# custom entries named in AD_KEEP_IDS survive, with their hosted file
+fresh; echo ours > "$T/root/patches/ours.ini"; echo theirs > "$T/root/patches/theirs.zip"
+jq '.mods = [{"id":"ours","name":"O","url":"https://example.test/launcher/patches/ours.ini"},{"id":"theirs","name":"T","url":"https://example.test/launcher/patches/theirs.zip"},{"id":"nx","name":"N","nexus":{"mod":1}}]' "$T/root/mods.json" > "$T/m" && mv "$T/m" "$T/root/mods.json"
+AD_KEEP_IDS=ours "$here/publish-feed.sh" --strip-mods >/dev/null || { echo "FAIL: strip with keep failed"; exit 1; }
+[ "$(jq -r '[.mods[].id]|join(",")' "$T/root/mods.json")" = ours ] && [ -f "$T/root/patches/ours.ini" ] && [ -f "$T/bk/files/patches/theirs.zip" ] || { echo "FAIL: custom entry not kept or third-party file not moved"; exit 1; }
 echo "publish-feed test ok"

@@ -26,6 +26,6 @@ later edit is published with this script (see docs/signing-feeds.md, "Rollout or
 
 Order matters: old launchers still read `mods.json`, so never remove it before the release is live. Then:
 
-1. Actions > Publish launcher feed > mode `strip-mods-preview`: lists the entries and the hosted files it would move; changes nothing.
-2. Same workflow, mode `strip-mods`: sets `mods` to `[]` (other keys stay), signs, verifies, swaps in with the old `mods.json` and `.sig` backed up, then moves (never deletes) the hosted mod files into `AD_BACKUP_DIR/files`. `client/`, `masters.json` and files `client/manifest.json` names are not touched.
+1. Actions > Publish launcher feed > mode `strip-mods-preview`: lists each entry as KEEP or remove and the hosted files it would move; changes nothing.
+2. Same workflow, mode `strip-mods`: keeps only the custom (our own) entries named in `AD_KEEP_IDS` (default none; set the repo variable `AD_KEEP_IDS`), removing Nexus and other third-party entries (other keys stay), signs, verifies, swaps in with the old `mods.json` and `.sig` backed up, then moves (never deletes) the hosted mod files into `AD_BACKUP_DIR/files`. `client/`, `masters.json` and files `client/manifest.json` names are not touched.
 3. Rollback: copy the backed-up `mods.json`, `.sig` and `files/` back into the web root, then run mode `publish`.
