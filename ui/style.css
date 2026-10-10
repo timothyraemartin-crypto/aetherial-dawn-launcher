@@ -190,16 +190,7 @@ html.paused .scene, html.paused .aurora { animation-play-state: paused; }
 .btn.primary { background: linear-gradient(180deg, #1F5A80, #103349); border-color: rgba(169,214,242,.55); height: 40px; padding: 0 22px; font: 600 13px var(--display); letter-spacing: .16em; }
 .btn.primary:disabled { opacity: .45; cursor: default; }
 
-.ftable-wrap { flex: 1; min-height: 120px; overflow: auto; border: 1px solid var(--line); border-radius: 4px; }
-.ftable { width: 100%; border-collapse: collapse; }
-.ftable th { position: sticky; top: 0; background: var(--panel-solid); text-align: left; font: 500 10.5px var(--display); letter-spacing: .16em; color: var(--faint); padding: 9px 12px; border-bottom: 1px solid var(--line); }
-.ftable td { padding: 7px 12px; border-bottom: 1px solid rgba(170,196,222,.06); font: 400 11.5px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
-.ftable td:last-child, .ftable th:last-child { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.page-foot { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .note { color: var(--faint); font-size: 12.5px; }
-.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ok); }
-.chip.warn { color: var(--warn); } .chip.busy { color: var(--frost); }
-.chip svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
 .news-full { display: grid; gap: 18px; }
 .news-full .news-item { grid-template-columns: 200px 1fr; }
@@ -266,7 +257,6 @@ html.animated .nav { background: linear-gradient(180deg, rgba(6,10,15,.9), rgba(
 .depot small.done { color: #8fd6a4; }
 .depot small.going { color: var(--frost); }
 .depot .btn { padding: 5px 12px; font-size: 12px; }
-.files-list { font: 400 12px var(--mono); max-height: 180px; overflow: auto; }
 .report { margin: 0; max-height: 220px; overflow: auto; padding: 10px 12px; background: #070B10; border: 1px solid var(--line); border-radius: 4px; font: 400 11px/1.45 var(--mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 
 .health-list { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow: auto; display: grid; gap: 6px; }
@@ -282,15 +272,6 @@ html.animated .nav { background: linear-gradient(180deg, rgba(6,10,15,.9), rgba(
 #dg-bar { width: 100%; }
 #cr-staff { color: var(--frost); }
 
-.rq-list { display: grid; gap: 8px; margin: 12px 0; max-height: 300px; overflow: auto; }
-.rq-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--line, rgba(255,255,255,.12)); border-radius: 8px; font-size: 13px; }
-.rq-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
-.rq-row.ok { opacity: .7; }
-.rq-row.bad { border-color: rgba(230, 110, 100, .5); }
-.page-foot .line { display: flex; gap: 8px; }
-#aside-line { display: flex; gap: 10px; align-items: center; justify-content: space-between; margin-top: 10px; }
-#aside-line small { opacity: .75; }
-#aside-line .btn { flex: none; }
 
 .si-join { margin: -4px 0 12px; font-size: 13px; color: var(--muted); }
 .si-join .linkish { font-size: 13px; }

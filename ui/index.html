@@ -42,7 +42,6 @@
   <nav class="nav" aria-label="Launcher">
     <button id="nav-home" aria-current="page"><svg viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5h13V10"/><path d="M10 19.5v-5h4v5"/></svg>Home</button>
     <button id="nav-server"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8" ry="2.5"/><path d="M4 5.5v6c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5v-6"/><path d="M4 11.5v6c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5v-6"/></svg>Server Info</button>
-    <button id="nav-mods"><svg viewBox="0 0 24 24"><path d="M9 4h6v3a2 2 0 1 0 4 0h1v6h-3a2 2 0 1 0 0 4h3v3H4v-6h1a2 2 0 1 0 0-4H4V4z"/></svg>Mods</button>
     <button id="nav-news"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 12h7M9 16h7"/></svg>News</button>
     <button id="nav-settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>Settings</button>
     <div class="me" id="me" hidden><span class="avatar" id="me-avatar"></span><div><b id="me-name"></b><small>Discord</small></div></div>
@@ -86,18 +85,6 @@
         <button id="t-settings"><svg viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>Launch options</button>
       </div>
     </div>
-  </section>
-
-  <!-- ===== mods ===== -->
-  <section class="page" id="page-mods" hidden>
-    <div class="srv-head">
-      <div><h2>Mods</h2><p class="note" id="mods-summary" style="margin:6px 0 0">The server decides which mods and files every player needs.</p></div>
-      <span class="chip busy" id="mods-chip" role="status" aria-live="polite"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/></svg><span>Checking</span></span>
-    </div>
-    <div class="ftable-wrap">
-      <table class="ftable"><thead><tr><th>FILE</th><th>SIZE</th></tr></thead><tbody id="files-body"></tbody></table>
-    </div>
-    <div class="page-foot"><span class="note">Check Vortex to confirm required mods are enabled and deployed before Play.</span><span class="line"><button class="btn primary" id="files-mods">Required mods</button><button class="btn" id="files-verify">Verify all files</button></span></div>
   </section>
 
   <!-- ===== news ===== -->
@@ -190,41 +177,6 @@
     </div>
   </div>
 
-  <!-- ===== stray plugins ===== -->
-  <div class="sheet" id="strays" role="dialog" aria-modal="true" aria-label="Other mods found" tabindex="-1" hidden>
-    <div class="panel">
-      <div class="eyebrow">OTHER MODS FOUND</div>
-      <h2>These plugins can crash the game</h2>
-      <p class="lead">Your Skyrim folder has plugins that aren't part of Aetherial Dawn. They load together with the multiplayer files and often crash Skyrim before the main menu. The launcher moves them to a backup folder or switches them off. Nothing is deleted, and you can put them back in Settings.</p>
-      <ul class="notes files-list" id="st-list"></ul>
-      <span class="error" id="st-error" role="alert" hidden></span>
-      <div class="actions">
-        <button class="btn primary" id="st-move">FIX IT</button>
-        <button class="btn" id="st-cancel">Not now</button>
-        <button class="linkish" id="st-ignore">Play with them anyway</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ===== required mods ===== -->
-  <div class="sheet" id="reqs" role="dialog" aria-modal="true" aria-label="Required mods" tabindex="-1" hidden>
-    <div class="panel">
-      <div class="eyebrow">MODS</div>
-      <h2>The server's mods</h2>
-      <p class="lead">Install, enable and deploy these mods in Vortex. For linked Nexus mods, use Mod Manager Download for the required file. The file list does not confirm deployment.</p>
-      <p class="note" id="rq-summary" role="status"></p>
-      <p class="note" id="rq-vortex-step" role="status" hidden></p>
-      <p class="note" id="rq-ownership" hidden></p>
-      <div class="line" id="rq-vortex-connect" hidden><button class="btn" id="rq-vortex-go">Connect Vortex</button></div>
-      <p class="note" id="rq-vortex-said" role="status" hidden></p>
-      <div class="rq-list" id="rq-list"></div>
-      <span class="error" id="rq-error" role="alert" hidden></span>
-      <div class="actions">
-        <button class="btn primary" id="rq-close">Close</button>
-      </div>
-    </div>
-  </div>
-
   <!-- ===== game crashed ===== -->
   <div class="sheet" id="crash" role="dialog" aria-modal="true" aria-label="Skyrim closed unexpectedly" tabindex="-1" hidden>
     <div class="panel">
@@ -275,9 +227,6 @@
         <div class="toggle"><div>Animated background<small>Snow, northern lights, castle lights and waterfalls. Turn off to save power on older PCs.</small></div><button class="switch" id="set-anim" role="switch" aria-checked="true" aria-label="Animated background"></button></div>
         <div class="toggle"><div>Update automatically<small>Downloads new files as soon as the launcher opens.</small></div><button class="switch" id="set-bg" role="switch" aria-checked="true" aria-label="Update automatically"></button></div>
         <div class="toggle"><div>Send game health reports to staff<small>Before Play when something is wrong, and after a crash, with the game's crash log (your Windows user folder hidden). Never your password, login or settings file. The checks that are sent show under Check my game.</small></div><button class="switch" id="set-share" role="switch" aria-checked="true" aria-label="Send game health reports to staff"></button></div>
-        <div class="toggle"><div>Only the server's mods<small>Before Play, other mods (ones not on the server's list) are set aside so they can't clash with the server. Nothing is deleted, and the mods the server needs are never touched.</small></div><button class="switch" id="set-only" role="switch" aria-checked="true" aria-label="Only the server's mods"></button></div>
-        <small class="note">When you press Play, staff are told which of the server's mods and required mods this PC is missing, by mod name only.</small>
-        <div class="line" id="aside-line"><small id="aside-note">Nothing has been set aside.</small><button class="btn" id="aside-restore">Put my other mods back</button></div>
       </div>
       <div class="field">
         <label>Problems?</label>
