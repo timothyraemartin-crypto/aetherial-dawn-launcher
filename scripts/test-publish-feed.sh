@@ -94,4 +94,16 @@ out=$(SIGN_FEED= "$here/publish-feed.sh" --check 2>&1) && { echo "FAIL: --check 
 echo "$out" | grep -q "no full sha256 (the launcher drops them): nx" || { echo "FAIL: nexus file entry not named: $out"; exit 1; }
 jq '.mods[2].sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$T/root/mods.json" > "$T/m" && mv "$T/m" "$T/root/mods.json"
 out=$(SIGN_FEED= "$here/publish-feed.sh" --check 2>&1) || { echo "FAIL: a full sha256 on the file entry should pass: $out"; exit 1; }
+# --strip-mods: empties the list (other keys kept), signs, moves hosted mod files into the backup (never deletes),
+# leaves client/ files and files the client manifest names. The preview changes nothing.
+fresh; echo big > "$T/root/patches/b.zip"; echo c > "$T/root/client/sync.dll"; echo kept > "$T/root/patches/kept.ini"; echo '{"files":[{"path":"x","url":"https://example.test/launcher/patches/kept.ini"}]}' > "$T/root/client/manifest.json"
+jq '.note="keep me" | .mods += [{"id":"b","name":"B","url":"https://example.test/launcher/patches/b.zip"},{"id":"c","name":"C","url":"https://example.test/launcher/client/sync.dll"},{"id":"k","name":"K","url":"https://example.test/launcher/patches/kept.ini"}]' "$T/root/mods.json" > "$T/m" && mv "$T/m" "$T/root/mods.json"
+before=$(snap); "$here/publish-feed.sh" --strip-mods-preview | grep -q "move patches/b.zip" || { echo "FAIL: preview did not list the move"; exit 1; }
+[ "$before" = "$(snap)" ] && [ -f "$T/root/patches/b.zip" ] || { echo "FAIL: preview changed files"; exit 1; }
+"$here/publish-feed.sh" --strip-mods >/dev/null || { echo "FAIL: --strip-mods failed"; exit 1; }
+[ "$(jq -c '.mods' "$T/root/mods.json")" = "[]" ] && [ "$(jq -r .note "$T/root/mods.json")" = "keep me" ] || { echo "FAIL: list not emptied or other keys lost"; exit 1; }
+[ "$(cat "$T/root/mods.json.sig")" = "$(sha256sum "$T/root/mods.json" | cut -d' ' -f1)" ] || { echo "FAIL: strip did not sign"; exit 1; }
+[ ! -e "$T/root/patches/b.zip" ] && [ -f "$T/bk/files/patches/b.zip" ] || { echo "FAIL: hosted file not moved to the backup"; exit 1; }
+[ -f "$T/root/client/sync.dll" ] && [ -f "$T/root/patches/kept.ini" ] || { echo "FAIL: stripped a client or manifest-named file"; exit 1; }
+jq -e '.mods | length == 6' "$T/bk/mods.json" >/dev/null || { echo "FAIL: old list not backed up"; exit 1; }
 echo "publish-feed test ok"

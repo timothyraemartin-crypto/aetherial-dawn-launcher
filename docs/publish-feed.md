@@ -21,3 +21,11 @@ Or from GitHub (choose mode check, pin-only or publish): Actions > Publish launc
 Run it after every change to `mods.json` or the manifest. The launcher accepts unsigned files until
 it has once seen a valid signature, so the order is: release the launcher, publish, then every
 later edit is published with this script (see docs/signing-feeds.md, "Rollout order").
+
+## Removing the mod list (after the mod-free launcher is released)
+
+Order matters: old launchers still read `mods.json`, so never remove it before the release is live. Then:
+
+1. Actions > Publish launcher feed > mode `strip-mods-preview`: lists the entries and the hosted files it would move; changes nothing.
+2. Same workflow, mode `strip-mods`: sets `mods` to `[]` (other keys stay), signs, verifies, swaps in with the old `mods.json` and `.sig` backed up, then moves (never deletes) the hosted mod files into `AD_BACKUP_DIR/files`. `client/`, `masters.json` and files `client/manifest.json` names are not touched.
+3. Rollback: copy the backed-up `mods.json`, `.sig` and `files/` back into the web root, then run mode `publish`.

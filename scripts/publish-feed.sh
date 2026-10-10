@@ -5,6 +5,10 @@
 #   sudo scripts/publish-feed.sh --check          only report; changes nothing
 #   sudo scripts/publish-feed.sh --pin-only       BEFORE a launcher release: fill missing sha256 pins in mods.json,
 #                                                 no signing (needs no sign-feed and no key); refuses a signed list
+#   sudo scripts/publish-feed.sh --strip-mods-preview   list what --strip-mods would do; changes nothing
+#   sudo scripts/publish-feed.sh --strip-mods     AFTER the mod-free launcher is released: set mods.json to an empty list
+#                                                 (keeps its other keys), sign, verify, swap, then MOVE (never delete) the mod
+#                                                 files it pointed at into AD_BACKUP_DIR/files. client/ and masters.json stay.
 # Needs bash, jq, curl, sha256sum. Fetches the sign-feed tool from the newest GitHub release
 # (checked against its .sha256) unless SIGN_FEED points at one.
 # Everything is built and signed in a temp copy first; the live files change only after the copy
@@ -22,8 +26,8 @@ BASE_URL=${AD_BASE_URL:-https://vps-d38c928e.vps.ovh.us/launcher}
 REPO=${AD_RELEASE_REPO:-timothyraemartin-crypto/aetherial-dawn-launcher}
 BACKUP_DIR=${AD_BACKUP_DIR:-/var/backups/aetherial-deploy/feed-$(date +%Y%m%d%H%M%S)}
 RELEASE_BASE=${AD_RELEASE_BASE:-https://github.com/$REPO/releases/latest/download}
-CHECK=0; PIN_ONLY=0
-case "${1:-}" in --check) CHECK=1 ;; --pin-only) PIN_ONLY=1 ;; "") ;; *) echo "unknown option ${1}"; exit 1 ;; esac
+CHECK=0; PIN_ONLY=0; STRIP=0; PREVIEW=0
+case "${1:-}" in --check) CHECK=1 ;; --pin-only) PIN_ONLY=1 ;; --strip-mods) STRIP=1 ;; --strip-mods-preview) STRIP=1; PREVIEW=1 ;; "") ;; *) echo "unknown option ${1}"; exit 1 ;; esac
 FEEDS=(mods.json client/manifest.json)
 
 for t in jq curl sha256sum; do command -v "$t" >/dev/null || { echo "$t is needed"; exit 1; }; done
@@ -37,16 +41,32 @@ WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 # or isn't https, so those are found first and named; they are what makes players lose mods.
 UNPINNED='.mods[] | select(.url != null and .nexus == null and ((.sha256 // "") | tostring | test("^[0-9a-fA-F]{64}$") | not)) | .id'
 PLAIN='.mods[] | select(.url != null and (.url | startswith("https://") | not)) | .id'
-plain=$(jq -r "$PLAIN" "$MODS")
+plain=$([ "$STRIP" = 1 ] || jq -r "$PLAIN" "$MODS")
 [ -z "$plain" ] || { echo "Entries whose address is not https (the launcher drops them): $(echo $plain | tr '\n' ' ')"; exit 1; }
-missing=$(jq -r "$UNPINNED" "$MODS")
+missing=$([ "$STRIP" = 1 ] || jq -r "$UNPINNED" "$MODS")
 if [ "$CHECK" = 1 ] && [ -n "$missing" ]; then echo "Entries without sha256: $(echo $missing | tr '\n' ' ')"; exit 1; fi
 # The launcher also drops any entry that names a single `file` to check or copy unless it carries a full
 # 64-character sha256 (core/src/modlist.rs). A nexus entry is not covered by the direct-download check
 # above, so it would vanish from every player's list without a word.
 NOFILEPIN='.mods[] | select(.file != null and ((.sha256 // "") | tostring | length) != 64) | .id'
-nofilepin=$(jq -r "$NOFILEPIN" "$MODS")
+nofilepin=$([ "$STRIP" = 1 ] || jq -r "$NOFILEPIN" "$MODS")
 if [ "$CHECK" = 1 ] && [ -n "$nofilepin" ]; then echo "Entries with a file but no full sha256 (the launcher drops them): $(echo $nofilepin | tr '\n' ' ')"; exit 1; fi
+# Strip mode: hosted mod files to move after the swap = files under our address named by the old list,
+# minus anything under client/ (SkyMP file sync) and anything the client manifest mentions.
+MOVE=()
+if [ "$STRIP" = 1 ]; then
+  while IFS= read -r u; do
+    [[ "$u" == "$BASE_URL"/* ]] || continue
+    rel=${u#"$BASE_URL"/}; rel=${rel%%[?#]*}
+    case "$rel" in client/*|masters.json*|mods.json*|*..*|"") continue ;; esac
+    [ -f "$WEB_ROOT/$rel" ] || continue
+    if [ -f "$WEB_ROOT/client/manifest.json" ] && grep -qF -- "$rel" "$WEB_ROOT/client/manifest.json"; then echo "  keep (client manifest names it): $rel"; continue; fi
+    MOVE+=("$rel")
+  done < <(jq -r '.mods[]? | (.url // empty), (.files[]? // empty | strings)' "$MODS" | sort -u)
+  echo "mods.json: $(jq '.mods | length' "$MODS") entries -> 0. Hosted files to move to the backup folder: ${#MOVE[@]}"
+  for rel in "${MOVE[@]}"; do echo "  move $rel"; done
+  [ "$PREVIEW" = 0 ] || exit 0
+fi
 if [ "$PIN_ONLY" = 0 ]; then
   tool=${SIGN_FEED:-$(command -v sign-feed || true)}
   if [ -z "$tool" ]; then
@@ -70,6 +90,9 @@ fi
 # 2. Build the new feed in a temp copy.
 STAGE=$WORK/stage; mkdir -p "$STAGE/client"
 for f in "${FEEDS[@]}"; do [ -f "$WEB_ROOT/$f" ] && cp "$WEB_ROOT/$f" "$STAGE/$f"; done
+if [ "$STRIP" = 1 ]; then
+  jq '.mods = []' "$STAGE/mods.json" > "$WORK/m.new" && mv "$WORK/m.new" "$STAGE/mods.json"
+fi
 for id in $missing; do
   url=$(jq -r --arg id "$id" '.mods[] | select(.id == $id) | .url' "$MODS")
   if [[ "$url" == "$BASE_URL"/* && -f "$WEB_ROOT/${url#"$BASE_URL"/}" ]]; then
@@ -113,4 +136,7 @@ for f in "${FEEDS[@]}"; do
 done
 "$tool" verify "$WEB_ROOT"
 trap 'rm -rf "$WORK"' EXIT; trap - ERR
+for rel in "${MOVE[@]}"; do
+  mkdir -p "$BACKUP_DIR/files/$(dirname "$rel")" && mv "$WEB_ROOT/$rel" "$BACKUP_DIR/files/$rel"
+done
 echo "Feed published and verified. Previous files: $BACKUP_DIR"

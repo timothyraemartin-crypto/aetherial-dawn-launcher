@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: check = only report; pin-only = fill missing sha256 before a launcher release (no signing); publish = pin, sign, verify (after the release)
+        description: check = only report; pin-only = fill missing sha256 before a launcher release (no signing); publish = pin, sign, verify (after the release); strip-mods-preview / strip-mods = empty the mod list and move hosted mod files to the backup folder (only after the mod-free launcher is released)
         type: choice
-        options: [check, pin-only, publish]
+        options: [check, pin-only, publish, strip-mods-preview, strip-mods]
         default: check
 
 permissions:
@@ -56,5 +56,6 @@ jobs:
           printf '%s\n' "$K" > ~/.ssh/id_ed25519; chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$KH" > ~/.ssh/known_hosts
           flag=""; [ "$MODE" = check ] && flag="--check"; [ "$MODE" = pin-only ] && flag="--pin-only"
+          [ "$MODE" = strip-mods-preview ] && flag="--strip-mods-preview"; [ "$MODE" = strip-mods ] && flag="--strip-mods"
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$U@$H" \
             "sudo env AD_WEB_ROOT='$WEB_ROOT' AD_FEED_KEY='$FEED_KEY' bash -s -- $flag" < scripts/publish-feed.sh
