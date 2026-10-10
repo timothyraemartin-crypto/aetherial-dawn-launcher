@@ -98,13 +98,8 @@ jobs:
       # error prefixes), which nothing else checks. See ui-contract-test.js.
       - name: UI and Tauri command contract
         run: node .github/scripts/ui-contract-test.js
-      # The Vortex extension's job rules with a stand-in for Vortex (signed
-      # requests, listed mods only, the Aetherial Dawn profile only, USSEP
-      # version swap, rollback). Real Vortex proof is on Timothy's PC.
       - name: Discord notice checks
         run: node --test .github/scripts/patch-notes.test.js
-      - name: Vortex extension checks
-        run: node --test "vortex-extension/test/*.test.js"
       - name: Install Tauri CLI
         uses: taiki-e/install-action@v2
         with:
@@ -206,8 +201,6 @@ jobs:
         run: node .github/scripts/ui-contract-test.js
       - name: Discord notice checks
         run: node --test .github/scripts/patch-notes.test.js
-      - name: Vortex extension checks
-        run: node --test "vortex-extension/test/*.test.js"
 
   # The canonical-plugins tool for the server (staging runbook C): the VPS has
   # no Rust, so it downloads this build from the release instead. Static

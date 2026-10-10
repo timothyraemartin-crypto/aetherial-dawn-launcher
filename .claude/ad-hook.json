@@ -4,7 +4,6 @@
     "core",
     "src-tauri",
     "ui",
-    "vortex-extension",
     "contract",
     "scripts",
     "docs",

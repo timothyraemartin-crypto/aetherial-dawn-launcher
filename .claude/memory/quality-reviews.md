@@ -5,7 +5,7 @@ type: reference
 verified: 2026-10-07
 refs: ui/app.js, core/src/auth.rs, core/src/health.rs, core/src/serverorder.rs, core/src/serverlane.rs, core/src/loadorder.rs
 ---
-Read-only reviews on 2026-10-07; no code changed. Parts 2 and 3 are topics quality-reviews-2 and -3. Vortex has its own topic: topic vortex-extension-review. Unproven items say so.
+Read-only reviews on 2026-10-07; no code changed. Parts 2 and 3 are topics quality-reviews-2 and -3.. Unproven items say so.
 
 **Sign-in and health checks** (report: https://claude.ai/artifact/NXj5Tw5yRXcMddHcyNSqm1)
 - The launcher calls `/api/users/login-discord/token`, `/api/client-status`, `/api/crash-reports`; these exist on discord only on unmerged branches (e.g. triple-check-fixes), not main; discord draft PR #4 merges that branch. Confirmed 2026-10-07: the live server runs triple-check-fixes. See discord memory `launcher-endpoints-unmerged`.
