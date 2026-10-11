@@ -24,7 +24,6 @@ pub struct Inputs {
     pub game_folder: bool,
     pub game_version_ok: Option<bool>,
     pub skse: bool,
-    pub helper_mods: bool,
     pub signed_in: bool,
 }
 
@@ -33,7 +32,6 @@ pub fn steps(i: &Inputs) -> Vec<Step> {
         Step { id: "folder", title: "Choose your Skyrim folder", hint: "Open Settings and pick the folder with SkyrimSE.exe.", play_stage: "Starting", done: i.game_folder },
         Step { id: "version", title: "Skyrim is the version the server needs", hint: "Press Play and the launcher changes it for you.", play_stage: "Starting", done: i.game_folder && i.game_version_ok == Some(true) },
         Step { id: "skse", title: "SKSE is installed", hint: "Press Play: the launcher installs it.", play_stage: "Installing SKSE", done: i.skse },
-        Step { id: "helpers", title: "The launcher's helper mods are installed", hint: "Press Play: the launcher installs them.", play_stage: "Installing the launcher's helper mods", done: i.helper_mods },
         Step { id: "signin", title: "Sign in with Discord", hint: "Press Sign in with Discord.", play_stage: "Getting your game session", done: i.signed_in },
     ]
 }
@@ -51,7 +49,7 @@ mod tests {
     #[test]
     fn a_new_player_has_every_step_open_in_play_order() {
         let s = steps(&Inputs::default());
-        assert_eq!(s.iter().map(|s| s.id).collect::<Vec<_>>(), ["folder", "version", "skse", "helpers", "signin"]);
+        assert_eq!(s.iter().map(|s| s.id).collect::<Vec<_>>(), ["folder", "version", "skse", "signin"]);
         assert!(s.iter().all(|s| !s.done));
         assert!(show(&s, false));
     }
@@ -68,7 +66,7 @@ mod tests {
 
     #[test]
     fn it_hides_once_everything_is_done_or_the_game_has_started_before() {
-        let all = steps(&Inputs { game_folder: true, game_version_ok: Some(true), skse: true, helper_mods: true, signed_in: true });
+        let all = steps(&Inputs { game_folder: true, game_version_ok: Some(true), skse: true, signed_in: true });
         assert!(all.iter().all(|s| s.done) && !show(&all, false));
         assert!(!show(&steps(&Inputs::default()), true));
     }
@@ -76,7 +74,7 @@ mod tests {
     #[test]
     fn every_step_names_a_play_stage_the_report_can_carry() {
         // These are the texts play() shows under the Play button.
-        let known = ["Starting", "Installing SKSE", "Installing the launcher's helper mods", "Getting your game session"];
+        let known = ["Starting", "Installing SKSE", "Getting your game session"];
         assert!(steps(&Inputs::default()).iter().all(|s| known.contains(&s.play_stage)));
     }
 }
