@@ -3,11 +3,10 @@ name: Build launcher
 # Build and test on main and pull requests. Only an explicit vX.Y.Z tag can
 # publish a signed release, after both platform artifacts have passed.
 #
-# Jobs run on self-hosted runners on Timothy's PC (GitHub-hosted minutes are
-# blocked by billing): [self-hosted, windows, x64] is a native Windows runner,
-# [self-hosted, linux, x64] runs inside WSL2 Ubuntu. Required tools for each
-# are listed in docs/self-hosted-runners.md; the preflight steps below fail
-# fast with a clear message when one is missing.
+# The Windows build runs on a GitHub-hosted runner (windows-latest), so a release
+# never waits on Timothy's PC. The Linux jobs run on the self-hosted Linux runner
+# ([self-hosted, linux, x64]); tools it needs are listed in docs/self-hosted-runners.md.
+# The preflight step below fails fast with a clear message when a tool is missing.
 
 on:
   push:
@@ -25,7 +24,7 @@ jobs:
   # (Actions > Build launcher > Run workflow).
   windows:
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-    runs-on: [self-hosted, windows, x64]
+    runs-on: windows-latest
     env:
       # Where the server publishes launcher files, and the Discord login service.
       # Override with repository variables if the server moves.
