@@ -14,7 +14,7 @@ const FILES: &[(&str, &[u8])] = &[
 ];
 
 /// Settings files: written once, then the player's (or staff's) edits stay.
-const SETTINGS: &[(&str, &[u8])] = &[("Data/SKSE/Plugins/AetherialSkillTree.test.json", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialSkillTree.test.json")), ("Data/SKSE/Plugins/AetherialQuietPickups.ini", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialQuietPickups.ini"))];
+const SETTINGS: &[(&str, &[u8])] = &[("Data/SKSE/Plugins/AetherialSkillTree.test.json", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialSkillTree.test.json")), ("Data/SKSE/Plugins/AetherialQuietPickups.ini", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialQuietPickups.ini")), ("Data/SKSE/Plugins/AetherialDawn-NoPause.ini", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialDawn-NoPause.ini"))];
 
 /// Our own mods that are switched off for now: the launcher takes its own copies back out.
 const RETIRED: &[&str] = &["Data/SKSE/Plugins/AetherialFreezeMenus.dll"];
@@ -68,6 +68,8 @@ mod tests {
         std::fs::write(&ini, b"edited").unwrap();
         super::deploy(d.path());
         assert_ne!(std::fs::read(&dll).unwrap(), b"old");
+        let np = std::fs::read_to_string(d.path().join("Data/SKSE/Plugins/AetherialDawn-NoPause.ini")).unwrap();
+        assert!(np.contains("Book=0"));
         assert_eq!(std::fs::read(&ini).unwrap(), b"edited");
     }
 
