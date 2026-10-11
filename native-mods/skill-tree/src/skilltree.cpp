@@ -1,10 +1,10 @@
-// AetherialSkillTree 0.1.2 (adlite kit, Skyrim 1.6.1170 only).
+// AetherialSkillTree 0.1.3 (adlite kit, Skyrim 1.6.1170 only).
 // Shows our server skills in Skyrim's own Tab constellation menu (StatsMenu):
 //  - while the menu is open, the 18 vanilla constellations carry our skill names, perk names and descriptions;
 //  - only skills the player has learned are listed (hidden otherwise); no data from the server => vanilla menu untouched;
 //  - skill levels in the menu come from the server rank (15/30/50/75/100) for every learned skill, so no vanilla skill value has to be changed;
 //  - perk stars show "learned" from the server state (Actor::HasPerk answers for our perks only while the menu is open).
-// Server state comes as JSON in the inert GMST sTestFile2 (set by the client script) or, for offline tests, from
+// Server state comes as JSON in an inert GMST (sTestFile1, 2 or 3: the client script uses the first that exists) or, for offline tests, from
 // Data\SKSE\Plugins\AetherialSkillTree.test.json. Nothing is written to the game's records outside the menu session:
 // names are put back when the menu hides. No inventory/equipment calls, no Papyrus, no per-tick work.
 // Kill switches (Data\SKSE\Plugins): AetherialSkillTree.off = idle; AetherialSkillTree.nohide = names only, all 18 listed.
@@ -74,17 +74,23 @@ std::string ReadFileText(const std::wstring& path) {
     fclose(f); return r;
 }
 
-// GMST sTestFile2 string, found once by walking the settings table (same layout the freeze plugin verified)
-uintptr_t g_setting = 0; bool g_scanTried = false;
+// The inert string GMSTs the client script may hold the server state in, found once by walking the settings table
+// (same layout the freeze plugin verified). sTestFile2 does not exist in every install (Bart's skse64.log: "SetGameSettingString:
+// sTestFile2 not found"), so the client probes this same list in order and keeps the first one that reads back; here every one
+// that exists is remembered and the first holding JSON wins. Keep the list in step with "gmst" in skills-vanilla-map.json.
+const char* const kSettingNames[] = {"sTestFile1", "sTestFile2", "sTestFile3"};
+const int kSettingCount = 3;
+uintptr_t g_settings[kSettingCount] = {0, 0, 0}; bool g_scanTried = false;
 void FindSetting() {
     g_scanTried = true;
     uintptr_t gsc = rd<uintptr_t>(g_gsc);
     if (!gsc) { g_scanTried = false; return; }
     uintptr_t base = gsc + 0x118;
-    for (int eo = 0; eo < 0x40; eo += 8) {
+    int found = 0;
+    for (int eo = 0; eo < 0x40 && !found; eo += 8) {
         uintptr_t entries = rd<uintptr_t>(base + eo);
         if (!entries || entries < 0x10000 || !adlite::Readable(reinterpret_cast<void*>(entries), 0x18)) continue;
-        for (int co = 0; co < 0x40; co += 4) {
+        for (int co = 0; co < 0x40 && !found; co += 4) {
             uint32_t cap = rd<uint32_t>(base + co);
             if (cap < 256 || cap > (1u << 20) || (cap & (cap - 1))) continue;
             if (!adlite::Readable(reinterpret_cast<void*>(entries), static_cast<size_t>(cap) * 0x18)) continue;
@@ -92,29 +98,35 @@ void FindSetting() {
                 uintptr_t e = entries + static_cast<uintptr_t>(i) * 0x18;
                 uintptr_t key = rd<uintptr_t>(e), val = rd<uintptr_t>(e + 8);
                 if (!key || !val || key < 0x10000 || !adlite::Readable(reinterpret_cast<void*>(key), 12)) continue;
-                if (_strnicmp(reinterpret_cast<const char*>(key), "sTestFile2", 11) == 0) { g_setting = val; adlite::Log::Write("found sTestFile2 setting at %p", (void*)val); return; }
+                for (int n = 0; n < kSettingCount; ++n) {
+                    if (!g_settings[n] && _strnicmp(reinterpret_cast<const char*>(key), kSettingNames[n], 11) == 0) {
+                        g_settings[n] = val; ++found;
+                        adlite::Log::Write("found %s setting at %p", kSettingNames[n], (void*)val);
+                    }
+                }
             }
         }
     }
-    adlite::Log::Write("sTestFile2 not found");
+    if (!found) adlite::Log::Write("none of sTestFile1/2/3 found in the settings table: only the test file can feed the menu");
 }
 
 // Reads the server state; false = no usable data (menu stays vanilla).
 bool LoadState() {
     g_state.clear();
     std::string text;
-    if (!g_setting && !g_scanTried) FindSetting();
-    if (g_setting) {
-        uintptr_t s = rd<uintptr_t>(g_setting + 0x08);
+    if (!g_scanTried) FindSetting();
+    const char* src = "GMST";
+    for (int n = 0; n < kSettingCount && text.empty(); ++n) {
+        if (!g_settings[n]) continue;
+        uintptr_t s = rd<uintptr_t>(g_settings[n] + 0x08);
         if (s && adlite::Readable(reinterpret_cast<void*>(s), 2) && reinterpret_cast<const char*>(s)[0] == '{') {
-            size_t n = 0; const char* c = reinterpret_cast<const char*>(s);
-            while (n < 65536 && adlite::Readable(c + n, 1) && c[n]) ++n;
-            text.assign(c, n);
+            size_t len = 0; const char* c = reinterpret_cast<const char*>(s);
+            while (len < 65536 && adlite::Readable(c + len, 1) && c[len]) ++len;
+            text.assign(c, len); src = kSettingNames[n];
         }
     }
-    const char* src = "GMST";
     if (text.empty()) { text = ReadFileText(g_dir + L"\\Data\\SKSE\\Plugins\\AetherialSkillTree.test.json"); src = "test file"; }
-    if (text.empty()) { adlite::Log::Write("no server state (GMST empty, no test file): menu stays vanilla"); return false; }
+    if (text.empty()) { adlite::Log::Write("no server state (settings empty, no test file): menu stays vanilla"); return false; }
     P p{text.data(), text.data() + text.size()};
     J root = p.val();
     const J* sk = root.get("skills");
@@ -365,7 +377,7 @@ DWORD WINAPI Init(LPVOID) {
 
 bool Load(const void*) {
     adlite::Log::Open("AetherialSkillTree");
-    adlite::Log::Write("AetherialSkillTree 0.1.2 loading");
+    adlite::Log::Write("AetherialSkillTree 0.1.3 loading");
     wchar_t exe[MAX_PATH]{}; GetModuleFileNameW(nullptr, exe, MAX_PATH);
     g_dir = exe; g_dir = g_dir.substr(0, g_dir.find_last_of(L"\\/"));
     auto has = [](const std::wstring& f) { return GetFileAttributesW((g_dir + L"\\Data\\SKSE\\Plugins\\" + f).c_str()) != INVALID_FILE_ATTRIBUTES; };
