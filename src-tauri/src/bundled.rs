@@ -9,7 +9,6 @@ const FILES: &[(&str, &[u8])] = &[
     ("Data/SKSE/Plugins/AetherialDawn-NoPause.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialDawn-NoPause.dll")),
     ("Data/SKSE/Plugins/AetherialQuietPickups.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialQuietPickups.dll")),
     ("Data/SKSE/Plugins/AetherialFreezeMenus.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialFreezeMenus.dll")),
-    ("Data/Platform/Plugins/ad-report.js", include_bytes!("../bundled/Data/Platform/Plugins/ad-report.js")),
 ];
 
 /// Settings files: written once, then the player's (or staff's) edits stay.
