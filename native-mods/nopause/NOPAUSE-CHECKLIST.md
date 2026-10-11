@@ -1,6 +1,6 @@
 # NoPause in-game checklist (one session)
-Allowed (should NOT pause): Esc/Journal, Inventory, Magic, Favorites, Container, Crafting, Barter, Gift, Book, SleepWait, Training.
-Always paused (by design): Tab (Tween), Skills (Stats), Map, LevelUp, Console, MessageBox, Lockpicking, Tutorial.
+Allowed (should NOT pause): Esc/Journal, Inventory, Magic, Favorites, Container, Crafting, Barter, Gift, SleepWait, Training.
+Always paused (by design): Book (switched off by the bundled AetherialDawn-NoPause.ini, Book=0), Tab (Tween), Skills (Stats), Map, LevelUp, Console, MessageBox, Lockpicking, Tutorial.
 Test with a second player or a moving NPC/campfire/river in view so you can see time run.
 
 1. Stand near a moving NPC/river. Press Esc: Journal/system opens. Expect world keeps moving behind the menu, no blur trouble. Close with Esc: full control back at once.
@@ -10,7 +10,8 @@ Test with a second player or a moving NPC/campfire/river in view so you can see 
 5. Open a chest/container. World keeps running; walk-away auto-close is NOT active, so just close it. Controls back.
 6. Open a crafting station (forge/alchemy). Same. Close.
 7. Open a merchant (Barter). Same. Close.
-8. Pick up a book and read. Same. Close.
+8. Pick up a book and read it (and a skill book from the inventory). Expect the vanilla pause: world still, book opens and closes normally, controls back. The log must say "saw menu Book ... (left paused)", never "unpaused menu Book". Then set Book=1 in Data\SKSE\Plugins\AetherialDawn-NoPause.ini only to reproduce the old break.
+8b. Bisect (proves the cause): if the book still hangs with Book=0, move AetherialDawn-NoPause.dll out of Data\SKSE\Plugins and read again. Still broken = not NoPause; next suspects are AetherialSkillTree.dll, then AetherialQuietPickups.dll (one at a time), then the server skill-state mirror. Fixed = NoPause. Also send AetherialDawn-NoPause.log and the SKSE logs from the failed attempt.
 9. Wait/Sleep (T/ bed). Same. Close.
 10. Tab: Tween opens and the game PAUSES (expected). Pick Skills: it opens, sky/camera normal, NOT black. Close it: normal screen, controls back.
 11. Tab > Map: opens paused, world map shown. Close: controls back.

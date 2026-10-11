@@ -1,4 +1,4 @@
-// AetherialSkillTree 0.1.1 (adlite kit, Skyrim 1.6.1170 only).
+// AetherialSkillTree 0.1.2 (adlite kit, Skyrim 1.6.1170 only).
 // Shows our server skills in Skyrim's own Tab constellation menu (StatsMenu):
 //  - while the menu is open, the 18 vanilla constellations carry our skill names, perk names and descriptions;
 //  - only skills the player has learned are listed (hidden otherwise); no data from the server => vanilla menu untouched;
@@ -131,8 +131,24 @@ bool LoadState() {
 
 // ---------------------------------------------------------------- vanilla tree edits
 typedef void* (*CtorFn)(void*, const char*);
-typedef bool (*SetFn)(void*, const char*);
-CtorFn g_ctor = nullptr; SetFn g_setCStr = nullptr;
+CtorFn g_ctor = nullptr;
+// BSString (data*, u16 size, u16 capacity) written with the game's own allocator (BSString::Set_CStr has no id in 1.6.1170)
+typedef void* (*MmGetFn)();
+typedef void* (*AllocFn)(void*, size_t, int32_t, bool);
+typedef void (*FreeFn)(void*, void*, bool);
+MmGetFn g_mmGet = nullptr; AllocFn g_alloc = nullptr; FreeFn g_free = nullptr;
+bool SetBSString(void* out, const char* text) {
+    if (!g_mmGet || !g_alloc || !g_free || !out || !adlite::Readable(out, 16)) return false;
+    size_t len = strlen(text); if (len > 60000) return false;
+    char** data = reinterpret_cast<char**>(out); uint16_t* size = reinterpret_cast<uint16_t*>(reinterpret_cast<char*>(out) + 8); uint16_t* cap = reinterpret_cast<uint16_t*>(reinterpret_cast<char*>(out) + 10);
+    if (*data && *cap > len) { memcpy(*data, text, len + 1); *size = static_cast<uint16_t>(len); return true; }
+    void* mm = g_mmGet(); if (!mm) return false;
+    char* fresh = static_cast<char*>(g_alloc(mm, len + 1, 0, false)); if (!fresh) return false;
+    memcpy(fresh, text, len + 1);
+    char* old = *data; *data = fresh; *size = static_cast<uint16_t>(len); *cap = static_cast<uint16_t>(len + 1);
+    if (old) g_free(mm, old, false);
+    return true;
+}
 uintptr_t MakeFixed(const char* s) { uintptr_t slot = 0; g_ctor(&slot, s); return slot; }
 
 struct Edit { uintptr_t dest; uintptr_t orig; uintptr_t ours; };  // dest = address of a BSFixedString (8 bytes)
@@ -208,7 +224,7 @@ DescFn g_origDesc = nullptr;
 void DescDetour(void* self, void* out, void* parent, uint32_t field) {
     if (g_open.load(std::memory_order_relaxed)) {
         auto it = g_desc.find(reinterpret_cast<uintptr_t>(parent));
-        if (it != g_desc.end() && g_setCStr) { g_setCStr(out, it->second.c_str()); return; }
+        if (it != g_desc.end() && SetBSString(out, it->second.c_str())) return;
     }
     g_origDesc(self, out, parent, field);
 }
@@ -333,21 +349,23 @@ bool PatchVtable(uint64_t id, int slot, void* thunk, void** orig) {
 DWORD WINAPI Init(LPVOID) {
     Sleep(15000);
     g_avl = g_lib.Address(400267); g_statsVt = g_lib.Address(215973); g_pcVar = g_lib.Address(403521); g_gsc = g_lib.Address(400782);
-    g_ctor = reinterpret_cast<CtorFn>(g_lib.Address(69161)); g_setCStr = reinterpret_cast<SetFn>(g_lib.Address(11044));
+    g_ctor = reinterpret_cast<CtorFn>(g_lib.Address(69161));
+    g_mmGet = reinterpret_cast<MmGetFn>(g_lib.Address(11141)); g_alloc = reinterpret_cast<AllocFn>(g_lib.Address(68115)); g_free = reinterpret_cast<FreeFn>(g_lib.Address(68117));
     uintptr_t descFn = g_lib.Address(14552), hasPerkFn = g_lib.Address(37698);
-    if (!g_avl || !g_statsVt || !g_pcVar || !g_gsc || !g_ctor || !g_setCStr || !descFn || !hasPerkFn) { adlite::Log::Write("address ids missing, plugin idle"); return 0; }
+    adlite::Log::Write("ids: avl=%d statsVt=%d player=%d gmst=%d ctor=%d alloc=%d desc=%d hasPerk=%d", g_avl != 0, g_statsVt != 0, g_pcVar != 0, g_gsc != 0, g_ctor != nullptr, g_mmGet && g_alloc && g_free, descFn != 0, hasPerkFn != 0);
+    if (!g_avl || !g_statsVt || !g_pcVar || !g_gsc || !g_ctor) { adlite::Log::Write("required address ids missing, plugin idle"); return 0; }
     bool ok = adlite::InitHooks();
-    ok = ok && adlite::Hook(descFn, (void*)&DescDetour, (void**)&g_origDesc);
-    ok = ok && adlite::Hook(hasPerkFn, (void*)&HasPerkDetour, (void**)&g_origHasPerk);
+    if (descFn && g_mmGet && g_alloc && g_free) adlite::Log::Write("description hook ok=%d", (int)adlite::Hook(descFn, (void*)&DescDetour, (void**)&g_origDesc)); else adlite::Log::Write("description hook skipped (ids missing): vanilla texts stay");
+    if (hasPerkFn) adlite::Log::Write("perk-check hook ok=%d", (int)adlite::Hook(hasPerkFn, (void*)&HasPerkDetour, (void**)&g_origHasPerk)); else adlite::Log::Write("perk-check hook skipped (id missing): perk stars show vanilla state");
     ok = ok && PatchVtable(215973, 4, (void*)&ProcDetour, (void**)&g_origProc);
-    adlite::Log::Write("hooks installed ok=%d (description, HasPerk, StatsMenu.ProcessMessage)", (int)ok);
+    adlite::Log::Write("hooks installed ok=%d (StatsMenu.ProcessMessage patched; others above)", (int)ok);
     for (int tries = 0; tries < 60 && ok && !PatchAvOwner(); ++tries) Sleep(5000);  // the player object may not exist yet at the title screen
     return 0;
 }
 
 bool Load(const void*) {
     adlite::Log::Open("AetherialSkillTree");
-    adlite::Log::Write("AetherialSkillTree 0.1.1 loading");
+    adlite::Log::Write("AetherialSkillTree 0.1.2 loading");
     wchar_t exe[MAX_PATH]{}; GetModuleFileNameW(nullptr, exe, MAX_PATH);
     g_dir = exe; g_dir = g_dir.substr(0, g_dir.find_last_of(L"\\/"));
     auto has = [](const std::wstring& f) { return GetFileAttributesW((g_dir + L"\\Data\\SKSE\\Plugins\\" + f).c_str()) != INVALID_FILE_ATTRIBUTES; };
@@ -359,4 +377,4 @@ bool Load(const void*) {
 }
 }  // namespace
 
-ADLITE_PLUGIN("AetherialSkillTree", "Aetherial Dawn", 0x00010001, Load)
+ADLITE_PLUGIN("AetherialSkillTree", "Aetherial Dawn", 0x00010002, Load)
