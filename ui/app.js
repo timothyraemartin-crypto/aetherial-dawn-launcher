@@ -756,7 +756,7 @@
     onPlay(true, true);
   }
   async function onPlay(checked = false, gateOk = false) {
-    if (gameRunning || playInFlight || updating) return;
+    if (gameRunning || playInFlight || updating || playChecking) return;
     if (busy) return;
     // Installing the launcher update closes the launcher; Play waits for it.
     if (updating) { setStatus('The launcher is updating itself. Play is ready again once it restarts.'); return; }
@@ -787,6 +787,9 @@
       }
     }
     hideGate();
+    // A newer launcher release installs before the game starts. A failed or
+    // offline check never blocks Play: it carries on with this version.
+    if (await updateBeforePlay()) return;
     setPlay('wait', 'LAUNCHING');
     setStatus('Starting Skyrim through SKSE…');
     playing = true;
@@ -871,7 +874,10 @@
   let lastUpToDateLog = 0;
   // An update downloaded while Play was starting, installed once it's safe.
   let downloaded = null;
-  const updateWaits = () => gameRunning || playing || playInFlight || busy;
+  // playChecking: Play is looking for a launcher update before the game starts.
+  // That check may install (Play is the moment it is safe), so it ignores itself.
+  let playChecking = false;
+  const updateWaits = (beforePlay = false) => gameRunning || playInFlight || busy || (!beforePlay && (playing || playChecking));
   // gameRunning only knows a game Play started; Skyrim started from Steam,
   // Vortex or MO2 is found by asking Windows. When that question fails, the
   // game might be running, so the update waits (installing closes the
@@ -908,25 +914,29 @@
         : m.length <= 200 ? m : m.slice(0, 200).replace(/\s+\S*$/, '').replace(/[\s.,;:!?-]+$/, '') + '…';
     }
   }
-  async function checkSelfUpdate(byHand) {
-    if (updating || updateWaits()) return byHand ? 'busy' : undefined;
+  async function checkSelfUpdate(byHand, beforePlay = false) {
+    if (updating || updateWaits(beforePlay)) return byHand ? 'busy' : undefined;
     if (await skyrimUp()) return byHand ? waitReason() : undefined;
     // Staff's hold list comes with the server status, so the first check waits briefly for it.
     for (let i = 0; i < 30 && !statusAsked; i++) await new Promise(r => setTimeout(r, 100));
     try {
-      const upd = downloaded || await T.updater.check();
+      // Before Play a dead network must not hold the player up for long.
+      const upd = downloaded || (beforePlay
+        ? await Promise.race([T.updater.check(), new Promise((_, no) => setTimeout(() => no(new Error('timed out after 10 s')), 10000))])
+        : await T.updater.check());
       if (!upd) {
         if (byHand || Date.now() - lastUpToDateLog > 30 * 60 * 1000) { logUi('launcher is up to date'); lastUpToDateLog = Date.now(); }
         return 'latest';
       }
       // Play may have started while the check was out.
-      if (updating || updateWaits()) return byHand ? 'busy' : undefined;
+      if (updating || updateWaits(beforePlay)) return byHand ? 'busy' : undefined;
       if (!downloaded && heldByStaff(upd.version)) {
         if (byHand || Date.now() - lastUpToDateLog > 30 * 60 * 1000) { logUi(`launcher ${upd.version} is on hold from staff`); lastUpToDateLog = Date.now(); }
         return 'latest';
       }
       updating = true;
-      $('self-update-text').textContent = `Updating the launcher to ${upd.version}…`;
+      $('self-update-text').textContent = beforePlay ? `Updating the launcher to ${upd.version} before the game starts…` : `Updating the launcher to ${upd.version}…`;
+      if (beforePlay) setStatus(`Updating the launcher to ${upd.version} before the game starts…`);
       $('self-update').hidden = false;
       $('self-update-go').hidden = true;
       logUi(`installing launcher ${upd.version} automatically`);
@@ -937,7 +947,7 @@
           downloaded = upd;
         }
         // And again after the download: installing closes the launcher.
-        const held = updateWaits() || await skyrimUp();
+        const held = updateWaits(beforePlay) || await skyrimUp();
         if (held) {
           updating = false;
           $('self-update-text').textContent = gameCheckFailed
@@ -956,6 +966,7 @@
         }
         await upd.install();
         await T.process.relaunch();
+        return 'installing';
       } catch (e) {
         if (reserved) await T.core.invoke('self_update_end').catch(() => {});
         updating = false;
@@ -970,6 +981,23 @@
       logUi('launcher self-update check failed: ' + e);
       return 'failed';
     }
+  }
+  // Play checks for a newer launcher first. True when one is installing, so
+  // Play stops and the launcher restarts; any other outcome (up to date, held
+  // by staff, offline, failed) lets the game start with the current version.
+  async function updateBeforePlay() {
+    playChecking = true;
+    setPlay('wait', 'CHECKING');
+    setStatus('Checking for updates…');
+    try {
+      const r = await checkSelfUpdate(false, true);
+      if (r === 'installing') return true;
+      logUi(r === 'failed' ? 'play: launcher update check failed, starting with this version' : `play: launcher update check done (${r || 'no update installed'}), starting`);
+      return false;
+    } catch (e) {
+      logUi('play: launcher update check threw, starting with this version: ' + e);
+      return false;
+    } finally { playChecking = false; }
   }
   setInterval(() => checkSelfUpdate(false), 60 * 1000);
   $('set-update').onclick = async () => {

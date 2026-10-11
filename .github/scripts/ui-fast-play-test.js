@@ -101,7 +101,7 @@ function fakeBackEnd() {
     // S.picks: what each press of "Choose folder" returns in turn (dir null = cancelled).
     dialog: { open: async () => S.picks ? (S.picks[(S.picked = (S.picked || 0) + 1) - 1] || {}).dir || null : S.pickDir || null },
     // The fake latest.json: this launcher is the newest, unless S.update names a newer one.
-    updater: { check: () => new Promise(r => setTimeout(() => r(S.update ? {
+    updater: { check: () => new Promise((r, no) => setTimeout(() => S.updaterFails ? no(new Error('offline')) : r(S.update ? {
       version: S.update,
       download: () => { log.invokes.push([at(), 'ask', 'updater_download']); return new Promise(res => setTimeout(res, 200)); },
       install: async () => { log.invokes.push([at(), 'ask', 'updater_install']); },
@@ -463,9 +463,17 @@ const scenarios = [
   { name: 'another Skyrim folder: no early PLAY', s: { ...base, seed: { ...seed, dir: 'D:\\Other' }, clicks: [] }, expect: r => [
     ['PLAY is not enabled before the checks', firstLabel(r, 'PLAY') === null || firstLabel(r, 'PLAY') >= answeredAt(r, 'check')],
   ] },
-  { name: 'launcher update found while Play is starting the game: it waits', s: { ...base, update: '9.9.10', updaterDelay: 900, delay: { play: 3000 } }, expect: r => [
+  { name: 'newer launcher found when Play is pressed: it installs first and the game does not start yet', s: { ...base, update: '9.9.10', updaterDelay: 900, delay: { play: 3000 } }, expect: r => [
+    ['the launcher installs its update', askedAt(r, 'updater_install') !== null],
+    ['the game is not started by the old launcher', !played(r), JSON.stringify(r.invokes.filter(i => /updater|play/.test(i[2])))],
+  ] },
+  { name: 'Play with no update available: the game starts', s: { ...base, clicks: [1250] }, expect: r => [
+    ['nothing is installed', askedAt(r, 'updater_install') === null],
     ['the game starts', played(r)],
-    ['the launcher never installs its update while Play runs or the game is up', askedAt(r, 'updater_install') === null, JSON.stringify(r.invokes.filter(i => /updater|play/.test(i[2])))],
+  ] },
+  { name: 'Play when the update check fails or is offline: the game still starts', s: { ...base, updaterFails: true, clicks: [1250] }, expect: r => [
+    ['nothing is installed', askedAt(r, 'updater_install') === null],
+    ['the game starts', played(r)],
   ] },
   { name: 'launcher update found while Skyrim runs from Steam or Vortex: it waits', s: { ...base, update: '9.9.10', outsideGame: true, clicks: [] }, expect: r => [
     ['the launcher asks Windows whether Skyrim runs', askedAt(r, 'game_running') !== null],
@@ -487,7 +495,7 @@ const scenarios = [
   { name: 'launcher update found with nothing running: it installs', s: { ...base, update: '9.9.10', clicks: [] }, expect: r => [
     ['the update installs', askedAt(r, 'updater_install') !== null],
   ] },
-  { name: 'Skyrim running: PLAY does not come back, and a second press starts nothing', s: { ...base, clicks: [60, 9500], end: 10500 }, expect: r => [
+  { name: 'Skyrim running: PLAY does not come back, and a second press starts nothing', s: { ...base, clicks: [60, 9500], end: 12500 }, expect: r => [
     ['the game starts once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
     ['the button shows IN GAME once the launch settles', firstLabel(r, 'IN GAME [off]') !== null],
     ['PLAY is never offered again while the game runs', !r.labels.some(l => l[0] > answeredAt(r, 'play') && l[1] === 'PLAY'), JSON.stringify(r.labels.slice(-4))],
