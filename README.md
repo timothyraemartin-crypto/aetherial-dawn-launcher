@@ -85,51 +85,9 @@ Players don't click anything for this. Before each launch, the launcher:
 
 Everything it changes is written to the log. In the first live test, Skyrim.ini still named 43 BSAs from uninstalled mods.
 
-## Only the server's mods
-
-Settings has an **Only the server's mods** switch, on by default (0.1.38). A mod counts as the server's when it is required (SKSE, Address Library, Crash Logger, Skyrim Souls RE and its dependencies) or listed in the server's `/launcher/mods.json`. The launcher keeps the last list it downloaded in `.aetherial-dawn/mods/server-list.json`, so tidying works offline.
-
-A file belongs to a listed mod when the list's `check` names it, the launcher installed it (`installed.json`), or Vortex deployed it from a mod folder whose Nexus id is on the list (`Data/vortex.deployment.json`, folder names like `SKSE Menu Framework-120352-3-18-...`). Those files are never moved and their plugins are never switched off, even when Vortex installed them.
-
-Vortex folder names are matched by any number in them that equals a listed Nexus id (Vortex writes both `Name-120352-3-18-...` and `Name 120352 3.18 ...`), or by a required mod's name. Required mods' files are also protected by name: SKSE Menu Framework's ini, json, fonts and themes next to its DLL, Engine Fixes, Skyrim Souls RE, Crash Logger, Address Library, SkyUI, ImGui Icons and the Unofficial Patch's loose files. A mod is set aside whole or not at all: if any of its files stays, they all stay. In 0.1.38 the sweep missed Vortex's space-separated names and moved Menu Framework's fonts and settings but not its DLL, which crashed the game 3 seconds in; since 0.1.41 every Play first puts back any file of a kept mod from `*-other-mods` folders. Play also puts the five base masters first in loadorder.txt.
-
-With the switch on, Play also moves every other file Vortex deployed (meshes, textures, scripts, DLLs) to `.aetherial-dawn/disabled/<time>-other-mods/`. Their plugins are switched off in plugins.txt as before. Loose files that no tool recorded can't be traced to a mod, so they're left alone. **Put my other mods back** turns the switch off and moves everything in `.aetherial-dawn/disabled/` back where nothing has replaced it. The next Vortex deploy also puts its files back, so players who switch between servers are better off with a separate Vortex profile for Aetherial Dawn.
-
-Before uninstalling, close Skyrim and use **Settings → Put my other mods back** if Play has set any files aside. The launcher keeps its recovery copies under `<Skyrim>/.aetherial-dawn/disabled/`; a file is left there if another file already occupies its original path, so the player can review that conflict without losing either copy. If the launcher was already uninstalled, reinstall it and use the same Settings action. Uninstalling the launcher does not remove the Skyrim folder or these recovery copies.
-
 ## Plugins for a newer Skyrim
 
 Steam updates Creation Club downloads separately from the game, so after a downgrade they can stay on the newer build. Before every Play, `loadorder::too_new` compares each plugin's header version and form version with the five base masters. Any plugin that is newer, and any broken stub plugin, is moved with its archives to `.aetherial-dawn/disabled/<time>-plugins/`. The game skips Creation Club files that aren't in Data. The version record and the kept copy are then refreshed. Skyrim Platform's browser cache (`%TEMP%\\Skyrim Platform`) is cleared, because a stale profile there crashed libcef.dll 5 seconds in. A crash logger that launchers before 0.1.20 moved aside is put back, so the next crash names the failing module. Crash reports to staff go out in the background and are retried once when the staff service asks for a short wait.
-
-## Required mods
-
-Every player needs SKSE64 2.2.6, Address Library for SKSE Plugins (the `versionlib-1-6-1170-0.bin` file for the server's build), Crash Logger SSE AE VR 1.25.0 and Skyrim Souls RE - Unpaused Menus (Timothy's requirements, 2026-09-26). The launcher installs Skyrim Souls RE 2.4.0, the newest release built for 1.6.1170 (3.x targets 1.7.x), from its GitHub release (SHA-256 checked), keeps an existing SkyrimSoulsRE.ini, and never moves its DLL or its Interface/CombatAlertOverlayMenu.swf aside. Before Play (and after patching), the launcher installs SKSE 2.2.6 and Crash Logger itself when they're missing, from their pinned GitHub releases (`core/src/requirements.rs`, SHA-256 checked). If SKSE can't be installed, Play stops and says why (no connection, a damaged download, or a file it couldn't write). If Crash Logger or Skyrim Souls RE can't be installed, the game starts without it and the status line says which one and why; Play tries again next time (the default until Timothy chooses between blocking and warning). Crash Logger and Skyrim Souls RE only count as installed when SKSE 2.2.6 would load the DLL on 1.6.1170, so a copy for another Skyrim build or a cut-short one is installed again, and a Crash Logger set aside as a wrong build is never put back. Their files are unpacked as `.part` files and the DLL is renamed in last. SKSE's loader, DLL and Data/Scripts are the only files taken from its archive. Nexus Mods doesn't allow other sites to hand out its files, so when a Nexus-only required mod is missing Play stops and a screen lists each one with its Open button and which file to pick (`missing_nexus_mods`). Tidying never moves the Address Library files or Crash Logger's DLL, PDB and msdia140.dll. The health report's "Required mods" check covers all of them.
-
-Skyrim Souls RE's dependencies (Timothy, 2026-09-26, "All four"): SSE Engine Fixes (the 7.0.20 main file, held by Vortex, and the SKSE64 Preloader next to SkyrimSE.exe; 2026-10-05), the Unofficial Skyrim Special Edition Patch (client only; the server keeps its five masters), SKSE Menu Framework and ImGui Icons, all from Nexus through Download all mods or the Open buttons. Engine Fixes counts as installed when Data/SKSE/Plugins has EngineFixes.dll and EngineFixes_preload.txt and its preloader's d3dx9_42.dll is next to SkyrimSE.exe (the preload file alone isn't enough on 1.6.1170); tbb.dll and tbbmalloc.dll are optional. USSEP is `Unofficial Skyrim Special Edition Patch.esp` in Data, SKSE Menu Framework is `SKSEMenuFramework.dll`, ImGui Icons is `Data/Interface/ImGuiIcons`. None of them is moved aside or switched off.
-
-SkyUI (Timothy, 2026-09-26) is required too: SkyUI 5.2SE from Nexus (skyrimspecialedition mod 12604; the old-Skyrim page, skyrim mod 3863, doesn't work on Special Edition). It's client-only like USSEP, so the server keeps its five masters. It counts as installed when Data has a real `SkyUI_SE.esp` (not the empty stub from the first live test, which is still moved aside as broken) and `SkyUI_SE.bsa`. Before every Play, the plugins of required and listed mods that are in Data (SkyUI, USSEP, plugins named in mods.json) are switched on in plugins.txt, because the launcher's own installs don't do that the way Vortex does.
-
-SSE Display Tweaks (Nexus 34705, the Anniversary Edition file; `SSEDisplayTweaks.dll`) and the Black Screen and Startup Fix (Nexus 176509, a ready-made `SSEDisplayTweaks.ini` for 1080p or 1440p) are required too (Timothy, 2026-09-26). Display Tweaks is listed first so the fix's ini lands over the default one. The launcher doesn't change that ini. Since 0.1.58 it picks the 1440p preset when SkyrimPrefs.ini's `[Display] iSize H` is 1440 or more, else the 1080p one.
-
-SmoothCam (Nexus 41252), True Directional Movement (51614), TrueHUD (62775) and MCM Helper (53000, which their menus need) are required too (Timothy, 2026-09-26). The Anniversary Edition files are picked where a page has several. Each counts as installed when its DLL is in `Data\SKSE\Plugins`, and their plugins are switched on before Play like SkyUI's. They are client-only and change no world records.
-
-### Camera: SmoothCam's Modern Camera Preset
-
-SmoothCam - Modern Camera Preset (Nexus 41636) is required (Timothy, 2026-09-26). It only adds a preset file (`Data\SKSE\Plugins\SmoothCamPreset<slot>.json`, so the check accepts any slot). On the first Play with it installed, the launcher does what SmoothCam's "Load preset" does: it writes the preset's settings to `SmoothCam.json`, after copying the old one to `.aetherial-dawn\disabled\<time>-camera-preset\`. `.aetherial-dawn\mods\camera-preset.json` stops it running again, so changes made in Mod Configuration stay; bump `PRESET_VERSION` in `core/src/camera.rs` to apply once more. 0.1.53's hand-made Souls-style preset is replaced; its True Directional Movement change is undone where it ran.
-
-Required mods' plugins (SkyUI, the Unofficial Patch's dashed copy, SmoothCam, True Directional Movement, TrueHUD, MCM Helper) are switched on before every Play even when Vortex lists them switched off, because their menus need them. Other plugins switched off in Vortex stay off.
-
-### Unofficial Patch version
-
-USSEP 4.3.9 and later need Skyrim 1.7.99; the last one for 1.6.1170 is 4.3.8a. Timothy's Vortex had 4.3.9c, which crashed the game 17-19 seconds in while drawing land it changes (SkyrimSE.exe+02AD242 via Skyrim Souls RE's terrain hook, 2026-09-26 22:39 and 23:50). The launcher reads the patch's version from its header description, else Vortex's folder name, else its own install record. A newer one doesn't count as installed and is moved (with its Vortex mod's other files) to `.aetherial-dawn\disabled\<time>-too-new-ussep\` before Play; the Nexus install picks files whose version starts with 4.3.8 and refuses a download whose header says 4.3.9 or newer.
-
-Crash reports whose log shows the terrain update (`BGSTerrainManager`, or land plus the patch) name that as the likely cause instead of the checks' guess. (0.1.56 briefly held the patch off until the server had it; 0.1.57 removed that, since the land crash was the 1.7.99 patch version and SkyMP never streams terrain.)
-
-A header-only plugin no longer counts as broken (MCM Helper's `MCMHelper.esp` is one and was parked); Play puts required files back from `*-plugins` backup folders too.
-
-### SKSE mods built for another Skyrim
-
-A DLL in `Data\SKSE\Plugins` only counts as installed when it's the build SKSE 2.2.6 loads on Skyrim 1.6.1170. The launcher reads the DLL's `SKSEPlugin_Version` data and applies SKSE's own rules (1.6.629+ structure layout or no struct use; Address Library, signatures or 1.6.1170 in its version list; SKSE 2.2.6 or older required). In the first test Vortex had deployed True Directional Movement's old build and SKSE stopped the game with "only compatible with versions earlier than 1.6.629". Before every Play such DLLs are moved to `.aetherial-dawn\disabled\<time>-wrong-build\` with a `why.txt` (never deleted), the game check lists them, and a required mod's right build is installed: from an installer with SE and AE folders it takes the one that fits, and with Premium it tries the page's other files when the picked one is the wrong build.
 
 ## Plugin names the game client can't load
 
@@ -172,26 +130,9 @@ The launcher keeps a log at `%LOCALAPPDATA%\gg.aetherialdawn.launcher\logs\launc
 
 Fonts are Cinzel, Hanken Grotesk and JetBrains Mono, all under the SIL Open Font License.
 
-## Server mod list (mods.json)
+## Mods
 
-Timothy (2026-09-26): the server will run a lot of mods. The launcher no longer downloads or installs them itself (the one-click "Download all mods" queue and its Nexus sign-in were removed as unreachable): Vortex installs them, and the Mods page shows what is present and opens each mod's Nexus page. The list is `core/src/modlist.rs`'s built-in required mods, overlaid by the server's optional `<base>/mods.json`:
-
-```json
-{"mods": [
-  {"id": "ussep", "name": "Unofficial Skyrim Special Edition Patch",
-   "nexus": {"mod": 266, "file": 123456, "pick": "text in the file name"},
-   "check": ["Data/Unofficial Skyrim Special Edition Patch.esp"],
-   "hint": "which file to pick on Nexus"},
-  {"id": "some-github-mod", "name": "Some Mod", "url": "https://github.com/o/r/releases/download/v1/mod.7z",
-   "sha256": "…", "check": ["Data/SKSE/Plugins/Some.dll"]}
-]}
-```
-
-Other fields: `target` ("data", default, or "game" with `include` file names for files next to SkyrimSE.exe), `game_files` (names from a Data package that go next to SkyrimSE.exe instead), `fomod` (FOMOD option names to pick). A server entry with the same `id` replaces the built-in one. `check` paths must all exist for a mod to count as installed; entries without https sources or with unsafe paths are ignored.
-
-## Server-mods export (staff)
-
-When the server's `server-lane.json` names a staff member's Discord account, that PC downloads the listed pinned Nexus files in the background and zips them for the server (`src-tauri/src/export.rs`). It needs a Nexus Premium API key: staff paste it under **Settings > Staff: server-mod export**. The key is checked with Nexus, kept encrypted for the Windows user in the launcher's settings folder (`nexus.bin`), used only by the export, never logged and never shown again. Players never sign in to Nexus in the launcher.
+The launcher no longer lists, downloads, installs, sets aside or checks third-party mods, and there is no Mods page, Vortex or Nexus step. It keeps only what SkyMP needs: the game version check and fix, SKSE, the SkyMP client files from `client/manifest.json`, the server's plugin order from `masters.json`, Discord sign-in and the game health checks. Old launchers still read `mods.json`; the server keeps an empty one for them.
 
 ## Menu music
 
