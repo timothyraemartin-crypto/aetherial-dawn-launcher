@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
+mod bundled;
 mod faces;
 mod log;
 mod music;
@@ -424,6 +425,8 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
         let (dir, names, files) = (dir.clone(), server_names.clone(), m.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>());
         // Test builds of our own mods: exact paths listed one per line in .aetherial-dawn/local-allow.txt stay in place until the server lists them.
         let mut files = files;
+        // Our own mods ship inside the launcher: written into the game on every Play and always allowed.
+        files.extend(bundled::deploy(&dir));
         files.extend(std::fs::read_to_string(dir.join(".aetherial-dawn").join("local-allow.txt")).unwrap_or_default().lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()));
         tokio::task::spawn_blocking(move || launcher_core::modguard::extras(&dir, &names, &files)).await.map_err(|e| e.to_string())?
     };
