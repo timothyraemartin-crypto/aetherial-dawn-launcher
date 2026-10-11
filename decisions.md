@@ -15,3 +15,11 @@ Limits: this only stops the new launcher from starting the game. The server cann
 
 ## D-2026-10-11-2 A windowless Skyrim is ended automatically
 Timothy, 2026-10-11: force-closing Skyrim left it running, so Play refused. `watch::end_when_window_closed` now ends it 4 s after its window goes (was 15 s); `end_leftover_skyrim` ends a SkyrimSE.exe that is at least 30 s old and has had no window for 8 s, when this launcher has no session of its own (a leftover from an earlier launcher).
+
+## D-2026-10-11-3 The launcher is a profile (supersedes the block in D-2026-10-11-1)
+Timothy, 2026-10-11: however many mods a player has installed, the game should only run the allowed files.
+
+`core/src/profile.rs`: before the game starts, every extra file found by `modguard::extras` is moved (same-drive rename, instant) into `.aetherial-dawn/aside/<time>/` and moved back when Skyrim closes. The list is written to `aside/journal.json` before the first move, so a crash or power cut is repaired by `profile::restore`, which also runs whenever the launcher starts with no game running and when Play stops before the game starts. A file with something new at its old place is never overwritten; it stays in the aside folder and is logged. A file that cannot be moved (locked) stops Play with `MODS_FOUND:` as before, so the block remains the fallback. Rejected: a separate clean folder of hard links (Steam and SKSE expect the real folder; more unknowns) and a plugins.txt-only profile (does not stop loose files, archives or SKSE DLLs).
+
+## D-2026-10-11-4 Never pause: bAlwaysActive, no Skyrim Souls RE
+Timothy, 2026-10-11: "No I dont want the mod I want to create our own of it." Skyrim Souls RE stays out of the allowed set. On every Play the launcher writes `bAlwaysActive=1` under `[General]` in Skyrim.ini and Skyrim.ini.base (original kept as `.aetherial-dawn-backup`), so the game keeps running when its window loses focus. Our own never-pause plugin comes from the Never-pause thread; its file name is added to the allowed set when it exists.

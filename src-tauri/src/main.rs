@@ -1473,6 +1473,14 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, server_names:
             Err(e) => log::line(&format!("play: couldn't clean {}: {e}", ini.display())),
         }
     }
+    // The game keeps running when its window loses focus (Timothy: never pause).
+    for ini in gameini::skyrim_ini_paths(&docs) {
+        match gameini::ensure_always_active(&ini) {
+            Ok(true) => log::line(&format!("play: set bAlwaysActive=1 in {}", ini.display())),
+            Ok(false) => {}
+            Err(e) => log::line(&format!("play: couldn't set bAlwaysActive in {}: {e}", ini.display())),
+        }
+    }
     Ok(())
 }
 

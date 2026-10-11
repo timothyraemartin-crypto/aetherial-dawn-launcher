@@ -93,6 +93,70 @@ pub fn clean(text: &str, data_dir: &Path) -> (String, Repair) {
     (s, rep)
 }
 
+/// Skyrim.ini and its `.base` copy, where `bAlwaysActive` belongs.
+pub fn skyrim_ini_paths(documents: &Path) -> Vec<PathBuf> {
+    let dir = documents.join("My Games").join("Skyrim Special Edition");
+    ["Skyrim.ini", "Skyrim.ini.base"].iter().map(|n| dir.join(n)).collect()
+}
+
+/// The text with `bAlwaysActive=1` under `[General]`: the game keeps running
+/// when its window loses focus, so a shared world never stops for one player
+/// alt-tabbing. None when the text already says so.
+pub fn with_always_active(text: &str) -> Option<String> {
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let mut general: Option<usize> = None;
+    let mut in_general = false;
+    for i in 0..lines.len() {
+        let l = lines[i].trim().to_string();
+        if l.starts_with('[') {
+            in_general = l.eq_ignore_ascii_case("[general]");
+            if in_general {
+                general = Some(i);
+            }
+        } else if in_general {
+            if let Some((k, v)) = l.split_once('=') {
+                if k.trim().eq_ignore_ascii_case("balwaysactive") {
+                    if v.trim() == "1" {
+                        return None;
+                    }
+                    lines[i] = "bAlwaysActive=1".to_string();
+                    return Some(joined(&lines, nl, text));
+                }
+            }
+        }
+    }
+    match general {
+        Some(i) => lines.insert(i + 1, "bAlwaysActive=1".to_string()),
+        None => {
+            lines.push("[General]".to_string());
+            lines.push("bAlwaysActive=1".to_string());
+        }
+    }
+    Some(joined(&lines, nl, text))
+}
+
+fn joined(lines: &[String], nl: &str, original: &str) -> String {
+    let mut s = lines.join(nl);
+    if original.is_empty() || original.ends_with('\n') || !original.contains('\n') {
+        s.push_str(nl);
+    }
+    s
+}
+
+/// Writes `bAlwaysActive=1` into one ini file; the first time it changes a
+/// file it keeps the original next to it as `<name>.aetherial-dawn-backup`.
+pub fn ensure_always_active(ini: &Path) -> Result<bool> {
+    let Ok(text) = std::fs::read_to_string(ini) else { return Ok(false) };
+    let Some(new) = with_always_active(&text) else { return Ok(false) };
+    let backup = ini.with_file_name(format!("{}.aetherial-dawn-backup", ini.file_name().unwrap().to_string_lossy()));
+    if !backup.exists() {
+        crate::loadorder::atomic_write(&backup, text.as_bytes())?;
+    }
+    crate::loadorder::atomic_write(ini, new.as_bytes())?;
+    Ok(true)
+}
+
 /// Cleans one ini file in place. The first time it changes a file it keeps the
 /// original next to it as `<name>.aetherial-dawn-backup`.
 pub fn repair(ini: &Path, data_dir: &Path) -> Result<Repair> {
@@ -111,6 +175,35 @@ pub fn repair(ini: &Path, data_dir: &Path) -> Result<Repair> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn always_active_is_added_under_general_without_touching_the_rest() {
+        let text = "[Archive]\r\nsResourceArchiveList=a.bsa\r\n[General]\r\nsLanguage=ENGLISH\r\n[Display]\r\niSize H=1080\r\n";
+        let new = with_always_active(text).unwrap();
+        assert_eq!(new, "[Archive]\r\nsResourceArchiveList=a.bsa\r\n[General]\r\nbAlwaysActive=1\r\nsLanguage=ENGLISH\r\n[Display]\r\niSize H=1080\r\n");
+        assert_eq!(with_always_active(&new), None, "already set: nothing to write");
+    }
+
+    #[test]
+    fn always_active_is_corrected_or_the_section_made() {
+        assert_eq!(with_always_active("[General]\nbAlwaysActive=0\nx=1\n").unwrap(), "[General]\nbAlwaysActive=1\nx=1\n");
+        assert_eq!(with_always_active("[Display]\na=1\n").unwrap(), "[Display]\na=1\n[General]\nbAlwaysActive=1\n");
+        assert_eq!(with_always_active("").unwrap(), "[General]\nbAlwaysActive=1\n");
+        // the same key in another section does not count
+        assert!(with_always_active("[Other]\nbAlwaysActive=1\n[General]\n").is_some());
+    }
+
+    #[test]
+    fn always_active_is_written_to_the_file_and_the_original_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let ini = d.path().join("Skyrim.ini");
+        std::fs::write(&ini, "[General]\nsLanguage=ENGLISH\n").unwrap();
+        assert!(ensure_always_active(&ini).unwrap());
+        assert!(std::fs::read_to_string(&ini).unwrap().contains("bAlwaysActive=1"));
+        assert_eq!(std::fs::read_to_string(d.path().join("Skyrim.ini.aetherial-dawn-backup")).unwrap(), "[General]\nsLanguage=ENGLISH\n");
+        assert!(!ensure_always_active(&ini).unwrap());
+        assert!(!ensure_always_active(&d.path().join("missing.ini")).unwrap());
+    }
 
     #[test]
     fn drops_missing_and_repeated_archives() {
