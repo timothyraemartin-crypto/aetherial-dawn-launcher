@@ -194,6 +194,36 @@ pub fn has_visible_window(_pid: u32) -> bool {
     true
 }
 
+/// How long the process has been running, in seconds (None when unknown).
+#[cfg(windows)]
+pub fn process_age_secs(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
+    use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return None;
+        }
+        let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+        let ok = GetProcessTimes(h, &mut created, &mut exited, &mut kernel, &mut user) != 0;
+        CloseHandle(h);
+        if !ok {
+            return None;
+        }
+        let mut now = zero;
+        GetSystemTimeAsFileTime(&mut now);
+        let ticks = |f: FILETIME| (u64::from(f.dwHighDateTime) << 32) | u64::from(f.dwLowDateTime);
+        Some(ticks(now).saturating_sub(ticks(created)) / 10_000_000)
+    }
+}
+
+#[cfg(not(windows))]
+pub fn process_age_secs(_pid: u32) -> Option<u64> {
+    None
+}
+
 /// Ends every running process with this file name; returns their ids.
 pub fn end_all(name: &str) -> Vec<u32> {
     let mut out = Vec::new();

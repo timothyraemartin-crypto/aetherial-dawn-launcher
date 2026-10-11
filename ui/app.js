@@ -808,6 +808,12 @@
         showSignIn(msg.slice(11));
         return;
       }
+      if (msg.startsWith('MODS_FOUND:')) {
+        // The server takes no mods at all: pressing Play again checks the folder again.
+        setPlay('play', 'PLAY');
+        setStatus(`You can't join with other mods installed. Remove these from your Skyrim folder, then press Play again: ${msg.slice(11)}.`, true);
+        return;
+      }
       setPlay('play', 'PLAY');
       helpStatus(`Skyrim didn't start: ${msg}`, `game didn't start: ${msg}`);
     } finally {

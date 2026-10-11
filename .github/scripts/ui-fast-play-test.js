@@ -277,6 +277,11 @@ const firstLabel = (r, text) => (r.labels.find(l => l[1] === text) || [null])[0]
 const lastLabel = r => r.labels[r.labels.length - 1][1];
 
 const scenarios = [
+  { name: 'Other mods installed: Play stops and names them, and the game is not started', s: { ...base, playError: 'MODS_FOUND:SkyUI_SE.esp, CrashLogger.dll, textures (212 files), and 3 more' }, expect: r => [
+    ['the game was asked to start once and refused', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
+    ['the status says other mods block joining and names them', /can't join with other mods/.test(r.status) && r.status.includes('SkyUI_SE.esp, CrashLogger.dll, textures (212 files), and 3 more'), r.status],
+    ['Play is offered again', lastLabel(r) === 'PLAY'],
+  ] },
   { name: 'update available: the notes are listed under the update, closed, with no dialog', s: { ...base, clicks: [], check: { files: 2, bytes: 5000000, notes: ['New tavern in Whiterun', 'Fixed <b>crash</b> at the docks'] }, end: 4000 }, expect: r => [
     ['the lines are listed', !!r.whatsNew && r.whatsNew.lines.length === 2 && r.whatsNew.lines[0] === 'New tavern in Whiterun'],
     ['markup in a note is shown as text', !!r.whatsNew && r.whatsNew.lines[1].includes('<b>crash</b>')],

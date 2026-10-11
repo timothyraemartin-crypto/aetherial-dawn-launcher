@@ -250,6 +250,31 @@ fn restore_ccc(dir: &std::path::Path, why: &str) {
     }
 }
 
+/// Puts the player's mods back (core/src/profile.rs) when Play stops before the game starts.
+struct ProfileGuard {
+    dir: PathBuf,
+    armed: bool,
+}
+
+impl Drop for ProfileGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            restore_profile(&self.dir, "play stopped before the game started");
+        }
+    }
+}
+
+fn restore_profile(dir: &std::path::Path, why: &str) {
+    if !launcher_core::profile::pending(dir) {
+        return;
+    }
+    match launcher_core::profile::restore(dir) {
+        Ok(r) if r.kept.is_empty() => log::line(&format!("profile: put {} mod file(s) back ({why})", r.files)),
+        Ok(r) => log::line(&format!("profile: put {} mod file(s) back ({why}); {} stay in .aetherial-dawn/aside because something new sits at their place: {}", r.files, r.kept.len(), r.kept.iter().take(10).cloned().collect::<Vec<_>>().join(", "))),
+        Err(e) => log::line(&format!("profile: couldn't put the mod files back ({why}): {e}")),
+    }
+}
+
 /// Puts back every file the launcher set aside (other mods, old plugins).
 #[tauri::command]
 async fn restore_set_aside(state: State<'_, AppState>) -> CmdResult<usize> {
@@ -391,6 +416,32 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
         return Err("The server's list of game files is broken, so Play can't check your Skyrim against it. Staff need to fix it on the server; try again later.".into());
     }
     let server_names: Vec<String> = order.iter().map(|p| p.name.clone()).collect();
+    // No mods: anything beyond the game, SKSE and SkyMP's own files keeps the
+    // player out (core/src/modguard.rs). Checked on every Play, before the
+    // launcher changes anything on the PC.
+    play_step(&app, "Setting other mods aside…");
+    let extras = {
+        let (dir, names, files) = (dir.clone(), server_names.clone(), m.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>());
+        tokio::task::spawn_blocking(move || launcher_core::modguard::extras(&dir, &names, &files)).await.map_err(|e| e.to_string())?
+    };
+    let mut profile_guard = ProfileGuard { dir: dir.clone(), armed: false };
+    if !extras.is_empty() {
+        // The player keeps their mods: they leave the Skyrim folder for this session and come back when the game closes.
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0).to_string();
+        let (d, ex) = (dir.clone(), extras.clone());
+        let moved = tokio::task::spawn_blocking(move || launcher_core::profile::set_aside(&d, &ex, &stamp)).await.map_err(|e| e.to_string())?;
+        profile_guard.armed = true;
+        match moved {
+            Ok(m) if m.failed.is_empty() => log::line(&format!("play: set {} mod file(s) aside for this session", m.files)),
+            Ok(m) => {
+                log::line(&format!("play: couldn't set aside {} mod file(s): {}", m.failed.len(), m.failed.iter().take(10).cloned().collect::<Vec<_>>().join("; ")));
+                let names: Vec<String> = m.failed.iter().take(6).map(|f| f.split(" (").next().unwrap_or(f).rsplit('/').next().unwrap_or(f).to_string()).collect();
+                let found = format!("{}{}", names.join(", "), if m.failed.len() > 6 { format!(", and {} more", m.failed.len() - 6) } else { String::new() });
+                return Err(format!("MODS_FOUND:{found}"));
+            }
+            Err(e) => return Err(format!("Couldn't set your other mods aside ({e}). Close Skyrim and Vortex, then press Play again.")),
+        }
+    }
     tidy_game(&app, &dir, &m, &server_names)?;
     // Once the server loads more than the five base masters, this PC loads
     // exactly its plugins in its order: no Creation Club masters for the
@@ -486,6 +537,8 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     log::line("play: started skse64_loader.exe");
     // Skyrim.ccc goes back when the game closes (watch_game).
     ccc_guard.armed = false;
+    // The game is up: the mods stay aside until it closes (watch_game).
+    profile_guard.armed = false;
     let started = std::time::SystemTime::now();
     if config.close_on_launch {
         if let Some(w) = app.get_webview_window("main") {
@@ -520,13 +573,15 @@ fn reports_dir() -> Option<PathBuf> {
 
 /// Closing Skyrim with its X (or Alt+F4) can leave SkyrimSE.exe and Skyrim
 /// Platform's browser helper running with no window, so Steam still shows the
-/// game as running. Once Skyrim has had a window, and then has none for 15
-/// seconds while the process is still alive, the launcher ends it and the
-/// helpers.
+/// game as running, and Play refuses to start another session until it is gone.
+/// Once Skyrim has had a window, and then has none for a few seconds while the
+/// process is still alive, the launcher ends it and the helpers, so a player
+/// can rejoin straight away.
+const WINDOWLESS_GRACE_SECS: u32 = 4;
 async fn end_when_window_closed(pid: u32) {
     let alive = || watch::find_process(watch::GAME_PROCESS) == Some(pid);
     let mut seen = false;
-    let mut gone = 0;
+    let mut gone: u32 = 0;
     while alive() {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         if watch::has_visible_window(pid) {
@@ -534,8 +589,8 @@ async fn end_when_window_closed(pid: u32) {
             gone = 0;
         } else if seen {
             gone += 1;
-            if gone >= 15 && alive() {
-                log::line("game: Skyrim's window closed but the game kept running for 15 seconds; ending it so Steam sees it closed");
+            if gone >= WINDOWLESS_GRACE_SECS && alive() {
+                log::line(&format!("game: Skyrim's window closed but the game kept running for {WINDOWLESS_GRACE_SECS} seconds; ending it so Steam sees it closed"));
                 watch::terminate(pid);
                 for helper in watch::BROWSER_HELPERS {
                     let ended = tokio::task::spawn_blocking(move || watch::end_all(helper)).await.unwrap_or_default();
@@ -549,12 +604,49 @@ async fn end_when_window_closed(pid: u32) {
     }
 }
 
+/// A Skyrim left behind with no window (force-closed, or started by an earlier
+/// launcher) would make Play refuse until the player found and ended it in Task
+/// Manager. While no session of this launcher is running, a SkyrimSE.exe that
+/// has been up for at least 30 seconds and has had no window for 8 seconds in a
+/// row is ended, with Skyrim Platform's helpers, so Play works straight away.
+async fn end_leftover_skyrim(app: AppHandle) {
+    let mut gone = 0u32;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        if app.state::<AppState>().active_session.load(Ordering::SeqCst) {
+            gone = 0;
+            continue;
+        }
+        let Some(pid) = watch::find_process(watch::GAME_PROCESS) else {
+            gone = 0;
+            continue;
+        };
+        if watch::has_visible_window(pid) || !watch::process_age_secs(pid).is_some_and(|a| a >= 30) {
+            gone = 0;
+            continue;
+        }
+        gone += 1;
+        if gone >= 8 {
+            gone = 0;
+            log::line("game: a Skyrim with no window was left running (force-closed, or from an earlier launcher); ending it so Play works");
+            watch::terminate(pid);
+            for helper in watch::BROWSER_HELPERS {
+                let ended = tokio::task::spawn_blocking(move || watch::end_all(helper)).await.unwrap_or_default();
+                if !ended.is_empty() {
+                    log::line(&format!("game: ended {} leftover {helper} process(es)", ended.len()));
+                }
+            }
+        }
+    }
+}
+
 /// Follows Skyrim from launch to exit. Every session leaves a report in the
 /// log folder; a crash brings the launcher back with that report on screen.
 async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::time::SystemTime, close_on_launch: bool) {
     let close = watch_game_inner(app.clone(), &game_dir, started, close_on_launch).await;
     app.state::<AppState>().active_session.store(false, Ordering::SeqCst);
     restore_ccc(&game_dir, "the game closed");
+    restore_profile(&game_dir, "the game closed");
     if close {
         app.exit(0);
     }
@@ -2168,10 +2260,12 @@ fn main() {
             };
             let (http, faces_http) = (client(false)?, client(true)?);
             app.manage(AppState { config: Mutex::new(config), manifest: Mutex::new(None), game_operation: Mutex::new(()), active_session: AtomicBool::new(false), update_installing: AtomicBool::new(false), http, faces_http, music: music::Music::new() });
+            tauri::async_runtime::spawn(end_leftover_skyrim(app.handle().clone()));
             // A session that ended while the launcher was closed.
             if let Some(dir) = app.state::<AppState>().config.try_lock().ok().and_then(|c| c.game_dir.clone()) {
                 if watch::find_process(watch::GAME_PROCESS).is_none() {
                     restore_ccc(&dir, "the launcher started and the game isn't running");
+                    restore_profile(&dir, "the launcher started and the game isn't running");
                     faces::tidy(&dir, None);
                 }
             }
