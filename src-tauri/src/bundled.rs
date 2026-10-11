@@ -6,6 +6,7 @@ use std::path::Path;
 
 /// Path relative to the game folder, and the file's bytes.
 const FILES: &[(&str, &[u8])] = &[
+    ("Data/SKSE/Plugins/AetherialSkillTree.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialSkillTree.dll")),
     ("Data/SKSE/Plugins/AetherialDawn-NoPause.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialDawn-NoPause.dll")),
     ("Data/SKSE/Plugins/AetherialQuietPickups.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialQuietPickups.dll")),
 ];
@@ -14,7 +15,7 @@ const FILES: &[(&str, &[u8])] = &[
 const SETTINGS: &[(&str, &[u8])] = &[("Data/SKSE/Plugins/AetherialQuietPickups.ini", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialQuietPickups.ini"))];
 
 /// Our own mods that are switched off for now: the launcher takes its own copies back out.
-const RETIRED: &[&str] = &["Data/SKSE/Plugins/AetherialFreezeMenus.dll", "Data/SKSE/Plugins/AetherialSkillTree.dll"];
+const RETIRED: &[&str] = &["Data/SKSE/Plugins/AetherialFreezeMenus.dll"];
 
 fn same(path: &Path, bytes: &[u8]) -> bool {
     std::fs::read(path).is_ok_and(|b| b == bytes)
