@@ -6,14 +6,14 @@ use std::path::Path;
 
 /// Path relative to the game folder, and the file's bytes.
 const FILES: &[(&str, &[u8])] = &[
-    ("Data/SKSE/Plugins/AetherialDawn-NoPause.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialDawn-NoPause.dll")),
     ("Data/SKSE/Plugins/AetherialQuietPickups.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialQuietPickups.dll")),
-    ("Data/SKSE/Plugins/AetherialFreezeMenus.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialFreezeMenus.dll")),
-    ("Data/SKSE/Plugins/AetherialSkillTree.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialSkillTree.dll")),
 ];
 
 /// Settings files: written once, then the player's (or staff's) edits stay.
 const SETTINGS: &[(&str, &[u8])] = &[("Data/SKSE/Plugins/AetherialQuietPickups.ini", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialQuietPickups.ini"))];
+
+/// Our own mods that are switched off for now: the launcher takes its own copies back out.
+const RETIRED: &[&str] = &["Data/SKSE/Plugins/AetherialDawn-NoPause.dll", "Data/SKSE/Plugins/AetherialFreezeMenus.dll", "Data/SKSE/Plugins/AetherialSkillTree.dll"];
 
 fn same(path: &Path, bytes: &[u8]) -> bool {
     std::fs::read(path).is_ok_and(|b| b == bytes)
@@ -23,6 +23,9 @@ fn same(path: &Path, bytes: &[u8]) -> bool {
 /// A file that cannot be written is logged and still counted as ours.
 pub fn deploy(game_dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
+    for rel in RETIRED {
+        let _ = std::fs::remove_file(game_dir.join(rel));
+    }
     for (rel, bytes) in FILES.iter().chain(SETTINGS.iter()) {
         out.push((*rel).to_string());
         let path = game_dir.join(rel);
@@ -45,7 +48,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let ours = super::deploy(d.path());
         assert_eq!(ours.len(), super::FILES.len() + super::SETTINGS.len());
-        let dll = d.path().join("Data/SKSE/Plugins/AetherialDawn-NoPause.dll");
+        let dll = d.path().join("Data/SKSE/Plugins/AetherialQuietPickups.dll");
         let ini = d.path().join("Data/SKSE/Plugins/AetherialQuietPickups.ini");
         std::fs::write(&dll, b"old").unwrap();
         std::fs::write(&ini, b"edited").unwrap();
