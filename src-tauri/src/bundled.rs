@@ -8,6 +8,7 @@ use std::path::Path;
 const ESP_NAME: &str = "AetherialDawn.esp";
 
 const FILES: &[(&str, &[u8])] = &[
+    ("Data/Platform/Plugins/ad-modlist.js", include_bytes!("../bundled/Data/Platform/Plugins/ad-modlist.js")),
     ("Data/SKSE/Plugins/AetherialSkillTree.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialSkillTree.dll")),
     ("Data/SKSE/Plugins/AetherialDawn-NoPause.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialDawn-NoPause.dll")),
     ("Data/SKSE/Plugins/AetherialQuietPickups.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialQuietPickups.dll")),
