@@ -18,3 +18,8 @@ package\Data\SKSE\Plugins\SkyrimSoulsRE.dll (sha256 04bb6686...f88bbf) + .ini (a
 1. No-mods Play gate must allow SkyrimSoulsRE.dll + SkyrimSoulsRE.ini (and ideally CrashLogger.dll, which the code comment already calls "never set aside"). The set-aside list should be an allow-list: SKSE, versionlib bins, SkyrimPlatform, MpClientPlugin, SSRE, CrashLogger.
 2. Launcher ini step: ensure `bAlwaysActive=1` in [General] of Skyrim.ini (and its .base). I won't edit launcher source.
 3. Game restart for a test (coordinator): restore the two SSRE files, add bAlwaysActive=1, launch, then check: open inventory/map/Esc with another player nearby moving; alt-tab 60 s and confirm no disconnect. I have not run the game.
+
+## 5. Book menu (2026-10-11)
+REPORTED (Timothy): a player opening a book breaks the game. Not reproduced here (no game access); freeze, crash or stuck menu is UNKNOWN.
+INFERRED: Book was the only reading/item-view menu on the allow-list that the engine ran paused with its own 3D book scene; NoPause 1.0.5 cleared its pause flag and decremented numPausesGame, so the world kept running under it. Code paths show no crash route (Readable + SEH guards), so the likely symptom is a stuck or misbehaving book menu, not a hard crash.
+FIX: bundled AetherialDawn-NoPause.ini (written once by the launcher) sets Book=0, the DLL's existing per-menu switch, so books stay vanilla-paused. No DLL rebuild. Source default is still Book=1 until a rebuild.
