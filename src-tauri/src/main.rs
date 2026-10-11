@@ -1170,6 +1170,39 @@ fn self_update_begin(state: State<'_, AppState>) -> CmdResult<bool> {
     Ok(state.update_installing.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok())
 }
 
+/// A launcher update needs Skyrim closed. Ends the game and Skyrim Platform's
+/// helpers (the UI sends this only after its on-screen countdown). Returns
+/// whether no Skyrim process is left; the session watcher then clears itself.
+#[tauri::command]
+async fn close_game_for_update() -> CmdResult<bool> {
+    log::line("update: ending Skyrim so the launcher update can install");
+    tokio::task::spawn_blocking(|| {
+        for name in [watch::GAME_PROCESS, game::SKSE_LOADER] {
+            watch::end_all(name);
+        }
+        for helper in watch::BROWSER_HELPERS {
+            watch::end_all(helper);
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(!external_game_running()?)
+}
+
+/// Brings the launcher window in front of the game (top = true), so the
+/// countdown before a forced close is seen, and puts it back (top = false).
+#[tauri::command]
+fn raise_launcher(app: AppHandle, top: bool) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_always_on_top(top);
+        if top {
+            let _ = w.show();
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+        }
+    }
+}
+
 #[tauri::command]
 fn self_update_end(state: State<'_, AppState>) {
     state.update_installing.store(false, Ordering::SeqCst);
@@ -2413,7 +2446,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, files_state, open_game_folder, server_status, setup_state, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, health_check, bug_state, send_bug, report_problem, patch_game, game_running, self_update_begin, self_update_end, music_start, set_music, restore_set_aside, window_ready, open_invite])
+        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, files_state, open_game_folder, server_status, setup_state, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, health_check, bug_state, send_bug, report_problem, patch_game, game_running, self_update_begin, self_update_end, close_game_for_update, raise_launcher, music_start, set_music, restore_set_aside, window_ready, open_invite])
         .build(tauri::generate_context!())
         .expect("error while running the launcher")
         .run(|_, _| {});
