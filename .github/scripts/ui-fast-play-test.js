@@ -50,7 +50,9 @@ function fakeBackEnd() {
     update: () => null,
     server_status: () => ({ online: true, players: 1, maxPlayers: 50, ...(typeof S.statusNow === 'object' ? S.statusNow : {}), ...(S.statusFileDown ? { launcher: undefined } : { fromFile: true }), discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
     setup_state: () => S.setup || [{ id: 'folder', title: 'Choose your Skyrim folder', hint: 'x', done: true }],
-    files: () => S.files || [], files_state: () => S.fileStates || [], play: () => S.playWarnings || null,
+    bug_state: () => ({ available: true, summary: 't2 pos 4,5,6 cell Whiterun world Tamriel nearby: Dovah (120)' }),
+    send_bug: a => { (window.__T.bugs ||= []).push(a.note); return 'R-test'; },
+    files: () => [], play: () => S.playWarnings || null,
     patch_game: () => S.patchResult || { ...game, needed: false },
     game_running: () => !!S.outsideGame,
     self_update_begin: () => !S.updateReservationFails,
@@ -75,6 +77,7 @@ function fakeBackEnd() {
         log.invokes.push([at(), 'answer', cmd]);
         if (cmd === 'get_state' && S.stateFails) return rej('settings are not writable');
         if (cmd === 'server_status' && S.statusNow === 'down') return rej('no answer');
+        if (cmd === 'send_bug' && S.bugError) return rej(S.bugError);
         if (cmd === 'auth_status' && S.authFails) return rej('network down');
         if (cmd === 'game_running' && (S.gameCheckFails || (S.gameCheckFailsFrom && (S.gameChecks = (S.gameChecks || 0) + 1) >= S.gameCheckFailsFrom))) return rej('process list unavailable');
         if (cmd === 'export_key_save' && S.keyError) { log.keySent = args.key; return rej(S.keyError); }
@@ -240,6 +243,7 @@ function fakeBackEnd() {
       log.skse = ['g-skse', 'c-skse'].map(id => { const el = document.getElementById(id); return el.querySelector('b').textContent + el.querySelector('small').textContent; });
       log.skseRecheck = !document.getElementById('c-skse-recheck').hidden;
       log.playDisabled = btn.disabled;
+      log.bug = { bugs: log.bugs || [], shown: !document.getElementById('bug').hidden, summary: document.getElementById('bg-summary').textContent, result: document.getElementById('bg-result').hidden ? null : document.getElementById('bg-result').textContent, sendOff: document.getElementById('bg-send').disabled };
       const wn = document.getElementById('whatsnew');
       log.whatsNew = wn.hidden ? null : { lines: [...document.querySelectorAll('#whatsnew-list li')].map(li => li.textContent), open: wn.open };
       const setupBox = document.getElementById('setup');
@@ -277,6 +281,18 @@ const firstLabel = (r, text) => (r.labels.find(l => l[1] === text) || [null])[0]
 const lastLabel = r => r.labels[r.labels.length - 1][1];
 
 const scenarios = [
+  { name: 'Bug report: the saved F10 snapshot is shown and Send needs consent', s: { ...base, clicks: [], end: 3500, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 1800, kind: 'click', id: 'set-bug' }] }, expect: r => [
+    ['the sheet shows what the game saved', r.bug.shown && /pos 4,5,6 cell Whiterun/.test(r.bug.summary), r.bug.summary],
+    ['Send is off until the player agrees', r.bug.sendOff === true],
+  ] },
+  { name: 'Bug report: with consent the note is sent and the player is thanked', s: { ...base, clicks: [], end: 4500, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 1800, kind: 'click', id: 'set-bug' }, { at: 2300, kind: 'type', id: 'bg-note', text: 'door stuck' }, { at: 2400, kind: 'click', id: 'bg-consent' }, { at: 2500, kind: 'click', id: 'bg-send' }] }, expect: r => [
+    ['the note was sent once', JSON.stringify(r.bugs) === '["door stuck"]', JSON.stringify(r.bugs)],
+    ['the player is told it went to staff with the number', /Sent to staff as R-test/.test(r.bug.result || ''), r.bug.result],
+  ] },
+  { name: 'Bug report: a failed send says so and Send is offered again', s: { ...base, clicks: [], bugError: 'offline', end: 4500, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 1800, kind: 'click', id: 'set-bug' }, { at: 2400, kind: 'click', id: 'bg-consent' }, { at: 2500, kind: 'click', id: 'bg-send' }] }, expect: r => [
+    ['the player sees an error', /offline/.test(r.bug.result || ''), r.bug.result],
+    ['Send can be pressed again', r.bug.sendOff === false],
+  ] },
   { name: 'Other mods installed: Play stops and names them, and the game is not started', s: { ...base, playError: 'MODS_FOUND:SkyUI_SE.esp, CrashLogger.dll, textures (212 files), and 3 more' }, expect: r => [
     ['the game was asked to start once and refused', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
     ['the status says other mods block joining and names them', /can't join with other mods/.test(r.status) && r.status.includes('SkyUI_SE.esp, CrashLogger.dll, textures (212 files), and 3 more'), r.status],

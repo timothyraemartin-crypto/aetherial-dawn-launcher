@@ -152,7 +152,7 @@
   let statusAsked = false;
   // ---------- pages + sheets ----------
   const PAGES = { home: 'nav-home', server: 'nav-server', news: 'nav-news' };
-  const SHEETS = ['first', 'settings', 'downgrade', 'signin', 'crash', 'health'];
+  const SHEETS = ['first', 'settings', 'downgrade', 'signin', 'crash', 'health', 'bug'];
   let activeSheet = null, sheetReturnFocus = null;
   function showPage(p) {
     page = p;
@@ -1016,6 +1016,39 @@
     try { await navigator.clipboard.writeText(healthText); $('hl-note').textContent = 'Copied. Paste it with Ctrl+V.'; }
     catch { $('hl-note').textContent = "Couldn't copy. Use Copy diagnostics instead."; }
     $('hl-note').hidden = false;
+  };
+
+  // ---------- bug report ----------
+  // F10 in game saves where the player stands (ad-report.js); this sends it with a note.
+  function bugSendable() { return $('bg-consent').checked; }
+  async function openBug() {
+    $('bg-result').hidden = true;
+    $('bg-note').value = '';
+    $('bg-consent').checked = false;
+    $('bg-send').disabled = true;
+    $('bg-summary').textContent = 'Looking for what the game saved…';
+    showSheet('bug');
+    let st = null;
+    try { st = await invoke('bug_state'); } catch (_) { st = null; }
+    $('bg-summary').textContent = st && st.available
+      ? `The game saved this when you pressed F10: ${st.summary}`
+      : 'Nothing saved from the game yet. You can still send a note, or press F10 in game first.';
+  }
+  $('set-bug').onclick = openBug;
+  $('bg-close').onclick = () => showSheet('settings');
+  $('bg-consent').onchange = () => { $('bg-send').disabled = !bugSendable(); };
+  $('bg-send').onclick = async () => {
+    if (!bugSendable()) return;
+    $('bg-send').disabled = true;
+    try {
+      const id = await invoke('send_bug', { note: $('bg-note').value });
+      $('bg-result').textContent = id ? `Sent to staff as ${id}. Thank you.` : 'Sent to staff. Thank you.';
+      $('bg-note').value = '';
+    } catch (e) {
+      $('bg-result').textContent = String(e).replace(/^SIGNED_OUT:/, '');
+      $('bg-send').disabled = false;
+    }
+    $('bg-result').hidden = false;
   };
 
   // ---------- wiring ----------

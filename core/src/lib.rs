@@ -2,6 +2,7 @@
 //! client files into the Skyrim folder, writing SkyMP client settings, and
 //! finding the game. The Tauri app in `src-tauri` is a thin shell over this.
 
+pub mod adreport;
 pub mod aliases;
 pub mod aside;
 pub mod auth;

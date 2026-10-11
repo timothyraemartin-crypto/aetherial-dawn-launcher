@@ -480,7 +480,7 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     if let Some(c) = report.checks.iter().find(|c| c.id == "serverorder" && c.status == health::Status::Fail) {
         let which = c.items.iter().take(3).cloned().collect::<Vec<_>>().join("; ");
         // Sent to staff by the launcher when sharing is on (text audit C2).
-        let filed = if config.share_health { send_health(&app, &state.http, &config, &m.build, "before play", None, None, &report).await } else { Filed::default() };
+        let filed = if config.share_health { send_health(&app, &state.http, &config, &m.build, "before play", None, None, None, &report).await } else { Filed::default() };
         let tell = match filed.report_id {
             Some(id) => format!("Staff have been sent a report ({id})."),
             None => "Send Copy diagnostics to staff.".into(),
@@ -492,7 +492,7 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
         // rate-limit for 90 s or more, so the upload runs beside Play.
         let (app, http, config, build, report) = (app.clone(), state.http.clone(), config.clone(), m.build.clone(), report.clone());
         launcher_core::detach::detach(async move {
-            send_health(&app, &http, &config, &build, "before play", None, None, &report).await;
+            send_health(&app, &http, &config, &build, "before play", None, None, None, &report).await;
         });
     }
     let token = token(&app).ok_or("SIGNED_OUT:Sign in with Discord to play.")?;
@@ -739,10 +739,12 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
     }
     // Sent in the background: the staff service can ask for a short wait
     // (one report per 20 s), and the crash window shouldn't wait for it.
+    // Where the player was and who was near, from the log ad-report.js writes (names and numbers only).
+    let position = if crashed { launcher_core::adreport::position_text(&platform_log_text(&app)) } else { None };
     if crashed && config.share_health {
         let (app2, http2, health2) = (app.clone(), http.clone(), health.clone());
         tauri::async_runtime::spawn(async move {
-            let f = send_health(&app2, &http2, &config, &build, "after a crash", Some(&staff_summary), crash_log, &health2).await;
+            let f = send_health(&app2, &http2, &config, &build, "after a crash", Some(&staff_summary), crash_log, position, &health2).await;
             if f.report_id.is_some() {
                 let _ = app2.emit("crash-filed", CrashFiled { report_id: f.report_id, likely_cause: f.likely_cause });
             }
@@ -1715,6 +1717,7 @@ async fn send_health(
     when: &str,
     crash: Option<&str>,
     crash_log: Option<String>,
+    extra: Option<String>,
     r: &health::Report,
 ) -> Filed {
     let Some(url) = health_report_url() else {
@@ -1727,6 +1730,12 @@ async fn send_health(
     };
     let mut body = health_payload(app, config, build, when, crash, r);
     body["consent"] = true.into();
+    if let Some(extra) = extra {
+        let text = format!("{}
+
+{extra}", body["text"].as_str().unwrap_or(""));
+        body["text"] = text.into();
+    }
     if let Some(cl) = crash_log {
         // The newest crash logger log as is (optional crashLog, bot CONTRACT.md).
         body["crashLog"] = cl.into();
@@ -1818,11 +1827,97 @@ async fn report_problem(app: AppHandle, state: State<'_, AppState>, what: String
     let report = run_health(&app, &state.http, &config.base_url, &dir, m.as_ref()).await;
     let what: String = what.chars().filter(|c| !c.is_control()).take(200).collect();
     log::line(&format!("health: sending staff a report for: {what}"));
-    let filed = send_health(&app, &state.http, &config, m.as_ref().map(|m| m.build.as_str()).unwrap_or(""), &what, None, None, &report).await;
+    let filed = send_health(&app, &state.http, &config, m.as_ref().map(|m| m.build.as_str()).unwrap_or(""), &what, None, None, None, &report).await;
     Ok(filed.report_id)
 }
 
 /// Runs the checks for the Settings screen.
+/// The tail of Skyrim Platform's log, where ad-report.js writes where the player was.
+fn platform_log_text(app: &AppHandle) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let docs = app.path().document_dir().or_else(|_| app.path().home_dir().map(|h| h.join("Documents"))).unwrap_or_default();
+    let path = docs.join("My Games").join("Skyrim Special Edition").join("SKSE").join("skyrim-platform.log");
+    let Ok(mut f) = std::fs::File::open(path) else { return String::new() };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    if len > launcher_core::adreport::MAX_LOG_BYTES {
+        let _ = f.seek(SeekFrom::Start(len - launcher_core::adreport::MAX_LOG_BYTES));
+    }
+    let mut bytes = Vec::new();
+    let _ = f.read_to_end(&mut bytes);
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn bug_sent_path() -> Option<PathBuf> {
+    reports_dir().map(|d| d.join("bug-sent.txt"))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BugState {
+    /// A button press (F10 in game) that has not been sent yet.
+    available: bool,
+    /// What was recorded, for the player to read before sending.
+    summary: String,
+}
+
+/// Whether the player pressed F10 in game since the last bug report was sent.
+#[tauri::command]
+async fn bug_state(app: AppHandle) -> CmdResult<BugState> {
+    let log = tokio::task::spawn_blocking({
+        let app = app.clone();
+        move || platform_log_text(&app)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let at = launcher_core::adreport::newest_bug_at(&log);
+    let sent = bug_sent_path().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+    let collected = launcher_core::adreport::collect(&log);
+    Ok(BugState { available: at.as_deref().is_some_and(|a| a != sent.trim()), summary: launcher_core::adreport::describe(collected.last_bug.as_ref()) })
+}
+
+/// Sends a bug report to staff: the player's note and where they were. The
+/// live bot takes it as a "health" report with a note (its report kinds are
+/// crash and health), so it needs no server change.
+#[tauri::command]
+async fn send_bug(app: AppHandle, state: State<'_, AppState>, note: String) -> CmdResult<Option<String>> {
+    let config = state.config.lock().await.clone();
+    let build = state.manifest.lock().await.as_ref().map(|m| m.build.clone()).unwrap_or_default();
+    let Some(url) = health_report_url() else { return Err("The staff report service isn't set up yet.".into()) };
+    let Some(token) = token(&app) else { return Err("SIGNED_OUT:Sign in with Discord to send a report.".into()) };
+    let log = tokio::task::spawn_blocking({
+        let app = app.clone();
+        move || platform_log_text(&app)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let note: String = note.chars().filter(|c| !c.is_control() || *c == '\n').take(1000).collect();
+    let body = serde_json::json!({
+        "kind": "health",
+        "when": "player bug report",
+        "launcher": app.package_info().version.to_string(),
+        "build": build,
+        "discordId": config.account.as_ref().and_then(|a| a.discord_id.clone()),
+        "discordUsername": config.account.as_ref().and_then(|a| a.discord_username.clone()),
+        "crash": null,
+        "worst": "ok",
+        "likelyCause": null,
+        "checks": [],
+        "note": note.trim(),
+        "text": launcher_core::adreport::bug_text(&note, &log),
+        "consent": true,
+    });
+    match post_report(&state.http, &url, &token, &fit_report(body), "bug report").await {
+        Posted::Filed(f) => {
+            if let (Some(p), Some(at)) = (bug_sent_path(), launcher_core::adreport::newest_bug_at(&log)) {
+                let _ = std::fs::write(p, at);
+            }
+            Ok(f.report_id)
+        }
+        Posted::RetryAfter(s) => Err(format!("Staff are getting a lot of reports right now. Try again in {s} seconds.")),
+        Posted::Failed => Err("Couldn't send the report. Check your internet connection and try again.".into()),
+    }
+}
+
 #[tauri::command]
 async fn health_check(app: AppHandle, state: State<'_, AppState>) -> CmdResult<HealthOut> {
     let config = state.config.lock().await.clone();
@@ -2285,7 +2380,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, files_state, open_game_folder, server_status, setup_state, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, health_check, report_problem, patch_game, game_running, self_update_begin, self_update_end, music_start, set_music, restore_set_aside, window_ready, open_invite])
+        .invoke_handler(tauri::generate_handler![plain_error, repair_game_files, get_state, set_game_dir, set_prefs, check, update, play, files, files_state, open_game_folder, server_status, setup_state, mark_game_ok, auth_status, auth_begin, auth_poll, auth_sign_out, log_ui, open_log_folder, diagnostics, health_check, bug_state, send_bug, report_problem, patch_game, game_running, self_update_begin, self_update_end, music_start, set_music, restore_set_aside, window_ready, open_invite])
         .build(tauri::generate_context!())
         .expect("error while running the launcher")
         .run(|_, _| {});
