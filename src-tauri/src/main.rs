@@ -416,6 +416,7 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     if !serverorder::valid_base(&order) {
         return Err("The server's list of game files is broken, so Play can't check your Skyrim against it. Staff need to fix it on the server; try again later.".into());
     }
+    fetch_server_plugins(&state.http, &config.base_url, &dir, &order).await?;
     let server_names: Vec<String> = order.iter().map(|p| p.name.clone()).collect();
     // No mods: anything beyond the game, SKSE and SkyMP's own files keeps the
     // player out (core/src/modguard.rs). Checked on every Play, before the
@@ -1495,6 +1496,32 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, server_names:
 /// Installs SKSE 2.2.6 from its official GitHub release when it is missing.
 /// SKSE is needed to join at all, so one that can't be installed stops Play
 /// with the reason. It is the only thing the launcher installs.
+/// The server's own plugins beyond the five base masters (masters.json) come from the feed at <base>/<name>,
+/// checked against the listed size and sha256, and replace a local copy that differs.
+async fn fetch_server_plugins(http: &reqwest::Client, base: &str, dir: &std::path::Path, order: &[serverorder::ServerPlugin]) -> Result<(), String> {
+    for p in order.iter().skip(serverorder::BASE.len()) {
+        let (Some(size), Some(sha)) = (p.size, p.sha256.as_deref()) else { continue };
+        if !serverorder::plain_plugin_name(&p.name) || p.name.to_ascii_lowercase().starts_with("cc") {
+            continue;
+        }
+        let path = dir.join("Data").join(&p.name);
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() == size) && sync::sha256_file(&path).await.is_ok_and(|h| h.eq_ignore_ascii_case(sha)) {
+            continue;
+        }
+        let url = format!("{}/{}", base.trim_end_matches('/'), p.name);
+        let fail = |why: String| format!("Couldn't get the server's plugin {} ({why}). Check your internet connection, then press Play again.", p.name);
+        let bytes = http.get(&url).timeout(std::time::Duration::from_secs(60)).send().await.and_then(|r| r.error_for_status()).map_err(|e| fail(e.to_string()))?
+            .bytes().await.map_err(|e| fail(e.to_string()))?;
+        let got = launcher_core::sync::sha256_bytes(&bytes);
+        if bytes.len() as u64 != size || !got.eq_ignore_ascii_case(sha) {
+            return Err(fail("it didn't match what the server lists".into()));
+        }
+        loadorder::atomic_write(&path, &bytes).map_err(|e| fail(e.to_string()))?;
+        log::line(&format!("play: downloaded the server's plugin {} ({size} bytes, sha256 checked)", p.name));
+    }
+    Ok(())
+}
+
 async fn install_skse(http: &reqwest::Client, dir: &std::path::Path) -> CmdResult<()> {
     let mut line = |l: &str| log::line(l);
     requirements::ensure_skse(http, dir, &requirements::Sources::official(), &mut line).await.map_err(|f| {
@@ -1603,7 +1630,7 @@ struct Filed {
 async fn fetch_masters(http: &reqwest::Client, base: &str) -> Option<serde_json::Value> {
     let url = format!("{}/masters.json", base.trim_end_matches('/'));
     match http.get(&url).timeout(std::time::Duration::from_secs(8)).send().await.and_then(|r| r.error_for_status()) {
-        Ok(r) => r.json::<serde_json::Value>().await.ok().map(|mut v| { bundled::add_plugin_entry(&mut v); v }),
+        Ok(r) => r.json::<serde_json::Value>().await.ok(),
         Err(e) => {
             log::line(&format!("health: couldn't load {url}: {e}"));
             None

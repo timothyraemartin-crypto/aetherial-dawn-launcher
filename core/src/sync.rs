@@ -100,6 +100,10 @@ pub struct Progress {
     pub bytes_total: u64,
 }
 
+pub fn sha256_bytes(b: &[u8]) -> String {
+    Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
+}
+
 pub async fn sha256_file(path: &Path) -> Result<String> {
     let mut f = tokio::fs::File::open(path).await?;
     let mut h = Sha256::new();
