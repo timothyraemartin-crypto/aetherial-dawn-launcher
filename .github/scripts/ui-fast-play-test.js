@@ -1,5 +1,5 @@
 // Proves the launcher Play path: a returning player waits for fresh game,
-// Discord, and Vortex checks before PLAY is enabled. The launcher's page runs
+// and Discord checks before PLAY is enabled. The launcher's page runs
 // in headless Chrome with a fake launcher
 // back end: a fake Discord answer, a fake game-files answer and a fake
 // latest.json. No packages needed: Chrome's --dump-dom prints the result.
@@ -46,16 +46,17 @@ function fakeBackEnd() {
   const answers = {
     get_state: () => ({ launcherVersion: S.version, config: { gameDir: S.dir, closeOnLaunch: false, backgroundUpdates: !!S.backgroundUpdates, shareHealth: true, music: false, onlyServerMods: true }, game: S.gameGone ? null : { dir: S.dir, hasSkse: S.hasSkse !== false }, gameError: S.gameGone || null }),
     auth_status: () => (S.authSequence && S.authSequence.shift()) || ((S.authAfter && (S.authCalls = (S.authCalls || 0) + 1) > 1) ? S.authAfter : S.auth),
-    check: () => Object.assign({ build: 'B2', server: { name: 'Aetherial Dawn', ip: '127.0.0.1', port: 7777 }, files: 0, remove: 0, bytes: 0, strays: [], game }, (S.checkSequence && S.checkSequence.shift()) || S.check || {}),
+    check: () => Object.assign({ build: 'B2', server: { name: 'Aetherial Dawn', ip: '127.0.0.1', port: 7777 }, files: 0, remove: 0, bytes: 0, game }, (S.checkSequence && S.checkSequence.shift()) || S.check || {}),
     update: () => null,
     server_status: () => ({ online: true, players: 1, maxPlayers: 50, ...(typeof S.statusNow === 'object' ? S.statusNow : {}), ...(S.statusFileDown ? { launcher: undefined } : { fromFile: true }), discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
     setup_state: () => S.setup || [{ id: 'folder', title: 'Choose your Skyrim folder', hint: 'x', done: true }],
-    files: () => S.files || [], files_state: () => S.fileStates || [], play: () => S.playWarnings || null,
+    bug_state: () => ({ available: true, summary: 't2 pos 4,5,6 cell Whiterun world Tamriel nearby: Dovah (120)' }),
+    send_bug: a => { (window.__T.bugs ||= []).push(a.note); return 'R-test'; },
+    files: () => [], play: () => S.playWarnings || null,
     patch_game: () => S.patchResult || { ...game, needed: false },
     game_running: () => !!S.outsideGame,
     self_update_begin: () => !S.updateReservationFails,
     self_update_end: () => null,
-    mods_state: () => Object.assign({ mods: [], vortex: true, vortex_ready: true, vortex_paired: true }, S.modsState || {}),
     export_key_saved: () => !!S.keySaved,
     export_key_save: a => { log.keySent = a.key; S.keySaved = true; return 'Saved for Staffer (Premium).'; },
     export_key_forget: () => { S.keySaved = false; return null; },
@@ -76,6 +77,7 @@ function fakeBackEnd() {
         log.invokes.push([at(), 'answer', cmd]);
         if (cmd === 'get_state' && S.stateFails) return rej('settings are not writable');
         if (cmd === 'server_status' && S.statusNow === 'down') return rej('no answer');
+        if (cmd === 'send_bug' && S.bugError) return rej(S.bugError);
         if (cmd === 'auth_status' && S.authFails) return rej('network down');
         if (cmd === 'game_running' && (S.gameCheckFails || (S.gameCheckFailsFrom && (S.gameChecks = (S.gameChecks || 0) + 1) >= S.gameCheckFailsFrom))) return rej('process list unavailable');
         if (cmd === 'export_key_save' && S.keyError) { log.keySent = args.key; return rej(S.keyError); }
@@ -218,26 +220,9 @@ function fakeBackEnd() {
       log.readyAnim = getComputedStyle(document.getElementById('play-wrap')).animationName;
       log.copied = log.copied || null;
       log.statusUi = { text: status.textContent, copy: !!document.getElementById('status-copy'), errorClass: !!document.querySelector('#status .error'), minH: parseFloat(getComputedStyle(status).minHeight) || 0, lineH: parseFloat(getComputedStyle(status).lineHeight) || 0, dividerAfterError: (() => { const e = document.querySelector('#status .error'); const n = e && e.nextElementSibling && e.nextElementSibling.tagName === 'SPAN' ? e.nextElementSibling : null; return n ? getComputedStyle(n, '::before').content : null; })() };
-      log.fileRows = [...document.querySelectorAll('#files-body tr')].map(tr => ({ skel: tr.classList.contains('skel'), name: (tr.querySelector('.fname') || {}).textContent || null, dir: (tr.querySelector('.fdir') || {}).textContent || null, cells: tr.children.length, state: (tr.querySelector('.fstate') || {}).textContent || null, stateCls: (tr.querySelector('.fstate') || {}).className || null }));
-      log.modsSummary = document.getElementById('mods-summary').textContent;
       { const n = document.getElementById('min-notice'); log.minNotice = n && !n.hidden ? n.textContent : null; }
-      { const chip = document.getElementById('mods-chip'), sum = document.getElementById('mods-summary'), wrap = document.querySelector('#page-mods .ftable-wrap');
-        log.chip = { text: chip.querySelector('span').textContent, cls: chip.className, h: Math.round(chip.getBoundingClientRect().height), lineH: parseFloat(getComputedStyle(chip).lineHeight) || 18 };
-        log.fileColors = [...document.querySelectorAll('#files-body .fstate')].map(td => getComputedStyle(td).color);
-        const page = document.getElementById('page-mods');
-        if (S.modsJank && !page.hidden) {
-          const top = () => wrap.getBoundingClientRect().top, keep = sum.textContent, was = top();
-          log.modsJank = {};
-          const words = 'The server decides which mods and files every player needs.';
-          for (const [name, text] of Object.entries({ loading: words, plain: 'Build B2 · 3 files · 0.0 MB. ' + words, attention: 'Build B2 · 3 files · 0.0 MB · 2 need attention. ' + words })) { sum.textContent = text; log.modsJank[name] = Math.round((top() - was) * 10) / 10; }
-          sum.textContent = keep;
-        } }
-      const alpha = c => { const m = /rgba?\([^)]*?,\s*([\d.]+)\)$/.exec(c); return m ? parseFloat(m[1]) : 1; };
-      log.pageAlpha = alpha(getComputedStyle(document.querySelector('#page-mods .ftable-wrap')).backgroundColor);
-      const sk = document.querySelector('#files-body tr.skel i');
-      log.skelAlpha = sk ? Math.max(...(getComputedStyle(sk).backgroundImage.match(/rgba\([^)]*\)/g) || []).map(alpha)) : null;
       const groupOf = id => { const el = document.getElementById(id); const hs = [...document.querySelectorAll('#settings h3')]; let found = null; for (const h of hs) if (h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) found = h.textContent; return found; };
-      log.settingsGroups = { heads: [...document.querySelectorAll('#settings h3')].map(h => h.textContent), close: groupOf('set-close'), bg: groupOf('set-bg'), share: groupOf('set-share'), only: groupOf('set-only'), folder: groupOf('set-path') };
+      log.settingsGroups = { heads: [...document.querySelectorAll('#settings h3')].map(h => h.textContent), close: groupOf('set-close'), bg: groupOf('set-bg'), share: groupOf('set-share'), folder: groupOf('set-path') };
       const saved = document.getElementById('set-saved'), failed = document.getElementById('set-failed');
       log.saved = (failed && failed.textContent) || (saved ? saved.textContent : null);
       const okEl = document.getElementById('set-saved'), badEl = document.getElementById('set-failed');
@@ -257,16 +242,8 @@ function fakeBackEnd() {
       log.errorLink = errLink ? errLink.textContent : null;
       log.skse = ['g-skse', 'c-skse'].map(id => { const el = document.getElementById(id); return el.querySelector('b').textContent + el.querySelector('small').textContent; });
       log.skseRecheck = !document.getElementById('c-skse-recheck').hidden;
-      log.modsShown = !document.getElementById('reqs').hidden;
-      log.modNames = [...document.querySelectorAll('#rq-list b')].map(el => el.textContent);
-      log.modSummary = document.getElementById('rq-summary').textContent;
-      const vx = document.getElementById('rq-vortex-step');
-      log.vortexLine = vx.hidden ? null : vx.textContent;
-      const own = document.getElementById('rq-ownership');
-      log.ownership = own.hidden ? null : own.textContent;
-      log.vortexConnect = !document.getElementById('rq-vortex-connect').hidden;
-      log.installerControl = !!document.querySelector('#rq-all, #rq-stop, #rq-sso-go, #rq-signin');
       log.playDisabled = btn.disabled;
+      log.bug = { bugs: log.bugs || [], shown: !document.getElementById('bug').hidden, summary: document.getElementById('bg-summary').textContent, result: document.getElementById('bg-result').hidden ? null : document.getElementById('bg-result').textContent, sendOff: document.getElementById('bg-send').disabled };
       const wn = document.getElementById('whatsnew');
       log.whatsNew = wn.hidden ? null : { lines: [...document.querySelectorAll('#whatsnew-list li')].map(li => li.textContent), open: wn.open };
       const setupBox = document.getElementById('setup');
@@ -277,8 +254,6 @@ function fakeBackEnd() {
       log.modal = [...document.querySelectorAll('.sheet')].find(el => !el.hidden)?.id || null;
       log.navInert = document.getElementById('nav-home').closest('.nav').inert;
       log.titlebarInert = document.querySelector('.titlebar').inert;
-      log.modRow = document.getElementById('rq-list').textContent;
-      log.modLead = document.querySelector('#reqs .lead').textContent;
       log.firstError = document.getElementById('first-error').hidden ? null : document.getElementById('first-error').textContent;
       log.retryShown = !document.getElementById('f-retry').hidden;
       log.statusRole = document.getElementById('status-live').getAttribute('role');
@@ -286,7 +261,6 @@ function fakeBackEnd() {
       const rect = sel => { const b = document.querySelector(sel).getBoundingClientRect(); return [Math.round(b.top), Math.round(b.bottom)]; };
       log.layout = { height: document.querySelector('.app').offsetHeight, width: document.querySelector('.app').offsetWidth, titlebar: rect('.titlebar'), dock: rect('.dock'), play: rect('#play') };
       log.signInError = document.getElementById('si-error').hidden ? null : document.getElementById('si-error').textContent;
-      log.xk = { note: document.getElementById('xk-note').textContent, forget: !document.getElementById('xk-forget').hidden, field: document.getElementById('xk-key').value, type: document.getElementById('xk-key').type };
       log.me = document.getElementById('me').hidden ? null : document.getElementById('me-name').textContent;
       const pre = document.createElement('pre');
       pre.id = 'ui-test-result';
@@ -307,6 +281,23 @@ const firstLabel = (r, text) => (r.labels.find(l => l[1] === text) || [null])[0]
 const lastLabel = r => r.labels[r.labels.length - 1][1];
 
 const scenarios = [
+  { name: 'Bug report: the saved F10 snapshot is shown and Send needs consent', s: { ...base, clicks: [], end: 3500, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 1800, kind: 'click', id: 'set-bug' }] }, expect: r => [
+    ['the sheet shows what the game saved', r.bug.shown && /pos 4,5,6 cell Whiterun/.test(r.bug.summary), r.bug.summary],
+    ['Send is off until the player agrees', r.bug.sendOff === true],
+  ] },
+  { name: 'Bug report: with consent the note is sent and the player is thanked', s: { ...base, clicks: [], end: 4500, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 1800, kind: 'click', id: 'set-bug' }, { at: 2300, kind: 'type', id: 'bg-note', text: 'door stuck' }, { at: 2400, kind: 'click', id: 'bg-consent' }, { at: 2500, kind: 'click', id: 'bg-send' }] }, expect: r => [
+    ['the note was sent once', JSON.stringify(r.bugs) === '["door stuck"]', JSON.stringify(r.bugs)],
+    ['the player is told it went to staff with the number', /Sent to staff as R-test/.test(r.bug.result || ''), r.bug.result],
+  ] },
+  { name: 'Bug report: a failed send says so and Send is offered again', s: { ...base, clicks: [], bugError: 'offline', end: 4500, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 1800, kind: 'click', id: 'set-bug' }, { at: 2400, kind: 'click', id: 'bg-consent' }, { at: 2500, kind: 'click', id: 'bg-send' }] }, expect: r => [
+    ['the player sees an error', /offline/.test(r.bug.result || ''), r.bug.result],
+    ['Send can be pressed again', r.bug.sendOff === false],
+  ] },
+  { name: 'Other mods installed: Play stops and names them, and the game is not started', s: { ...base, playError: 'MODS_FOUND:SkyUI_SE.esp, CrashLogger.dll, textures (212 files), and 3 more' }, expect: r => [
+    ['the game was asked to start once and refused', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
+    ['the status says other mods block joining and names them', /can't join with other mods/.test(r.status) && r.status.includes('SkyUI_SE.esp, CrashLogger.dll, textures (212 files), and 3 more'), r.status],
+    ['Play is offered again', lastLabel(r) === 'PLAY'],
+  ] },
   { name: 'update available: the notes are listed under the update, closed, with no dialog', s: { ...base, clicks: [], check: { files: 2, bytes: 5000000, notes: ['New tavern in Whiterun', 'Fixed <b>crash</b> at the docks'] }, end: 4000 }, expect: r => [
     ['the lines are listed', !!r.whatsNew && r.whatsNew.lines.length === 2 && r.whatsNew.lines[0] === 'New tavern in Whiterun'],
     ['markup in a note is shown as text', !!r.whatsNew && r.whatsNew.lines[1].includes('<b>crash</b>')],
@@ -331,8 +322,8 @@ const scenarios = [
     ['done steps are marked and open ones are not', !!r.setup && r.setup[0].startsWith('done:') && r.setup[1].startsWith('todo:') && r.setup[2].startsWith('todo:')],
   ] },
   { name: 'setup checklist: only on Home, back when the player returns', s: { ...base, clicks: [], setup: [{ id: 'skse', title: 'SKSE is installed', hint: 'Press Play.', done: false }], end: 5000,
-    actions: [{ kind: 'click', id: 'nav-server', at: 3000 }, { kind: 'click', id: 'nav-mods', at: 3300 }, { kind: 'click', id: 'nav-news', at: 3600 }, { kind: 'click', id: 'nav-home', at: 4200 }, { kind: 'click', id: 'nav-home', at: 4300 }] }, expect: r => [
-    ['the checklist is hidden on the Server, Mods and News pages', r.setupHidden.slice(0, 3).every(h => h === true)],
+    actions: [{ kind: 'click', id: 'nav-server', at: 3000 }, { kind: 'click', id: 'nav-news', at: 3600 }, { kind: 'click', id: 'nav-home', at: 4200 }, { kind: 'click', id: 'nav-home', at: 4300 }] }, expect: r => [
+    ['the checklist is hidden on the Server and News pages', r.setupHidden.slice(0, 2).every(h => h === true)],
     ['it is back on Home', !!r.setup && r.setup.length === 1],
   ] },
   { name: 'setup checklist: hidden once the game has been started before', s: { ...base, clicks: [], hintSeen: true, setup: [{ id: 'skse', title: 'SKSE is installed', hint: 'Press Play.', done: false }], end: 4000 }, expect: r => [
@@ -367,8 +358,8 @@ const scenarios = [
     ['the message is shown and only Wait and join is offered', !!r.gate && /Back at 18:00/.test(r.gate.msg) && !r.gate.anyway && r.gate.wait],
     ['the status line carries the message', /Back at 18:00/.test(r.status)],
   ] },
-  { name: 'returning player: Play waits for fresh game, Discord and Vortex checks', s: base, expect: r => [
-    ['PLAY is not enabled before fresh checks answer', firstLabel(r, 'PLAY') !== null && firstLabel(r, 'PLAY') >= Math.max(answeredAt(r, 'auth_status'), answeredAt(r, 'check'), answeredAt(r, 'mods_state'))],
+  { name: 'returning player: Play waits for fresh game and Discord checks', s: base, expect: r => [
+    ['PLAY is not enabled before fresh checks answer', firstLabel(r, 'PLAY') !== null && firstLabel(r, 'PLAY') >= Math.max(answeredAt(r, 'auth_status'), answeredAt(r, 'check'))],
     ['the game starts once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
     ['the game starts only after the Discord answer', askedAt(r, 'play') >= answeredAt(r, 'auth_status')],
     ['the game starts only after the game-files answer', askedAt(r, 'play') >= answeredAt(r, 'check')],
@@ -397,23 +388,6 @@ const scenarios = [
   ] },
   { name: 'SKSE installed: no file name under it', s: base, expect: r => [
     ['the row reads "SKSE installed" alone', r.skse.every(t => t === 'SKSE installed'), JSON.stringify(r.skse)],
-  ] },
-  { name: 'missing mods show the exact backend list for manual Vortex setup', s: { ...base,
-    playError: 'NEEDS_NEXUS_MODS:[{"id":"racemenu","name":"RaceMenu","in_vortex":true,"looks_for":"Data/RaceMenu.esp, Data/SKSE/Plugins/skee64.dll","page":"https://www.nexusmods.com/skyrimspecialedition/mods/19080"},{"id":"ussep","name":"USSEP","looks_for":"Data/Unofficial Skyrim Special Edition Patch.esp"}]',
-    modsState: { mods: [{ id: 'other', name: 'Other mod', installed: true }], nexus: { name: 'Player', is_premium: false }, vortex: false, running: false, sso: true },
-  }, expect: r => [
-    ['the required mods dialog opens', r.modsShown],
-    ['only the two missing mods appear in backend order', JSON.stringify(r.modNames) === JSON.stringify(['RaceMenu', 'USSEP']), JSON.stringify(r.modNames)],
-    ['required file paths appear', /Data\/RaceMenu\.esp/.test(r.modRow) && /Data\/Unofficial Skyrim Special Edition Patch\.esp/.test(r.modRow), r.modRow],
-    ['Play missing rows never claim exact Vortex confirmation from the legacy inventory field', !/profile, deployment, and game files confirmed/i.test(r.modRow)],
-    ['the dialog explains Vortex setup', /manual|Vortex/i.test(r.modLead) && /Vortex/.test(r.status), r.modLead],
-    ['the launcher keeps the exact missing list when Play stops', JSON.stringify(r.modNames) === JSON.stringify(['RaceMenu', 'USSEP'])],
-    ['the launcher does not start an installer or Nexus sign-in', askedAt(r, 'download_all_mods') === null && askedAt(r, 'nexus_sso') === null && !r.installerControl],
-  ] },
-  { name: 'Premium Nexus account does not auto-install missing mods', s: { ...base, playError: 'NEEDS_NEXUS_MODS:[{"id":"a","name":"A"}]', modsState: { mods: [{ id: 'a', name: 'A', installed: false }], nexus: { name: 'Player', is_premium: true }, vortex: false, running: false, sso: true } }, expect: r => [
-    ['the missing mod is listed', r.modsShown && JSON.stringify(r.modNames) === JSON.stringify(['A']), JSON.stringify(r.modNames)],
-    ['there is no automatic mod install', askedAt(r, 'download_all_mods') === null],
-    ['there are no installer controls', !r.installerControl],
   ] },
   { name: 'Discord cannot be reached: SIGN IN, the game never starts', s: { ...base, authFails: true }, expect: r => [
     ['the game never starts', !played(r)],
@@ -462,17 +436,16 @@ const scenarios = [
     ['the fix waits for a press made after the reason shows', askedAt(r, 'patch_game') === null],
     ['the status line gives the reason', /Skyrim needs changing/.test(r.status)],
   ] },
-  { name: 'Play resumes after version repair and Vortex verification', s: { ...base,
+  { name: 'Play resumes after version repair', s: { ...base,
     game: { needed: true, canDowngrade: true, reason: 'Skyrim needs changing.' },
     checkSequence: [
       { game: { needed: true, canDowngrade: true, reason: 'Skyrim needs changing.' } },
       { game: { needed: false, installed: '1.6.1170.0', target: '1.6.1170.0', skseOk: true } },
     ],
     patchResult: { needed: false, installed: '1.6.1170.0', target: '1.6.1170.0', skseOk: true },
-    delay: { mods_state: 1000 },
   }, expect: r => [
     ['the game version patch ran once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'patch_game').length === 1],
-    ['Play resumed after Vortex answered', askedAt(r, 'play') !== null && askedAt(r, 'play') >= answeredAt(r, 'mods_state')],
+    ['Play resumed after the repair', askedAt(r, 'play') !== null],
   ] },
   { name: 'a helper mod could not be installed: the game still starts and the reason stays shown', s: { ...base, playWarnings: ["Crash Logger 1.25.0 isn't installed: the download didn't get through. Skyrim starts without it; Play tries again next time."] }, expect: r => [
     ['the game starts', played(r)],
@@ -556,92 +529,6 @@ const scenarios = [
     ['Play starts once', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'play').length === 1],
     ['no extra check starts during Play', r.invokes.filter(i => i[1] === 'ask' && i[2] === 'check').length === 2],
   ] },
-  { name: 'required mods remain viewable during the game without installer controls', s: { ...base, modsState: {
-    mods: [{ id: 'a', name: 'A', installed: false }], nexus: { name: 'Player', is_premium: true }, vortex: false, running: false, sso: true,
-  }, actions: [{ at: 2800, kind: 'click', id: 'files-mods' }] }, expect: r => [
-    ['the game starts', played(r)],
-    ['the required mods dialog opens', r.modsShown],
-    ['no mod installer is exposed or started', !r.installerControl && askedAt(r, 'download_all_mods') === null],
-  ] },
-  { name: 'a found mod file is not called deployed in Vortex', s: { ...base, clicks: [], modsState: {
-    mods: [{ id: 'a', name: 'A', installed: true, from: 'nexus' }], nexus: null, vortex: true, running: false, sso: true,
-  }, actions: [{ at: 1500, kind: 'click', id: 'files-mods' }] }, expect: r => [
-    ['the required mods dialog opens', r.modsShown],
-    ['no ownership line without a report', r.ownership === null, r.ownership],
-    ['the row waits for Vortex profile evidence', /Game files found.*waiting for Vortex profile check/.test(r.modRow), r.modRow],
-    ['the dialog distinguishes files from deployment', /does not confirm deployment/.test(r.modLead), r.modLead],
-    ['there is no direct installer control', !r.installerControl],
-  ] },
-  { name: 'Requirements shows exact Vortex deployment failure', s: { ...base, clicks: [], modsState: {
-    mods: [{ id: 'a', name: 'Test Mod', installed: true, in_vortex: false, from: 'nexus', looks_for: 'Data/Test.esp', vortex_installed: true, vortex_enabled: false, vortex_deployed: false }],
-    counts_text: 'Vortex: 0 of 1 required Nexus mods confirmed · Game files: 1 of 1 present',
-    vortex_line: 'Vortex: 1 required mod needs deployment or game files in Skyrim: Test Mod. Deploy in Vortex, then Check again.',
-    vortex_ready: false, vortex_paired: true,
-    ownership_text: 'Installed by the launcher: 2 mods · 1 only in the launcher\'s files · 1 also deployed by Vortex (two owners): Test Mod',
-  }, actions: [{ at: 1500, kind: 'click', id: 'files-mods' }] }, expect: r => [
-    ['mods held by both the launcher and Vortex are named', /1 also deployed by Vortex \(two owners\): Test Mod$/.test(r.ownership || ''), r.ownership],
-    ['the missing count and name are visible', /1 required mod.*Test Mod/.test(r.vortexLine || ''), r.vortexLine],
-    ['the summary does not report Vortex ready', /0 of 1 required Nexus mods confirmed/.test(r.modSummary), r.modSummary],
-    ['the mod row identifies deployment as missing', /Vortex deployment or game files need attention/.test(r.modRow), r.modRow],
-    ['the row says which Vortex step is missing', /In Vortex: installed, not switched on, not deployed$/.test(r.modRow || ''), r.modRow],
-    ['the player is not offered a direct installer', !r.installerControl],
-  ] },
-  { name: 'Requirements refresh cannot enable Play ahead of hero Vortex check', s: { ...base, clicks: [],
-    delay: { mods_state: 2000 }, actions: [{ at: 200, kind: 'click', id: 'files-mods' }],
-  }, expect: r => [
-    ['both Requirements and hero Vortex requests completed', r.invokes.filter(i => i[1] === 'answer' && i[2] === 'mods_state').length >= 2],
-    ['Play waits for the hero Vortex answer', firstLabel(r, 'PLAY') >= Math.max(...r.invokes.filter(i => i[1] === 'answer' && i[2] === 'mods_state').map(i => i[0]))],
-  ] },
-  { name: 'incomplete Vortex setup changes the hero action to Requirements', s: { ...base, clicks: [], modsState: {
-    mods: [{ id: 'a', name: 'Test Mod', installed: false, in_vortex: false, from: 'nexus' }],
-    vortex_ready: false, vortex_paired: true,
-    vortex_line: 'Vortex: 1 required mod needs deployment or game files in Skyrim: Test Mod.',
-  }, actions: [{ at: 1800, kind: 'click', id: 'play' }] }, expect: r => [
-    ['PLAY never appears before the Vortex failure', firstLabel(r, 'PLAY') === null],
-    ['the button becomes MODS NEEDED', lastLabel(r) === 'MODS NEEDED', lastLabel(r)],
-    ['the hero action opens Requirements', r.modsShown && r.modal === 'reqs'],
-    ['the status names the missing mod', /Test Mod/.test(r.status), r.status],
-    ['the game never starts', !played(r)],
-  ] },
-  { name: 'Vortex gate off: every mod present gives PLAY without Vortex', s: { ...base, clicks: [], modsState: {
-    mods: [{ name: 'SkyUI', from: 'nexus', in_vortex: false, installed: true }, { name: 'Helper', from: 'direct', installed: true }],
-    vortex_required: false, vortex_ready: null, vortex_paired: false, vortex_line: null,
-  } }, expect: r => [
-    ['the button ends on PLAY', lastLabel(r) === 'PLAY', lastLabel(r)],
-  ] },
-  { name: 'Vortex gate off: a missing mod stops Play and names it', s: { ...base, clicks: [3000], modsState: {
-    mods: [{ name: 'SkyUI', from: 'nexus', in_vortex: false, installed: false }],
-    vortex_required: false, vortex_ready: null, vortex_paired: false, vortex_line: null,
-  } }, expect: r => [
-    ['the button ends on MODS NEEDED', lastLabel(r) === 'MODS NEEDED', lastLabel(r)],
-    ['the status names the missing mod', /SkyUI/.test(r.status), r.status],
-    ['the game never starts', !played(r)],
-  ] },
-  { name: 'Vortex gate on: files present but Vortex not ready keeps PLAY off', s: { ...base, clicks: [3000], modsState: {
-    mods: [{ name: 'SkyUI', from: 'nexus', in_vortex: false, installed: true }],
-    vortex_required: true, vortex_ready: false, vortex_paired: true, vortex_line: 'Vortex: open Vortex (with the Aetherial Dawn extension) so the launcher can check your mods',
-  } }, expect: r => [
-    ['the button ends on MODS NEEDED', lastLabel(r) === 'MODS NEEDED', lastLabel(r)],
-    ['the game never starts', !played(r)],
-  ] },
-  { name: 'hero summarizes a long missing Vortex list', s: { ...base, clicks: [], modsState: {
-    mods: ['One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven'].map(name => ({ name, from: 'nexus', in_vortex: false, installed: false })),
-    vortex_ready: false, vortex_paired: true,
-    vortex_line: 'Aetherial Dawn profile: 0 of 7 installed · 0 of 7 switched on · waiting: One, Two, Three, Four, Five, Six, Seven',
-  } }, expect: r => [
-    ['the hero shows count, three names and the remainder', /7 required mods.*One, Two, Three, \+4 more/.test(r.status), r.status],
-    ['the hero does not repeat the full seven-name list', !/Four, Five, Six, Seven/.test(r.status)],
-    ['the button points to full Requirements', lastLabel(r) === 'MODS NEEDED'],
-  ] },
-  { name: 'a missing direct-source mod keeps the hero from claiming overall readiness', s: { ...base, clicks: [], modsState: {
-    mods: [{ id: 'a', name: 'Direct Helper', installed: false, from: 'direct' }],
-    vortex_ready: true, vortex_paired: true,
-    vortex_line: 'Aetherial Dawn profile: every required mod installed and switched on',
-  } }, expect: r => [
-    ['the button points to Requirements', lastLabel(r) === 'MODS NEEDED', lastLabel(r)],
-    ['the missing direct mod is named', /Direct Helper/.test(r.status), r.status],
-    ['the game never starts', !played(r)],
-  ] },
   { name: 'Play checks a changed manifest before starting', s: { ...base, clicks: [2000], checkSequence: [
     { build: 'B1' }, { build: 'B2', files: 1, bytes: 1000 },
   ] }, expect: r => [
@@ -681,19 +568,6 @@ const scenarios = [
     ['Settings closes', r.modal === null],
     ['focus returns to Settings button', r.focus === 'nav-settings', r.focus],
     ['background navigation is active again', !r.navInert],
-  ] },
-  { name: 'staff Nexus key: saved, shown only as saved, field cleared, Remove offered', s: { ...base, clicks: [], actions: [
-      { at: 1500, kind: 'open', id: 'xk' }, { at: 1800, kind: 'type', id: 'xk-key', text: 'abcDEF123+/=abcDEF123+/=abcDEF123--xyz--QQ==' }, { at: 2000, kind: 'click', id: 'xk-save' }] }, expect: r => [
-    ['the key goes to the launcher once', r.keySent === 'abcDEF123+/=abcDEF123+/=abcDEF123--xyz--QQ=='],
-    ['the page names the account', r.xk.note === 'Saved for Staffer (Premium).', r.xk.note],
-    ['the key is not left in the field or the note', r.xk.field === '' && !r.xk.note.includes('abcDEF')],
-    ['the field hides what is typed', r.xk.type === 'password'],
-    ['Remove key is offered', r.xk.forget === true],
-  ] },
-  { name: 'staff Nexus key: a refused key says why and is not saved', s: { ...base, clicks: [], keyError: 'Nexus Mods didn\'t accept the API key', actions: [
-      { at: 1500, kind: 'open', id: 'xk' }, { at: 1800, kind: 'type', id: 'xk-key', text: 'abcDEF123+/=abcDEF123+/=abcDEF123--xyz--QQ==' }, { at: 2000, kind: 'click', id: 'xk-save' }] }, expect: r => [
-    ['the note gives the reason', r.xk.note === 'Nexus Mods didn\'t accept the API key', r.xk.note],
-    ['Remove key stays hidden', r.xk.forget === false],
   ] },
 ];
 
@@ -799,13 +673,6 @@ scenarios.push({ name: 'errors: when nothing can copy, the line says where to fi
 scenarios.push({ name: 'errors: a normal status line has no Copy details button', s: { ...base, clicks: [] }, expect: r => [
   ['no button on a healthy status', !r.statusUi.copy],
 ] });
-scenarios.push({ name: 'Mods page: placeholder rows while the file list loads', s: { ...base, clicks: [], files: [{ path: 'Data/a.esp', size: 1000 }], delay: { files: 3000 }, end: 2500, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
-  ['placeholder rows show while waiting', r.fileRows.length >= 3 && r.fileRows.every(x => x.skel), JSON.stringify(r.fileRows)],
-] });
-scenarios.push({ name: 'Mods page: each file shows its name with its folder dimmed', s: { ...base, clicks: [], files: [{ path: 'Data/Meshes/rock.nif', size: 2048 }, { path: 'Readme.txt', size: 10 }], end: 4000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
-  ['the name is separate from the folder', r.fileRows[0] && r.fileRows[0].name === 'rock.nif' && r.fileRows[0].dir === 'Data/Meshes/', JSON.stringify(r.fileRows[0])],
-  ['a file in the top folder has no folder text', r.fileRows[1] && r.fileRows[1].name === 'Readme.txt' && !r.fileRows[1].dir, JSON.stringify(r.fileRows[1])],
-] });
 scenarios.push({ name: 'download progress: after the last byte, hashing says Checking file', s: { ...base, clicks: [], backgroundUpdates: true, check: { build: 'B2', files: 3, bytes: 3000000 }, delay: { update: 20000 }, end: 8000, actions: [
   { at: 2000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 0, bytesTotal: 3000000, filesDone: 0, filesTotal: 3, file: 'Data/big.bsa' } },
   { at: 3000, kind: 'event', name: 'sync-progress', payload: { bytesDone: 3000000, bytesTotal: 3000000, filesDone: 2, filesTotal: 3, file: 'Data/big.bsa' } },
@@ -813,16 +680,11 @@ scenarios.push({ name: 'download progress: after the last byte, hashing says Che
   ['it says the file is being checked, not that the server is silent', r.progress.speed === 'Checking file…', JSON.stringify(r.progress.speed)],
 ] });
 
-scenarios.push({ name: 'Mods page: file list is solid enough to read over the artwork, placeholders are visible', s: { ...base, clicks: [], files: [{ path: 'Data/a.esp', size: 1000 }], delay: { files: 3000 }, end: 2500, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
-  ['the file list background is at least 95% opaque, so the artwork does not cross the rows', r.pageAlpha >= 0.95, String(r.pageAlpha)],
-  ['the placeholder bars reach at least 18% white', r.skelAlpha >= 0.18, String(r.skelAlpha)],
-] });
-
 scenarios.push({ name: 'Settings: grouped under headings', s: { ...base, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }] }, expect: r => [
-  ['three headings in order', JSON.stringify(r.settingsGroups.heads) === JSON.stringify(['Game', 'Launcher', 'Privacy and mods']), JSON.stringify(r.settingsGroups.heads)],
+  ['three headings in order', JSON.stringify(r.settingsGroups.heads) === JSON.stringify(['Game', 'Launcher', 'Privacy']), JSON.stringify(r.settingsGroups.heads)],
   ['the Skyrim folder is under Game', r.settingsGroups.folder === 'Game', String(r.settingsGroups.folder)],
   ['close and automatic updates are under Launcher', r.settingsGroups.close === 'Launcher' && r.settingsGroups.bg === 'Launcher', JSON.stringify([r.settingsGroups.close, r.settingsGroups.bg])],
-  ['health reports and server-only mods are under Privacy and mods', r.settingsGroups.share === 'Privacy and mods' && r.settingsGroups.only === 'Privacy and mods', JSON.stringify([r.settingsGroups.share, r.settingsGroups.only])],
+  ['health reports are under Privacy', r.settingsGroups.share === 'Privacy', String(r.settingsGroups.share)],
 ] });
 scenarios.push({ name: 'Settings: a changed setting says Saved', s: { ...base, clicks: [], end: 3000, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 2000, kind: 'click', id: 'set-bg' }] }, expect: r => [
   ['it says Saved', r.saved === 'Saved', String(r.saved)],
@@ -883,23 +745,6 @@ scenarios.push({ name: 'Status line: no separator at the start of a line', s: { 
   [`state ${n + 1}: no separator on the first item of a line`, row.every(k => !(k.rowStart && k.sep)), JSON.stringify(row)],
   [`state ${n + 1}: the other items keep theirs`, row.every(k => k.rowStart || k.error || k.sep), JSON.stringify(row)]
 ]) });
-const stateFiles = [{ path: 'Data/Meshes/rock.nif', size: 2048 }, { path: 'Readme.txt', size: 10 }, { path: 'Data/SKSE/new.dll', size: 99 }];
-scenarios.push({ name: 'Mods page: each file says whether it is up to date, needs an update or is missing', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Data/Meshes/rock.nif', state: 'current' }, { path: 'Readme.txt', state: 'changed' }, { path: 'Data/SKSE/new.dll', state: 'missing' }], end: 4000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
-  ['a current file says Up to date', r.fileRows[0] && r.fileRows[0].state === 'Up to date', JSON.stringify(r.fileRows[0])],
-  ['a changed file says Update needed', r.fileRows[1] && r.fileRows[1].state === 'Update needed', JSON.stringify(r.fileRows[1])],
-  ['a missing file says Missing', r.fileRows[2] && r.fileRows[2].state === 'Missing', JSON.stringify(r.fileRows[2])],
-  ['only files that need attention use the warning style', /\bok\b/.test(r.fileRows[0].stateCls) && /\bwarn\b/.test(r.fileRows[1].stateCls) && /\bbad\b/.test(r.fileRows[2].stateCls), JSON.stringify(r.fileRows.map(x => x.stateCls))],
-  ['the summary counts what needs attention', /2 need attention/.test(r.modsSummary), r.modsSummary],
-  ['every row has the same three cells', r.fileRows.every(x => x.cells === 3), JSON.stringify(r.fileRows.map(x => x.cells))],
-] });
-scenarios.push({ name: 'Mods page: when the state cannot be read the list still shows, with a dash', s: { ...base, clicks: [], files: stateFiles, fileStatesError: 'no game folder', end: 4000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
-  ['all files are still listed', r.fileRows.length === 3 && r.fileRows.every(x => x.name), JSON.stringify(r.fileRows.map(x => x.name))],
-  ['each row shows a dash, not an error', r.fileRows.every(x => x.state === '–'), JSON.stringify(r.fileRows.map(x => x.state))],
-  ['the summary does not claim anything is wrong', !/need attention/.test(r.modsSummary), r.modsSummary],
-] });
-scenarios.push({ name: 'Mods page: placeholder rows have all three cells', s: { ...base, clicks: [], files: stateFiles, delay: { files: 3000 }, end: 2500, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
-  ['placeholder rows keep the three columns', r.fileRows.length >= 3 && r.fileRows.every(x => x.skel && x.cells === 3), JSON.stringify(r.fileRows.map(x => x.cells))],
-] });
 scenarios.push({ name: 'Feed refused (unsigned or tampered): the launcher update still installs and the words are plain', s: { ...base, update: '9.9.10', clicks: [], checkError: "The launcher couldn't confirm the server's files are genuine, so it did not use them. It tries again the next time you press Play.", end: 5000 }, expect: r => [
   ['the launcher update installs', askedAt(r, 'updater_install') !== null],
   ['the sentence gives no second set of advice; the Copy details button is the way to staff', !/keeps happening|diagnostics/.test(r.statusUi.text) && r.statusUi.copy, r.statusUi.text],
@@ -924,9 +769,6 @@ scenarios.push({ name: 'Release hold: if the status file cannot be read the last
 scenarios.push({ name: 'Release hold: staff removing the hold lets the update through', s: { ...base, update: '9.9.10', clicks: [], statusNow: holdOf(['9.9.10'], new Date(Date.now() + 36e5).toISOString()), updaterDelay: 33000, actions: [{ at: 3000, kind: 'status', value: {} }], end: 37000 }, expect: r => [
   ['the update installs', askedAt(r, 'updater_install') !== null],
 ] });
-scenarios.push({ name: 'Minimum launcher version: the notice shows on Home only, not over the Mods page', s: { ...base, clicks: [], statusNow: { launcher: { minVersion: '99.0.0', message: 'Server changes need a newer launcher.' } }, end: 4000, actions: [{ at: 1500, kind: 'click', id: 'nav-mods' }] }, expect: r => [
-  ['no notice on the Mods page', !r.minNotice, r.minNotice],
-] });
 scenarios.push({ name: 'Minimum launcher version: a long message is cut at a word with an ellipsis', s: { ...base, clicks: [], statusNow: { launcher: { minVersion: '99.0.0', message: 'Server changes need a newer launcher. '.repeat(10).trim() } }, end: 4000 }, expect: r => [
   ['it ends with an ellipsis', /…$/.test(r.minNotice || ''), r.minNotice],
   ['it is no longer than 201 characters', (r.minNotice || '').length <= 201, String((r.minNotice || '').length)],
@@ -938,43 +780,6 @@ scenarios.push({ name: 'Minimum launcher version: an older launcher shows staff\
 ] });
 scenarios.push({ name: 'Minimum launcher version: a current launcher shows no notice', s: { ...base, clicks: [], statusNow: { launcher: { minVersion: '0.0.1', message: 'Old.' } }, end: 4000 }, expect: r => [
   ['no notice', !r.minNotice, r.minNotice],
-] });
-scenarios.push({ name: 'Mods page: the chip does not say ready while files need attention', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }, { path: 'Data/SKSE/new.dll', state: 'missing' }], end: 4000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
-  ['the chip names the files', /2 files? need attention/i.test(r.chip.text), r.chip.text],
-  ['the chip uses the warning style', /\bwarn\b/.test(r.chip.cls), r.chip.cls],
-] });
-scenarios.push({ name: 'Mods page: the chip still shows the files when the mods check ends last', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }], delay: { mods_state: 3000 }, end: 6000, actions: [{ at: 600, kind: 'click', id: 'nav-mods' }] }, expect: r => [
-  ['the chip names the file', /1 file needs attention/i.test(r.chip.text), r.chip.text],
-] });
-scenarios.push({ name: 'Mods page: Missing is the error colour, Update needed stays amber', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Data/Meshes/rock.nif', state: 'current' }, { path: 'Readme.txt', state: 'changed' }, { path: 'Data/SKSE/new.dll', state: 'missing' }], end: 4000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => {
-  const hex = c => '#' + (c.match(/\d+/g) || []).slice(0, 3).map(n => Number(n).toString(16).padStart(2, '0')).join('');
-  return [
-    ['Missing uses --danger', hex(r.fileColors[2]) === r.tokens.danger, r.fileColors[2] + ' vs ' + r.tokens.danger],
-    ['Update needed uses --warn', hex(r.fileColors[1]) === r.tokens.warn, r.fileColors[1] + ' vs ' + r.tokens.warn],
-  ]; } });
-scenarios.push({ name: 'Mods page: the chip stays on one line and the table does not move', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }, { path: 'Data/SKSE/new.dll', state: 'missing' }], modsJank: true, end: 4000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
-  ['the chip is one line high', r.chip.h <= r.chip.lineH + 4, `${r.chip.h}px vs line ${r.chip.lineH}px`],
-  ...Object.entries(r.modsJank || {}).map(([k, d]) => [`the ${k} summary moves the table by ${d}px`, Math.abs(d) < 1, String(d)]),
-] });
-scenarios.push({ name: 'Mods page: the file list does not log every file state', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }], end: 3000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
-  ['no log line carries the per-file states', !(r.uiLogs || []).some(l => /^files_state/.test(l)), JSON.stringify((r.uiLogs || []).filter(l => /^files_state/.test(l)))],
-] });
-scenarios.push({ name: 'Mods page: the list shows before the file states are known', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }], delay: { files_state: 4000 }, end: 3000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
-  ['the real file names are listed, not placeholders', r.fileRows.length === 3 && r.fileRows.every(x => !x.skel && x.name), JSON.stringify(r.fileRows.map(x => x.name))],
-  ['their states show a dash meanwhile', r.fileRows.every(x => x.state === '–'), JSON.stringify(r.fileRows.map(x => x.state))],
-] });
-scenarios.push({ name: 'Mods page: before any file state is known the chip is neutral, not ready', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }], delay: { files_state: 2500 }, end: 2000, actions: [{ at: 300, kind: 'click', id: 'nav-mods' }] }, expect: r => [
-  ['the chip says it is checking files', /Checking files/.test(r.chip.text), r.chip.text],
-  ['it does not use the ready style', /\bbusy\b/.test(r.chip.cls), r.chip.cls],
-] });
-scenarios.push({ name: 'Mods page: reopening it keeps the last known states while they refresh', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }, { path: 'Data/SKSE/new.dll', state: 'missing' }], delay: { files_state: 2500 }, end: 5600, actions: [{ at: 600, kind: 'click', id: 'nav-mods' }, { at: 4000, kind: 'click', id: 'nav-home' }, { at: 4500, kind: 'click', id: 'nav-mods' }] }, expect: r => [
-  ['the chip still says files need attention', /2 files need attention/.test(r.chip.text), r.chip.text],
-  ['the rows keep their words', r.fileRows.map(x => x.state).join() === '–,Update needed,Missing', JSON.stringify(r.fileRows.map(x => x.state))],
-  ['the summary still counts them', /2 need attention/.test(r.modsSummary), r.modsSummary],
-] });
-scenarios.push({ name: 'Mods page: the states fill in when they arrive', s: { ...base, clicks: [], files: stateFiles, fileStates: [{ path: 'Readme.txt', state: 'changed' }], delay: { files_state: 1500 }, end: 5000, actions: [{ at: 1200, kind: 'click', id: 'nav-mods' }] }, expect: r => [
-  ['the changed file says Update needed', r.fileRows[1] && r.fileRows[1].state === 'Update needed', JSON.stringify(r.fileRows[1])],
-  ['the summary counts it', /1 needs? attention/.test(r.modsSummary), r.modsSummary],
 ] });
 scenarios.push({ name: 'Tokens: the launcher colours are the design system values (Dawnglass)', s: { ...base, clicks: [], end: 2000 }, expect: r => Object.entries({ text: '#ece6d6', muted: '#b3b8c0', faint: '#8a93a0', ok: '#93cf9e', warn: '#e6b866', gold: '#d8b56a', frost: '#b6dcf7', glow: '#5ea4d8', danger: '#f0998a' }).map(([k, v]) => [`--${k} is ${v}`, r.tokens[k] === v, String(r.tokens[k])]) });
 const hueOf = c => { const [r, g, b] = (c.match(/[\d.]+/g) || []).slice(0, 3).map(Number).map(v => v / 255), mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn; if (!d) return 0; const h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; return (h * 60 + 360) % 360; };

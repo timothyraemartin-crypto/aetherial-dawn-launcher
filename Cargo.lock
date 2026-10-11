@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aetherial-dawn-launcher"
-version = "0.1.116"
+version = "0.1.134"
 dependencies = [
  "futures-util",
  "hex",
@@ -2222,16 +2222,14 @@ dependencies = [
 
 [[package]]
 name = "launcher-core"
-version = "0.1.116"
+version = "0.1.134"
 dependencies = [
  "ed25519-dalek",
  "futures-util",
  "hex",
  "lz4_flex",
- "lzma-rust2",
  "rand 0.9.5",
  "reqwest 0.12.28",
- "roxmltree",
  "serde",
  "serde_json",
  "sevenz-rust2",
@@ -2240,7 +2238,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "unrar",
  "windows-sys 0.59.0",
  "winreg",
  "zip 2.4.2",
@@ -3427,12 +3424,6 @@ dependencies = [
  "untrusted",
  "windows-sys 0.52.0",
 ]
-
-[[package]]
-name = "roxmltree"
-version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rustc-hash"
@@ -5041,29 +5032,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
-name = "unrar"
-version = "0.5.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92ec61343a630d2b50d13216dea5125e157d3fc180a7d3f447d22fe146b648fc"
-dependencies = [
- "bitflags 2.13.2",
- "regex",
- "unrar_sys",
- "widestring",
-]
-
-[[package]]
-name = "unrar_sys"
-version = "0.5.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b77675b883cfbe6bf41e6b7a5cd6008e0a83ba497de3d96e41a064bbeead765"
-dependencies = [
- "cc",
- "libc",
- "winapi",
-]
-
-[[package]]
 name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5389,12 +5357,6 @@ dependencies = [
  "windows",
  "windows-core 0.61.2",
 ]
-
-[[package]]
-name = "widestring"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
 name = "winapi"

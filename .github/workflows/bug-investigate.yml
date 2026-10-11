@@ -10,7 +10,7 @@
 #                the branch, opens a DRAFT pull request and posts the result comment.
 # Nothing here merges anything: staff press Approve in Discord.
 #
-# Repo variable (optional): BUG_TEST_COMMAND, default: cargo test -p launcher-core -- --skip rehearsal && node --test vortex-extension/test/*.test.js
+# Repo variable (optional): BUG_TEST_COMMAND, default: cargo test -p launcher-core -- --skip rehearsal
 # Same tests as build.yml (which runs on Windows). Untested on the Ubuntu runner here: if they fail there, no fix is proposed, so set BUG_TEST_COMMAND if needed.
 # Actions are pinned to tags like the other workflows in these repos. Pinning to commit SHAs
 # (and Dependabot to update them) is a good follow-up.
@@ -113,7 +113,7 @@ jobs:
         run: |
           set -u
           if [ "$(cat out/outcome.txt)" != "fix" ] || [ ! -s out/fix.patch ]; then echo "tests=skipped" >> "$GITHUB_OUTPUT"; exit 0; fi
-          if git apply --check out/fix.patch && git apply out/fix.patch && bash -c "${BUG_TEST_COMMAND:-cargo test -p launcher-core -- --skip rehearsal && node --test vortex-extension/test/*.test.js}"; then
+          if git apply --check out/fix.patch && git apply out/fix.patch && bash -c "${BUG_TEST_COMMAND:-cargo test -p launcher-core -- --skip rehearsal}"; then
             echo "tests=ok" >> "$GITHUB_OUTPUT"
           else
             echo "tests=failed" >> "$GITHUB_OUTPUT"

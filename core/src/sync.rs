@@ -100,6 +100,10 @@ pub struct Progress {
     pub bytes_total: u64,
 }
 
+pub fn sha256_bytes(b: &[u8]) -> String {
+    Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
+}
+
 pub async fn sha256_file(path: &Path) -> Result<String> {
     let mut f = tokio::fs::File::open(path).await?;
     let mut h = Sha256::new();
@@ -184,12 +188,33 @@ pub async fn file_states(game_dir: &Path, manifest: &Manifest) -> Result<Vec<Fil
     Ok(out)
 }
 
+/// Skyrim's own files, which only ever come from the player's own Steam
+/// copy: the game's programs next to SkyrimSE.exe (any .exe but SKSE's
+/// loader), Skyrim.ccc, and in Data the base and Creation Club plugins,
+/// _ResourcePack, and their archives ("Skyrim - *.bsa", "cc*.bsa").
+pub fn game_owned(rel: &str) -> bool {
+    let l = rel.replace('\\', "/").to_ascii_lowercase();
+    match l.strip_prefix("data/") {
+        None => !l.contains('/') && (matches!(l.as_str(), "skyrim.ccc" | "steam_api64.dll" | "bink2w64.dll") || (l.ends_with(".exe") && l != "skse64_loader.exe")),
+        Some(n) => {
+            let stem = n.rsplit_once('.').map(|(s, _)| s).unwrap_or(n);
+            !n.contains('/')
+                && (n == "skyrim.ccc"
+                    || n.starts_with("_resourcepack.")
+                    || n.starts_with("marketplacetextures.")
+                    || (n.starts_with("skyrim - ") && n.ends_with(".bsa"))
+                    || crate::aliases::shipped_with_game(n)
+                    || (n.ends_with(".bsa") && crate::aliases::shipped_with_game(&format!("{stem}.esm"))))
+        }
+    }
+}
+
 /// A file the server's list asks to remove goes only if the launcher put it
 /// there (an earlier file list had it, so it's in the hash cache) and it isn't
 /// one of Skyrim's own files. The remove list can't be used to delete a
 /// player's saves, other mods or the game.
 fn removable(cache: &HashCache, rel: &str) -> bool {
-    cache.0.contains_key(rel) && !crate::modlist::game_owned(rel)
+    cache.0.contains_key(rel) && !game_owned(rel)
 }
 
 pub async fn apply(
@@ -409,6 +434,50 @@ mod tests {
         apply(&reqwest::Client::new(), "http://127.0.0.1:1", game, &hand, |_| {}).await.unwrap();
         assert!(game.join("Data/players-own.esp").exists());
         assert!(!game.join("Data/SKSE/Plugins/served.dll").exists());
+    }
+
+    /// An own, hash-checked file (the RaceMenu sync guard, skee64_custom.ini)
+    /// reaches the game folder through the manifest like any client file, and a
+    /// download that doesn't match its hash is refused.
+    #[tokio::test]
+    async fn an_own_file_in_the_manifest_is_downloaded_and_hash_checked() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let rel = "Data/SKSE/Plugins/skee64_custom.ini";
+        let body = b"[Overlays]\nbEnableOverlays=0\n".to_vec();
+        let e = entry(rel, &body);
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        let (good, sha) = (body.clone(), e.sha256.clone());
+        let corrupt = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let c2 = corrupt.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut c, _)) = l.accept().await else { return };
+                let mut buf = vec![0u8; 4096];
+                let n = c.read(&mut buf).await.unwrap_or(0);
+                let path = String::from_utf8_lossy(&buf[..n]).split_whitespace().nth(1).unwrap_or("").to_string();
+                let out = if path == format!("/client/files/{sha}") {
+                    let b = if c2.load(std::sync::atomic::Ordering::SeqCst) { b"tampered".to_vec() } else { good.clone() };
+                    let mut r = format!("HTTP/1.1 200 X\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", b.len()).into_bytes();
+                    r.extend(b);
+                    r
+                } else {
+                    b"HTTP/1.1 404 X\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_vec()
+                };
+                let _ = c.write_all(&out).await;
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let m = manifest(vec![e], vec![]);
+        let p = plan(dir.path(), &m, false).await.unwrap();
+        assert_eq!(p.download.len(), 1);
+        let http = reqwest::Client::new();
+        assert!(apply(&http, &base, dir.path(), &p, |_| {}).await.is_err(), "a download that doesn't match its hash is refused");
+        assert!(!dir.path().join(rel).exists());
+        corrupt.store(false, std::sync::atomic::Ordering::SeqCst);
+        apply(&http, &base, dir.path(), &p, |_| {}).await.unwrap();
+        assert_eq!(std::fs::read(dir.path().join(rel)).unwrap(), body);
+        assert!(plan(dir.path(), &m, false).await.unwrap().download.is_empty());
     }
 
     #[test]

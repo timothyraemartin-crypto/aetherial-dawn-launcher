@@ -37,7 +37,6 @@
   const ICON_OK = '<path d="M5 12.5l4.5 4.5L19 7.5"/>';
   const ICON_BAD = '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/>';
   const ICON_INFO = '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.5v.01"/>';
-  const ICON_BUSY = '<path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/>';
   const THUMBS = ['art/thumb-castle.jpg', 'art/thumb-peak.jpg', 'art/thumb-lake.jpg', 'art/thumb-city.jpg'];
 
   let state = null;       // get_state
@@ -48,8 +47,7 @@
   let auth = null;        // auth_status: Discord sign-in   // check().game: is Skyrim the build the server needs?
   let busy = false;
   let playInFlight = false;
-  let playMode = 'wait';  // wait | play | mods | update | retry | auth-retry | downgrade | signin
-  let modsCheckSeq = 0;
+  let playMode = 'wait';  // wait | play | update | retry | auth-retry | downgrade | signin
   let page = 'home';
 
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
@@ -64,7 +62,7 @@
     $('play').disabled = mode === 'wait';
     $('play-wrap').classList.toggle('off', mode === 'wait');
     // For styling only: busy = the launcher is working, ready = PLAY starts the game,
-    // anything else is a step the player takes first (sign in, fix mods, retry).
+    // anything else is a step the player takes first (sign in, retry).
     const busy = mode === 'wait' && /ING$|CHECKING/.test(label);
     $('play-wrap').dataset.state = busy ? 'busy' : mode === 'play' || mode === 'downgrade' ? 'ready' : mode === 'wait' ? 'off' : 'action';
     showHint();
@@ -104,7 +102,6 @@
     const live = $('status-live');
     if (live && live.textContent !== (msg || '')) live.textContent = msg || '';
   }
-  let toolRunning = false;
   function renderStatus() {
     const parts = [];
     if (statusMsg) {
@@ -126,7 +123,6 @@
       const build = pending && pending.build;
       if (build) parts.push(`<span>Build ${esc(build)}</span>`);
     }
-    if (toolRunning) parts.push(`<button class="linkish" id="tool-skip">Skip for now</button>`);
     if (state) parts.push(`<span>v${esc(state.launcherVersion)}</span>`);
     const html = parts.join('');
     if (html !== shownStatus) $('status').innerHTML = shownStatus = html;
@@ -154,26 +150,9 @@
   }
   if (lastSeen.play) remember({ play: false });
   let statusAsked = false;
-  function setChip(kind, text) {
-    const c = $('mods-chip');
-    c.className = 'chip ' + (kind === 'ok' ? '' : kind);
-    c.querySelector('svg').innerHTML = kind === 'ok' ? ICON_OK : kind === 'warn' ? ICON_BAD : ICON_BUSY;
-    c.querySelector('span').textContent = text;
-  }
-
-  // Files that are out of date or missing take the "ready" chip's place, so it never says ready beside them.
-  let readyChipText = null, filesAttention = 0, filesPending = false;
-  const CHECKING_FILES = 'Checking files…';
-  const attentionText = n => `${plural(n, 'file')} ${n === 1 ? 'needs' : 'need'} attention`;
-  function showReadyChip() {
-    if (filesPending) setChip('busy', CHECKING_FILES);
-    else if (filesAttention > 0) setChip('warn', attentionText(filesAttention));
-    else if (readyChipText) setChip('ok', readyChipText);
-  }
-
   // ---------- pages + sheets ----------
-  const PAGES = { home: 'nav-home', server: 'nav-server', mods: 'nav-mods', news: 'nav-news' };
-  const SHEETS = ['first', 'settings', 'downgrade', 'signin', 'strays', 'crash', 'health', 'reqs'];
+  const PAGES = { home: 'nav-home', server: 'nav-server', news: 'nav-news' };
+  const SHEETS = ['first', 'settings', 'downgrade', 'signin', 'crash', 'health', 'bug'];
   let activeSheet = null, sheetReturnFocus = null;
   function showPage(p) {
     page = p;
@@ -187,7 +166,6 @@
     $('tagline').hidden = p !== 'home';
     applySetup();
     showMinNotice();
-    if (p === 'mods') loadFiles();
   }
   function showSheet(id) {
     const previous = activeSheet;
@@ -287,7 +265,6 @@
     $('set-bg').setAttribute('aria-checked', state.config.backgroundUpdates);
     $('set-share').setAttribute('aria-checked', state.config.shareHealth !== false);
     $('set-music').setAttribute('aria-checked', state.config.music !== false);
-    $('set-only').setAttribute('aria-checked', state.config.onlyServerMods !== false);
     $('set-version').textContent = 'Launcher ' + state.launcherVersion;
     $('ver').textContent = 'Launcher v' + state.launcherVersion;
     renderGame();
@@ -338,11 +315,8 @@
     return checkNow(verifyAll, opt);
   }
   async function checkNow(verifyAll, { signIn } = {}) {
-    // A Vortex answer from an older manifest must not enable Play here.
-    modsCheckSeq++;
     busy = true;
     setPlay('wait', 'CHECKING');
-    setChip('busy', 'Checking');
     setStatus('Checking for updates…');
     try {
       pending = await invoke('check', { verifyAll });
@@ -352,7 +326,6 @@
         busy = false;
         pending = null;
         setPlay('signin', 'SIGN IN');
-        setChip('busy', 'Client files ready · mods not checked yet');
         setStatus('Sign in with Discord to play');
         return;
       }
@@ -366,7 +339,6 @@
         busy = false;
         if (state.config.backgroundUpdates || verifyAll) return await update(verifyAll);
         setPlay('update', 'UPDATE');
-        setChip('warn', 'Update available');
         setStatus(`Build ${pending.build} available · ${plural(pending.files, 'file')} · ${mb(pending.bytes)}`);
       } else {
         await ready();
@@ -375,14 +347,11 @@
       setPlay('retry', 'RETRY');
       pending = null;
       if (String(e).includes("hasn't published")) {
-        setChip('warn', 'Server not ready');
         setStatus("The server is still being set up. The launcher will check again in a minute.");
       } else if (String(e).includes("couldn't confirm the server's files")) {
         // A signed file that failed its check is not a connection problem, and the launcher says so.
-        setChip('warn', 'Files not confirmed');
         setStatus(String(e) + HELP, true);
       } else {
-        setChip('warn', 'Not checked');
         setStatus(`Couldn't reach the Aetherial Dawn server. Check your internet; the launcher tries again every minute.` + HELP, true);
       }
       scheduleRetry();
@@ -409,7 +378,6 @@
     if (busy) return;
     busy = true;
     setPlay('wait', 'UPDATING');
-    setChip('busy', 'Updating');
     setStatus(`Updating to build ${pending.build} · ${mb(pending.bytes)}`);
     $('progress').hidden = false;
     $('p-progress').setAttribute('aria-valuenow', '0');
@@ -449,7 +417,6 @@
       await ready();
     } catch (e) {
       setPlay('retry', 'RETRY');
-      setChip('warn', 'Update failed');
       helpStatus(`The game file update stopped: ${e}. Click Retry.`, `update stopped: ${e}`);
       pending = null;
     } finally {
@@ -481,12 +448,9 @@
     // Only a current check or a completed update can claim file readiness.
     if (!pending || pending.files || pending.remove) {
       setPlay('retry', 'RECHECK');
-      setChip('warn', 'Game files need checking');
       setStatus('Check the current game files before Play.', true);
       return;
     }
-    setChip('busy', 'Client files ready · mods not checked yet');
-    loadFiles();
     renderGame();
     if (gameRunning || playInFlight) {
       setPlay('wait', gameRunning ? 'IN GAME' : 'LAUNCHING');
@@ -501,65 +465,14 @@
     if (!signedIn()) { setPlay('signin', 'SIGN IN'); setStatus('Sign in with Discord to play.', true); return; }
     if (auth.locked) {
       setPlay('auth-retry', 'RETRY SIGN-IN');
-      setChip('warn', 'Sign-in unavailable');
       setStatus(auth.message, true);
       return;
     }
-    setPlay('wait', 'CHECKING MODS');
-    setStatus('Checking your mods…');
-    setChip('busy', 'Client files ready · checking mods');
-    return checkModReadiness();
-  }
-
-  function applyModReadiness(view) {
-    if (gameRunning || playInFlight || updating || !['wait', 'play', 'mods'].includes(playMode)) return;
-    const missingDirect = Array.isArray(view.mods)
-      ? view.mods.filter(m => m.from === 'direct' && !m.installed).map(m => m.name)
-      : [];
-    const missingVortex = Array.isArray(view.mods)
-      ? view.mods.filter(m => m.from === 'nexus' && m.in_vortex === false).map(m => m.name)
-      : [];
-    const shortList = (names, label) => {
-      const shown = names.slice(0, 3).join(', ');
-      const rest = names.length > 3 ? `, +${names.length - 3} more` : '';
-      return `${plural(names.length, 'required mod')} ${label}: ${shown}${rest}. Open Requirements for the full list.`;
-    };
-    // With the server's Vortex gate off (vortex_required false), PLAY needs
-    // only every listed mod present, as Play itself then checks.
-    const missingAny = Array.isArray(view.mods) ? view.mods.filter(m => !m.installed).map(m => m.name) : [];
-    const ready = view.vortex_required === false
-      ? Array.isArray(view.mods) && missingAny.length === 0
-      : view.vortex_ready === true && missingDirect.length === 0;
-    if (ready) {
-      setPlay('play', 'PLAY');
-      if (gameCheck && gameCheck.warning) setStatus(gameCheck.warning, true);
-      else if (gameCheck && gameCheck.target && !gameCheck.skseOk) setStatus(`The launcher installs SKSE ${gameCheck.skseVersion || ''} for you when you press Play.`);
-      else setStatus(null);
-      // A helper mod that couldn't be installed: Play still starts, and the
-      // reason stays on the status line.
-      if (helperWarning && !(gameCheck && gameCheck.warning)) setStatus(helperWarning, true);
-      readyChipText = view.vortex_required === false ? 'Ready to play' : 'Client and Vortex ready';
-      showReadyChip();
-    } else {
-      setPlay('mods', 'MODS NEEDED');
-      setChip('warn', 'Mods need attention');
-      const missingFiles = view.vortex_required === false ? missingAny : missingDirect;
-      setStatus(missingFiles.length
-        ? shortList(missingFiles, missingFiles.length === 1 ? 'still needs game files' : 'still need game files')
-        : missingVortex.length && /^(Aetherial Dawn profile:|Vortex: \d+ required mods?)/.test(view.vortex_line || '')
-          ? shortList(missingVortex, missingVortex.length === 1 ? 'needs attention in Vortex' : 'need attention in Vortex')
-          : view.vortex_line || 'Connect Vortex and check the required mods before Play.', true);
-    }
-  }
-
-  async function checkModReadiness() {
-    const seq = ++modsCheckSeq;
-    try {
-      const view = await invoke('mods_state');
-      if (seq === modsCheckSeq) applyModReadiness(view);
-    } catch (e) {
-      if (seq === modsCheckSeq) applyModReadiness({ vortex_ready: false, vortex_line: `Could not check required mods: ${e}` });
-    }
+    setPlay('play', 'PLAY');
+    if (gameCheck && gameCheck.warning) setStatus(gameCheck.warning, true);
+    else if (gameCheck && gameCheck.target && !gameCheck.skseOk) setStatus(`The launcher installs SKSE ${gameCheck.skseVersion || ''} for you when you press Play.`);
+    else setStatus(null);
+    if (helperWarning && !(gameCheck && gameCheck.warning)) setStatus(helperWarning, true);
   }
 
   // ---------- discord sign-in ----------
@@ -603,10 +516,8 @@
     try {
       await refreshAuth();
       if (!signedIn()) {
-        modsCheckSeq++;
         pending = null;
         setPlay('signin', 'SIGN IN');
-        setChip('warn', 'Sign-in needed');
         showSignIn(auth.message);
       }
       else if (pending && ['play', 'wait', 'auth-retry'].includes(playMode)) await check();
@@ -805,106 +716,6 @@
   // code (Timothy's decisions).
   function runDowngrade() { return patchGame(); }
 
-  // ---------- plugins the server didn't ship ----------
-  let ignoreStrays = false;
-  const strays = () => (pending && pending.strays) || [];
-  function openStrays() {
-    $('st-list').innerHTML = strays().map(f => `<li>${esc(f)}</li>`).join('');
-    $('st-error').hidden = true;
-    showSheet('strays');
-  }
-  async function moveStrays() {
-    $('st-move').disabled = true;
-    try {
-      const dest = await invoke('move_strays');
-      pending = { ...pending, strays: [] };
-      showPage(page);
-      ready();
-      if (playMode === 'play') setStatus(`${dest} You're ready to play.`);
-    } catch (e) { $('st-error').textContent = String(e); $('st-error').hidden = false; }
-    finally { $('st-move').disabled = false; }
-  }
-
-  // ---------- required mods: manual installation through Vortex ----------
-  const rqError = (e) => { $('rq-error').textContent = e ? String(e) : ''; $('rq-error').hidden = !e; };
-
-  // Vortex's three answers for one mod, each named; a step Vortex hasn't
-  // answered is left out rather than guessed.
-  function vortexSteps(m) {
-    const parts = [
-      [m.vortex_installed, 'installed', 'not installed'],
-      [m.vortex_enabled, 'switched on', 'not switched on'],
-      [m.vortex_deployed, 'deployed', 'not deployed'],
-    ].filter(([v]) => v === true || v === false).map(([v, yes, no]) => (v ? yes : no));
-    return parts.length ? ` · In Vortex: ${parts.join(', ')}` : '';
-  }
-
-  function renderMods(view, fromPlay = false) {
-    $('rq-summary').textContent = fromPlay
-      ? `Play stopped because these ${plural(view.mods.length, 'required mod')} need attention in Vortex.`
-      : (view.counts_text || `Showing ${plural(view.mods.length, 'required mod')}. Check each one in Vortex before Play.`);
-    $('rq-vortex-step').hidden = !view.vortex_line;
-    $('rq-vortex-step').textContent = view.vortex_line || '';
-    // Mods the launcher placed itself, and whether Vortex also lists their files.
-    $('rq-ownership').hidden = !view.ownership_text;
-    $('rq-ownership').textContent = view.ownership_text || '';
-    $('rq-vortex-connect').hidden = fromPlay || !!view.vortex_paired;
-    const list = $('rq-list');
-    list.replaceChildren();
-    for (const m of view.mods) {
-      const row = document.createElement('div');
-      row.className = 'rq-row';
-      const text = document.createElement('div');
-      const name = document.createElement('b');
-      name.textContent = m.name;
-      const sub = document.createElement('div');
-      sub.className = 'rq-sub';
-      sub.textContent = fromPlay
-        ? (m.looks_for ? `Missing files: ${m.looks_for}` : 'Required mod files are missing')
-        : m.from === 'direct'
-        ? (m.installed ? 'Game files found' : m.looks_for ? `Missing files: ${m.looks_for}` : 'Game files not found')
-        : m.in_vortex === true ? 'Vortex profile, deployment, and game files confirmed'
-        : m.in_vortex === false ? (m.looks_for ? `Vortex deployment or game files need attention: ${m.looks_for}` : 'Vortex deployment needs attention') + vortexSteps(m)
-        : m.installed ? 'Game files found — waiting for Vortex profile check'
-        : m.looks_for ? `Missing files: ${m.looks_for}` : 'Waiting for Vortex profile check';
-      text.append(name, sub);
-      if (m.hint && !m.installed) {
-        const hint = document.createElement('div');
-        hint.className = 'rq-sub';
-        hint.textContent = m.hint;
-        text.append(hint);
-      }
-      row.append(text);
-      if (m.page) {
-        const open = document.createElement('button');
-        open.className = 'btn';
-        open.textContent = 'Open mod page';
-        open.onclick = () => invoke('open_mod_page', { url: m.page }).catch(rqError);
-        row.append(open);
-      }
-      if (!fromPlay && (m.in_vortex === true || (m.from === 'direct' && m.installed))) row.classList.add('ok');
-      list.append(row);
-    }
-  }
-
-  async function refreshMods() {
-    try {
-      const view = await invoke('mods_state');
-      renderMods(view);
-    } catch (e) { rqError(e); }
-  }
-
-  async function showRequiredMods(missing = null) {
-    rqError(null);
-    showSheet('reqs');
-    if (Array.isArray(missing)) renderMods({ mods: missing }, true);
-    else {
-      $('rq-summary').textContent = 'Loading required mods…';
-      $('rq-list').replaceChildren();
-      await refreshMods();
-    }
-  }
-
   async function invokePlay() {
     playInFlight = true;
     try { return await invoke('play'); }
@@ -949,8 +760,6 @@
     if (busy) return;
     // Installing the launcher update closes the launcher; Play waits for it.
     if (updating) { setStatus('The launcher is updating itself. Play is ready again once it restarts.'); return; }
-    if (playMode === 'strays') return openStrays();
-    if (playMode === 'mods') return showRequiredMods();
     if (playMode === 'retry') return check();
     if (playMode === 'auth-retry') {
       setPlay('wait', 'CHECKING SIGN-IN');
@@ -982,7 +791,7 @@
     setStatus('Starting Skyrim through SKSE…');
     playing = true;
     try {
-      // Helper mods that couldn't be installed: the game starts without
+      // Setup steps that could not finish: the game starts without
       // them, and the reason stays on the status line.
       const warns = await invokePlay();
       helperWarning = Array.isArray(warns) && warns.length ? warns.join(' ') : null;
@@ -992,28 +801,6 @@
       setStatus(helperWarning || 'Skyrim is running.', !!helperWarning);
     } catch (e) {
       const msg = String(e);
-      if (msg.startsWith('NEEDS_NEXUS_MODS:')) {
-        modsCheckSeq++;
-        setPlay('mods', 'MODS NEEDED');
-        setChip('warn', 'Mods need attention');
-        let missing;
-        try { missing = JSON.parse(msg.slice('NEEDS_NEXUS_MODS:'.length)); }
-        catch (_) { missing = null; }
-        await showRequiredMods(missing);
-        if (!Array.isArray(missing)) rqError('Could not read the missing-mod list. Press Play again or send launcher.log to staff.');
-        setStatus('Some required mods are missing. Install them in Vortex (switch them on and deploy), then press Play again.', true);
-        return;
-      }
-      if (msg.startsWith('VORTEX_NOT_READY:')) {
-        modsCheckSeq++;
-        setPlay('mods', 'MODS NEEDED');
-        setChip('warn', 'Mods need attention');
-        await showRequiredMods();
-        const reason = msg.slice('VORTEX_NOT_READY:'.length);
-        rqError(reason);
-        setStatus(reason, true);
-        return;
-      }
       if (msg.startsWith('SIGNED_OUT:')) {
         auth = { signedIn: false };
         renderAccount();
@@ -1021,62 +808,17 @@
         showSignIn(msg.slice(11));
         return;
       }
+      if (msg.startsWith('MODS_FOUND:')) {
+        // The server takes no mods at all: pressing Play again checks the folder again.
+        setPlay('play', 'PLAY');
+        setStatus(`You can't join with other mods installed. Remove these from your Skyrim folder, then press Play again: ${msg.slice(11)}.`, true);
+        return;
+      }
       setPlay('play', 'PLAY');
       helpStatus(`Skyrim didn't start: ${msg}`, `game didn't start: ${msg}`);
     } finally {
       playing = false;
     }
-  }
-
-  // ---------- mods page ----------
-  let filesSeq = 0, lastMarks = new Map(), lastMarksKey = '';
-  async function loadFiles() {
-    const seq = ++filesSeq;
-    // Placeholder rows keep the table's height steady while the list loads.
-    if (!$('files-body').children.length) $('files-body').innerHTML = '<tr class="skel"><td><i></i></td><td><i></i></td><td><i></i></td></tr>'.repeat(5);
-    // Hashing every file can take a while on a cold cache, so the list is drawn
-    // as soon as it arrives and the states fill in afterwards.
-    const marksAsked = invoke('files_state').catch(() => null);
-    const files = await invoke('files').catch(() => null);
-    if (seq !== filesSeq) return;
-    if (!files) {
-      filesPending = false;
-      if (/^(\d+ files? needs? attention|Checking files…)$/.test($('mods-chip').querySelector('span').textContent) && readyChipText) setChip('ok', readyChipText);
-      $('files-body').innerHTML = '<tr><td colspan="3">The file list loads after the launcher reaches the server.</td></tr>';
-      return;
-    }
-    // Until fresh states arrive the last known ones stay on screen, and only a draw with real states may touch the chip.
-    const key = `${pending ? pending.build : ''}|${state && state.config ? state.config.gameDir : ''}`;
-    if (key !== lastMarksKey) { lastMarks = new Map(); lastMarksKey = key; }
-    // With no known states yet the chip stays neutral instead of claiming ready.
-    filesPending = lastMarks.size === 0;
-    if (filesPending && readyChipText && !$('mods-chip').classList.contains('busy') && !$('mods-chip').classList.contains('warn')) setChip('busy', CHECKING_FILES);
-    draw(files, lastMarks, false);
-    const marks = await marksAsked;
-    if (seq !== filesSeq) return;
-    // Each file's state on this PC. If it can't be read the rows keep their dash and the page claims nothing.
-    if (Array.isArray(marks)) lastMarks = new Map(marks.map(m => [m.path, m.state]));
-    draw(files, Array.isArray(marks) ? lastMarks : new Map(), true);
-  }
-  function draw(files, stateOf, final) {
-    const LABEL = { current: ['Up to date', 'ok'], changed: ['Update needed', 'warn'], missing: ['Missing', 'bad'] };
-    const attention = [...stateOf.values()].filter(v => v === 'changed' || v === 'missing').length;
-    const total = files.reduce((n, f) => n + f.size, 0);
-    $('mods-summary').textContent = `Build ${pending ? pending.build : ''} · ${plural(files.length, 'file')} · ${mb(total)}${attention ? ` · ${attention} ${attention === 1 ? 'needs' : 'need'} attention` : ''}. The server decides which files every player needs.`;
-    // The file's own name stands out; its folder sits dimmed in front of it.
-    $('files-body').innerHTML = files.map(f => {
-      const cut = f.path.lastIndexOf('/') + 1;
-      const [label, cls] = LABEL[stateOf.get(f.path)] || ['–', 'none'];
-      return `<tr><td title="${esc(f.path)}"><span class="fdir">${esc(f.path.slice(0, cut))}</span><span class="fname">${esc(f.path.slice(cut))}</span></td><td class="fstate ${cls}">${label}</td><td>${mb(f.size)}</td></tr>`;
-    }).join('');
-    if (!final) return;
-    filesPending = false;
-    filesAttention = attention;
-    // Only a finished mods check owns the chip: a busy-for-other-reasons or already-warning chip is left as it is.
-    const chip = $('mods-chip'), shown = chip.querySelector('span').textContent;
-    const ours = shown === CHECKING_FILES || /^\d+ files? needs? attention$/.test(shown);
-    if (readyChipText && ours) { if (attention > 0) setChip('warn', attentionText(attention)); else setChip('ok', readyChipText); }
-    else if (readyChipText && attention > 0 && !chip.classList.contains('busy') && !chip.classList.contains('warn')) setChip('warn', attentionText(attention));
   }
 
   // ---------- server status.json (optional) ----------
@@ -1276,6 +1018,39 @@
     $('hl-note').hidden = false;
   };
 
+  // ---------- bug report ----------
+  // F10 in game saves where the player stands (ad-report.js); this sends it with a note.
+  function bugSendable() { return $('bg-consent').checked; }
+  async function openBug() {
+    $('bg-result').hidden = true;
+    $('bg-note').value = '';
+    $('bg-consent').checked = false;
+    $('bg-send').disabled = true;
+    $('bg-summary').textContent = 'Looking for what the game saved…';
+    showSheet('bug');
+    let st = null;
+    try { st = await invoke('bug_state'); } catch (_) { st = null; }
+    $('bg-summary').textContent = st && st.available
+      ? `The game saved this when you pressed F10: ${st.summary}`
+      : 'Nothing saved from the game yet. You can still send a note, or press F10 in game first.';
+  }
+  $('set-bug').onclick = openBug;
+  $('bg-close').onclick = () => showSheet('settings');
+  $('bg-consent').onchange = () => { $('bg-send').disabled = !bugSendable(); };
+  $('bg-send').onclick = async () => {
+    if (!bugSendable()) return;
+    $('bg-send').disabled = true;
+    try {
+      const id = await invoke('send_bug', { note: $('bg-note').value });
+      $('bg-result').textContent = id ? `Sent to staff as ${id}. Thank you.` : 'Sent to staff. Thank you.';
+      $('bg-note').value = '';
+    } catch (e) {
+      $('bg-result').textContent = String(e).replace(/^SIGNED_OUT:/, '');
+      $('bg-send').disabled = false;
+    }
+    $('bg-result').hidden = false;
+  };
+
   // ---------- wiring ----------
   const win = T.window.getCurrentWindow();
   // After a sign-in in the browser, the launcher comes back by itself.
@@ -1292,7 +1067,7 @@
   $('set-done').onclick = leaveSheet;
   $('set-browse').onclick = pickFolder;
   $('g-change').onclick = async () => { await pickFolder(); if (!ready_()) leaveSheet(); else check(); };
-  $('t-verify').onclick = $('files-verify').onclick = () => check(true);
+  $('t-verify').onclick = () => check(true);
   $('t-check').onclick = () => check();
   $('t-folder').onclick = () => invoke('open_game_folder').catch(e => setStatus(String(e), true));
   $('srv-copy').onclick = async () => {
@@ -1329,7 +1104,7 @@
   $('set-music').onclick = () => setMusic($('set-music').getAttribute('aria-checked') !== 'true');
   document.querySelectorAll('.switch:not(#set-anim):not(#set-music)').forEach(s => s.onclick = async () => {
     s.setAttribute('aria-checked', s.getAttribute('aria-checked') !== 'true');
-    const prefs = { closeOnLaunch: $('set-close').getAttribute('aria-checked') === 'true', backgroundUpdates: $('set-bg').getAttribute('aria-checked') === 'true', shareHealth: $('set-share').getAttribute('aria-checked') === 'true', onlyServerMods: $('set-only').getAttribute('aria-checked') === 'true' };
+    const prefs = { closeOnLaunch: $('set-close').getAttribute('aria-checked') === 'true', backgroundUpdates: $('set-bg').getAttribute('aria-checked') === 'true', shareHealth: $('set-share').getAttribute('aria-checked') === 'true' };
     try {
       await invoke('set_prefs', { prefs });
       Object.assign(state.config, prefs);
@@ -1346,20 +1121,8 @@
     playAfterPatch = false;
     stopVerifyWait(); dgMode(); showPage(page);
   };
-  $('st-move').onclick = moveStrays;
-  // ---------- other mods set aside before Play ----------
-  const asideNote = n => {
-    $('aside-note').textContent = n ? `Last time you pressed Play, ${n} file${n === 1 ? '' : 's'} from other mods ${n === 1 ? 'was' : 'were'} set aside (in your Skyrim folder under .aetherial-dawn\\disabled).` : 'Nothing has been set aside.';
-  };
-  try { asideNote(+localStorage.getItem('ad-set-aside') || 0); } catch { asideNote(0); }
   // What Play is doing, step by step.
   T.event.listen('play-step', ({ payload: text }) => { if (text) setStatus(text); });
-  // A mod's tool running before the game starts ("Fitting armor to bodies").
-  T.event.listen('tool-running', ({ payload: label }) => {
-    toolRunning = !!label;
-    if (label) setStatus(`${label}. This can take a few minutes the first time.`);
-    else renderStatus();
-  });
   $('status').addEventListener('click', e => {
     if (e.target && e.target.id === 'status-copy') {
       e.target.disabled = true;
@@ -1371,51 +1134,7 @@
       });
       return;
     }
-    if (e.target && e.target.id === 'tool-skip') {
-      e.target.disabled = true;
-      invoke('skip_tool').catch(() => {});
-    }
   });
-  T.event.listen('mods-set-aside', ({ payload: n }) => {
-    try { localStorage.setItem('ad-set-aside', String(n)); } catch {}
-    asideNote(n);
-    logUi(`set aside ${n} file(s) from other mods before Play`);
-  });
-  // ---------- staff: Nexus key for the server-mod export ----------
-  const xkShow = (saved, note) => {
-    $('xk-forget').hidden = !saved;
-    $('xk-key').value = '';
-    $('xk-note').textContent = note || (saved ? 'A key is saved on this PC.' : 'No key saved.');
-  };
-  const xkRefresh = () => invoke('export_key_saved').then(v => xkShow(!!v)).catch(() => {});
-  $('xk').addEventListener('toggle', () => { if ($('xk').open) xkRefresh(); });
-  $('xk-save').onclick = async () => {
-    const b = $('xk-save');
-    b.disabled = true;
-    $('xk-note').textContent = 'Checking the key with Nexus…';
-    try { xkShow(true, await invoke('export_key_save', { key: $('xk-key').value })); }
-    catch (e) { $('xk-note').textContent = String(e); }
-    b.disabled = false;
-  };
-  $('xk-forget').onclick = async () => {
-    try { await invoke('export_key_forget'); xkShow(false, 'Key removed.'); }
-    catch (e) { $('xk-note').textContent = String(e); }
-  };
-  $('aside-restore').onclick = async () => {
-    const b = $('aside-restore');
-    b.disabled = true;
-    try {
-      // Turn the switch off first, or the next Play would set them aside again.
-      $('set-only').setAttribute('aria-checked', 'false');
-      const prefs = { closeOnLaunch: $('set-close').getAttribute('aria-checked') === 'true', backgroundUpdates: $('set-bg').getAttribute('aria-checked') === 'true', shareHealth: $('set-share').getAttribute('aria-checked') === 'true', onlyServerMods: false };
-      await invoke('set_prefs', { prefs });
-      Object.assign(state.config, prefs);
-      const n = await invoke('restore_set_aside');
-      try { localStorage.setItem('ad-set-aside', '0'); } catch {}
-      $('aside-note').textContent = n ? `Put ${n} file${n === 1 ? '' : 's'} back. "Only the server's mods" is now off.` : `Nothing needed putting back. "Only the server's mods" is now off.`;
-    } catch (e) { $('aside-note').textContent = String(e); }
-    b.disabled = false;
-  };
   // ---------- after the game closes ----------
   let lastReport = '';
   T.event.listen('game-ended', ({ payload: g }) => {
@@ -1453,20 +1172,8 @@
     catch { $('cr-note').textContent = "Couldn't copy. Open the log folder and send the newest game-….txt file."; }
     $('cr-note').hidden = false;
   };
-  $('rq-close').onclick = () => { showPage(page); if (!gameRunning && !busy) check(); };
-  $('files-mods').onclick = () => showRequiredMods();
-  $('rq-vortex-go').onclick = async () => {
-    rqError(null);
-    try {
-      $('rq-vortex-said').textContent = await invoke('vortex_connect');
-      $('rq-vortex-said').hidden = false;
-      await refreshMods();
-    } catch (e) { rqError(e); }
-  };
   $('cr-logs').onclick = () => invoke('open_log_folder').catch(() => {});
   $('cr-close').onclick = () => showPage(page);
-  $('st-cancel').onclick = () => showPage(page);
-  $('st-ignore').onclick = () => { ignoreStrays = true; logUi('player chose to keep other plugins: ' + strays().join(', ')); showPage(page); ready(); };
   // Two clicks, because saying yes here when Steam has swapped the game data
   // makes Skyrim crash on start.
   $('dg-skip').onclick = async () => {
@@ -1527,7 +1234,6 @@
       $('first-error').textContent = 'The launcher could not load or save its settings. Check the app settings folder, then try again. If it keeps happening, send launcher.log to staff.';
       $('first-error').hidden = false;
       setPlay('wait', 'SETUP ERROR');
-      setChip('warn', 'Not checked');
       setStatus('Launcher settings could not load. Use Try again after fixing the settings folder.', true);
       showSheet('first');
       showWindow();
