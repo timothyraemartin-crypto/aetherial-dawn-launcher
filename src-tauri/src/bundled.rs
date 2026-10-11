@@ -8,14 +8,13 @@ use std::path::Path;
 const ESP_NAME: &str = "AetherialDawn.esp";
 
 const FILES: &[(&str, &[u8])] = &[
-    ("Data/Platform/Plugins/ad-modlist.js", include_bytes!("../bundled/Data/Platform/Plugins/ad-modlist.js")),
     ("Data/SKSE/Plugins/AetherialSkillTree.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialSkillTree.dll")),
     ("Data/SKSE/Plugins/AetherialDawn-NoPause.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialDawn-NoPause.dll")),
     ("Data/SKSE/Plugins/AetherialQuietPickups.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialQuietPickups.dll")),
 ];
 
 /// Settings files: written once, then the player's (or staff's) edits stay.
-const SETTINGS: &[(&str, &[u8])] = &[("Data/SKSE/Plugins/AetherialQuietPickups.ini", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialQuietPickups.ini"))];
+const SETTINGS: &[(&str, &[u8])] = &[("Data/SKSE/Plugins/AetherialSkillTree.test.json", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialSkillTree.test.json")), ("Data/SKSE/Plugins/AetherialQuietPickups.ini", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialQuietPickups.ini"))];
 
 /// Our own mods that are switched off for now: the launcher takes its own copies back out.
 const RETIRED: &[&str] = &["Data/SKSE/Plugins/AetherialFreezeMenus.dll"];
