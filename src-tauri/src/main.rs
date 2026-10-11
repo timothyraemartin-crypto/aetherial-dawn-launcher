@@ -757,7 +757,7 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
         });
     }
     let filed = Filed::default();
-    report.push_str(&format!("\n===== game data =====\n{}", game_data_report(&app, &game_dir)));
+    report.push_str(&format!("\n===== game data =====\n{}{}", bundled::report_line(&game_dir, plugins_txt(&app).as_deref()), game_data_report(&app, &game_dir)));
     report.push_str(&watch::collect(&skse_logs, &std::env::temp_dir(), started));
     report.push_str(&format!("\n===== launcher log (last 40 lines) =====\n{}\n", log::tail(40)));
     if let Some(dir) = reports_dir() {
@@ -1603,7 +1603,7 @@ struct Filed {
 async fn fetch_masters(http: &reqwest::Client, base: &str) -> Option<serde_json::Value> {
     let url = format!("{}/masters.json", base.trim_end_matches('/'));
     match http.get(&url).timeout(std::time::Duration::from_secs(8)).send().await.and_then(|r| r.error_for_status()) {
-        Ok(r) => r.json::<serde_json::Value>().await.ok(),
+        Ok(r) => r.json::<serde_json::Value>().await.ok().map(|mut v| { bundled::add_plugin_entry(&mut v); v }),
         Err(e) => {
             log::line(&format!("health: couldn't load {url}: {e}"));
             None

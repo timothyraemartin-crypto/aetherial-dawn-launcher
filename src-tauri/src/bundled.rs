@@ -2,10 +2,16 @@
 //! the Skyrim folder (when missing or different), and the paths come back so
 //! the no-mods gate treats exactly these files as the launcher's own.
 
+use sha2::{Digest, Sha256};
 use std::path::Path;
 
 /// Path relative to the game folder, and the file's bytes.
+/// The recipe plugin: ours, loaded last. Listed in the server order locally (see add_plugin_entry) until the server lists it itself.
+pub const ESP_NAME: &str = "AetherialDawn.esp";
+const ESP: &[u8] = include_bytes!("../bundled/Data/AetherialDawn.esp");
+
 const FILES: &[(&str, &[u8])] = &[
+    ("Data/AetherialDawn.esp", ESP),
     ("Data/SKSE/Plugins/AetherialSkillTree.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialSkillTree.dll")),
     ("Data/SKSE/Plugins/AetherialDawn-NoPause.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialDawn-NoPause.dll")),
     ("Data/SKSE/Plugins/AetherialQuietPickups.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialQuietPickups.dll")),
@@ -43,6 +49,27 @@ pub fn deploy(game_dir: &Path) -> Vec<String> {
     out
 }
 
+/// Adds AetherialDawn.esp, last, to the server's masters list when the server does not list it yet.
+pub fn add_plugin_entry(masters: &mut serde_json::Value) {
+    let key = if masters.get("masters").is_some() { "masters" } else if masters.get("files").is_some() { "files" } else { return };
+    let Some(list) = masters.get_mut(key).and_then(|l| l.as_array_mut()) else { return };
+    let listed = list.iter().any(|e| e.get("name").and_then(|n| n.as_str()).is_some_and(|n| n.eq_ignore_ascii_case(ESP_NAME)));
+    if !listed {
+        let sha: String = Sha256::digest(ESP).iter().map(|b| format!("{b:02x}")).collect();
+        list.push(serde_json::json!({ "name": ESP_NAME, "size": ESP.len(), "sha256": sha }));
+    }
+}
+
+/// One line for the session report: is our plugin there and switched on.
+pub fn report_line(game_dir: &Path, plugins_txt: Option<&Path>) -> String {
+    let size = std::fs::metadata(game_dir.join("Data").join(ESP_NAME)).map(|m| m.len()).ok();
+    let on = plugins_txt
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .is_some_and(|t| t.lines().any(|l| l.trim().trim_start_matches('*').eq_ignore_ascii_case(ESP_NAME)));
+    format!("{ESP_NAME}: {} in Data, {} in plugins.txt
+", size.map_or("missing".to_string(), |s| format!("{s} bytes")), if on { "switched on" } else { "not switched on" })
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -57,5 +84,17 @@ mod tests {
         super::deploy(d.path());
         assert_ne!(std::fs::read(&dll).unwrap(), b"old");
         assert_eq!(std::fs::read(&ini).unwrap(), b"edited");
+    }
+
+    #[test]
+    fn the_plugin_joins_the_server_list_once_and_last() {
+        let mut m = serde_json::json!({ "masters": [{ "name": "Skyrim.esm" }] });
+        super::add_plugin_entry(&mut m);
+        super::add_plugin_entry(&mut m);
+        let l = m["masters"].as_array().unwrap();
+        assert_eq!(l.len(), 2);
+        assert_eq!(l[1]["name"], "AetherialDawn.esp");
+        assert_eq!(l[1]["size"], 11808);
+        assert!(l[1]["sha256"].as_str().unwrap().starts_with("2e04a9b3"));
     }
 }
