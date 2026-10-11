@@ -57,6 +57,8 @@ function fakeBackEnd() {
     game_running: () => !!S.outsideGame,
     self_update_begin: () => !S.updateReservationFails,
     self_update_end: () => null,
+    close_game_for_update: () => { S.outsideGame = false; return true; },
+    raise_launcher: () => null,
     export_key_saved: () => !!S.keySaved,
     export_key_save: a => { log.keySent = a.key; S.keySaved = true; return 'Saved for Staffer (Premium).'; },
     export_key_forget: () => { S.keySaved = false; return null; },
@@ -478,6 +480,15 @@ const scenarios = [
   { name: 'launcher update found while Skyrim runs from Steam or Vortex: it waits', s: { ...base, update: '9.9.10', outsideGame: true, clicks: [] }, expect: r => [
     ['the launcher asks Windows whether Skyrim runs', askedAt(r, 'game_running') !== null],
     ['the update never installs while that Skyrim runs', askedAt(r, 'updater_install') === null, JSON.stringify(r.invokes.filter(i => /updater|game_running/.test(i[2])))],
+  ] },
+  { name: 'newer launcher while in game: countdown, then Skyrim is closed and the update installs', s: { ...base, update: '9.9.10', outsideGame: true, statusNow: { launcher: { forceCloseSecs: 5 } }, clicks: [], end: 16000 }, expect: r => [
+    ['the window is raised for the countdown', askedAt(r, 'raise_launcher') !== null],
+    ['Skyrim is closed only after the countdown', askedAt(r, 'close_game_for_update') !== null && askedAt(r, 'close_game_for_update') - askedAt(r, 'updater_download') >= 4500, JSON.stringify(r.invokes.filter(i => /updater|close_game/.test(i[2])))],
+    ['the update installs after the game is closed', askedAt(r, 'updater_install') > askedAt(r, 'close_game_for_update')],
+  ] },
+  { name: 'newer launcher while in game with the kill switch on: nothing is closed', s: { ...base, update: '9.9.10', outsideGame: true, statusNow: { launcher: { forceClose: false, forceCloseSecs: 5 } }, clicks: [], end: 12000 }, expect: r => [
+    ['Skyrim is left alone', askedAt(r, 'close_game_for_update') === null],
+    ['no install while the game runs', askedAt(r, 'updater_install') === null],
   ] },
   { name: 'launcher update found but the game check fails: it waits', s: { ...base, update: '9.9.10', gameCheckFails: true, clicks: [] }, expect: r => [
     ['the launcher asked whether Skyrim runs', askedAt(r, 'game_running') !== null],

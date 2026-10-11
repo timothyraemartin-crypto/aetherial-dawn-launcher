@@ -914,9 +914,43 @@
         : m.length <= 200 ? m : m.slice(0, 200).replace(/\s+\S*$/, '').replace(/[\s.,;:!?-]+$/, '') + '…';
     }
   }
+  // A launcher release published while a player is in game closes the game
+  // after a countdown, then installs (Timothy). Staff can switch it off in
+  // status.json: `launcher: { forceClose: false }`, and change the countdown
+  // with `forceCloseSecs` (5 to 300, default 60).
+  const forceAllowed = () => launcherNote().forceClose !== false;
+  const forceSecs = () => { const n = Number(launcherNote().forceCloseSecs); return Number.isFinite(n) ? Math.min(300, Math.max(5, Math.round(n))) : 60; };
+  const otherBusy = () => busy || playInFlight || playing || playChecking;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  // Counts down on screen, then ends Skyrim. True once no Skyrim is left; false
+  // when the player closed out of it, staff switched it off, or Play/files got busy.
+  async function forceCloseForUpdate(upd) {
+    const secs = forceSecs();
+    logUi(`launcher ${upd.version} is ready and Skyrim is running: closing the game in ${secs} s`);
+    T.core.invoke('raise_launcher', { top: true }).catch(() => {});
+    $('self-update').hidden = false;
+    $('self-update-go').hidden = true;
+    try {
+      for (let left = secs; left > 0; left--) {
+        $('self-update-text').textContent = `Launcher ${upd.version} is ready. Skyrim closes in ${left} second${left === 1 ? '' : 's'} to install it. Save your game.`;
+        await sleep(1000);
+        if (!forceAllowed() || otherBusy() || gameCheckFailed) { logUi('forced close cancelled'); return false; }
+        if (!(await skyrimUp())) { if (gameCheckFailed) return false; break; }
+      }
+      const closed = await T.core.invoke('close_game_for_update').catch(e => { logUi('close_game_for_update failed: ' + e); return false; });
+      // The session watcher clears its hold a moment after the game ends.
+      for (let i = 0; i < 20 && !(await skyrimUp() === false); i++) await sleep(1000);
+      if (gameCheckFailed || await skyrimUp()) { logUi(`Skyrim is still running (close reported ${closed}); the update waits`); return false; }
+      gameRunning = false;
+      return true;
+    } finally { T.core.invoke('raise_launcher', { top: false }).catch(() => {}); }
+  }
   async function checkSelfUpdate(byHand, beforePlay = false) {
-    if (updating || updateWaits(beforePlay)) return byHand ? 'busy' : undefined;
-    if (await skyrimUp()) return byHand ? waitReason() : undefined;
+    const canForce = !byHand && !beforePlay && forceAllowed();
+    // In game alone is not a reason to wait when a forced close is allowed.
+    const waits = () => updateWaits(beforePlay) && !(canForce && !otherBusy());
+    if (updating || waits()) return byHand ? 'busy' : undefined;
+    if (await skyrimUp() && !(canForce && !gameCheckFailed)) return byHand ? waitReason() : undefined;
     // Staff's hold list comes with the server status, so the first check waits briefly for it.
     for (let i = 0; i < 30 && !statusAsked; i++) await new Promise(r => setTimeout(r, 100));
     try {
@@ -929,7 +963,7 @@
         return 'latest';
       }
       // Play may have started while the check was out.
-      if (updating || updateWaits(beforePlay)) return byHand ? 'busy' : undefined;
+      if (updating || waits()) return byHand ? 'busy' : undefined;
       if (!downloaded && heldByStaff(upd.version)) {
         if (byHand || Date.now() - lastUpToDateLog > 30 * 60 * 1000) { logUi(`launcher ${upd.version} is on hold from staff`); lastUpToDateLog = Date.now(); }
         return 'latest';
@@ -947,7 +981,11 @@
           downloaded = upd;
         }
         // And again after the download: installing closes the launcher.
-        const held = updateWaits(beforePlay) || await skyrimUp();
+        let held = beforePlay ? updateWaits(true) : otherBusy();
+        if (!held) {
+          const up = (!beforePlay && gameRunning) || await skyrimUp();
+          if (up) held = !(canForce && !gameCheckFailed && await forceCloseForUpdate(upd));
+        }
         if (held) {
           updating = false;
           $('self-update-text').textContent = gameCheckFailed
