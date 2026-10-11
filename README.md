@@ -46,7 +46,7 @@ To test the file sync against any server, run `cargo run -p launcher-core --exam
 
 ## Game version check
 
-The server's `manifest.json` names the Skyrim build it needs (`game.version`, now 1.6.1170.0 with SKSE 2.2.6) and the Steam depot manifests for it. `core/src/version.rs` compares the player's SkyrimSE.exe, Steam's `appmanifest_489830.acf` and the launcher's own record. A wrong build is fixed by patching the player's own files ("Patching the game instead of downloading it" below), after a Steam "verify files" repair when the game is Steam's newest build. The launcher has no Steam downloader: DepotDownloader, Steam sign-in inside the launcher and the Steam console download were removed because nothing used them. `cargo run -p launcher-core --example gamever -- SkyrimSE.exe` prints an exe's version.
+The server's `manifest.json` names the Skyrim build it needs (`game.version`, now 1.6.1170.0 with SKSE 2.2.6) and the Steam depot manifests for it. `core/src/version.rs` compares the player's SkyrimSE.exe, Steam's `appmanifest_489830.acf` and the launcher's own record. A wrong build is fixed by patching the player's own files ("Patching the game instead of downloading it" below), after a Steam "verify files" repair when the game is Steam's newest build. The launcher has no Steam downloader: DepotDownloader, Steam sign-in inside the launcher and the Steam console download were removed because nothing used them.
 
 ## Discord sign-in
 
