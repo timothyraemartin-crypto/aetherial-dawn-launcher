@@ -5,7 +5,7 @@
 //! Everything here is advisory. Nothing in this module may stop Play: every
 //! failure is a log line and a health check, never an error for the player.
 //! Staff can switch each part off in status.json (`launcher.firewallFix`,
-//! `launcher.udpProbe`, `launcher.connectWatch` set to false).
+//! `launcher.udpProbe`, `launcher.connectWatch`, `launcher.platformGuard` set to false).
 
 use std::path::Path;
 use std::time::Duration;
@@ -27,11 +27,13 @@ pub struct Flags {
     pub firewall_fix: bool,
     pub udp_probe: bool,
     pub connect_watch: bool,
+    /// Set other servers' Skyrim Platform scripts aside for the session.
+    pub platform_guard: bool,
 }
 
 impl Default for Flags {
     fn default() -> Self {
-        Flags { firewall_fix: true, udp_probe: true, connect_watch: true }
+        Flags { firewall_fix: true, udp_probe: true, connect_watch: true, platform_guard: true }
     }
 }
 
@@ -39,7 +41,7 @@ impl Flags {
     pub fn from_status(status: Option<&serde_json::Value>) -> Flags {
         let launcher = status.and_then(|s| s.get("launcher"));
         let on = |key: &str| launcher.and_then(|l| l.get(key)).and_then(|v| v.as_bool()) != Some(false);
-        Flags { firewall_fix: on("firewallFix"), udp_probe: on("udpProbe"), connect_watch: on("connectWatch") }
+        Flags { firewall_fix: on("firewallFix"), udp_probe: on("udpProbe"), connect_watch: on("connectWatch"), platform_guard: on("platformGuard") }
     }
 }
 
@@ -369,6 +371,23 @@ pub fn udp_check(p: &Probe, port: u16) -> Check {
     }
 }
 
+/// Other servers' Skyrim Platform scripts the launcher set aside for this
+/// session (they come back when the game closes). Skyrim Platform runs every
+/// script in its plugin folders, so a second server's client would run beside
+/// ours and could connect elsewhere or fail silently.
+pub fn platform_check(set_aside: &[String]) -> Check {
+    if set_aside.is_empty() {
+        return Check { id: "platform", title: "Other servers' scripts", status: Status::Ok, detail: "No scripts from other servers in Skyrim Platform's folders.".into(), items: vec![] };
+    }
+    Check {
+        id: "platform",
+        title: "Other servers' scripts",
+        status: Status::Info,
+        detail: "Scripts from another server were found in Skyrim Platform's folders. They are set aside while you play on Aetherial Dawn and put back when the game closes.".into(),
+        items: set_aside.to_vec(),
+    }
+}
+
 // ---------- game ran but never connected ----------
 
 /// Skyrim ran, did not crash, got to the main menu, and never loaded a world.
@@ -409,7 +428,8 @@ mod tests {
         assert_eq!(Flags::from_status(Some(&serde_json::json!({}))), Flags::default());
         assert_eq!(Flags::from_status(Some(&serde_json::json!({"launcher": {"firewallFix": "no", "udpProbe": 0}}))), Flags::default());
         let f = Flags::from_status(Some(&serde_json::json!({"launcher": {"firewallFix": false, "connectWatch": false}})));
-        assert!(!f.firewall_fix && f.udp_probe && !f.connect_watch);
+        assert!(!f.firewall_fix && f.udp_probe && !f.connect_watch && f.platform_guard);
+        assert!(!Flags::from_status(Some(&serde_json::json!({"launcher": {"platformGuard": false}}))).platform_guard);
     }
 
     #[test]
@@ -512,5 +532,7 @@ mod tests {
         assert_eq!(udp_check(&Probe::NoAnswer, 7777).status, Status::Warn);
         assert_eq!(udp_check(&Probe::Unknown("x".into()), 7777).status, Status::Info);
         assert_eq!(connect_check(99).id, "connect");
+        assert_eq!(platform_check(&[]).status, Status::Ok);
+        assert_eq!(platform_check(&["Data/Platform/Plugins/a.js".into()]).status, Status::Info);
     }
 }

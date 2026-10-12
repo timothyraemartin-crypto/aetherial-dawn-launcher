@@ -421,6 +421,7 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     // No mods: anything beyond the game, SKSE and SkyMP's own files keeps the
     // player out (core/src/modguard.rs). Checked on every Play, before the
     // launcher changes anything on the PC.
+    let flags = launcher_flags(&state.http, &config.base_url).await;
     play_step(&app, "Setting other mods aside…");
     let extras = {
         let (dir, names, files) = (dir.clone(), server_names.clone(), m.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>());
@@ -431,6 +432,12 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
         files.extend(std::fs::read_to_string(dir.join(".aetherial-dawn").join("local-allow.txt")).unwrap_or_default().lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()));
         tokio::task::spawn_blocking(move || launcher_core::modguard::extras(&dir, &names, &files)).await.map_err(|e| e.to_string())?
     };
+    // Another server's Skyrim Platform scripts: set aside like other mods, unless staff switched it off.
+    let extras: Vec<_> = extras.into_iter().filter(|e| e.kind != "script" || flags.platform_guard).collect();
+    let foreign_scripts: Vec<String> = extras.iter().filter(|e| e.kind == "script").map(|e| e.rel.clone()).collect();
+    if !foreign_scripts.is_empty() {
+        log::line(&format!("play: another server's Skyrim Platform script(s) found, set aside for this session: {}", foreign_scripts.join(", ")));
+    }
     let mut profile_guard = ProfileGuard { dir: dir.clone(), armed: false };
     if !extras.is_empty() {
         // The player keeps their mods: they leave the Skyrim folder for this session and come back when the game closes.
@@ -498,7 +505,6 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     // for SkyrimSE.exe and the server's UDP port. Advisory only: nothing here
     // stops Play. Staff switch parts off in status.json (`launcher.firewallFix`,
     // `launcher.udpProbe`).
-    let flags = launcher_flags(&state.http, &config.base_url).await;
     let firewall = if flags.firewall_fix {
         play_step(&app, "Checking Windows Firewall for Skyrim…");
         let (exe, marker) = (dir.join(game::GAME_EXE), app.path().app_local_data_dir().ok().map(|d| d.join("firewall-fix.txt")));
@@ -524,6 +530,7 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     };
     log::line(&format!("play: server UDP probe {}:{}: {udp:?}", m.server.ip, m.server.port));
     report.checks.push(netcheck::firewall_check(&firewall));
+    report.checks.push(netcheck::platform_check(&foreign_scripts));
     report.checks.push(netcheck::udp_check(&udp, m.server.port));
     report.worst = report.checks.iter().map(|c| c.status).max().unwrap_or(health::Status::Ok);
     if report.worst >= health::Status::Warn && config.share_health {

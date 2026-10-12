@@ -12,8 +12,13 @@
 //! - loose files under `Data` (meshes, textures, sound, interface and so on)
 //!   that are not in the SkyMP file list.
 //!
-//! `Data/Platform`, `Data/Scripts` (SKSE and SkyMP's Papyrus files) and
-//! `Data/Video` are SkyMP's, SKSE's or the game's, and are not looked at.
+//! - Skyrim Platform scripts (`.js`) in its plugin folders that the server did
+//!   not give: another server's client script would run beside ours and can
+//!   connect elsewhere or fail silently (kind "script").
+//!
+//! The rest of `Data/Platform`, `Data/Scripts` (SKSE and SkyMP's Papyrus
+//! files) and `Data/Video` are SkyMP's, SKSE's or the game's, and are not
+//! looked at.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -120,6 +125,27 @@ pub fn extras(game_dir: &Path, masters: &[String], manifest: &[String]) -> Vec<E
         found.push(Extra { kind: "dll", rel });
     }
 
+    // Skyrim Platform runs every .js directly inside its plugin folders. The
+    // server's own (the manifest), the launcher's bundled ones and the ones
+    // listed in local-allow.txt come in through `manifest`; any other is
+    // another server's script.
+    for folder in crate::game::platform_folders(game_dir) {
+        let Ok(rd) = std::fs::read_dir(game_dir.join(&folder)) else { continue };
+        let mut names: Vec<String> = rd
+            .flatten()
+            .filter(|e| e.path().is_file())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.to_ascii_lowercase().ends_with(".js"))
+            .collect();
+        names.sort_by_key(|n| n.to_ascii_lowercase());
+        for name in names {
+            let rel = format!("{folder}/{name}");
+            if !manifest.contains(&lower(&rel)) {
+                found.push(Extra { kind: "script", rel });
+            }
+        }
+    }
+
     // Loose files under Data (not Platform, Scripts, Video, SKSE).
     let mut all = Vec::new();
     walk(&data, &mut all);
@@ -187,12 +213,25 @@ mod tests {
     #[test]
     fn a_game_with_nothing_but_the_game_skse_and_skymp_is_clean() {
         let d = tempfile::tempdir().unwrap();
-        for f in ["Data/Skyrim.esm", "Data/Update.esm", "Data/Dawnguard.esm", "Data/Skyrim - Textures0.bsa", "Data/ccBGSSSE001-Fish.esm", "Data/ccBGSSSE001-Fish.bsa", "Data/_ResourcePack.esl", "Data/MarketplaceTextures.bsa", "Data/SKSE/Plugins/MpClientPlugin.dll", "Data/SKSE/Plugins/SkyrimPlatform.dll", "Data/SKSE/Plugins/versionlib-1-6-1170-0.bin", "Data/Platform/Plugins/x.js", "Data/Scripts/Game.pex", "Data/Video/BGS_Logo.bik", "Data/Interface/CombatAlertOverlayMenu.swf", "Data/meshes/__folder_managed_by_vortex"] {
+        for f in ["Data/Skyrim.esm", "Data/Update.esm", "Data/Dawnguard.esm", "Data/Skyrim - Textures0.bsa", "Data/ccBGSSSE001-Fish.esm", "Data/ccBGSSSE001-Fish.bsa", "Data/_ResourcePack.esl", "Data/MarketplaceTextures.bsa", "Data/SKSE/Plugins/MpClientPlugin.dll", "Data/SKSE/Plugins/SkyrimPlatform.dll", "Data/SKSE/Plugins/versionlib-1-6-1170-0.bin", "Data/Platform/Plugins/skymp5-client.js", "Data/Scripts/Game.pex", "Data/Video/BGS_Logo.bik", "Data/Interface/CombatAlertOverlayMenu.swf", "Data/meshes/__folder_managed_by_vortex"] {
             touch(d.path(), f);
         }
         std::fs::write(d.path().join("Skyrim.ccc"), "ccBGSSSE001-Fish.esm\r\n").unwrap();
-        let manifest = vec!["Data/Interface/CombatAlertOverlayMenu.swf".to_string()];
+        let manifest = vec!["Data/Interface/CombatAlertOverlayMenu.swf".to_string(), "Data/Platform/Plugins/skymp5-client.js".to_string()];
         assert_eq!(scan(d.path(), &masters(), &manifest), vec![]);
+    }
+
+    #[test]
+    fn another_servers_platform_scripts_are_found_but_ours_and_non_scripts_are_not() {
+        let d = tempfile::tempdir().unwrap();
+        for f in ["Data/Platform/Plugins/skymp5-client.js", "Data/Platform/Plugins/OtherServer-ui.JS", "Data/Platform/Plugins/skymp5-client-settings.txt", "Data/Platform/PluginsDev/dev.js", "Data/Platform/PluginsNoLoad/auth-data-no-load.js", "Data/Platform/Plugins/sub/deep.js", "Data/Extra/more.js"] {
+            touch(d.path(), f);
+        }
+        std::fs::create_dir_all(d.path().join("Data/SKSE/Plugins")).unwrap();
+        std::fs::write(d.path().join("Data/SKSE/Plugins/SkyrimPlatform.ini"), "[Main]\nPluginFolders = Data/Extra;C:/evil;../up\n").unwrap();
+        let manifest = vec!["Data/Platform/Plugins/skymp5-client.js".to_string()];
+        let found: Vec<String> = extras(d.path(), &masters(), &manifest).into_iter().filter(|e| e.kind == "script").map(|e| e.rel).collect();
+        assert_eq!(found, vec!["Data/Extra/more.js", "Data/Platform/Plugins/OtherServer-ui.JS", "Data/Platform/PluginsDev/dev.js"]);
     }
 
     #[test]
