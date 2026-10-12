@@ -834,9 +834,9 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
     // Where the player was and who was near, from the log ad-report.js writes (names and numbers only).
     let position = if crashed { launcher_core::adreport::position_text(&platform_log_text(&app)) } else { None };
     if crashed && config.share_health {
-        let (app2, http2, health2)= (app.clone(), http.clone(), health.clone());
+        let (app2, http2, health2, config2, build2, staff2) = (app.clone(), http.clone(), health.clone(), config.clone(), build.clone(), staff_summary.clone());
         tauri::async_runtime::spawn(async move {
-            let f = send_health(&app2, &http2, &config, &build, "after a crash", Some(&staff_summary), crash_log, position, &health2).await;
+            let f = send_health(&app2, &http2, &config2, &build2, "after a crash", Some(&staff2), crash_log, position, &health2).await;
             if f.report_id.is_some() {
                 let _ = app2.emit("crash-filed", CrashFiled { report_id: f.report_id, likely_cause: f.likely_cause });
             }
