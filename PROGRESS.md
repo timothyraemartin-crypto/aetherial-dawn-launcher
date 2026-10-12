@@ -14,6 +14,7 @@ Protocol v2.0.0: `.claude/ad-system/OPERATING_PROTOCOL.md`. Checks: `python3 .cl
 - 2026-10-11 Branch mod-removal (0.1.134, 22 commits) pushed as a draft PR with native-mods/ sources. Share build 0.1.135 (the share folder under A:/Aetherial Dawn) has no matching source commit: Cargo.toml and tree are at 0.1.134. Not released, not deployed.
 
 ## Done
+- 2026-10-12 Release 0.1.137: version bump (Cargo.toml, Cargo.lock x2). Bundles #122 (sample skill data removed), #124 (firewall repair, UDP probe, never-connected report, other servers scripts set aside), #125 (NoPause 1.0.8: Esc/Tab/Map unpaused). Not built as Windows app until the tag build; no game check yet. SkillTree 0.1.3 (#123) is source only, not in this release.
 - 2026-10-11 Release 0.1.136: version bump in Cargo.toml and Cargo.lock (two entries). Bundles hosted Windows build, NoPause Book=0, skill tree 0.1.2, update check on Play. Not built as Windows app until tag build; no game check yet.
 - 2026-10-11 Removed 6 unreferenced files (ui/art/background-dawn.jpg, ui/art/icon-128.png, ui/art/README.md, docs/connect-vortex-runbook.md, docs/publish-feed.md, core/examples/gamever.rs). Checked: cargo check -p launcher-core --tests, node tests, 3 UI tests. Not built as Windows app; no game check needed.
 - 2026-10-08 Added repo memory (`.claude/memory/`: INDEX.md + topic files, linted by `.claude/memory-lint.sh`).
