@@ -247,6 +247,16 @@ mod win {
         Ok(parse_rules(&String::from_utf8_lossy(&out.stdout)))
     }
 
+    /// Windows Defender's recent detections that mention Skyrim or the browser engine,
+    /// from its event log (no admin needed on most PCs; says so when it can't read it).
+    pub fn defender_history() -> String {
+        let script = "try { $e = Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Windows Defender/Operational'; Id=1006,1007,1116,1117,1118,1119} -MaxEvents 200 -ErrorAction Stop | Where-Object { $_.Message -match 'Skyrim|cef|Platform' } | Select-Object -First 10; if ($e) { $e | ForEach-Object { $m = ($_.Message -replace '\\s+',' '); $_.TimeCreated.ToString('s') + ' id ' + $_.Id + ' ' + $m.Substring(0,[Math]::Min(300,$m.Length)) } } else { 'no Defender detections mention Skyrim, cef or Platform' } } catch { 'could not read the Defender log: ' + $_.Exception.Message }";
+        match powershell(&["-EncodedCommand", encode_command(script).as_str()]) {
+            Ok(o) => String::from_utf8_lossy(&o.stdout).trim().chars().take(2500).collect(),
+            Err(e) => format!("could not run PowerShell: {e}"),
+        }
+    }
+
     /// Runs the fix in an elevated PowerShell (one Windows permission prompt)
     /// and waits for it. Err when the player declined or Windows refused.
     pub fn run_elevated(script: &str) -> Result<(), String> {
@@ -261,6 +271,17 @@ mod win {
             Err(String::from_utf8_lossy(&out.stderr).trim().chars().take(200).collect::<String>())
         }
     }
+}
+
+/// What Windows Defender logged about Skyrim or the browser engine (read only).
+#[cfg(windows)]
+pub fn defender_history() -> String {
+    win::defender_history()
+}
+
+#[cfg(not(windows))]
+pub fn defender_history() -> String {
+    "(Windows only)".into()
 }
 
 /// Makes sure Windows Firewall lets `exe` through; asks Windows for

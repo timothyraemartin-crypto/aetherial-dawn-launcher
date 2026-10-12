@@ -932,7 +932,11 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
     let filed = Filed::default();
     report.push_str(&format!("\n===== game data =====\n{}{}", bundled::report_line(&game_dir, plugins_txt(&app).as_deref()), game_data_report(&app, &game_dir)));
     let session_logs = watch::collect(&skse_logs, &std::env::temp_dir(), started);
-    let browser_text = launcher_core::browsercheck::report_text(&game_dir);
+    let browser_text = {
+        let t = launcher_core::browsercheck::report_text(&game_dir);
+        let defender = tokio::task::spawn_blocking(netcheck::defender_history).await.unwrap_or_default();
+        format!("{t}===== Windows Defender detections naming Skyrim, cef or Platform =====\n{defender}\n")
+    };
     report.push_str(&session_logs);
     report.push_str(&format!("\n===== launcher log (last 40 lines) =====\n{}\n", log::tail(40)));
     // Staff can read what happened on the next attempt: the whole session report

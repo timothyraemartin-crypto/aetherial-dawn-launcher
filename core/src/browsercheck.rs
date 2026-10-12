@@ -98,7 +98,8 @@ pub fn inventory(game_dir: &Path) -> Vec<(String, u64)> {
                 continue;
             }
             let n = e.file_name().to_string_lossy().to_ascii_lowercase();
-            if n.contains("cef") || n.contains("nirnlab") || n == "icudtl.dat" || n == "resources.pak" {
+            let rel_l = p.strip_prefix(root).map(|r| r.to_string_lossy().replace('\\', "/").to_ascii_lowercase()).unwrap_or_default();
+            if rel_l.starts_with("data/platform/distribution/") || n.contains("cef") || n.contains("nirnlab") {
                 let rel = p.strip_prefix(root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
                 out.push((rel, e.metadata().map(|m| m.len()).unwrap_or(0)));
             }
@@ -129,8 +130,9 @@ fn has(inv: &[(String, u64)], name: &str) -> bool {
 /// The health check: warns when the browser cannot start.
 pub fn check(inv: &[(String, u64)], backend: Option<&str>, temp: &Result<(), String>, fixed: Option<&(String, String)>) -> Check {
     let mut items = Vec::new();
-    if !has(inv, "SkyrimPlatformCEF.exe") {
-        items.push("SkyrimPlatformCEF.exe (the browser's helper) is missing or empty".to_string());
+    // The helper ships as SkyrimPlatformCEF.exe.hidden (so antivirus doesn't see an exe); Skyrim Platform copies it out as .exe when it starts.
+    if !has(inv, "SkyrimPlatformCEF.exe") && !has(inv, "SkyrimPlatformCEF.exe.hidden") {
+        items.push("SkyrimPlatformCEF.exe.hidden (the browser's helper) is missing or empty".to_string());
     }
     if !has(inv, "libcef.dll") {
         items.push("libcef.dll (the browser engine) is missing or empty".to_string());
@@ -156,7 +158,12 @@ pub fn check(inv: &[(String, u64)], backend: Option<&str>, temp: &Result<(), Str
 pub fn report_text(game_dir: &Path) -> String {
     let ini = std::fs::read_to_string(ini_path(game_dir)).unwrap_or_else(|_| "(SkyrimPlatform.ini not found)".into());
     let inv = inventory(game_dir);
-    let files = if inv.is_empty() { "  (none found under Data/Platform or Data/SKSE/Plugins)".to_string() } else { inv.iter().map(|(n, s)| format!("  {n}  {s} bytes")).collect::<Vec<_>>().join("\n") };
+    let locales = inv.iter().filter(|(n, _)| n.to_ascii_lowercase().contains("/locales/")).count();
+    let mut lines: Vec<String> = inv.iter().filter(|(n, _)| !n.to_ascii_lowercase().contains("/locales/")).map(|(n, s)| format!("  {n}  {s} bytes")).collect();
+    if locales > 0 {
+        lines.push(format!("  ({locales} files under a locales folder)"));
+    }
+    let files = if lines.is_empty() { "  (none found under Data/Platform or Data/SKSE/Plugins)".to_string() } else { lines.join("\n") };
     format!("===== SkyrimPlatform.ini =====\n{}\n===== browser files =====\n{files}\n", ini.trim_end())
 }
 
@@ -189,13 +196,13 @@ mod tests {
         let d = g.join("Data/Platform/Distribution/RuntimeDependencies");
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("libcef.dll"), b"x").unwrap();
-        std::fs::write(d.join("SkyrimPlatformCEF.exe"), b"").unwrap();
+        std::fs::write(d.join("SkyrimPlatformCEF.exe.hidden"), b"").unwrap();
         let inv = inventory(&g);
         assert_eq!(inv.len(), 2);
         let c = check(&inv, Some("off"), &Err("denied".into()), None);
         assert_eq!(c.status, Status::Warn);
         assert_eq!(c.items.len(), 3, "empty helper, temp, backend: {:?}", c.items);
-        std::fs::write(d.join("SkyrimPlatformCEF.exe"), b"x").unwrap();
+        std::fs::write(d.join("SkyrimPlatformCEF.exe.hidden"), b"x").unwrap();
         let ok = check(&inventory(&g), None, &Ok(()), None);
         assert_eq!(ok.status, Status::Ok);
         assert!(temp_probe(&g.join("tmp")).is_ok());
