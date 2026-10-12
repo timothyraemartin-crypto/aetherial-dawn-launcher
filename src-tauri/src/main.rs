@@ -623,6 +623,13 @@ fn reports_dir() -> Option<PathBuf> {
     log::path().and_then(|p| p.parent().map(|d| d.to_path_buf()))
 }
 
+/// Whether Skyrim Platform's browser helper was running 30 s into the last
+/// session: 1 yes, 0 no, -1 not known.
+fn browser_probe() -> &'static std::sync::atomic::AtomicI8 {
+    static B: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(-1);
+    &B
+}
+
 /// Closing Skyrim with its X (or Alt+F4) can leave SkyrimSE.exe and Skyrim
 /// Platform's browser helper running with no window, so Steam still shows the
 /// game as running, and Play refuses to start another session until it is gone.
@@ -717,6 +724,21 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
         Some(pid) => {
             log::line(&format!("game: SkyrimSE.exe running as process {pid}"));
             tokio::spawn(end_when_window_closed(pid));
+            // Skyrim Platform's in-game browser draws the SkyMP login box (the
+            // way into the server). Whether its helper process is up 30 s in,
+            // for the report: no helper means no login box (overlay, graphics
+            // card or antivirus trouble).
+            let browser_seen = browser_probe();
+            browser_seen.store(-1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                if watch::find_process(watch::GAME_PROCESS) != Some(pid) {
+                    return;
+                }
+                let up = watch::BROWSER_HELPERS.iter().any(|h| watch::find_process(h).is_some());
+                browser_probe().store(up as i8, Ordering::SeqCst);
+                log::line(&format!("game: Skyrim Platform's in-game browser (SkyrimPlatformCEF.exe) {} 30 seconds after the game started", if up { "is running" } else { "is NOT running" }));
+            });
             // Face sharing for as long as the game runs.
             let stop = std::sync::Arc::new(AtomicBool::new(false));
             let sharing = token(&app).map(|t| {
@@ -772,7 +794,12 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
     };
     if never_connected {
         log::line(&format!("game: ran {} seconds without crashing but never loaded into the world; it most likely never connected to the server", ran.as_secs()));
-        health.checks.push(netcheck::connect_check(ran.as_secs()));
+        let mut connect = netcheck::connect_check(ran.as_secs());
+        if browser_probe().load(Ordering::SeqCst) == 0 {
+            connect.items.push("Skyrim Platform's in-game browser was not running, so the login box could not show. Try closing Medal, Discord and Xbox Game Bar overlays, and check antivirus.".into());
+            summary.push_str(" The in-game browser that draws the login box was not running; closing overlays such as Medal, Discord and Xbox Game Bar often fixes that.");
+        }
+        health.checks.push(connect);
         health.worst = health.checks.iter().map(|c| c.status).max().unwrap_or(health::Status::Ok);
         summary.push_str(" Skyrim never loaded into the world, so it most likely never connected to the server. Staff can see why if you leave sharing on; a firewall, router or VPN blocking UDP is the usual cause.");
     }
