@@ -1,0 +1,1824 @@
+{
+ "version": 1,
+ "perkPoints": "AetherialDawn.esp|0x10DE",
+ "skills": [
+  {
+   "id": "ad.oneHanded",
+   "name": "One-Handed",
+   "description": "Swords, war axes, maces and daggers, fought with a shield, a torch, a spell or a second blade.",
+   "level": "AetherialDawn.esp|0x101C",
+   "ratio": "AetherialDawn.esp|0x101D",
+   "nodes": [
+    {
+     "id": "oneHanded.armsman",
+     "perk": "AetherialDawn.esp|0x10A9",
+     "x": 0,
+     "y": 0,
+     "links": [
+      "oneHanded.elven",
+      "oneHanded.power1",
+      "oneHanded.care"
+     ]
+    },
+    {
+     "id": "oneHanded.elven",
+     "perk": "AetherialDawn.esp|0x10AE",
+     "x": 0,
+     "y": 1,
+     "links": [
+      "oneHanded.dwarven"
+     ]
+    },
+    {
+     "id": "oneHanded.dwarven",
+     "perk": "AetherialDawn.esp|0x10AC",
+     "x": 0,
+     "y": 2,
+     "links": [
+      "oneHanded.glass"
+     ]
+    },
+    {
+     "id": "oneHanded.glass",
+     "perk": "AetherialDawn.esp|0x10B0",
+     "x": 0,
+     "y": 3,
+     "links": [
+      "oneHanded.ebony"
+     ]
+    },
+    {
+     "id": "oneHanded.ebony",
+     "perk": "AetherialDawn.esp|0x10AD",
+     "x": 0,
+     "y": 4,
+     "links": []
+    },
+    {
+     "id": "oneHanded.power1",
+     "perk": "AetherialDawn.esp|0x10B2",
+     "x": 1.5,
+     "y": 1,
+     "links": [
+      "oneHanded.power2"
+     ]
+    },
+    {
+     "id": "oneHanded.care",
+     "perk": "AetherialDawn.esp|0x10AA",
+     "x": -1.5,
+     "y": 1,
+     "links": [
+      "oneHanded.endure"
+     ]
+    },
+    {
+     "id": "oneHanded.power2",
+     "perk": "AetherialDawn.esp|0x10B3",
+     "x": 1.5,
+     "y": 2,
+     "links": [
+      "oneHanded.power3"
+     ]
+    },
+    {
+     "id": "oneHanded.endure",
+     "perk": "AetherialDawn.esp|0x10AF",
+     "x": -1.5,
+     "y": 2,
+     "links": [
+      "oneHanded.drill"
+     ]
+    },
+    {
+     "id": "oneHanded.power3",
+     "perk": "AetherialDawn.esp|0x10B4",
+     "x": 1.5,
+     "y": 3,
+     "links": [
+      "oneHanded.master"
+     ]
+    },
+    {
+     "id": "oneHanded.drill",
+     "perk": "AetherialDawn.esp|0x10AB",
+     "x": -1.5,
+     "y": 3,
+     "links": []
+    },
+    {
+     "id": "oneHanded.master",
+     "perk": "AetherialDawn.esp|0x10B1",
+     "x": 1.5,
+     "y": 4,
+     "links": []
+    }
+   ]
+  },
+  {
+   "id": "ad.twoHanded",
+   "name": "Two-Handed",
+   "description": "Greatswords, battleaxes and warhammers. Slow, heavy blows that end a fight.",
+   "level": "AetherialDawn.esp|0x10E1",
+   "ratio": "AetherialDawn.esp|0x10E2",
+   "nodes": [
+    {
+     "id": "twoHanded.barbarian",
+     "perk": "AetherialDawn.esp|0x10CB",
+     "x": 0,
+     "y": 0,
+     "links": [
+      "twoHanded.elven",
+      "twoHanded.power1",
+      "twoHanded.care"
+     ]
+    },
+    {
+     "id": "twoHanded.elven",
+     "perk": "AetherialDawn.esp|0x10D0",
+     "x": 0,
+     "y": 1,
+     "links": [
+      "twoHanded.dwarven"
+     ]
+    },
+    {
+     "id": "twoHanded.dwarven",
+     "perk": "AetherialDawn.esp|0x10CE",
+     "x": 0,
+     "y": 2,
+     "links": [
+      "twoHanded.glass"
+     ]
+    },
+    {
+     "id": "twoHanded.glass",
+     "perk": "AetherialDawn.esp|0x10D2",
+     "x": 0,
+     "y": 3,
+     "links": [
+      "twoHanded.ebony"
+     ]
+    },
+    {
+     "id": "twoHanded.ebony",
+     "perk": "AetherialDawn.esp|0x10CF",
+     "x": 0,
+     "y": 4,
+     "links": []
+    },
+    {
+     "id": "twoHanded.power1",
+     "perk": "AetherialDawn.esp|0x10D4",
+     "x": 1.5,
+     "y": 1,
+     "links": [
+      "twoHanded.power2"
+     ]
+    },
+    {
+     "id": "twoHanded.care",
+     "perk": "AetherialDawn.esp|0x10CC",
+     "x": -1.5,
+     "y": 1,
+     "links": [
+      "twoHanded.endure"
+     ]
+    },
+    {
+     "id": "twoHanded.power2",
+     "perk": "AetherialDawn.esp|0x10D5",
+     "x": 1.5,
+     "y": 2,
+     "links": [
+      "twoHanded.power3"
+     ]
+    },
+    {
+     "id": "twoHanded.endure",
+     "perk": "AetherialDawn.esp|0x10D1",
+     "x": -1.5,
+     "y": 2,
+     "links": [
+      "twoHanded.drill"
+     ]
+    },
+    {
+     "id": "twoHanded.power3",
+     "perk": "AetherialDawn.esp|0x10D6",
+     "x": 1.5,
+     "y": 3,
+     "links": [
+      "twoHanded.master"
+     ]
+    },
+    {
+     "id": "twoHanded.drill",
+     "perk": "AetherialDawn.esp|0x10CD",
+     "x": -1.5,
+     "y": 3,
+     "links": []
+    },
+    {
+     "id": "twoHanded.master",
+     "perk": "AetherialDawn.esp|0x10D3",
+     "x": 1.5,
+     "y": 4,
+     "links": []
+    }
+   ]
+  },
+  {
+   "id": "ad.archery",
+   "name": "Archery",
+   "description": "Bows and crossbows. Steady breathing, a long draw and a clean shot from afar.",
+   "level": "AetherialDawn.esp|0x1002",
+   "ratio": "AetherialDawn.esp|0x1003",
+   "nodes": [
+    {
+     "id": "archery.overdraw",
+     "perk": "AetherialDawn.esp|0x1031",
+     "x": 0,
+     "y": 0,
+     "links": [
+      "archery.elven",
+      "archery.power1",
+      "archery.care"
+     ]
+    },
+    {
+     "id": "archery.elven",
+     "perk": "AetherialDawn.esp|0x102D",
+     "x": 0,
+     "y": 1,
+     "links": [
+      "archery.dwarven"
+     ]
+    },
+    {
+     "id": "archery.dwarven",
+     "perk": "AetherialDawn.esp|0x102B",
+     "x": 0,
+     "y": 2,
+     "links": [
+      "archery.glass"
+     ]
+    },
+    {
+     "id": "archery.glass",
+     "perk": "AetherialDawn.esp|0x102F",
+     "x": 0,
+     "y": 3,
+     "links": [
+      "archery.ebony"
+     ]
+    },
+    {
+     "id": "archery.ebony",
+     "perk": "AetherialDawn.esp|0x102C",
+     "x": 0,
+     "y": 4,
+     "links": []
+    },
+    {
+     "id": "archery.power1",
+     "perk": "AetherialDawn.esp|0x1032",
+     "x": 1.5,
+     "y": 1,
+     "links": [
+      "archery.power2"
+     ]
+    },
+    {
+     "id": "archery.care",
+     "perk": "AetherialDawn.esp|0x1029",
+     "x": -1.5,
+     "y": 1,
+     "links": [
+      "archery.endure"
+     ]
+    },
+    {
+     "id": "archery.power2",
+     "perk": "AetherialDawn.esp|0x1033",
+     "x": 1.5,
+     "y": 2,
+     "links": [
+      "archery.power3"
+     ]
+    },
+    {
+     "id": "archery.endure",
+     "perk": "AetherialDawn.esp|0x102E",
+     "x": -1.5,
+     "y": 2,
+     "links": [
+      "archery.drill"
+     ]
+    },
+    {
+     "id": "archery.power3",
+     "perk": "AetherialDawn.esp|0x1034",
+     "x": 1.5,
+     "y": 3,
+     "links": [
+      "archery.master"
+     ]
+    },
+    {
+     "id": "archery.drill",
+     "perk": "AetherialDawn.esp|0x102A",
+     "x": -1.5,
+     "y": 3,
+     "links": []
+    },
+    {
+     "id": "archery.master",
+     "perk": "AetherialDawn.esp|0x1030",
+     "x": 1.5,
+     "y": 4,
+     "links": []
+    }
+   ]
+  },
+  {
+   "id": "ad.block",
+   "name": "Block",
+   "description": "Shields and parrying: turning a blow aside, bashing, and holding the line.",
+   "level": "AetherialDawn.esp|0x1006",
+   "ratio": "AetherialDawn.esp|0x1007",
+   "nodes": [
+    {
+     "id": "block.shieldWall",
+     "perk": "AetherialDawn.esp|0x1040",
+     "x": 0,
+     "y": 0,
+     "links": [
+      "block.deflect",
+      "block.power1",
+      "block.care"
+     ]
+    },
+    {
+     "id": "block.deflect",
+     "perk": "AetherialDawn.esp|0x1037",
+     "x": 0,
+     "y": 1,
+     "links": [
+      "block.elemental"
+     ]
+    },
+    {
+     "id": "block.elemental",
+     "perk": "AetherialDawn.esp|0x1039",
+     "x": 0,
+     "y": 2,
+     "links": [
+      "block.heavyShields"
+     ]
+    },
+    {
+     "id": "block.heavyShields",
+     "perk": "AetherialDawn.esp|0x103B",
+     "x": 0,
+     "y": 3,
+     "links": [
+      "block.charge"
+     ]
+    },
+    {
+     "id": "block.charge",
+     "perk": "AetherialDawn.esp|0x1036",
+     "x": 0,
+     "y": 4,
+     "links": []
+    },
+    {
+     "id": "block.power1",
+     "perk": "AetherialDawn.esp|0x103D",
+     "x": 1.5,
+     "y": 1,
+     "links": [
+      "block.power2"
+     ]
+    },
+    {
+     "id": "block.care",
+     "perk": "AetherialDawn.esp|0x1035",
+     "x": -1.5,
+     "y": 1,
+     "links": [
+      "block.endure"
+     ]
+    },
+    {
+     "id": "block.power2",
+     "perk": "AetherialDawn.esp|0x103E",
+     "x": 1.5,
+     "y": 2,
+     "links": [
+      "block.power3"
+     ]
+    },
+    {
+     "id": "block.endure",
+     "perk": "AetherialDawn.esp|0x103A",
+     "x": -1.5,
+     "y": 2,
+     "links": [
+      "block.drill"
+     ]
+    },
+    {
+     "id": "block.power3",
+     "perk": "AetherialDawn.esp|0x103F",
+     "x": 1.5,
+     "y": 3,
+     "links": [
+      "block.master"
+     ]
+    },
+    {
+     "id": "block.drill",
+     "perk": "AetherialDawn.esp|0x1038",
+     "x": -1.5,
+     "y": 3,
+     "links": []
+    },
+    {
+     "id": "block.master",
+     "perk": "AetherialDawn.esp|0x103C",
+     "x": 1.5,
+     "y": 4,
+     "links": []
+    }
+   ]
+  },
+  {
+   "id": "ad.heavyArmor",
+   "name": "Heavy Armour",
+   "description": "Iron, steel, dwarven, orcish, ebony and Daedric plate. Moving and fighting under its weight.",
+   "level": "AetherialDawn.esp|0x1010",
+   "ratio": "AetherialDawn.esp|0x1011",
+   "nodes": [
+    {
+     "id": "heavyArmor.juggernaut",
+     "perk": "AetherialDawn.esp|0x1067",
+     "x": 0,
+     "y": 0,
+     "links": [
+      "heavyArmor.banded",
+      "heavyArmor.power1",
+      "heavyArmor.care"
+     ]
+    },
+    {
+     "id": "heavyArmor.banded",
+     "perk": "AetherialDawn.esp|0x1060",
+     "x": 0,
+     "y": 1,
+     "links": [
+      "heavyArmor.dwarven"
+     ]
+    },
+    {
+     "id": "heavyArmor.dwarven",
+     "perk": "AetherialDawn.esp|0x1064",
+     "x": 0,
+     "y": 2,
+     "links": [
+      "heavyArmor.ebony"
+     ]
+    },
+    {
+     "id": "heavyArmor.ebony",
+     "perk": "AetherialDawn.esp|0x1065",
+     "x": 0,
+     "y": 3,
+     "links": [
+      "heavyArmor.daedric"
+     ]
+    },
+    {
+     "id": "heavyArmor.daedric",
+     "perk": "AetherialDawn.esp|0x1062",
+     "x": 0,
+     "y": 4,
+     "links": []
+    },
+    {
+     "id": "heavyArmor.power1",
+     "perk": "AetherialDawn.esp|0x1069",
+     "x": 1.5,
+     "y": 1,
+     "links": [
+      "heavyArmor.power2"
+     ]
+    },
+    {
+     "id": "heavyArmor.care",
+     "perk": "AetherialDawn.esp|0x1061",
+     "x": -1.5,
+     "y": 1,
+     "links": [
+      "heavyArmor.endure"
+     ]
+    },
+    {
+     "id": "heavyArmor.power2",
+     "perk": "AetherialDawn.esp|0x106A",
+     "x": 1.5,
+     "y": 2,
+     "links": [
+      "heavyArmor.power3"
+     ]
+    },
+    {
+     "id": "heavyArmor.endure",
+     "perk": "AetherialDawn.esp|0x1066",
+     "x": -1.5,
+     "y": 2,
+     "links": [
+      "heavyArmor.drill"
+     ]
+    },
+    {
+     "id": "heavyArmor.power3",
+     "perk": "AetherialDawn.esp|0x106B",
+     "x": 1.5,
+     "y": 3,
+     "links": [
+      "heavyArmor.master"
+     ]
+    },
+    {
+     "id": "heavyArmor.drill",
+     "perk": "AetherialDawn.esp|0x1063",
+     "x": -1.5,
+     "y": 3,
+     "links": []
+    },
+    {
+     "id": "heavyArmor.master",
+     "perk": "AetherialDawn.esp|0x1068",
+     "x": 1.5,
+     "y": 4,
+     "links": []
+    }
+   ]
+  },
+  {
+   "id": "ad.lightArmor",
+   "name": "Light Armour",
+   "description": "Hide, leather, scaled, elven and glass armour. Quick feet and protection that never slows you.",
+   "level": "AetherialDawn.esp|0x1018",
+   "ratio": "AetherialDawn.esp|0x1019",
+   "nodes": [
+    {
+     "id": "lightArmor.agile",
+     "perk": "AetherialDawn.esp|0x1092",
+     "x": 0,
+     "y": 0,
+     "links": [
+      "lightArmor.scaled",
+      "lightArmor.power1",
+      "lightArmor.care"
+     ]
+    },
+    {
+     "id": "lightArmor.scaled",
+     "perk": "AetherialDawn.esp|0x109D",
+     "x": 0,
+     "y": 1,
+     "links": [
+      "lightArmor.elven"
+     ]
+    },
+    {
+     "id": "lightArmor.elven",
+     "perk": "AetherialDawn.esp|0x1096",
+     "x": 0,
+     "y": 2,
+     "links": [
+      "lightArmor.glass"
+     ]
+    },
+    {
+     "id": "lightArmor.glass",
+     "perk": "AetherialDawn.esp|0x1098",
+     "x": 0,
+     "y": 3,
+     "links": [
+      "lightArmor.dragonscale"
+     ]
+    },
+    {
+     "id": "lightArmor.dragonscale",
+     "perk": "AetherialDawn.esp|0x1094",
+     "x": 0,
+     "y": 4,
+     "links": []
+    },
+    {
+     "id": "lightArmor.power1",
+     "perk": "AetherialDawn.esp|0x109A",
+     "x": 1.5,
+     "y": 1,
+     "links": [
+      "lightArmor.power2"
+     ]
+    },
+    {
+     "id": "lightArmor.care",
+     "perk": "AetherialDawn.esp|0x1093",
+     "x": -1.5,
+     "y": 1,
+     "links": [
+      "lightArmor.endure"
+     ]
+    },
+    {
+     "id": "lightArmor.power2",
+     "perk": "AetherialDawn.esp|0x109B",
+     "x": 1.5,
+     "y": 2,
+     "links": [
+      "lightArmor.power3"
+     ]
+    },
+    {
+     "id": "lightArmor.endure",
+     "perk": "AetherialDawn.esp|0x1097",
+     "x": -1.5,
+     "y": 2,
+     "links": [
+      "lightArmor.drill"
+     ]
+    },
+    {
+     "id": "lightArmor.power3",
+     "perk": "AetherialDawn.esp|0x109C",
+     "x": 1.5,
+     "y": 3,
+     "links": [
+      "lightArmor.master"
+     ]
+    },
+    {
+     "id": "lightArmor.drill",
+     "perk": "AetherialDawn.esp|0x1095",
+     "x": -1.5,
+     "y": 3,
+     "links": []
+    },
+    {
+     "id": "lightArmor.master",
+     "perk": "AetherialDawn.esp|0x1099",
+     "x": 1.5,
+     "y": 4,
+     "links": []
+    }
+   ]
+  },
+  {
+   "id": "ad.blacksmithing",
+   "name": "Blacksmithing",
+   "description": "Smelting ore into ingots and forging weapons, armour, bows and arrows; sharpening blades at the grindstone and fitting armour at the workbench.",
+   "level": "AetherialDawn.esp|0x1004",
+   "ratio": "AetherialDawn.esp|0x1005",
+   "nodes": [
+    {
+     "id": "smith.iron",
+     "perk": "AetherialDawn.esp|0x10BC",
+     "x": 0,
+     "y": 0,
+     "links": [
+      "smith.steel",
+      "smith.fletcher"
+     ]
+    },
+    {
+     "id": "smith.steel",
+     "perk": "AetherialDawn.esp|0x10BF",
+     "x": 0,
+     "y": 1,
+     "links": [
+      "smith.elven",
+      "smith.dwarven"
+     ]
+    },
+    {
+     "id": "smith.elven",
+     "perk": "AetherialDawn.esp|0x10B9",
+     "x": 0,
+     "y": 2,
+     "links": [
+      "smith.glass"
+     ]
+    },
+    {
+     "id": "smith.dwarven",
+     "perk": "AetherialDawn.esp|0x10B7",
+     "x": -1.5,
+     "y": 2,
+     "links": [
+      "smith.orcish"
+     ]
+    },
+    {
+     "id": "smith.glass",
+     "perk": "AetherialDawn.esp|0x10BB",
+     "x": 0,
+     "y": 3,
+     "links": [
+      "smith.daedric"
+     ]
+    },
+    {
+     "id": "smith.orcish",
+     "perk": "AetherialDawn.esp|0x10BE",
+     "x": -1.5,
+     "y": 3,
+     "links": [
+      "smith.ebony"
+     ]
+    },
+    {
+     "id": "smith.daedric",
+     "perk": "AetherialDawn.esp|0x10B6",
+     "x": 0,
+     "y": 4,
+     "links": []
+    },
+    {
+     "id": "smith.ebony",
+     "perk": "AetherialDawn.esp|0x10B8",
+     "x": -1.5,
+     "y": 4,
+     "links": []
+    },
+    {
+     "id": "smith.fletcher",
+     "perk": "AetherialDawn.esp|0x10BA",
+     "x": 1.5,
+     "y": 1,
+     "links": [
+      "smith.thrift"
+     ]
+    },
+    {
+     "id": "smith.thrift",
+     "perk": "AetherialDawn.esp|0x10C0",
+     "x": 1.5,
+     "y": 2,
+     "links": [
+      "smith.bellows"
+     ]
+    },
+    {
+     "id": "smith.bellows",
+     "perk": "AetherialDawn.esp|0x10B5",
+     "x": 1.5,
+     "y": 3,
+     "links": [
+      "smith.journeyman"
+     ]
+    },
+    {
+     "id": "smith.journeyman",
+     "perk": "AetherialDawn.esp|0x10BD",
+     "x": 1.5,
+     "y": 4,
+     "links": []
+    }
+   ]
+  },
+  {
+   "id": "ad.tailoring",
+   "name": "Tailoring",
+   "description": "Cutting and sewing at the tanning rack: clothes, robes, hoods and shoes, from roughspun to fine clothes.",
+   "level": "AetherialDawn.esp|0x10DF",
+   "ratio": "AetherialDawn.esp|0x10E0",
+   "nodes": [
+    {
+     "id": "tailor.roughspun",
+     "perk": "AetherialDawn.esp|0x10C9",
+     "x": 0,
+     "y": 0,
+     "links": [
+      "tailor.linen",
+      "tailor.cutter"
+     ]
+    },
+    {
+     "id": "tailor.linen",
+     "perk": "AetherialDawn.esp|0x10C5",
+     "x": 0,
+     "y": 1,
+     "links": [
+      "tailor.robes",
+      "tailor.merchant"
+     ]
+    },
+    {
+     "id": "tailor.robes",
+     "perk": "AetherialDawn.esp|0x10C8",
+     "x": -1.5,
+     "y": 2,
+     "links": []
+    },
+    {
+     "id": "tailor.merchant",
+     "perk": "AetherialDawn.esp|0x10C6",
+     "x": 0,
+     "y": 2,
+     "links": [
+      "tailor.fine"
+     ]
+    },
+    {
+     "id": "tailor.fine",
+     "perk": "AetherialDawn.esp|0x10C3",
+     "x": 0,
+     "y": 3,
+     "links": [
+      "tailor.court"
+     ]
+    },
+    {
+     "id": "tailor.court",
+     "perk": "AetherialDawn.esp|0x10C1",
+     "x": 0,
+     "y": 4,
+     "links": []
+    },
+    {
+     "id": "tailor.cutter",
+     "perk": "AetherialDawn.esp|0x10C2",
+     "x": 1.5,
+     "y": 1,
+     "links": [
+      "tailor.quick"
+     ]
+    },
+    {
+     "id": "tailor.quick",
+     "perk": "AetherialDawn.esp|0x10C7",
+     "x": 1.5,
+     "y": 2,
+     "links": [
+      "tailor.seam"
+     ]
+    },
+    {
+     "id": "tailor.seam",
+     "perk": "AetherialDawn.esp|0x10CA",
+     "x": 1.5,
+     "y": 3,
+     "links": [
+      "tailor.guild"
+     ]
+    },
+    {
+     "id": "tailor.guild",
+     "perk": "AetherialDawn.esp|0x10C4",
+     "x": 1.5,
+     "y": 4,
+     "links": []
+    }
+   ]
+  },
+  {
+   "id": "ad.leatherworking",
+   "name": "Leatherworking",
+   "description": "Tanning hides into leather and strips at the tanning rack; hide and leather armour.",
+   "level": "AetherialDawn.esp|0x1016",
+   "ratio": "AetherialDawn.esp|0x1017",
+   "nodes": [
+    {
+     "id": "leather.tanner",
+     "perk": "AetherialDawn.esp|0x1090",
+     "x": 0,
+     "y": 0,
+     "links": [
+      "leather.armour",
+      "leather.furrier",
+      "leather.thrift"
+     ]
+    },
+    {
+     "id": "leather.armour",
+     "perk": "AetherialDawn.esp|0x1087",
+     "x": 0,
+     "y": 1,
+     "links": [
+      "leather.studded"
+     ]
+    },
+    {
+     "id": "leather.furrier",
+     "perk": "AetherialDawn.esp|0x108A",
+     "x": 1.5,
+     "y": 1,
+     "links": [
+      "leather.bigGame"
+     ]
+    },
+    {
+     "id": "leather.studded",
+     "perk": "AetherialDawn.esp|0x108F",
+     "x": 0,
+     "y": 2,
+     "links": [
+      "leather.scaled"
+     ]
+    },
+    {
+     "id": "leather.bigGame",
+     "perk": "AetherialDawn.esp|0x1088",
+     "x": 1.5,
+     "y": 2,
+     "links": [
+      "leather.sabre"
+     ]
+    },
+    {
+     "id": "leather.scaled",
+     "perk": "AetherialDawn.esp|0x108E",
+     "x": 0,
+     "y": 3,
+     "links": []
+    },
+    {
+     "id": "leather.sabre",
+     "perk": "AetherialDawn.esp|0x108D",
+     "x": 1.5,
+     "y": 3,
+     "links": []
+    },
+    {
+     "id": "leather.thrift",
+     "perk": "AetherialDawn.esp|0x1091",
+     "x": -1.5,
+     "y": 1,
+     "links": [
+      "leather.quick"
+     ]
+    },
+    {
+     "id": "leather.quick",
+     "perk": "AetherialDawn.esp|0x108C",
+     "x": -1.5,
+     "y": 2,
+     "links": [
+      "leather.fine"
+     ]
+    },
+    {
+     "id": "leather.fine",
+     "perk": "AetherialDawn.esp|0x1089",
+     "x": -1.5,
+     "y": 3,
+     "links": [
+      "leather.master"
+     ]
+    },
+    {
+     "id": "leather.master",
+     "perk": "AetherialDawn.esp|0x108B",
+     "x": 0,
+     "y": 4,
+     "links": []
+    }
+   ]
+  },
+  {
+   "id": "ad.cooking",
+   "name": "Cooking and Brewing",
+   "description": "Stews, roasts and sweetrolls at the cooking pot, and the mead, ale and wine every tavern sells.",
+   "level": "AetherialDawn.esp|0x1008",
+   "ratio": "AetherialDawn.esp|0x1009",
+   "nodes": [
+    {
+     "id": "cook.hearth",
+     "perk": "AetherialDawn.esp|0x1044",
+     "x": 0,
+     "y": 0,
+     "links": [
+      "cook.stews",
+      "cook.vintner",
+      "cook.baker"
+     ]
+    },
+    {
+     "id": "cook.stews",
+     "perk": "AetherialDawn.esp|0x104A",
+     "x": 1.5,
+     "y": 1,
+     "links": [
+      "cook.feast"
+     ]
+    },
+    {
+     "id": "cook.vintner",
+     "perk": "AetherialDawn.esp|0x104B",
+     "x": -1.5,
+     "y": 1,
+     "links": [
+      "cook.honningbrew",
+      "cook.hearty"
+     ]
+    },
+    {
+     "id": "cook.baker",
+     "perk": "AetherialDawn.esp|0x1041",
+     "x": 0,
+     "y": 2,
+     "links": [
+      "cook.quick"
+     ]
+    },
+    {
+     "id": "cook.feast",
+     "perk": "AetherialDawn.esp|0x1043",
+     "x": 1.5,
+     "y": 2,
+     "links": [
+      "cook.potent"
+     ]
+    },
+    {
+     "id": "cook.honningbrew",
+     "perk": "AetherialDawn.esp|0x1046",
+     "x": -1.5,
+     "y": 3,
+     "links": [
+      "cook.blackBriar"
+     ]
+    },
+    {
+     "id": "cook.blackBriar",
+     "perk": "AetherialDawn.esp|0x1042",
+     "x": -1.5,
+     "y": 4,
+     "links": []
+    },
+    {
+     "id": "cook.hearty",
+     "perk": "AetherialDawn.esp|0x1045",
+     "x": -1.5,
+     "y": 2,
+     "links": []
+    },
+    {
+     "id": "cook.potent",
+     "perk": "AetherialDawn.esp|0x1048",
+     "x": 1.5,
+     "y": 3,
+     "links": [
+      "cook.jarlsTable"
+     ]
+    },
+    {
+     "id": "cook.quick",
+     "perk": "AetherialDawn.esp|0x1049",
+     "x": 0,
+     "y": 3,
+     "links": []
+    },
+    {
+     "id": "cook.jarlsTable",
+     "perk": "AetherialDawn.esp|0x1047",
+     "x": 1.5,
+     "y": 4,
+     "links": []
+    }
+   ]
+  },
+  {
+   "id": "ad.alchemy",
+   "name": "Alchemy",
+   "description": "Potions and poisons brewed from herbs, mushrooms and creature parts at the alchemy lab.",
+   "level": "AetherialDawn.esp|0x1000",
+   "ratio": "AetherialDawn.esp|0x1001",
+   "nodes": [
+    {
+     "id": "alchemy.alchemist",
+     "perk": "AetherialDawn.esp|0x101E",
+     "x": 0,
+     "y": 0,
+     "links": [
+      "alchemy.poisoner",
+      "alchemy.physician",
+      "alchemy.potency1"
+     ]
+    },
+    {
+     "id": "alchemy.poisoner",
+     "perk": "AetherialDawn.esp|0x1024",
+     "x": -1.5,
+     "y": 1,
+     "links": [
+      "alchemy.lasting"
+     ]
+    },
+    {
+     "id": "alchemy.physician",
+     "perk": "AetherialDawn.esp|0x1023",
+     "x": 0,
+     "y": 1,
+     "links": [
+      "alchemy.formulas"
+     ]
+    },
+    {
+     "id": "alchemy.formulas",
+     "perk": "AetherialDawn.esp|0x1020",
+     "x": 0,
+     "y": 2,
+     "links": [
+      "alchemy.master"
+     ]
+    },
+    {
+     "id": "alchemy.master",
+     "perk": "AetherialDawn.esp|0x1022",
+     "x": 0,
+     "y": 4,
+     "links": []
+    },
+    {
+     "id": "alchemy.potency1",
+     "perk": "AetherialDawn.esp|0x1025",
+     "x": 1.5,
+     "y": 1,
+     "links": [
+      "alchemy.potency2"
+     ]
+    },
+    {
+     "id": "alchemy.potency2",
+     "perk": "AetherialDawn.esp|0x1026",
+     "x": 1.5,
+     "y": 2,
+     "links": [
+      "alchemy.master",
+      "alchemy.potency3"
+     ]
+    },
+    {
+     "id": "alchemy.lasting",
+     "perk": "AetherialDawn.esp|0x1021",
+     "x": -1.5,
+     "y": 2,
+     "links": [
+      "alchemy.extra"
+     ]
+    },
+    {
+     "id": "alchemy.extra",
+     "perk": "AetherialDawn.esp|0x101F",
+     "x": -1.5,
+     "y": 3,
+     "links": [
+      "alchemy.quick"
+     ]
+    },
+    {
+     "id": "alchemy.potency3",
+     "perk": "AetherialDawn.esp|0x1027",
+     "x": 1.5,
+     "y": 3,
+     "links": []
+    },
+    {
+     "id": "alchemy.quick",
+     "perk": "AetherialDawn.esp|0x1028",
+     "x": -1.5,
+     "y": 4,
+     "links": []
+    }
+   ]
+  },
+  {
+   "id": "ad.jewelcrafting",
+   "name": "Jewelcrafting",
+   "description": "Rings, necklaces and circlets from silver and gold, set with garnets, rubies, sapphires and diamonds.",
+   "level": "AetherialDawn.esp|0x1014",
+   "ratio": "AetherialDawn.esp|0x1015",
+   "nodes": [
+    {
+     "id": "jewel.silver",
+     "perk": "AetherialDawn.esp|0x1085",
+     "x": 0,
+     "y": 0,
+     "links": [
+      "jewel.gold",
+      "jewel.thrift"
+     ]
+    },
+    {
+     "id": "jewel.gold",
+     "perk": "AetherialDawn.esp|0x1082",
+     "x": 0,
+     "y": 1,
+     "links": [
+      "jewel.set",
+      "jewel.circlets"
+     ]
+    },
+    {
+     "id": "jewel.set",
+     "perk": "AetherialDawn.esp|0x1084",
+     "x": 1.5,
+     "y": 2,
+     "links": [
+      "jewel.circlets",
+      "jewel.flawless"
+     ]
+    },
+    {
+     "id": "jewel.circlets",
+     "perk": "AetherialDawn.esp|0x107E",
+     "x": 0,
+     "y": 3,
+     "links": [
+      "jewel.diamond"
+     ]
+    },
+    {
+     "id": "jewel.diamond",
+     "perk": "AetherialDawn.esp|0x107F",
+     "x": 0,
+     "y": 4,
+     "links": []
+    },
+    {
+     "id": "jewel.thrift",
+     "perk": "AetherialDawn.esp|0x1086",
+     "x": -1.5,
+     "y": 1,
+     "links": [
+      "jewel.engraver"
+     ]
+    },
+    {
+     "id": "jewel.engraver",
+     "perk": "AetherialDawn.esp|0x1080",
+     "x": -1.5,
+     "y": 2,
+     "links": [
+      "jewel.quick"
+     ]
+    },
+    {
+     "id": "jewel.quick",
+     "perk": "AetherialDawn.esp|0x1083",
+     "x": -1.5,
+     "y": 3,
+     "links": []
+    },
+    {
+     "id": "jewel.flawless",
+     "perk": "AetherialDawn.esp|0x1081",
+     "x": 1.5,
+     "y": 3,
+     "links": []
+    }
+   ]
+  },
+  {
+   "id": "ad.mining",
+   "name": "Mining",
+   "description": "Working ore veins with a pickaxe: iron, corundum, silver, gold, quicksilver, moonstone, malachite, orichalcum and ebony, and the gems in them.",
+   "level": "AetherialDawn.esp|0x101A",
+   "ratio": "AetherialDawn.esp|0x101B",
+   "nodes": [
+    {
+     "id": "mine.iron",
+     "perk": "AetherialDawn.esp|0x10A3",
+     "x": 0,
+     "y": 0,
+     "links": [
+      "mine.corundum",
+      "mine.gems",
+      "mine.more"
+     ]
+    },
+    {
+     "id": "mine.corundum",
+     "perk": "AetherialDawn.esp|0x109E",
+     "x": 0,
+     "y": 1,
+     "links": [
+      "mine.gold"
+     ]
+    },
+    {
+     "id": "mine.gold",
+     "perk": "AetherialDawn.esp|0x10A2",
+     "x": 0,
+     "y": 2,
+     "links": [
+      "mine.orichalcum"
+     ]
+    },
+    {
+     "id": "mine.orichalcum",
+     "perk": "AetherialDawn.esp|0x10A6",
+     "x": 0,
+     "y": 3,
+     "links": [
+      "mine.ebony"
+     ]
+    },
+    {
+     "id": "mine.ebony",
+     "perk": "AetherialDawn.esp|0x109F",
+     "x": 0,
+     "y": 4,
+     "links": []
+    },
+    {
+     "id": "mine.gems",
+     "perk": "AetherialDawn.esp|0x10A1",
+     "x": 1.5,
+     "y": 1,
+     "links": [
+      "mine.flawless"
+     ]
+    },
+    {
+     "id": "mine.flawless",
+     "perk": "AetherialDawn.esp|0x10A0",
+     "x": 1.5,
+     "y": 3,
+     "links": []
+    },
+    {
+     "id": "mine.more",
+     "perk": "AetherialDawn.esp|0x10A5",
+     "x": -1.5,
+     "y": 1,
+     "links": [
+      "mine.quick"
+     ]
+    },
+    {
+     "id": "mine.quick",
+     "perk": "AetherialDawn.esp|0x10A7",
+     "x": -1.5,
+     "y": 2,
+     "links": [
+      "mine.rich"
+     ]
+    },
+    {
+     "id": "mine.rich",
+     "perk": "AetherialDawn.esp|0x10A8",
+     "x": -1.5,
+     "y": 3,
+     "links": [
+      "mine.master"
+     ]
+    },
+    {
+     "id": "mine.master",
+     "perk": "AetherialDawn.esp|0x10A4",
+     "x": -1.5,
+     "y": 4,
+     "links": []
+    }
+   ]
+  },
+  {
+   "id": "ad.woodcutting",
+   "name": "Woodcutting",
+   "description": "Splitting firewood at the chopping block and burning it into charcoal at the smelter, the fuel every forge in Skyrim runs on.",
+   "level": "AetherialDawn.esp|0x10E3",
+   "ratio": "AetherialDawn.esp|0x10E4",
+   "nodes": [
+    {
+     "id": "wood.firewood",
+     "perk": "AetherialDawn.esp|0x10D8",
+     "x": 0,
+     "y": 0,
+     "links": [
+      "wood.swing",
+      "wood.charcoal",
+      "wood.quick"
+     ]
+    },
+    {
+     "id": "wood.swing",
+     "perk": "AetherialDawn.esp|0x10DD",
+     "x": 1.5,
+     "y": 1,
+     "links": [
+      "wood.split"
+     ]
+    },
+    {
+     "id": "wood.charcoal",
+     "perk": "AetherialDawn.esp|0x10D7",
+     "x": 0,
+     "y": 1,
+     "links": [
+      "wood.kiln"
+     ]
+    },
+    {
+     "id": "wood.quick",
+     "perk": "AetherialDawn.esp|0x10DA",
+     "x": -1.5,
+     "y": 2,
+     "links": []
+    },
+    {
+     "id": "wood.split",
+     "perk": "AetherialDawn.esp|0x10DC",
+     "x": 1.5,
+     "y": 3,
+     "links": []
+    },
+    {
+     "id": "wood.kiln",
+     "perk": "AetherialDawn.esp|0x10D9",
+     "x": 0,
+     "y": 3,
+     "links": [
+      "wood.slowBurn"
+     ]
+    },
+    {
+     "id": "wood.slowBurn",
+     "perk": "AetherialDawn.esp|0x10DB",
+     "x": 0,
+     "y": 4,
+     "links": []
+    }
+   ]
+  },
+  {
+   "id": "ad.harvesting",
+   "name": "Harvesting",
+   "description": "Gathering wild plants, mushrooms and flowers: mountain flowers, nirnroot, deathbell, lavender, snowberries and more.",
+   "level": "AetherialDawn.esp|0x100E",
+   "ratio": "AetherialDawn.esp|0x100F",
+   "nodes": [
+    {
+     "id": "herb.common",
+     "perk": "AetherialDawn.esp|0x106D",
+     "x": 0,
+     "y": 0,
+     "links": [
+      "herb.mushrooms",
+      "herb.rare",
+      "herb.double"
+     ]
+    },
+    {
+     "id": "herb.mushrooms",
+     "perk": "AetherialDawn.esp|0x1071",
+     "x": 1.5,
+     "y": 1,
+     "links": [
+      "herb.fresh"
+     ]
+    },
+    {
+     "id": "herb.rare",
+     "perk": "AetherialDawn.esp|0x1074",
+     "x": 0,
+     "y": 2,
+     "links": [
+      "herb.nirnroot"
+     ]
+    },
+    {
+     "id": "herb.nirnroot",
+     "perk": "AetherialDawn.esp|0x1072",
+     "x": 0,
+     "y": 3,
+     "links": [
+      "herb.crimson"
+     ]
+    },
+    {
+     "id": "herb.crimson",
+     "perk": "AetherialDawn.esp|0x106E",
+     "x": 0,
+     "y": 4,
+     "links": []
+    },
+    {
+     "id": "herb.double",
+     "perk": "AetherialDawn.esp|0x106F",
+     "x": -1.5,
+     "y": 1,
+     "links": [
+      "herb.quick"
+     ]
+    },
+    {
+     "id": "herb.quick",
+     "perk": "AetherialDawn.esp|0x1073",
+     "x": -1.5,
+     "y": 2,
+     "links": [
+      "herb.bounty"
+     ]
+    },
+    {
+     "id": "herb.bounty",
+     "perk": "AetherialDawn.esp|0x106C",
+     "x": -1.5,
+     "y": 3,
+     "links": []
+    },
+    {
+     "id": "herb.fresh",
+     "perk": "AetherialDawn.esp|0x1070",
+     "x": 1.5,
+     "y": 2,
+     "links": []
+    }
+   ]
+  },
+  {
+   "id": "ad.hunting",
+   "name": "Hunting",
+   "description": "Tracking and killing game, then skinning and butchering it: deer, elk, goats, wolves and sabre cats for meat, pelts and horns. Hunt at the grounds staff mark in the wilds, with a bow and an arrow for each shot.",
+   "level": "AetherialDawn.esp|0x1012",
+   "ratio": "AetherialDawn.esp|0x1013",
+   "nodes": [
+    {
+     "id": "hunt.small",
+     "perk": "AetherialDawn.esp|0x107B",
+     "x": 0,
+     "y": 0,
+     "links": [
+      "hunt.deer",
+      "hunt.butcher",
+      "hunt.quick"
+     ]
+    },
+    {
+     "id": "hunt.deer",
+     "perk": "AetherialDawn.esp|0x1077",
+     "x": 0,
+     "y": 1,
+     "links": [
+      "hunt.wolves"
+     ]
+    },
+    {
+     "id": "hunt.wolves",
+     "perk": "AetherialDawn.esp|0x107D",
+     "x": 0,
+     "y": 2,
+     "links": [
+      "hunt.sabre"
+     ]
+    },
+    {
+     "id": "hunt.sabre",
+     "perk": "AetherialDawn.esp|0x107A",
+     "x": 0,
+     "y": 3,
+     "links": [
+      "hunt.mammoth"
+     ]
+    },
+    {
+     "id": "hunt.mammoth",
+     "perk": "AetherialDawn.esp|0x1078",
+     "x": 0,
+     "y": 4,
+     "links": []
+    },
+    {
+     "id": "hunt.butcher",
+     "perk": "AetherialDawn.esp|0x1075",
+     "x": -1.5,
+     "y": 1,
+     "links": [
+      "hunt.clean"
+     ]
+    },
+    {
+     "id": "hunt.clean",
+     "perk": "AetherialDawn.esp|0x1076",
+     "x": -1.5,
+     "y": 2,
+     "links": [
+      "hunt.trophy"
+     ]
+    },
+    {
+     "id": "hunt.quick",
+     "perk": "AetherialDawn.esp|0x1079",
+     "x": 1.5,
+     "y": 1,
+     "links": []
+    },
+    {
+     "id": "hunt.trophy",
+     "perk": "AetherialDawn.esp|0x107C",
+     "x": -1.5,
+     "y": 3,
+     "links": []
+    }
+   ]
+  },
+  {
+   "id": "ad.fishing",
+   "name": "Fishing",
+   "description": "Rod, net and patience in the rivers, lakes and the Sea of Ghosts: salmon, perch, slaughterfish and rarer catches.",
+   "level": "AetherialDawn.esp|0x100C",
+   "ratio": "AetherialDawn.esp|0x100D",
+   "nodes": [
+    {
+     "id": "fish.river",
+     "perk": "AetherialDawn.esp|0x105E",
+     "x": 0,
+     "y": 0,
+     "links": [
+      "fish.lake",
+      "fish.net"
+     ]
+    },
+    {
+     "id": "fish.lake",
+     "perk": "AetherialDawn.esp|0x1059",
+     "x": 0,
+     "y": 1,
+     "links": [
+      "fish.sea"
+     ]
+    },
+    {
+     "id": "fish.sea",
+     "perk": "AetherialDawn.esp|0x105F",
+     "x": 0,
+     "y": 2,
+     "links": [
+      "fish.ice",
+      "fish.rare"
+     ]
+    },
+    {
+     "id": "fish.ice",
+     "perk": "AetherialDawn.esp|0x1058",
+     "x": 0,
+     "y": 3,
+     "links": [
+      "fish.master"
+     ]
+    },
+    {
+     "id": "fish.master",
+     "perk": "AetherialDawn.esp|0x105A",
+     "x": 0,
+     "y": 4,
+     "links": []
+    },
+    {
+     "id": "fish.rare",
+     "perk": "AetherialDawn.esp|0x105D",
+     "x": -1.5,
+     "y": 3,
+     "links": []
+    },
+    {
+     "id": "fish.net",
+     "perk": "AetherialDawn.esp|0x105B",
+     "x": 1.5,
+     "y": 1,
+     "links": [
+      "fish.quick"
+     ]
+    },
+    {
+     "id": "fish.quick",
+     "perk": "AetherialDawn.esp|0x105C",
+     "x": 1.5,
+     "y": 2,
+     "links": [
+      "fish.haul"
+     ]
+    },
+    {
+     "id": "fish.haul",
+     "perk": "AetherialDawn.esp|0x1057",
+     "x": 1.5,
+     "y": 3,
+     "links": []
+    }
+   ]
+  },
+  {
+   "id": "ad.farming",
+   "name": "Farming",
+   "description": "Tending fields and livestock: wheat, cabbage, potatoes, leeks, gourds, tundra cotton for linen, and chickens and cows.",
+   "level": "AetherialDawn.esp|0x100A",
+   "ratio": "AetherialDawn.esp|0x100B",
+   "nodes": [
+    {
+     "id": "farm.basic",
+     "perk": "AetherialDawn.esp|0x104C",
+     "x": 0,
+     "y": 0,
+     "links": [
+      "farm.wheat",
+      "farm.chickens",
+      "farm.soil"
+     ]
+    },
+    {
+     "id": "farm.wheat",
+     "perk": "AetherialDawn.esp|0x1056",
+     "x": 0,
+     "y": 1,
+     "links": [
+      "farm.flax"
+     ]
+    },
+    {
+     "id": "farm.chickens",
+     "perk": "AetherialDawn.esp|0x104E",
+     "x": 1.5,
+     "y": 1,
+     "links": [
+      "farm.cows",
+      "farm.bees"
+     ]
+    },
+    {
+     "id": "farm.flax",
+     "perk": "AetherialDawn.esp|0x1050",
+     "x": 0,
+     "y": 2,
+     "links": [
+      "farm.orchard"
+     ]
+    },
+    {
+     "id": "farm.cows",
+     "perk": "AetherialDawn.esp|0x104F",
+     "x": 1.5,
+     "y": 2,
+     "links": []
+    },
+    {
+     "id": "farm.orchard",
+     "perk": "AetherialDawn.esp|0x1052",
+     "x": 0,
+     "y": 3,
+     "links": []
+    },
+    {
+     "id": "farm.bees",
+     "perk": "AetherialDawn.esp|0x104D",
+     "x": 1.5,
+     "y": 3,
+     "links": []
+    },
+    {
+     "id": "farm.soil",
+     "perk": "AetherialDawn.esp|0x1055",
+     "x": -1.5,
+     "y": 1,
+     "links": [
+      "farm.quick"
+     ]
+    },
+    {
+     "id": "farm.quick",
+     "perk": "AetherialDawn.esp|0x1054",
+     "x": -1.5,
+     "y": 2,
+     "links": [
+      "farm.plenty"
+     ]
+    },
+    {
+     "id": "farm.plenty",
+     "perk": "AetherialDawn.esp|0x1053",
+     "x": -1.5,
+     "y": 3,
+     "links": [
+      "farm.master"
+     ]
+    },
+    {
+     "id": "farm.master",
+     "perk": "AetherialDawn.esp|0x1051",
+     "x": 0,
+     "y": 4,
+     "links": []
+    }
+   ]
+  }
+ ]
+}

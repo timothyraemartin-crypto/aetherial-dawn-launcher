@@ -1,0 +1,61 @@
+name: Build Custom Skills Framework
+
+# Builds the Tab skills menu framework (Exit-9B/CustomSkills, MIT) from a pinned commit on a GitHub-hosted Windows
+# machine and uploads CustomSkills.dll with its sha256. Manual only: nothing here ships. See native-mods/csf/README.md.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Exit-9B/CustomSkills commit to build"
+        default: "8be7055f2483a261e0c377e2e8fc04b34116c68f"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-cache
+  VCPKG_ROOT: C:\vcpkg
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        repository: Exit-9B/CustomSkills
+        ref: ${{ inputs.ref }}
+        submodules: recursive
+        path: csf
+
+    - name: Setup vcpkg
+      run: |
+        mkdir -p ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+        cd $env:VCPKG_INSTALLATION_ROOT
+        ./bootstrap-vcpkg.bat
+
+    - name: Configure CMake
+      working-directory: csf
+      run: |
+        cmake --preset vs2026-windows -Wno-deprecated
+        if ($LASTEXITCODE -ne 0) { Remove-Item -Recurse -Force build -ErrorAction SilentlyContinue; cmake --preset vs2022-windows -Wno-deprecated }
+        if ($LASTEXITCODE -ne 0) { throw "cmake configure failed" }
+
+    - name: Build
+      working-directory: csf
+      run: cmake --build build --config Release --parallel
+
+    - name: Collect the plugin and its hash
+      run: |
+        $dll = Get-ChildItem -Recurse csf/build -Filter CustomSkills.dll | Select-Object -First 1
+        if (-not $dll) { throw "CustomSkills.dll was not built" }
+        New-Item -ItemType Directory -Force out | Out-Null
+        Copy-Item $dll.FullName out/CustomSkills.dll
+        $h = (Get-FileHash out/CustomSkills.dll -Algorithm SHA256).Hash
+        "$h  CustomSkills.dll ($((Get-Item out/CustomSkills.dll).Length) bytes) from Exit-9B/CustomSkills ${{ inputs.ref }}" | Tee-Object out/CustomSkills.dll.sha256
+        Copy-Item csf/LICENSE out/LICENSE-CustomSkills.txt
+
+    - uses: actions/upload-artifact@v6
+      with:
+        name: CustomSkills-${{ inputs.ref }}
+        path: out
