@@ -360,6 +360,67 @@ pub async fn probe_udp(host: &str, port: u16, tries: u32, wait: Duration) -> Pro
     Probe::NoAnswer
 }
 
+/// Round-trip results of a burst of pings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PingStats {
+    pub sent: u32,
+    pub got: u32,
+    pub min_ms: u64,
+    pub avg_ms: u64,
+    pub max_ms: u64,
+}
+
+impl PingStats {
+    pub fn from_rtts(sent: u32, rtts: &[u64]) -> PingStats {
+        let got = rtts.len() as u32;
+        let sum: u64 = rtts.iter().sum();
+        PingStats { sent, got, min_ms: rtts.iter().copied().min().unwrap_or(0), avg_ms: sum.checked_div(got as u64).unwrap_or(0), max_ms: rtts.iter().copied().max().unwrap_or(0) }
+    }
+    pub fn loss_percent(&self) -> u32 {
+        (self.sent - self.got).saturating_mul(100).checked_div(self.sent).unwrap_or(0)
+    }
+}
+
+/// Sends `count` pings `gap` apart from one socket and times each pong.
+/// None when the host can't be reached at all (the plain probe says why).
+pub async fn ping_stats(host: &str, port: u16, count: u32, gap: Duration) -> Option<PingStats> {
+    use tokio::net::UdpSocket;
+    let target = tokio::net::lookup_host((host, port)).await.ok()?.find(|a| a.is_ipv4())?;
+    let sock = UdpSocket::bind("0.0.0.0:0").await.ok()?;
+    let guid: u64 = rand::random();
+    let mut buf = [0u8; 256];
+    let mut rtts = Vec::new();
+    for i in 0..count {
+        let sent_at = tokio::time::Instant::now();
+        sock.send_to(&ping_packet(i as u64, guid), target).await.ok()?;
+        let deadline = sent_at + gap;
+        while let Ok(Ok((n, from))) = tokio::time::timeout_at(deadline, sock.recv_from(&mut buf)).await {
+            if from.ip() == target.ip() && is_pong(&buf[..n]) {
+                rtts.push(sent_at.elapsed().as_millis() as u64);
+                tokio::time::sleep_until(deadline).await;
+                break;
+            }
+        }
+    }
+    Some(PingStats::from_rtts(count, &rtts))
+}
+
+/// Ping and loss to the game server. Warn from 5 % loss, 150 ms average or a
+/// 100 ms spread between the best and worst reply: numbers that show in game
+/// as rubber-banding. Never a Fail; Play goes on.
+pub fn ping_check(s: &PingStats) -> Check {
+    let c = |status, detail: String| Check { id: "ping", title: "Connection quality", status, detail, items: vec![] };
+    if s.got == 0 {
+        return c(Status::Info, "No replies to the ping burst; see Game server (UDP).".into());
+    }
+    let line = format!("{} of {} pings answered ({}% lost); {} ms average, {} to {} ms.", s.got, s.sent, s.loss_percent(), s.avg_ms, s.min_ms, s.max_ms);
+    if s.loss_percent() >= 5 || s.avg_ms >= 150 || s.max_ms.saturating_sub(s.min_ms) >= 100 {
+        c(Status::Warn, format!("{line} This much loss, delay or jitter shows in game as rubber-banding and players popping in. Wi-Fi, a VPN or a busy network are the usual causes; try a cable."))
+    } else {
+        c(Status::Ok, line)
+    }
+}
+
 pub fn udp_check(p: &Probe, port: u16) -> Check {
     let c = |status, detail: String| Check { id: "udp", title: "Game server (UDP)", status, detail, items: vec![] };
     match p {
@@ -489,6 +550,31 @@ mod tests {
         assert!(may_ask(Some(&m), p, 1000 + ASK_AGAIN_SECS));
         assert!(may_ask(Some(&m), r"D:\Other\SkyrimSE.exe", 1001));
         assert!(may_ask(Some("garbage"), p, 5));
+    }
+
+    #[test]
+    fn ping_quality_warns_on_loss_delay_or_jitter() {
+        let ok = PingStats::from_rtts(10, &[30, 31, 30, 33, 30, 30, 32, 30, 30, 31]);
+        assert_eq!((ok.loss_percent(), ok.avg_ms), (0, 30));
+        assert_eq!(ping_check(&ok).status, Status::Ok);
+        assert_eq!(ping_check(&PingStats::from_rtts(10, &[30; 9])).status, Status::Warn);
+        assert_eq!(ping_check(&PingStats::from_rtts(10, &[200; 10])).status, Status::Warn);
+        assert_eq!(ping_check(&PingStats::from_rtts(10, &[30, 30, 30, 30, 30, 30, 30, 30, 30, 160])).status, Status::Warn);
+        assert_eq!(ping_check(&PingStats::from_rtts(10, &[])).status, Status::Info);
+    }
+
+    #[tokio::test]
+    async fn the_burst_counts_each_pong() {
+        let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = sock.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 256];
+            while let Ok((_, from)) = sock.recv_from(&mut buf).await {
+                let _ = sock.send_to(&[0x1c], from).await;
+            }
+        });
+        let s = ping_stats("127.0.0.1", port, 3, Duration::from_millis(100)).await.unwrap();
+        assert_eq!((s.sent, s.got), (3, 3));
     }
 
     #[test]
