@@ -19,6 +19,7 @@ pub mod health;
 pub mod loadorder;
 pub mod manifest;
 pub mod modguard;
+pub mod netcheck;
 pub mod patcher;
 pub mod pristine;
 pub mod profile;

@@ -378,6 +378,24 @@ pub fn set_exact(game_dir: &Path, plugins_txt: &Path, server: &[ServerPlugin]) -
     Ok(true)
 }
 
+/// Rewrites loadorder.txt to exactly the server's plugins, in the server's
+/// order, so no other server's or mod manager's list is left in it. Skyrim and
+/// the SkyMP client read plugins.txt, not this file (it only records the order
+/// for tools such as LOOT, Vortex and MO2), so this is housekeeping and a stale
+/// copy could not stop a connection. A missing file is left missing. The old
+/// file is kept beside it. Returns whether it changed.
+pub fn set_loadorder_exact(loadorder_txt: &Path, server: &[ServerPlugin]) -> std::io::Result<bool> {
+    let Some(file) = crate::loadorder::ListFile::read(loadorder_txt)? else { return Ok(false) };
+    let nl = if file.text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut new = server.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(nl);
+    new.push_str(nl);
+    if new == file.text {
+        return Ok(false);
+    }
+    crate::loadorder::write_list(loadorder_txt, Some(&file), &new)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,5 +615,21 @@ mod tests {
             e["files"]["COTN Dawnstar.esp"]["run_name"] = bad.into();
             assert!(masters_json(&base, &e).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn loadorder_txt_becomes_exactly_the_servers_list_and_the_old_one_is_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let txt = d.path().join("loadorder.txt");
+        let sp = |n: &str| ServerPlugin { name: n.into(), size: None, sha256: None, crc32: None };
+        let server = [sp("Skyrim.esm"), sp("Update.esm"), sp("AetherialDawn.esp")];
+        assert!(!set_loadorder_exact(&txt, &server).unwrap(), "a missing file stays missing");
+        assert!(!txt.exists());
+        std::fs::write(&txt, "# This file is used by Skyrim\r\nSkyrim.esm\r\nSkyUI_SE.esp\r\nRaceMenu.esp\r\n").unwrap();
+        assert!(set_loadorder_exact(&txt, &server).unwrap());
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "Skyrim.esm\r\nUpdate.esm\r\nAetherialDawn.esp\r\n");
+        assert!(!set_loadorder_exact(&txt, &server).unwrap(), "already exact");
+        let kept = std::fs::read_dir(d.path()).unwrap().flatten().any(|e| e.file_name().to_string_lossy().contains("aetherial-dawn"));
+        assert!(kept, "the old list is kept beside it");
     }
 }

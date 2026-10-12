@@ -173,6 +173,20 @@ pub fn clear_run_as_admin(_dir: &Path) -> Vec<String> {
 /// never shows its login or connects (seen 2026-09-26). Makes any missing
 /// folder, empty. Returns the folders made.
 pub fn ensure_platform_folders(dir: &Path) -> Result<Vec<String>> {
+    let mut made = Vec::new();
+    for f in platform_folders(dir) {
+        let p = dir.join(&f);
+        if !p.is_dir() {
+            std::fs::create_dir_all(&p)?;
+            made.push(f);
+        }
+    }
+    Ok(made)
+}
+
+/// The folders Skyrim Platform loads scripts from, inside the game folder
+/// (`/` separators, sorted, no repeats). Never absolute paths or "..".
+pub fn platform_folders(dir: &Path) -> Vec<String> {
     let ini = std::fs::read_to_string(dir.join("Data/SKSE/Plugins/SkyrimPlatform.ini")).unwrap_or_default();
     let mut folders = vec!["Data/Platform/Plugins".to_string(), "Data/Platform/PluginsDev".to_string()];
     for line in ini.lines() {
@@ -183,21 +197,10 @@ pub fn ensure_platform_folders(dir: &Path) -> Result<Vec<String>> {
             }
         }
     }
-    let mut made = Vec::new();
-    for f in folders {
-        // Only folders inside the game folder, never absolute paths or "..".
-        if f.contains(':') || f.starts_with('/') || f.split('/').any(|c| c == "..") {
-            continue;
-        }
-        let p = dir.join(&f);
-        if !p.is_dir() {
-            std::fs::create_dir_all(&p)?;
-            made.push(f);
-        }
-    }
-    made.sort();
-    made.dedup();
-    Ok(made)
+    folders.retain(|f| !(f.contains(':') || f.starts_with('/') || f.split('/').any(|c| c == "..")));
+    folders.sort();
+    folders.dedup();
+    folders
 }
 
 /// Google sign-in settings some Chromium guides and tools put in the Windows

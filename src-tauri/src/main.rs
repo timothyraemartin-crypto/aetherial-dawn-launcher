@@ -1,7 +1,7 @@
 // Hides the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use launcher_core::{aside, auth, game, gameini, health, loadorder, manifest::Manifest, pristine, requirements, serverorder, settings, sync, version, watch, Error};
+use launcher_core::{aside, auth, game, gameini, health, loadorder, manifest::Manifest, netcheck, pristine, requirements, serverorder, settings, sync, version, watch, Error};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -421,6 +421,7 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     // No mods: anything beyond the game, SKSE and SkyMP's own files keeps the
     // player out (core/src/modguard.rs). Checked on every Play, before the
     // launcher changes anything on the PC.
+    let flags = launcher_flags(&state.http, &config.base_url).await;
     play_step(&app, "Setting other mods aside…");
     let extras = {
         let (dir, names, files) = (dir.clone(), server_names.clone(), m.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>());
@@ -431,6 +432,12 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
         files.extend(std::fs::read_to_string(dir.join(".aetherial-dawn").join("local-allow.txt")).unwrap_or_default().lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()));
         tokio::task::spawn_blocking(move || launcher_core::modguard::extras(&dir, &names, &files)).await.map_err(|e| e.to_string())?
     };
+    // Another server's Skyrim Platform scripts: set aside like other mods, unless staff switched it off.
+    let extras: Vec<_> = extras.into_iter().filter(|e| e.kind != "script" || flags.platform_guard).collect();
+    let foreign_scripts: Vec<String> = extras.iter().filter(|e| e.kind == "script").map(|e| e.rel.clone()).collect();
+    if !foreign_scripts.is_empty() {
+        log::line(&format!("play: another server's Skyrim Platform script(s) found, set aside for this session: {}", foreign_scripts.join(", ")));
+    }
     let mut profile_guard = ProfileGuard { dir: dir.clone(), armed: false };
     if !extras.is_empty() {
         // The player keeps their mods: they leave the Skyrim folder for this session and come back when the game closes.
@@ -471,10 +478,16 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
                 Ok(false) => {}
                 Err(e) => return Err(format!("Couldn't set your load order ({e}). Close Skyrim, then try again.")),
             }
+            // loadorder.txt is only a record for mod tools, but it should list nothing else.
+            match serverorder::set_loadorder_exact(&txt.with_file_name("loadorder.txt"), &order) {
+                Ok(true) => log::line(&format!("play: loadorder.txt now lists exactly the server's {} plugins (the old list is kept beside it)", order.len())),
+                Ok(false) => {}
+                Err(e) => log::line(&format!("play: couldn't rewrite loadorder.txt: {e}")),
+            }
         }
     }
     play_step(&app, "Checking your game…");
-    let report = run_health_with_masters(&app, &dir, Some(&m), Some(masters)).await;
+    let mut report = run_health_with_masters(&app, &dir, Some(&m), Some(masters)).await;
     log::line(&format!("health before play: worst={:?}\n{}", report.worst, report.text()));
     let base_check = report.checks.iter().find(|c| c.id == "masters")
         .ok_or("Could not finish checking the base game files. Try Play again.")?;
@@ -494,6 +507,38 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
         };
         return Err(format!("Your plugins don't match the server's order, so the game would refuse to connect: {which}. {tell}"));
     }
+    // Skyrim that starts but never reaches the server: Windows Firewall rules
+    // for SkyrimSE.exe and the server's UDP port. Advisory only: nothing here
+    // stops Play. Staff switch parts off in status.json (`launcher.firewallFix`,
+    // `launcher.udpProbe`).
+    let firewall = if flags.firewall_fix {
+        play_step(&app, "Checking Windows Firewall for Skyrim…");
+        let (exe, marker) = (dir.join(game::GAME_EXE), app.path().app_local_data_dir().ok().map(|d| d.join("firewall-fix.txt")));
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let notify = app.clone();
+        tokio::task::spawn_blocking(move || {
+            netcheck::ensure_firewall(&exe, marker.as_deref(), now, &|| {
+                log::line("play: Windows Firewall blocks or doesn't allow Skyrim; asking Windows for permission to fix it");
+                let _ = notify.emit("play-step", "Windows will ask permission to let Skyrim through its firewall. Press Yes…");
+            })
+        })
+        .await
+        .unwrap_or_else(|e| netcheck::Firewall::Unknown(e.to_string()))
+    } else {
+        netcheck::Firewall::Off
+    };
+    log::line(&format!("play: firewall check: {firewall:?}"));
+    let udp = if flags.udp_probe {
+        play_step(&app, "Checking the connection to the server…");
+        netcheck::probe_udp(&m.server.ip, m.server.port, 3, std::time::Duration::from_millis(1500)).await
+    } else {
+        netcheck::Probe::Off
+    };
+    log::line(&format!("play: server UDP probe {}:{}: {udp:?}", m.server.ip, m.server.port));
+    report.checks.push(netcheck::firewall_check(&firewall));
+    report.checks.push(netcheck::platform_check(&foreign_scripts));
+    report.checks.push(netcheck::udp_check(&udp, m.server.port));
+    report.worst = report.checks.iter().map(|c| c.status).max().unwrap_or(health::Status::Ok);
     if report.worst >= health::Status::Warn && config.share_health {
         // Nobody needs the report number here, and the staff service can
         // rate-limit for 90 s or more, so the upload runs beside Play.
@@ -576,6 +621,13 @@ struct GameEnded {
 
 fn reports_dir() -> Option<PathBuf> {
     log::path().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+}
+
+/// Whether Skyrim Platform's browser helper was running 30 s into the last
+/// session: 1 yes, 0 no, -1 not known.
+fn browser_probe() -> &'static std::sync::atomic::AtomicI8 {
+    static B: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(-1);
+    &B
 }
 
 /// Closing Skyrim with its X (or Alt+F4) can leave SkyrimSE.exe and Skyrim
@@ -672,6 +724,21 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
         Some(pid) => {
             log::line(&format!("game: SkyrimSE.exe running as process {pid}"));
             tokio::spawn(end_when_window_closed(pid));
+            // Skyrim Platform's in-game browser draws the SkyMP login box (the
+            // way into the server). Whether its helper process is up 30 s in,
+            // for the report: no helper means no login box (overlay, graphics
+            // card or antivirus trouble).
+            let browser_seen = browser_probe();
+            browser_seen.store(-1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                if watch::find_process(watch::GAME_PROCESS) != Some(pid) {
+                    return;
+                }
+                let up = watch::BROWSER_HELPERS.iter().any(|h| watch::find_process(h).is_some());
+                browser_probe().store(up as i8, Ordering::SeqCst);
+                log::line(&format!("game: Skyrim Platform's in-game browser (SkyrimPlatformCEF.exe) {} 30 seconds after the game started", if up { "is running" } else { "is NOT running" }));
+            });
             // Face sharing for as long as the game runs.
             let stop = std::sync::Arc::new(AtomicBool::new(false));
             let sharing = token(&app).map(|t| {
@@ -718,7 +785,25 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
         let c = st.config.lock().await.clone();
         (st.http.clone(), c, m.as_ref().map(|m| m.build.clone()).unwrap_or_default(), m)
     };
-    let health = run_health(&app, &http, &config.base_url, &game_dir, manifest.as_ref()).await;
+    let mut health = run_health(&app, &http, &config.base_url, &game_dir, manifest.as_ref()).await;
+    // Skyrim ran a while, did not crash, and never loaded a world: it most likely
+    // never connected (switch off with status.json `launcher.connectWatch`: false).
+    let flags = launcher_flags(&http, &config.base_url).await;
+    let never_connected = !crashed && pid.is_some() && flags.connect_watch && {
+        let skse_text = std::fs::read_to_string(skse_logs.join("skse64.log")).unwrap_or_default();
+        netcheck::never_connected(&skse_text, ran.as_secs())
+    };
+    if never_connected {
+        log::line(&format!("game: ran {} seconds without crashing but never loaded into the world; it most likely never connected to the server", ran.as_secs()));
+        let mut connect = netcheck::connect_check(ran.as_secs());
+        if browser_probe().load(Ordering::SeqCst) == 0 {
+            connect.items.push("Skyrim Platform's in-game browser was not running, so the login box could not show. Try closing Medal, Discord and Xbox Game Bar overlays, and check antivirus.".into());
+            summary.push_str(" The in-game browser that draws the login box was not running; closing overlays such as Medal, Discord and Xbox Game Bar often fixes that.");
+        }
+        health.checks.push(connect);
+        health.worst = health.checks.iter().map(|c| c.status).max().unwrap_or(health::Status::Ok);
+        summary.push_str(" Skyrim never loaded into the world, so it most likely never connected to the server. Staff can see why if you leave sharing on; a firewall, router or VPN blocking UDP is the usual cause.");
+    }
     report.push_str(&format!("\n===== game health =====\n{}", health.text()));
     // The player's own folders stay private in what staff get (quality L1).
     let private: Vec<PathBuf> = [app.path().home_dir().ok(), app.path().document_dir().ok()].into_iter().flatten().collect();
@@ -749,9 +834,9 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
     // Where the player was and who was near, from the log ad-report.js writes (names and numbers only).
     let position = if crashed { launcher_core::adreport::position_text(&platform_log_text(&app)) } else { None };
     if crashed && config.share_health {
-        let (app2, http2, health2) = (app.clone(), http.clone(), health.clone());
+        let (app2, http2, health2, config2, build2, staff2) = (app.clone(), http.clone(), health.clone(), config.clone(), build.clone(), staff_summary.clone());
         tauri::async_runtime::spawn(async move {
-            let f = send_health(&app2, &http2, &config, &build, "after a crash", Some(&staff_summary), crash_log, position, &health2).await;
+            let f = send_health(&app2, &http2, &config2, &build2, "after a crash", Some(&staff2), crash_log, position, &health2).await;
             if f.report_id.is_some() {
                 let _ = app2.emit("crash-filed", CrashFiled { report_id: f.report_id, likely_cause: f.likely_cause });
             }
@@ -759,8 +844,20 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
     }
     let filed = Filed::default();
     report.push_str(&format!("\n===== game data =====\n{}{}", bundled::report_line(&game_dir, plugins_txt(&app).as_deref()), game_data_report(&app, &game_dir)));
-    report.push_str(&watch::collect(&skse_logs, &std::env::temp_dir(), started));
+    let session_logs = watch::collect(&skse_logs, &std::env::temp_dir(), started);
+    report.push_str(&session_logs);
     report.push_str(&format!("\n===== launcher log (last 40 lines) =====\n{}\n", log::tail(40)));
+    // Staff can read what happened on the next attempt: the whole session report
+    // (health, SKSE and Skyrim Platform log tails, the launcher log) goes up with
+    // the "never connected" health report, paths left out. The bot keeps it in
+    // the crash log field and the size limit trims it. Switch: launcher.sessionUpload=false.
+    if never_connected && config.share_health {
+        let (app2, http2, health2, summary2, config2, build2) = (app.clone(), http.clone(), health.clone(), staff_summary.clone(), config.clone(), build.clone());
+        let session_text = if flags.session_upload { Some(watch::redact_paths(&format!("Session logs after a game that never connected (browser helper at 30 s: {})\n{session_logs}\n===== launcher log (last 40 lines) =====\n{}", match browser_probe().load(Ordering::SeqCst) { 1 => "running", 0 => "NOT running", _ => "not known" }, log::tail(40)), &private)) } else { None };
+        tauri::async_runtime::spawn(async move {
+            send_health(&app2, &http2, &config2, &build2, "game ran but never connected", None, session_text, Some(summary2), &health2).await;
+        });
+    }
     if let Some(dir) = reports_dir() {
         let name = format!("game-{}.txt", log::timestamp().replace([':', ' '], "-"));
         if std::fs::write(dir.join(&name), &report).is_ok() {
@@ -2183,6 +2280,14 @@ async fn server_status(state: State<'_, AppState>) -> CmdResult<Option<serde_jso
 }
 
 static HEALTH_OK: AtomicBool = AtomicBool::new(true);
+
+/// The parts of the connection help staff left switched on (status.json
+/// `launcher.firewallFix`, `udpProbe`, `connectWatch`). An unreadable status
+/// file leaves them on.
+async fn launcher_flags(http: &reqwest::Client, base_url: &str) -> netcheck::Flags {
+    let url = format!("{}/status.json", base_url.trim_end_matches('/'));
+    netcheck::Flags::from_status(get_json(http, &url).await.as_ref())
+}
 
 async fn get_json(http: &reqwest::Client, url: &str) -> Option<serde_json::Value> {
     let resp = http.get(url).timeout(std::time::Duration::from_secs(8)).send().await.ok()?.error_for_status().ok()?;
