@@ -26,6 +26,7 @@ const RETIRED: &[&str] = &[
     "Data/SKSE/Plugins/AetherialSkillTree.off",
     "Data/SKSE/Plugins/AetherialSkillTree.nohide",
     "Data/SKSE/Plugins/AetherialSkillTree.keeplevels",
+    "Data/SKSE/Plugins/AetherialSkillTree.usetest",
 ];
 
 fn same(path: &Path, bytes: &[u8]) -> bool {
