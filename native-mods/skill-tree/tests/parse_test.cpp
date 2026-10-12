@@ -27,15 +27,15 @@ int main(int argc, char** argv) {
         static const char* json = "{\"v\":1,\"skills\":{\"woodcutting\":{\"r\":1,\"p\":[\"wood.firewood\"]},\"mining\":{\"r\":1,\"p\":[\"mine.iron\"]}}}";
         static uintptr_t setting3[3] = {0, (uintptr_t)json, 0}, setting1[3] = {0, 0, 0};
         static char gscObj[0x140]; static uintptr_t buckets[401]; static uintptr_t a[3], b[3], c[3];
-        a[0] = (uintptr_t)b; a[1] = (uintptr_t)"sTestFile1"; a[2] = (uintptr_t)setting1;   // chained in one bucket, first empty
-        b[0] = 0; b[1] = (uintptr_t)"sTestFile3"; b[2] = (uintptr_t)setting3;
+        a[0] = (uintptr_t)b; a[1] = (uintptr_t)"sSaveGameOldVersion"; a[2] = (uintptr_t)setting1;   // chained in one bucket, first empty
+        b[0] = 0; b[1] = (uintptr_t)"sHolidayOldLifeFestival"; b[2] = (uintptr_t)setting3;
         c[0] = 0; c[1] = (uintptr_t)"sSomethingElse"; c[2] = (uintptr_t)setting1;
         buckets[7] = (uintptr_t)a; buckets[300] = (uintptr_t)c;
         *(uintptr_t*)(gscObj + 0x118) = 0x1000; *(uint32_t*)(gscObj + 0x120) = 401; *(uintptr_t*)(gscObj + 0x128) = (uintptr_t)buckets;
         static uintptr_t gscVar = (uintptr_t)gscObj; g_gsc = (uintptr_t)&gscVar;
         g_scanTried = false; for (auto& s : g_settings) s = 0;
         chk(LoadState(), "load from fake settings table");
-        chk(g_settings[0] == (uintptr_t)setting1 && g_settings[1] == 0 && g_settings[2] == (uintptr_t)setting3, "found sTestFile1 and sTestFile3 only");
+        chk(g_settings[0] == (uintptr_t)setting1 && g_settings[1] == 0 && g_settings[2] == (uintptr_t)setting3, "found sSaveGameOldVersion and sHolidayOldLifeFestival only");
         chk(g_state.size() == 2 && g_state.count("mining") && g_state.count("woodcutting") && !g_state.count("blacksmithing"), "settings payload preferred over the test file");
         setting3[1] = (uintptr_t)"{\"v\":1,\"skills\":{}}";
         chk(LoadState() && g_state.empty(), "empty skills object: state loads, nothing learned");
