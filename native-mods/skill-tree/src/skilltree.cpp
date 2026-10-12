@@ -86,33 +86,33 @@ std::string ReadFileText(const std::wstring& path) {
 const char* const kSettingNames[] = {"sTestFile1", "sTestFile2", "sTestFile3"};
 const int kSettingCount = 3;
 uintptr_t g_settings[kSettingCount] = {0, 0, 0}; bool g_scanTried = false;
+// The settings table is a NiTMap (BSTCaseInsensitiveStringMap) at GameSettingCollection+0x118: vptr, bucket count (+0x08), bucket array (+0x10);
+// each bucket is a chain of {next, key char*, value Setting*}; a Setting is vptr, data union (+0x08, char* for strings), name (+0x10).
+// (0.1.2/0.1.4 first drafts scanned for 0x18-byte entries, which is not this layout, so they never found any name; the freeze plugin's
+// log shows the real header: vptr, 0x191 buckets, the bucket array.) The offline test builds a fake table in this layout.
 void FindSetting() {
     g_scanTried = true;
     uintptr_t gsc = rd<uintptr_t>(g_gsc);
     if (!gsc) { g_scanTried = false; return; }
     uintptr_t base = gsc + 0x118;
-    int found = 0;
-    for (int eo = 0; eo < 0x40 && !found; eo += 8) {
-        uintptr_t entries = rd<uintptr_t>(base + eo);
-        if (!entries || entries < 0x10000 || !adlite::Readable(reinterpret_cast<void*>(entries), 0x18)) continue;
-        for (int co = 0; co < 0x40 && !found; co += 4) {
-            uint32_t cap = rd<uint32_t>(base + co);
-            if (cap < 256 || cap > (1u << 20) || (cap & (cap - 1))) continue;
-            if (!adlite::Readable(reinterpret_cast<void*>(entries), static_cast<size_t>(cap) * 0x18)) continue;
-            for (uint32_t i = 0; i < cap; ++i) {
-                uintptr_t e = entries + static_cast<uintptr_t>(i) * 0x18;
-                uintptr_t key = rd<uintptr_t>(e), val = rd<uintptr_t>(e + 8);
-                if (!key || !val || key < 0x10000 || !adlite::Readable(reinterpret_cast<void*>(key), 12)) continue;
-                for (int n = 0; n < kSettingCount; ++n) {
-                    if (!g_settings[n] && _strnicmp(reinterpret_cast<const char*>(key), kSettingNames[n], 11) == 0) {
-                        g_settings[n] = val; ++found;
-                        adlite::Log::Write("found %s setting at %p", kSettingNames[n], (void*)val);
-                    }
-                }
-            }
+    uint32_t cap = rd<uint32_t>(base + 8); uintptr_t buckets = rd<uintptr_t>(base + 0x10);
+    if (cap < 16 || cap > (1u << 20) || !buckets || !adlite::Readable(reinterpret_cast<void*>(buckets), static_cast<size_t>(cap) * 8)) {
+        adlite::Log::Write("settings table not readable (buckets=%u): only the test file can feed the menu", cap); return;
+    }
+    uint32_t seen = 0; int found = 0;
+    for (uint32_t i = 0; i < cap; ++i) {
+        uintptr_t it = rd<uintptr_t>(buckets + static_cast<uintptr_t>(i) * 8);
+        for (int hop = 0; it && hop < 64; ++hop, it = rd<uintptr_t>(it)) {
+            ++seen;
+            uintptr_t key = rd<uintptr_t>(it + 8), val = rd<uintptr_t>(it + 0x10);
+            if (!key || !val || !adlite::Readable(reinterpret_cast<void*>(key), 12)) continue;
+            const char* k = reinterpret_cast<const char*>(key);
+            for (int n = 0; n < kSettingCount; ++n)
+                if (!g_settings[n] && _stricmp(k, kSettingNames[n]) == 0) { g_settings[n] = val; ++found; adlite::Log::Write("found %s setting at %p", kSettingNames[n], (void*)val); }
         }
     }
-    if (!found) adlite::Log::Write("none of sTestFile1/2/3 found in the settings table: only the test file can feed the menu");
+    adlite::Log::Write("settings table: %u buckets, %u entries walked, %d of sTestFile1/2/3 found", cap, seen, found);
+    if (!found) adlite::Log::Write("none of sTestFile1/2/3 exist: only the test file can feed the menu");
 }
 
 // Reads the server state; false = no usable data (menu stays vanilla).
