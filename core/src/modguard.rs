@@ -40,7 +40,7 @@ fn lower(p: &str) -> String {
 
 /// Official Creation Club file names: `cc<author>sse<number>-<name>` (a few
 /// use `_` after the number, such as `cckrtsse001_altar`).
-fn is_cc(name: &str) -> bool {
+pub fn is_cc(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     let Some(rest) = n.strip_prefix("cc") else { return false };
     let Some(pos) = rest.find("sse") else { return false };

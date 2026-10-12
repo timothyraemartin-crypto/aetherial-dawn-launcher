@@ -31,11 +31,17 @@ pub struct Flags {
     pub platform_guard: bool,
     /// Send the post-game session report (logs included) to staff when a game never connected.
     pub session_upload: bool,
+    /// Print the texture check (base archives, streaming settings) in the session report.
+    pub asset_report: bool,
+    /// After a game that never connected, set Creation Club files aside for the next one (ladder.rs).
+    pub connect_ladder: bool,
+    /// Check and repair what Skyrim Platform's in-game browser needs before Play (browsercheck.rs).
+    pub browser_guard: bool,
 }
 
 impl Default for Flags {
     fn default() -> Self {
-        Flags { firewall_fix: true, udp_probe: true, connect_watch: true, platform_guard: true, session_upload: true }
+        Flags { firewall_fix: true, udp_probe: true, connect_watch: true, platform_guard: true, session_upload: true, connect_ladder: true, browser_guard: true, asset_report: true }
     }
 }
 
@@ -43,7 +49,7 @@ impl Flags {
     pub fn from_status(status: Option<&serde_json::Value>) -> Flags {
         let launcher = status.and_then(|s| s.get("launcher"));
         let on = |key: &str| launcher.and_then(|l| l.get(key)).and_then(|v| v.as_bool()) != Some(false);
-        Flags { firewall_fix: on("firewallFix"), udp_probe: on("udpProbe"), connect_watch: on("connectWatch"), platform_guard: on("platformGuard"), session_upload: on("sessionUpload") }
+        Flags { firewall_fix: on("firewallFix"), udp_probe: on("udpProbe"), connect_watch: on("connectWatch"), platform_guard: on("platformGuard"), session_upload: on("sessionUpload"), connect_ladder: on("connectLadder"), browser_guard: on("browserGuard"), asset_report: on("assetReport")  }
     }
 }
 
@@ -243,6 +249,26 @@ mod win {
         Ok(parse_rules(&String::from_utf8_lossy(&out.stdout)))
     }
 
+    /// Windows Defender's recent detections that mention Skyrim or the browser engine,
+    /// from its event log (no admin needed on most PCs; says so when it can't read it).
+    pub fn defender_history() -> String {
+        let script = "try { $e = Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Windows Defender/Operational'; Id=1006,1007,1116,1117,1118,1119} -MaxEvents 200 -ErrorAction Stop | Where-Object { $_.Message -match 'Skyrim|cef|Platform' } | Select-Object -First 10; if ($e) { $e | ForEach-Object { $m = ($_.Message -replace '\\s+',' '); $_.TimeCreated.ToString('s') + ' id ' + $_.Id + ' ' + $m.Substring(0,[Math]::Min(300,$m.Length)) } } else { 'no Defender detections mention Skyrim, cef or Platform' } } catch { 'could not read the Defender log: ' + $_.Exception.Message }";
+        match powershell(&["-EncodedCommand", encode_command(script).as_str()]) {
+            Ok(o) => String::from_utf8_lossy(&o.stdout).trim().chars().take(2500).collect(),
+            Err(e) => format!("could not run PowerShell: {e}"),
+        }
+    }
+
+    /// The antivirus and firewall products registered with Windows Security Center and
+    /// whether Windows' own firewall is on per profile (read only).
+    pub fn security_summary() -> String {
+        let script = "try { $av = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction Stop | ForEach-Object { $_.displayName + ' (state ' + $_.productState + ')' }; $fw = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName FirewallProduct -ErrorAction Stop | ForEach-Object { $_.displayName + ' (state ' + $_.productState + ')' }; $np = Get-NetFirewallProfile -ErrorAction Stop | ForEach-Object { $_.Name + '=' + $_.Enabled }; 'antivirus: ' + ($av -join '; ') + ' | firewall products: ' + ($fw -join '; ') + ' | Windows Firewall profiles: ' + ($np -join ', ') } catch { 'could not read Security Center: ' + $_.Exception.Message }";
+        match powershell(&["-EncodedCommand", encode_command(script).as_str()]) {
+            Ok(o) => String::from_utf8_lossy(&o.stdout).trim().chars().take(1500).collect(),
+            Err(e) => format!("could not run PowerShell: {e}"),
+        }
+    }
+
     /// Runs the fix in an elevated PowerShell (one Windows permission prompt)
     /// and waits for it. Err when the player declined or Windows refused.
     pub fn run_elevated(script: &str) -> Result<(), String> {
@@ -257,6 +283,35 @@ mod win {
             Err(String::from_utf8_lossy(&out.stderr).trim().chars().take(200).collect::<String>())
         }
     }
+}
+
+/// Whether `security_summary` says every Windows Firewall profile is off (another
+/// product has taken the firewall over, so rules for SkyrimSE.exe in Windows' own
+/// firewall change nothing). False when the summary could not be read.
+pub fn windows_firewall_off(summary: &str) -> bool {
+    summary.split("Windows Firewall profiles:").nth(1).is_some_and(|p| p.contains("=False") && !p.contains("=True"))
+}
+
+/// Which antivirus and firewall products Windows knows of, and whether its own firewall is on.
+#[cfg(windows)]
+pub fn security_summary() -> String {
+    win::security_summary()
+}
+
+#[cfg(not(windows))]
+pub fn security_summary() -> String {
+    "(Windows only)".into()
+}
+
+/// What Windows Defender logged about Skyrim or the browser engine (read only).
+#[cfg(windows)]
+pub fn defender_history() -> String {
+    win::defender_history()
+}
+
+#[cfg(not(windows))]
+pub fn defender_history() -> String {
+    "(Windows only)".into()
 }
 
 /// Makes sure Windows Firewall lets `exe` through; asks Windows for
@@ -360,6 +415,67 @@ pub async fn probe_udp(host: &str, port: u16, tries: u32, wait: Duration) -> Pro
     Probe::NoAnswer
 }
 
+/// Round-trip results of a burst of pings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PingStats {
+    pub sent: u32,
+    pub got: u32,
+    pub min_ms: u64,
+    pub avg_ms: u64,
+    pub max_ms: u64,
+}
+
+impl PingStats {
+    pub fn from_rtts(sent: u32, rtts: &[u64]) -> PingStats {
+        let got = rtts.len() as u32;
+        let sum: u64 = rtts.iter().sum();
+        PingStats { sent, got, min_ms: rtts.iter().copied().min().unwrap_or(0), avg_ms: sum.checked_div(got as u64).unwrap_or(0), max_ms: rtts.iter().copied().max().unwrap_or(0) }
+    }
+    pub fn loss_percent(&self) -> u32 {
+        (self.sent - self.got).saturating_mul(100).checked_div(self.sent).unwrap_or(0)
+    }
+}
+
+/// Sends `count` pings `gap` apart from one socket and times each pong.
+/// None when the host can't be reached at all (the plain probe says why).
+pub async fn ping_stats(host: &str, port: u16, count: u32, gap: Duration) -> Option<PingStats> {
+    use tokio::net::UdpSocket;
+    let target = tokio::net::lookup_host((host, port)).await.ok()?.find(|a| a.is_ipv4())?;
+    let sock = UdpSocket::bind("0.0.0.0:0").await.ok()?;
+    let guid: u64 = rand::random();
+    let mut buf = [0u8; 256];
+    let mut rtts = Vec::new();
+    for i in 0..count {
+        let sent_at = tokio::time::Instant::now();
+        sock.send_to(&ping_packet(i as u64, guid), target).await.ok()?;
+        let deadline = sent_at + gap;
+        while let Ok(Ok((n, from))) = tokio::time::timeout_at(deadline, sock.recv_from(&mut buf)).await {
+            if from.ip() == target.ip() && is_pong(&buf[..n]) {
+                rtts.push(sent_at.elapsed().as_millis() as u64);
+                tokio::time::sleep_until(deadline).await;
+                break;
+            }
+        }
+    }
+    Some(PingStats::from_rtts(count, &rtts))
+}
+
+/// Ping and loss to the game server. Warn from 5 % loss, 150 ms average or a
+/// 100 ms spread between the best and worst reply: numbers that show in game
+/// as rubber-banding. Never a Fail; Play goes on.
+pub fn ping_check(s: &PingStats) -> Check {
+    let c = |status, detail: String| Check { id: "ping", title: "Connection quality", status, detail, items: vec![] };
+    if s.got == 0 {
+        return c(Status::Info, "No replies to the ping burst; see Game server (UDP).".into());
+    }
+    let line = format!("{} of {} pings answered ({}% lost); {} ms average, {} to {} ms.", s.got, s.sent, s.loss_percent(), s.avg_ms, s.min_ms, s.max_ms);
+    if s.loss_percent() >= 5 || s.avg_ms >= 150 || s.max_ms.saturating_sub(s.min_ms) >= 100 {
+        c(Status::Warn, format!("{line} This much loss, delay or jitter shows in game as rubber-banding and players popping in. Wi-Fi, a VPN or a busy network are the usual causes; try a cable."))
+    } else {
+        c(Status::Ok, line)
+    }
+}
+
 pub fn udp_check(p: &Probe, port: u16) -> Check {
     let c = |status, detail: String| Check { id: "udp", title: "Game server (UDP)", status, detail, items: vec![] };
     match p {
@@ -398,12 +514,17 @@ pub fn platform_check(set_aside: &[String]) -> Check {
 /// "data loaded" (8) but none of those means the client never got a session.
 /// Short runs are the player backing out, not a finding.
 pub fn never_connected(skse_log: &str, ran_secs: u64) -> bool {
-    const MIN_RUN_SECS: u64 = 30;
+    const MIN_RUN_SECS: u64 = 15;
     if ran_secs < MIN_RUN_SECS {
         return false;
     }
     let sent = |id: u32| skse_log.contains(&format!("dispatch message ({id})"));
     sent(8) && !(sent(2) || sent(3) || sent(7))
+}
+
+/// A world was loaded (pre/post load-game or new-game message), so the player got in.
+pub fn world_loaded(skse_log: &str) -> bool {
+    [2u32, 3, 7].iter().any(|id| skse_log.contains(&format!("dispatch message ({id})")))
 }
 
 pub fn connect_check(ran_secs: u64) -> Check {
@@ -418,6 +539,13 @@ pub fn connect_check(ran_secs: u64) -> Check {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn windows_firewall_off_only_when_every_profile_says_false() {
+        assert!(windows_firewall_off("antivirus: Norton (state 397568) | firewall products: Norton | Windows Firewall profiles: Domain=False, Private=False, Public=False"));
+        assert!(!windows_firewall_off("antivirus: Defender | Windows Firewall profiles: Domain=True, Private=True, Public=False"));
+        assert!(!windows_firewall_off("could not read Security Center: access denied"));
+    }
+
     use super::*;
 
     fn rule(name: &str, enabled: &str, action: &str, direction: &str) -> Rule {
@@ -492,6 +620,31 @@ mod tests {
     }
 
     #[test]
+    fn ping_quality_warns_on_loss_delay_or_jitter() {
+        let ok = PingStats::from_rtts(10, &[30, 31, 30, 33, 30, 30, 32, 30, 30, 31]);
+        assert_eq!((ok.loss_percent(), ok.avg_ms), (0, 30));
+        assert_eq!(ping_check(&ok).status, Status::Ok);
+        assert_eq!(ping_check(&PingStats::from_rtts(10, &[30; 9])).status, Status::Warn);
+        assert_eq!(ping_check(&PingStats::from_rtts(10, &[200; 10])).status, Status::Warn);
+        assert_eq!(ping_check(&PingStats::from_rtts(10, &[30, 30, 30, 30, 30, 30, 30, 30, 30, 160])).status, Status::Warn);
+        assert_eq!(ping_check(&PingStats::from_rtts(10, &[])).status, Status::Info);
+    }
+
+    #[tokio::test]
+    async fn the_burst_counts_each_pong() {
+        let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = sock.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 256];
+            while let Ok((_, from)) = sock.recv_from(&mut buf).await {
+                let _ = sock.send_to(&[0x1c], from).await;
+            }
+        });
+        let s = ping_stats("127.0.0.1", port, 3, Duration::from_millis(100)).await.unwrap();
+        assert_eq!((s.sent, s.got), (3, 3));
+    }
+
+    #[test]
     fn the_ping_is_a_raknet_unconnected_ping() {
         let p = ping_packet(1, 2);
         assert_eq!(p.len(), 1 + 8 + 16 + 8);
@@ -520,7 +673,9 @@ mod tests {
     fn never_connected_needs_a_long_clean_run_that_loaded_no_world() {
         let menu = "init complete\ndispatch message (6)\ndispatch message (8)\n";
         assert!(never_connected(menu, 99));
-        assert!(!never_connected(menu, 12), "a short run is the player backing out");
+        assert!(!never_connected(menu, 9), "a short run is the player backing out");
+        assert!(never_connected(menu, 19), "19 s at the menu is a game that never joined");
+        assert!(world_loaded(&format!("{menu}dispatch message (7)\n")) && !world_loaded(menu));
         assert!(!never_connected(&format!("{menu}dispatch message (3)\n"), 99), "a world loaded");
         assert!(!never_connected(&format!("{menu}dispatch message (7)\n"), 99));
         assert!(!never_connected("init complete\n", 99), "never reached the main menu: a different problem");
