@@ -808,8 +808,12 @@ scenarios.push({ name: 'Tokens: errors and failures are clearly not gold', s: { 
 ] });
 // Scenarios are independent (own temp dir, own Chrome profile), so several run
 // at once. Output is collected per scenario and printed in scenario order, so
-// the log reads the same as a serial run. AD_UI_JOBS=1 runs them one by one.
-const JOBS = Math.max(1, Number(process.env.AD_UI_JOBS) || Math.min(4, os.cpus().length));
+// the log reads the same as a serial run. Serial by default: timing-based scenarios
+// failed now and then when 4 Chromes shared a 4-core CI machine. AD_UI_JOBS=4 opts in
+// for a quick local run. AD_UI_SHARD=i/n runs every n-th scenario (CI splits the
+// list over several machines instead).
+const JOBS = Math.max(1, Number(process.env.AD_UI_JOBS) || 1);
+const [shardI, shardN] = (process.env.AD_UI_SHARD || '1/1').split('/').map(Number);
 const runChrome = (args) => new Promise(resolve => {
   execFile(chrome, args, { encoding: 'utf8', timeout: 60000, maxBuffer: 64 * 1024 * 1024 }, (err, stdout) => resolve(String(stdout || '')));
 });
@@ -855,7 +859,7 @@ async function runScenario(sc) {
   return { lines, bad };
 }
 (async () => {
-  const todo = scenarios.filter(sc => !process.env.AD_UI_SCENARIO || sc.name.includes(process.env.AD_UI_SCENARIO));
+  const todo = scenarios.filter((sc, i) => i % shardN === shardI - 1 && (!process.env.AD_UI_SCENARIO || sc.name.includes(process.env.AD_UI_SCENARIO)));
   const done = new Array(todo.length);
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(JOBS, todo.length) }, async () => {
@@ -865,6 +869,8 @@ async function runScenario(sc) {
     }
   }));
   for (const d of done) { console.log(d.lines.join('\n')); failed += d.bad; }
+  const failedLines = done.flatMap(d => d.lines.filter(l => /^FAIL/.test(l) || (l.startsWith('==') && d.bad)));
+  if (failed) console.log('--- failed ---\n' + failedLines.join('\n'));
   if (failed) { console.log(`${failed} check(s) failed`); process.exit(1); }
   console.log('fast-Play checks passed: every check');
 })();
