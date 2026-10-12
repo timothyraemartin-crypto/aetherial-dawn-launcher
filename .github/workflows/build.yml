@@ -46,7 +46,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-checks
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/claude/faster-launcher-builds-xijhie' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Test
         run: cargo test -p launcher-core -- --skip rehearsal
       # The Tauri app layer (src-tauri) has its own tests; the line above
@@ -131,7 +131,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-build
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/claude/faster-launcher-builds-xijhie' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Check version and release tag
         shell: bash
         run: |
