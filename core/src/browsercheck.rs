@@ -6,8 +6,9 @@
 //! it still fails:
 //!
 //! - `SkyrimPlatform.ini` [Browser] BackendName off or nirnlab (no
-//!   NirnLabUIPlatform ships with the server) is put back to auto, which
-//!   falls back to the built-in browser;
+//!   NirnLabUIPlatform ships with the server) is set to tilted, the built-in
+//!   browser (his temp folder had no "Skyrim Platform" folder after a game,
+//!   so the browser code never got as far as creating its profile);
 //! - the temp folder the browser keeps its profile in is writable;
 //! - the browser's files (SkyrimPlatformCEF.exe, libcef.dll) are listed, so a
 //!   report shows at once whether they are on the PC.
@@ -41,7 +42,7 @@ pub fn backend(ini: &str) -> Option<String> {
     None
 }
 
-/// The ini with a browser that cannot work switched back to auto; None when
+/// The ini with a browser that cannot work switched to tilted; None when
 /// it is fine (auto, tilted, or not set).
 pub fn fixed_ini(ini: &str) -> Option<String> {
     if !matches!(backend(ini).as_deref(), Some("off" | "nirnlab")) {
@@ -55,7 +56,7 @@ pub fn fixed_ini(ini: &str) -> Option<String> {
             in_browser = l.eq_ignore_ascii_case("[Browser]");
         }
         let is_backend = in_browser && l.split_once('=').is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case("BackendName"));
-        out.push(if is_backend { "BackendName=auto".to_string() } else { line.to_string() });
+        out.push(if is_backend { "BackendName=tilted".to_string() } else { line.to_string() });
     }
     let mut text = out.join("\r\n");
     text.push_str("\r\n");
@@ -69,7 +70,7 @@ pub fn apply_ini_fix(game_dir: &Path) -> std::io::Result<Option<(String, String)
     let Some(new) = fixed_ini(&text) else { return Ok(None) };
     let old = backend(&text).unwrap_or_default();
     crate::atomicfile::write(&p, new.as_bytes())?;
-    Ok(Some((old, "auto".into())))
+    Ok(Some((old, "tilted".into())))
 }
 
 /// Whether `dir` can be created and written to (the browser's profile folder).
@@ -165,7 +166,7 @@ mod tests {
         assert_eq!(fixed_ini("[Browser]\nBackendName=tilted\n"), None);
         assert_eq!(fixed_ini("[Main]\nPluginFolders=Data/Platform/Plugins\n"), None);
         let fixed = fixed_ini("[Main]\nPluginFolders=Data/Platform/Plugins\n[Browser]\nBackendName=off\n[Debug]\nBackendName=off\n").unwrap();
-        assert_eq!(backend(&fixed), Some("auto".into()));
+        assert_eq!(backend(&fixed), Some("tilted".into()));
         assert!(fixed.contains("PluginFolders=Data/Platform/Plugins"));
         assert!(fixed.contains("[Debug]\r\nBackendName=off"), "other sections are left alone");
     }

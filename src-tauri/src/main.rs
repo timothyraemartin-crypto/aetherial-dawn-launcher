@@ -815,6 +815,9 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
                 let ccc_sizes: Vec<String> = ["Skyrim.ccc", "Data/Skyrim.ccc"].iter().filter_map(|f| std::fs::metadata(ccc_dir.join(f)).ok().map(|m| format!("{f} {} bytes", m.len()))).collect();
                 let head: Vec<String> = ccc_txt.as_ref().and_then(|t| std::fs::read_to_string(t).ok()).unwrap_or_default().lines().filter(|l| !l.trim_start().starts_with('#') && !l.trim().is_empty()).take(8).map(|l| l.trim().to_string()).collect();
                 log::line(&format!("game: {at} seconds in, {}; plugins.txt starts with: {}", if ccc_sizes.is_empty() { "no Skyrim.ccc".to_string() } else { ccc_sizes.join(", ") }, head.join(", ")));
+                // The browser creates its profile folder in TEMP when it starts; no folder means its code never got that far.
+                let temp_made = std::env::temp_dir().join("Skyrim Platform").exists();
+                log::line(&format!("game: {at} seconds in, the browser's temp folder {} exists", if temp_made { "DOES" } else { "does NOT" }));
                 let up = watch::BROWSER_HELPERS.iter().any(|h| watch::find_process(h).is_some());
                 browser_probe().store(up as i8, Ordering::SeqCst);
                 log::line(&format!("game: Skyrim Platform's in-game browser (SkyrimPlatformCEF.exe) {} {at} seconds after the game started", if up { "is running" } else { "is NOT running" }));
@@ -1815,7 +1818,7 @@ fn send_client_status(app: &AppHandle, dir: &std::path::Path) {
 fn browser_guard(dir: &std::path::Path) -> (health::Check, Option<std::path::PathBuf>) {
     let fixed = match launcher_core::browsercheck::apply_ini_fix(dir) {
         Ok(Some((old, new))) => {
-            log::line(&format!("play: SkyrimPlatform.ini had the in-game browser set to \"{old}\"; set it to \"{new}\" so the login box can show"));
+            log::line(&format!("play: SkyrimPlatform.ini had the in-game browser set to \"{old}\"; set it to \"{new}\" (the built-in browser) so the login box can show"));
             Some((old, new))
         }
         Ok(None) => None,
