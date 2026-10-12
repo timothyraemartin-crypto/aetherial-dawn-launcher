@@ -1,13 +1,18 @@
-// AetherialSkillTree 0.1.2 (adlite kit, Skyrim 1.6.1170 only).
+// AetherialSkillTree 0.1.4 (adlite kit, Skyrim 1.6.1170 only).
 // Shows our server skills in Skyrim's own Tab constellation menu (StatsMenu):
 //  - while the menu is open, the 18 vanilla constellations carry our skill names, perk names and descriptions;
-//  - only skills the player has learned are listed (hidden otherwise); no data from the server => vanilla menu untouched;
+//  - the menu's own list is NEVER reordered or shortened (0.1.2 cut it to the learned skills, but the 3D constellations keep the
+//    original order, so names, stars and levels no longer matched: the "jumping around" on 0.1.136). A skill the player has not
+//    learned stays in its place and reads "<name> (not learned)", level 0, every star "Locked";
+//  - no data from the server => vanilla menu untouched;
 //  - skill levels in the menu come from the server rank (15/30/50/75/100) for every learned skill, so no vanilla skill value has to be changed;
-//  - perk stars show "learned" from the server state (Actor::HasPerk answers for our perks only while the menu is open).
-// Server state comes as JSON in the inert GMST sTestFile2 (set by the client script) or, for offline tests, from
+//  - perk stars show "learned" from the server state (Actor::HasPerk answers for our perks only while the menu is open);
+//  - a learned perk with no star in its vanilla sky (a constellation has 6 to 15 stars, our trees up to 12 perks) is named in the skill's description.
+// Server state comes as JSON in an inert GMST (sTestFile1, 2 or 3: the client script uses the first that exists) or, for offline tests, from
 // Data\SKSE\Plugins\AetherialSkillTree.test.json. Nothing is written to the game's records outside the menu session:
 // names are put back when the menu hides. No inventory/equipment calls, no Papyrus, no per-tick work.
-// Kill switches (Data\SKSE\Plugins): AetherialSkillTree.off = idle; AetherialSkillTree.nohide = names only, all 18 listed.
+// Kill switches (Data\SKSE\Plugins): AetherialSkillTree.off = idle; AetherialSkillTree.keeplevels = unlearned skills keep the game's own
+// level (default: 0). AetherialSkillTree.nohide is no longer needed (the list is never filtered) and is ignored.
 // AE ids (CommonLibSSE-NG): UI 400327, ActorValueList 400267, StatsMenu vtable 215973, BSFixedString ctor 69161,
 // BSString::Set_CStr 11044, TESDescription::GetDescription 14552, Actor::HasPerk 37698, PlayerCharacter singleton 403521,
 // GameSettingCollection 400782.
@@ -24,7 +29,7 @@
 namespace {
 adlite::AddrLib g_lib;
 std::atomic<bool> g_open{false};
-bool g_nohide = false;
+bool g_keepLevels = false;
 uintptr_t g_avl = 0, g_statsVt = 0, g_pcVar = 0, g_gsc = 0;
 const int kVerbose = 40;
 std::atomic<int> g_logBudget{kVerbose};
@@ -74,47 +79,59 @@ std::string ReadFileText(const std::wstring& path) {
     fclose(f); return r;
 }
 
-// GMST sTestFile2 string, found once by walking the settings table (same layout the freeze plugin verified)
-uintptr_t g_setting = 0; bool g_scanTried = false;
+// The inert string GMSTs the client script may hold the server state in, found once by walking the settings table
+// (same layout the freeze plugin verified). sTestFile2 does not exist in every install (Bart's skse64.log: "SetGameSettingString:
+// sTestFile2 not found"), so the client probes this same list in order and keeps the first one that reads back; here every one
+// that exists is remembered and the first holding JSON wins. Keep the list in step with "gmst" in skills-vanilla-map.json.
+const char* const kSettingNames[] = {"sTestFile1", "sTestFile2", "sTestFile3"};
+const int kSettingCount = 3;
+uintptr_t g_settings[kSettingCount] = {0, 0, 0}; bool g_scanTried = false;
+// The settings table is a NiTMap (BSTCaseInsensitiveStringMap) at GameSettingCollection+0x118: vptr, bucket count (+0x08), bucket array (+0x10);
+// each bucket is a chain of {next, key char*, value Setting*}; a Setting is vptr, data union (+0x08, char* for strings), name (+0x10).
+// (0.1.2/0.1.4 first drafts scanned for 0x18-byte entries, which is not this layout, so they never found any name; the freeze plugin's
+// log shows the real header: vptr, 0x191 buckets, the bucket array.) The offline test builds a fake table in this layout.
 void FindSetting() {
     g_scanTried = true;
     uintptr_t gsc = rd<uintptr_t>(g_gsc);
     if (!gsc) { g_scanTried = false; return; }
     uintptr_t base = gsc + 0x118;
-    for (int eo = 0; eo < 0x40; eo += 8) {
-        uintptr_t entries = rd<uintptr_t>(base + eo);
-        if (!entries || entries < 0x10000 || !adlite::Readable(reinterpret_cast<void*>(entries), 0x18)) continue;
-        for (int co = 0; co < 0x40; co += 4) {
-            uint32_t cap = rd<uint32_t>(base + co);
-            if (cap < 256 || cap > (1u << 20) || (cap & (cap - 1))) continue;
-            if (!adlite::Readable(reinterpret_cast<void*>(entries), static_cast<size_t>(cap) * 0x18)) continue;
-            for (uint32_t i = 0; i < cap; ++i) {
-                uintptr_t e = entries + static_cast<uintptr_t>(i) * 0x18;
-                uintptr_t key = rd<uintptr_t>(e), val = rd<uintptr_t>(e + 8);
-                if (!key || !val || key < 0x10000 || !adlite::Readable(reinterpret_cast<void*>(key), 12)) continue;
-                if (_strnicmp(reinterpret_cast<const char*>(key), "sTestFile2", 11) == 0) { g_setting = val; adlite::Log::Write("found sTestFile2 setting at %p", (void*)val); return; }
-            }
+    uint32_t cap = rd<uint32_t>(base + 8); uintptr_t buckets = rd<uintptr_t>(base + 0x10);
+    if (cap < 16 || cap > (1u << 20) || !buckets || !adlite::Readable(reinterpret_cast<void*>(buckets), static_cast<size_t>(cap) * 8)) {
+        adlite::Log::Write("settings table not readable (buckets=%u): only the test file can feed the menu", cap); return;
+    }
+    uint32_t seen = 0; int found = 0;
+    for (uint32_t i = 0; i < cap; ++i) {
+        uintptr_t it = rd<uintptr_t>(buckets + static_cast<uintptr_t>(i) * 8);
+        for (int hop = 0; it && hop < 64; ++hop, it = rd<uintptr_t>(it)) {
+            ++seen;
+            uintptr_t key = rd<uintptr_t>(it + 8), val = rd<uintptr_t>(it + 0x10);
+            if (!key || !val || !adlite::Readable(reinterpret_cast<void*>(key), 12)) continue;
+            const char* k = reinterpret_cast<const char*>(key);
+            for (int n = 0; n < kSettingCount; ++n)
+                if (!g_settings[n] && _stricmp(k, kSettingNames[n]) == 0) { g_settings[n] = val; ++found; adlite::Log::Write("found %s setting at %p", kSettingNames[n], (void*)val); }
         }
     }
-    adlite::Log::Write("sTestFile2 not found");
+    adlite::Log::Write("settings table: %u buckets, %u entries walked, %d of sTestFile1/2/3 found", cap, seen, found);
+    if (!found) adlite::Log::Write("none of sTestFile1/2/3 exist: only the test file can feed the menu");
 }
 
 // Reads the server state; false = no usable data (menu stays vanilla).
 bool LoadState() {
     g_state.clear();
     std::string text;
-    if (!g_setting && !g_scanTried) FindSetting();
-    if (g_setting) {
-        uintptr_t s = rd<uintptr_t>(g_setting + 0x08);
+    if (!g_scanTried) FindSetting();
+    const char* src = "GMST";
+    for (int n = 0; n < kSettingCount && text.empty(); ++n) {
+        if (!g_settings[n]) continue;
+        uintptr_t s = rd<uintptr_t>(g_settings[n] + 0x08);
         if (s && adlite::Readable(reinterpret_cast<void*>(s), 2) && reinterpret_cast<const char*>(s)[0] == '{') {
-            size_t n = 0; const char* c = reinterpret_cast<const char*>(s);
-            while (n < 65536 && adlite::Readable(c + n, 1) && c[n]) ++n;
-            text.assign(c, n);
+            size_t len = 0; const char* c = reinterpret_cast<const char*>(s);
+            while (len < 65536 && adlite::Readable(c + len, 1) && c[len]) ++len;
+            text.assign(c, len); src = kSettingNames[n];
         }
     }
-    const char* src = "GMST";
     if (text.empty()) { text = ReadFileText(g_dir + L"\\Data\\SKSE\\Plugins\\AetherialSkillTree.test.json"); src = "test file"; }
-    if (text.empty()) { adlite::Log::Write("no server state (GMST empty, no test file): menu stays vanilla"); return false; }
+    if (text.empty()) { adlite::Log::Write("no server state (settings empty, no test file): menu stays vanilla"); return false; }
     P p{text.data(), text.data() + text.size()};
     J root = p.val();
     const J* sk = root.get("skills");
@@ -151,9 +168,13 @@ bool SetBSString(void* out, const char* text) {
 }
 uintptr_t MakeFixed(const char* s) { uintptr_t slot = 0; g_ctor(&slot, s); return slot; }
 
-struct Edit { uintptr_t dest; uintptr_t orig; uintptr_t ours; };  // dest = address of a BSFixedString (8 bytes)
+// dest = address of a BSFixedString (8 bytes); ours = our text for a learned skill; alt = the text while that skill is not learned.
+struct Edit { uintptr_t dest; uintptr_t orig; uintptr_t ours; uintptr_t alt; std::string skill; };
 std::vector<Edit> g_edits;
-std::unordered_map<uintptr_t, std::string> g_desc;       // form -> description while the menu is open
+// form -> description while the menu is open. learned = shown for a learned skill, locked = for one the player lacks;
+// extra = perks of this skill that have no star (AVIF entries only), named in the text once learned.
+struct Desc { std::string skill, learned, locked; std::vector<std::pair<std::string, std::string>> extra; };
+std::unordered_map<uintptr_t, Desc> g_desc;
 std::unordered_map<uintptr_t, std::string> g_perkOur;    // vanilla BGSPerk* -> our perk id (for HasPerk), "" = reserved star
 std::unordered_map<uintptr_t, std::string> g_perkSkill;  // vanilla BGSPerk* -> our skill id
 std::map<int, std::string> g_avSkill;                    // vanilla AV -> our skill id
@@ -172,9 +193,10 @@ void Walk(uintptr_t n, int depth, std::vector<Star>& out, std::set<uintptr_t>& s
 const struct { uint32_t form; const char* id; } kPins[] = {{0xCB40D, "smith.steel"}, {0xCB40E, "smith.dwarven"}, {0xCB40F, "smith.elven"}, {0xCB410, "smith.orcish"},
                                                           {0xCB411, "smith.glass"}, {0xCB412, "smith.ebony"}, {0xCB413, "smith.daedric"}};
 
-void AddEdit(uintptr_t dest, const char* text) {
+bool Learned_(const std::string& skill) { return g_state.count(skill) != 0; }
+void AddEdit(uintptr_t dest, const char* text, const char* skill, const char* lockedText) {
     if (!dest || !adlite::Readable(reinterpret_cast<void*>(dest), 8)) return;
-    g_edits.push_back({dest, rd<uintptr_t>(dest), MakeFixed(text)});
+    g_edits.push_back({dest, rd<uintptr_t>(dest), MakeFixed(text), MakeFixed(lockedText), skill});
 }
 
 void Build() {  // once, at first menu open: decide which star gets which of our perks and prepare the edits
@@ -199,23 +221,28 @@ void Build() {  // once, at first menu open: decide which star gets which of our
             while (q < s.nperks && used[q]) ++q;
             if (q < s.nperks) { starPerk[k] = q; used[q] = 1; }
         }
-        AddEdit(avif + 0x28, s.name);
-        g_desc[avif] = s.desc;
+        AddEdit(avif + 0x28, s.name, s.id, (std::string(s.name) + " (not learned)").c_str());
+        {
+            Desc d; d.skill = s.id; d.learned = s.desc; d.locked = std::string("You have not learned this skill. ") + s.desc;
+            for (int x = 0; x < s.nextra; ++x) d.extra.emplace_back(s.extra[x].id, s.extra[x].name);
+            g_desc[avif] = std::move(d);
+        }
         g_avSkill[s.av] = s.id;
         for (size_t k = 0; k < stars.size(); ++k) {
             uintptr_t perk = stars[k].perk;
             g_perkSkill[perk] = s.id;
             if (starPerk[k] >= 0) {
                 const TPerk& tp = s.perks[starPerk[k]];
-                AddEdit(perk + 0x28, tp.name); g_desc[perk] = tp.desc; g_perkOur[perk] = tp.id;
-            } else { AddEdit(perk + 0x28, "Locked"); g_desc[perk] = "Reserved for a future perk."; g_perkOur[perk] = ""; }
+                AddEdit(perk + 0x28, tp.name, s.id, "Locked");
+                g_desc[perk] = Desc{s.id, tp.desc, "Learn this skill to unlock its perks.", {}}; g_perkOur[perk] = tp.id;
+            } else { AddEdit(perk + 0x28, "Locked", s.id, "Locked"); g_desc[perk] = Desc{s.id, "Reserved for a future perk.", "Learn this skill to unlock its perks.", {}}; g_perkOur[perk] = ""; }
             adlite::Log::Write("  %s star %zu form %08X depth %d grid(%u,%u) -> %s", s.id, k, rd<uint32_t>(perk + 0x14), stars[k].depth, stars[k].gx, stars[k].gy, starPerk[k] >= 0 ? s.perks[starPerk[k]].id : "(locked)");
         }
         adlite::Log::Write("build: %s -> AV %s(%d) '%s' stars %zu perks %d", s.id, Str(rd<uintptr_t>(avif + 0x50)), s.av, s.name, stars.size(), s.nperks);
     }
     adlite::Log::Write("build done: %zu edits, %zu descriptions", g_edits.size(), g_desc.size());
 }
-void ApplyNames() { for (auto& e : g_edits) *reinterpret_cast<uintptr_t*>(e.dest) = e.ours; }
+void ApplyNames() { for (auto& e : g_edits) *reinterpret_cast<uintptr_t*>(e.dest) = Learned_(e.skill) ? e.ours : e.alt; }
 void RestoreNames() { for (auto& e : g_edits) *reinterpret_cast<uintptr_t*>(e.dest) = e.orig; }
 
 // ---------------------------------------------------------------- hooks
@@ -224,7 +251,17 @@ DescFn g_origDesc = nullptr;
 void DescDetour(void* self, void* out, void* parent, uint32_t field) {
     if (g_open.load(std::memory_order_relaxed)) {
         auto it = g_desc.find(reinterpret_cast<uintptr_t>(parent));
-        if (it != g_desc.end() && SetBSString(out, it->second.c_str())) return;
+        if (it != g_desc.end()) {
+            const Desc& d = it->second;
+            auto st = g_state.find(d.skill);
+            std::string text = st == g_state.end() ? d.locked : d.learned;
+            if (st != g_state.end()) {  // perks learned in F3 > Skills that have no star in this constellation
+                std::string names;
+                for (auto& x : d.extra) if (st->second.perks.count(x.first)) { if (!names.empty()) names += ", "; names += x.second; }
+                if (!names.empty()) text += " Also learned, with no star in this sky: " + names + ".";
+            }
+            if (SetBSString(out, text.c_str())) return;
+        }
     }
     g_origDesc(self, out, parent, field);
 }
@@ -254,7 +291,8 @@ const float kLevels[5] = {15.f, 30.f, 50.f, 75.f, 100.f};
 bool OurLevel(void* self, int av, float& out) {
     if (!g_open.load(std::memory_order_relaxed) || reinterpret_cast<uintptr_t>(self) != g_avOwner || av < 6 || av > 23) return false;
     auto sk = g_avSkill.find(av); if (sk == g_avSkill.end()) return false;
-    auto st = g_state.find(sk->second); if (st == g_state.end()) return false;
+    auto st = g_state.find(sk->second);
+    if (st == g_state.end()) { if (g_keepLevels) return false; out = 0.f; return true; }  // not learned: level 0, never the game's own
     int r = st->second.rank; if (r < 1) r = 1; if (r > 5) r = 5;
     out = kLevels[r - 1];
     return true;
@@ -296,25 +334,8 @@ bool PatchAvOwner() {
 // StatsMenu: vtable slot 4 = ProcessMessage(UIMessage&)
 typedef uint32_t (*ProcFn)(void*, void*);
 ProcFn g_origProc = nullptr;
-bool FilterTrees(uintptr_t menu) {  // keep only learned skills in the menu's own list
-    const uintptr_t rtd = menu + 0x40;
-    uintptr_t arr = rd<uintptr_t>(rtd + 0x10); uint32_t n = rd<uint32_t>(rtd + 0x20), cap = rd<uint32_t>(rtd + 0x18);
-    if (!arr || n == 0 || n > cap || n > 32 || !adlite::Readable(reinterpret_cast<void*>(arr), n * 4)) return false;
-    std::vector<int32_t> keep;
-    for (uint32_t i = 0; i < n; ++i) {
-        int32_t av = rd<int32_t>(arr + i * 4);
-        auto sk = g_avSkill.find(av);
-        if (sk != g_avSkill.end() && g_state.count(sk->second)) keep.push_back(av);
-    }
-    if (keep.empty()) return false;  // nothing of ours learned: do not touch the list
-    for (size_t i = 0; i < keep.size(); ++i) *reinterpret_cast<int32_t*>(arr + i * 4) = keep[i];
-    *reinterpret_cast<uint32_t*>(rtd + 0x20) = static_cast<uint32_t>(keep.size());
-    *reinterpret_cast<uint32_t*>(rtd + 0x2D0) = static_cast<uint32_t>(keep.size());
-    return true;
-}
 uint32_t ProcDetour(void* self, void* msg) {
     uint32_t type = rd<uint32_t>(reinterpret_cast<uintptr_t>(msg) + 8);
-    const uintptr_t menu = reinterpret_cast<uintptr_t>(self);
     if (type == 1 /*kShow*/ && !g_open.load()) {
         __try {
             if (LoadState()) {
@@ -323,13 +344,12 @@ uint32_t ProcDetour(void* self, void* msg) {
                     ApplyNames(); g_open = true;
                     g_logBudget = kVerbose;
                     adlite::Log::Write("menu opened: names applied, learned=%zu", g_state.size());
-                    if (!g_nohide) adlite::Log::Write("menu list filtered=%d", (int)FilterTrees(menu));
+                    for (auto& kv : g_avSkill) adlite::Log::Write("  AV %d %s: %s", kv.first, kv.second.c_str(), Learned_(kv.second) ? "learned" : "not learned");
                 }
             }
         } __except (EXCEPTION_EXECUTE_HANDLER) { RestoreNames(); g_open = false; adlite::Log::Write("exception on show: restored vanilla"); }
     }
     uint32_t r = g_origProc(self, msg);
-    if (type == 1 && g_open.load() && !g_nohide) { __try { FilterTrees(menu); } __except (EXCEPTION_EXECUTE_HANDLER) {} }
     if ((type == 3 /*kHide*/ || type == 4 /*kForceHide*/) && g_open.load()) {
         g_open = false; RestoreNames();
         adlite::Log::Write("menu closed: vanilla names restored");
@@ -365,16 +385,16 @@ DWORD WINAPI Init(LPVOID) {
 
 bool Load(const void*) {
     adlite::Log::Open("AetherialSkillTree");
-    adlite::Log::Write("AetherialSkillTree 0.1.2 loading");
+    adlite::Log::Write("AetherialSkillTree 0.1.4 loading");
     wchar_t exe[MAX_PATH]{}; GetModuleFileNameW(nullptr, exe, MAX_PATH);
     g_dir = exe; g_dir = g_dir.substr(0, g_dir.find_last_of(L"\\/"));
     auto has = [](const std::wstring& f) { return GetFileAttributesW((g_dir + L"\\Data\\SKSE\\Plugins\\" + f).c_str()) != INVALID_FILE_ATTRIBUTES; };
     if (has(L"AetherialSkillTree.off")) { adlite::Log::Write("kill switch .off present: idle"); return true; }
-    g_nohide = has(L"AetherialSkillTree.nohide");
+    g_keepLevels = has(L"AetherialSkillTree.keeplevels");
     if (!g_lib.Load()) return true;
     CreateThread(nullptr, 0, Init, nullptr, 0, nullptr);
     return true;
 }
 }  // namespace
 
-ADLITE_PLUGIN("AetherialSkillTree", "Aetherial Dawn", 0x00010002, Load)
+ADLITE_PLUGIN("AetherialSkillTree", "Aetherial Dawn", 0x00010004, Load)

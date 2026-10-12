@@ -1,5 +1,7 @@
-# AetherialSkillTree (skill-tree-work)
-Own SKSE plugin (adlite kit, 1.6.1170). Build: cmd /c "A:\Aetherial Dawn\skse-toolchain\build.bat" src\probe.cpp out\AetherialSkillTree.dll
-Status: probe 0.0.1 BUILT, NOT installed, NOT game-tested. Reads the vanilla StatsMenu (Tab) data when it opens and logs it to
-Documents\My Games\Skyrim Special Edition\SKSE\AetherialSkillTree.log. Optional test: empty file Data\SKSE\Plugins\AetherialSkillTree.rename renames the 18 skill AVIFs to our skills.
-Kill switch: Data\SKSE\Plugins\AetherialSkillTree.off. Never touches inventory/equipment.
+# AetherialSkillTree 0.1.4 (source)
+Own SKSE plugin (adlite kit, 1.6.1170). Build on Timothy's PC (or any Windows box with the kit): `native-mods\skill-tree\build.bat src\skilltree.cpp out\AetherialSkillTree.dll`, then copy to `src-tauri/bundled/Data/SKSE/Plugins/` and update the sha in PROGRESS.md.
+Draws our 18 skills on Skyrim's 18 Tab constellations while the menu is open (names, perks, descriptions, levels from the server rank). Server state: JSON in the inert GMST sTestFile1/2/3 (the client script writes the first that exists; see ingame-ui `skills/crafting.js`). `src/tree_data.h` is generated: `node gen.js` needs `data/skills-catalog.json` copied in from ingame-ui `skills/skills-catalog.json` (not stored here).
+Layout (0.1.4): the menu's own list is never reordered or shortened; a skill the player has not learned stays in place as "<name> (not learned)", level 0, stars "Locked". A learned perk with no star is named in the skill's description.
+Check without Windows: `g++ -std=c++17 -w -I tests/stub -I src tests/layout_test.cpp -o /tmp/layout_test && /tmp/layout_test` (fake menu memory; names, descriptions, levels, restore). NOT game-tested.
+Kill switches (Data\SKSE\Plugins): `AetherialSkillTree.off` = idle; `AetherialSkillTree.keeplevels` = unlearned skills keep the game's own level. Log: Documents\My Games\Skyrim Special Edition\SKSE\AetherialSkillTree.log. Never touches inventory/equipment.
+`src/probe.cpp` is the old read-only probe.

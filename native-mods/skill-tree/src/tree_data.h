@@ -2,7 +2,7 @@
 #pragma once
 #include <cstdint>
 struct TPerk { const char* id; const char* name; const char* desc; int tier; int col; };
-struct TSkill { const char* id; const char* name; const char* desc; int av; int stars; int nperks; const TPerk* perks; };
+struct TSkill { const char* id; const char* name; const char* desc; int av; int stars; int nperks; const TPerk* perks; int nextra; const TPerk* extra; };
 static const TPerk P_oneHanded[] = {
   {"oneHanded.armsman","Armsman","Unlocks: Iron and steel swords, war axes, maces and daggers.",1,1},
   {"oneHanded.power1","Keen Edge","One-handed weapons you can use hit 10% harder.",2,0},
@@ -16,6 +16,9 @@ static const TPerk P_oneHanded[] = {
   {"oneHanded.master","Master of Arms","One-handed weapons hit another 15% harder.",5,0},
   {"oneHanded.ebony","Ebony and Daedric Arms","Unlocks: Ebony, Daedric and dragonbone weapons.",5,1},
 };
+static const TPerk X_oneHanded[] = {
+  {"oneHanded.drill","Drillmaster","",4,2},
+};
 static const TPerk P_twoHanded[] = {
   {"twoHanded.barbarian","Barbarian","Unlocks: Iron and steel greatswords, battleaxes and warhammers.",1,1},
   {"twoHanded.power1","Heavy Swing","Two-handed weapons you can use hit 10% harder.",2,0},
@@ -27,6 +30,10 @@ static const TPerk P_twoHanded[] = {
   {"twoHanded.glass","Glass Greatarms","Unlocks: Glass two-handers.",4,1},
   {"twoHanded.master","Warmaster","Two-handed weapons hit another 15% harder.",5,0},
   {"twoHanded.ebony","Ebony and Daedric Greatarms","Unlocks: Ebony, Daedric and dragonbone two-handers.",5,1},
+};
+static const TPerk X_twoHanded[] = {
+  {"twoHanded.endure","Seasoned","",3,2},
+  {"twoHanded.drill","Drillmaster","",4,2},
 };
 static const TPerk P_archery[] = {
   {"archery.overdraw","Overdraw","Unlocks: Hunting bows and long bows; iron and steel arrows.",1,1},
@@ -96,6 +103,10 @@ static const TPerk P_blacksmithing[] = {
   {"smith.daedric","Daedric Smithing","Unlocks: Daedric weapons (with a daedra heart).",5,1},
   {"smith.ebony","Ebony Smithing","Unlocks: Smelt ebony; ebony weapons, bows and arrows.",5,2},
 };
+static const TPerk X_blacksmithing[] = {
+  {"smith.bellows","Master Bellows","",4,0},
+  {"smith.journeyman","Forgemaster","",5,0},
+};
 static const TPerk P_tailoring[] = {
   {"tailor.roughspun","Roughspun","Unlocks: Roughspun tunics, linen wraps and shoes.",1,1},
   {"tailor.cutter","Careful Cutter","25% more from every bolt of cloth (every fourth piece free).",2,0},
@@ -107,6 +118,9 @@ static const TPerk P_tailoring[] = {
   {"tailor.fine","Fine Clothes","Unlocks: Fine clothes.",4,1},
   {"tailor.court","Court Tailor","Unlocks: Jarl\342\200\231s clothes.",5,1},
 };
+static const TPerk X_tailoring[] = {
+  {"tailor.guild","Guild Tailor","",5,0},
+};
 static const TPerk P_leatherworking[] = {
   {"leather.tanner","Tanner","Unlocks: Tan hides into leather and strips; hide armour.",1,1},
   {"leather.furrier","Furrier","Unlocks: Tan wolf and ice wolf pelts.",2,0},
@@ -117,6 +131,10 @@ static const TPerk P_leatherworking[] = {
   {"leather.quick","Practised Hands","25% more Leatherworking XP.",3,2},
   {"leather.sabre","Sabre Cat Pelts","Unlocks: Tan sabre cat pelts.",4,0},
   {"leather.scaled","Scaled Armour","Unlocks: Scaled armour isn\342\200\231t made here yet.",4,1},
+};
+static const TPerk X_leatherworking[] = {
+  {"leather.fine","Fine Stitching","",4,2},
+  {"leather.master","Master Tanner","",5,1},
 };
 static const TPerk P_cooking[] = {
   {"cook.hearth","Hearth Cook","Unlocks: Roasts and vegetable soup; brew ale and Nord mead.",1,1},
@@ -130,6 +148,9 @@ static const TPerk P_cooking[] = {
   {"cook.jarlsTable","The Jarl\342\200\231s Table","Your own cooking restores another 5%, and magicka too.",5,0},
   {"cook.blackBriar","Black-Briar Reserve","Unlocks: Black-Briar mead.",5,2},
 };
+static const TPerk X_cooking[] = {
+  {"cook.hearty","Big Pot","",3,2},
+};
 static const TPerk P_alchemy[] = {
   {"alchemy.alchemist","Alchemist","Unlocks: Use an alchemy lab and brew its set recipes: Minor Healing, Minor Stamina and Minor Magicka.",1,1},
   {"alchemy.potency1","Potency","Each restoring potion you brew has a 20 in 100 chance to come out one strength higher (Minor Healing becomes Healing).",2,0},
@@ -141,6 +162,10 @@ static const TPerk P_alchemy[] = {
   {"alchemy.extra","Extra Dose","Every brew at the lab makes one more potion.",4,2},
   {"alchemy.master","Master Alchemist","Unlocks: Brew Invisibility, Waterbreathing and Weak Paralysis at the lab. Invisibility hides you from other players for up to a minute, until you attack or use anything. Weak Paralysis on a weapon holds the next player you hit in place for up to 10 seconds.",5,1},
 };
+static const TPerk X_alchemy[] = {
+  {"alchemy.potency3","Supreme Potency","",4,0},
+  {"alchemy.quick","Keen Mind","",5,2},
+};
 static const TPerk P_jewelcrafting[] = {
   {"jewel.silver","Silversmith","Unlocks: Silver rings and necklaces.",1,1},
   {"jewel.gold","Goldsmith","Unlocks: Gold rings and necklaces.",2,1},
@@ -150,6 +175,9 @@ static const TPerk P_jewelcrafting[] = {
   {"jewel.flawless","Flawless Setting","You cut so cleanly that one gem in four you set in jewellery comes back whole.",4,0},
   {"jewel.circlets","Circlet Maker","Unlocks: Circlets set with a sapphire.",4,1},
   {"jewel.diamond","Diamond Setter","Unlocks: A gold diamond necklace fit for a Jarl.",5,1},
+};
+static const TPerk X_jewelcrafting[] = {
+  {"jewel.quick","Steady Hands","",4,2},
 };
 static const TPerk P_mining[] = {
   {"mine.iron","Prospector","Unlocks: Mine iron ore.",1,1},
@@ -162,6 +190,10 @@ static const TPerk P_mining[] = {
   {"mine.orichalcum","Orichalcum","Unlocks: Mine orichalcum ore.",4,1},
   {"mine.ebony","Ebony Miner","Unlocks: Mine ebony ore.",5,1},
 };
+static const TPerk X_mining[] = {
+  {"mine.rich","Rich Seams","",4,2},
+  {"mine.master","Master Miner","",5,2},
+};
 static const TPerk P_woodcutting[] = {
   {"wood.firewood","Woodsman","Unlocks: Split firewood at the chopping block.",1,1},
   {"wood.swing","Clean Swing","50% more firewood from every log you split.",2,0},
@@ -169,6 +201,9 @@ static const TPerk P_woodcutting[] = {
   {"wood.split","True Split","Another 25% more firewood from every log.",4,0},
   {"wood.kiln","Earthen Kiln","Unlocks: Burn a full kiln at once: ten firewood into eight charcoal.",4,1},
   {"wood.slowBurn","Slow Burn","50% more charcoal from every burn.",5,1},
+};
+static const TPerk X_woodcutting[] = {
+  {"wood.quick","Woodsman\342\200\231s Rhythm","",3,2},
 };
 static const TPerk P_harvesting[] = {
   {"herb.common","Forager","Unlocks: Common wild plants: mountain flowers, lavender, snowberries and the like.",1,1},
@@ -190,6 +225,9 @@ static const TPerk P_hunting[] = {
   {"hunt.sabre","Sabre Cats and Trolls","Unlocks: Sabre cats and trolls.",4,1},
   {"hunt.trophy","Trophy Hunter","Another 25% more from every kill.",4,2},
   {"hunt.mammoth","Mammoth Hunter","Unlocks: Mammoths, on the tundra: tusks.",5,1},
+};
+static const TPerk X_hunting[] = {
+  {"hunt.quick","Tracker","",2,0},
 };
 static const TPerk P_fishing[] = {
   {"fish.river","Angler","Unlocks: River fish: salmon and silverside perch.",1,1},
@@ -213,24 +251,28 @@ static const TPerk P_farming[] = {
   {"farm.bees","Beekeeper","Unlocks: Beehives: honeycomb.",4,0},
   {"farm.orchard","Orchard","Unlocks: Orchards aren\342\200\231t planted yet.",4,1},
 };
+static const TPerk X_farming[] = {
+  {"farm.plenty","Plenty","",4,2},
+  {"farm.master","Harvest Lord","",5,1},
+};
 static const TSkill kSkills[] = {
-  {"oneHanded","One-Handed","Swords, war axes, maces and daggers, fought with a shield, a torch, a spell or a second blade.",14,11,11,P_oneHanded},
-  {"twoHanded","Two-Handed","Greatswords, battleaxes and warhammers. Slow, heavy blows that end a fight.",6,10,10,P_twoHanded},
-  {"archery","Archery","Bows and crossbows. Steady breathing, a long draw and a clean shot from afar.",19,15,12,P_archery},
-  {"block","Block","Shields and parrying: turning a blow aside, bashing, and holding the line.",20,14,12,P_block},
-  {"heavyArmor","Heavy Armour","Iron, steel, dwarven, orcish, ebony and Daedric plate. Moving and fighting under its weight.",21,13,12,P_heavyArmor},
-  {"lightArmor","Light Armour","Hide, leather, scaled, elven and glass armour. Quick feet and protection that never slows you.",22,12,12,P_lightArmor},
-  {"blacksmithing","Blacksmithing","Smelting ore into ingots and forging weapons, armour, bows and arrows; sharpening blades at the grindstone and fitting armour at the workbench.",10,10,10,P_blacksmithing},
-  {"tailoring","Tailoring","Cutting and sewing at the tanning rack: clothes, robes, hoods and shoes, from roughspun to fine clothes.",15,9,9,P_tailoring},
-  {"leatherworking","Leatherworking","Tanning hides into leather and strips at the tanning rack; hide and leather armour.",8,9,9,P_leatherworking},
-  {"cooking","Cooking and Brewing","Stews, roasts and sweetrolls at the cooking pot, and the mead, ale and wine every tavern sells.",18,10,10,P_cooking},
-  {"alchemy","Alchemy","Potions and poisons brewed from herbs, mushrooms and creature parts at the alchemy lab.",16,9,9,P_alchemy},
-  {"jewelcrafting","Jewelcrafting","Rings, necklaces and circlets from silver and gold, set with garnets, rubies, sapphires and diamonds.",13,8,8,P_jewelcrafting},
-  {"mining","Mining","Working ore veins with a pickaxe: iron, corundum, silver, gold, quicksilver, moonstone, malachite, orichalcum and ebony, and the gems in them.",9,9,9,P_mining},
-  {"woodcutting","Woodcutting","Splitting firewood at the chopping block and burning it into charcoal at the smelter, the fuel every forge in Skyrim runs on.",12,6,6,P_woodcutting},
-  {"harvesting","Harvesting","Gathering wild plants, mushrooms and flowers: mountain flowers, nirnroot, deathbell, lavender, snowberries and more.",23,9,9,P_harvesting},
-  {"hunting","Hunting","Tracking and killing game, then skinning and butchering it: deer, elk, goats, wolves and sabre cats for meat, pelts and horns. Hunt at the grounds staff mark in the wilds, with a bow and an arrow for each shot.",11,8,8,P_hunting},
-  {"fishing","Fishing","Rod, net and patience in the rivers, lakes and the Sea of Ghosts: salmon, perch, slaughterfish and rarer catches.",17,9,9,P_fishing},
-  {"farming","Farming","Tending fields and livestock: wheat, cabbage, potatoes, leeks, gourds, tundra cotton for linen, and chickens and cows.",7,9,9,P_farming},
+  {"oneHanded","One-Handed","Swords, war axes, maces and daggers, fought with a shield, a torch, a spell or a second blade.",14,11,11,P_oneHanded,1,X_oneHanded},
+  {"twoHanded","Two-Handed","Greatswords, battleaxes and warhammers. Slow, heavy blows that end a fight.",6,10,10,P_twoHanded,2,X_twoHanded},
+  {"archery","Archery","Bows and crossbows. Steady breathing, a long draw and a clean shot from afar.",19,15,12,P_archery,0,nullptr},
+  {"block","Block","Shields and parrying: turning a blow aside, bashing, and holding the line.",20,14,12,P_block,0,nullptr},
+  {"heavyArmor","Heavy Armour","Iron, steel, dwarven, orcish, ebony and Daedric plate. Moving and fighting under its weight.",21,13,12,P_heavyArmor,0,nullptr},
+  {"lightArmor","Light Armour","Hide, leather, scaled, elven and glass armour. Quick feet and protection that never slows you.",22,12,12,P_lightArmor,0,nullptr},
+  {"blacksmithing","Blacksmithing","Smelting ore into ingots and forging weapons, armour, bows and arrows; sharpening blades at the grindstone and fitting armour at the workbench.",10,10,10,P_blacksmithing,2,X_blacksmithing},
+  {"tailoring","Tailoring","Cutting and sewing at the tanning rack: clothes, robes, hoods and shoes, from roughspun to fine clothes.",15,9,9,P_tailoring,1,X_tailoring},
+  {"leatherworking","Leatherworking","Tanning hides into leather and strips at the tanning rack; hide and leather armour.",8,9,9,P_leatherworking,2,X_leatherworking},
+  {"cooking","Cooking and Brewing","Stews, roasts and sweetrolls at the cooking pot, and the mead, ale and wine every tavern sells.",18,10,10,P_cooking,1,X_cooking},
+  {"alchemy","Alchemy","Potions and poisons brewed from herbs, mushrooms and creature parts at the alchemy lab.",16,9,9,P_alchemy,2,X_alchemy},
+  {"jewelcrafting","Jewelcrafting","Rings, necklaces and circlets from silver and gold, set with garnets, rubies, sapphires and diamonds.",13,8,8,P_jewelcrafting,1,X_jewelcrafting},
+  {"mining","Mining","Working ore veins with a pickaxe: iron, corundum, silver, gold, quicksilver, moonstone, malachite, orichalcum and ebony, and the gems in them.",9,9,9,P_mining,2,X_mining},
+  {"woodcutting","Woodcutting","Splitting firewood at the chopping block and burning it into charcoal at the smelter, the fuel every forge in Skyrim runs on.",12,6,6,P_woodcutting,1,X_woodcutting},
+  {"harvesting","Harvesting","Gathering wild plants, mushrooms and flowers: mountain flowers, nirnroot, deathbell, lavender, snowberries and more.",23,9,9,P_harvesting,0,nullptr},
+  {"hunting","Hunting","Tracking and killing game, then skinning and butchering it: deer, elk, goats, wolves and sabre cats for meat, pelts and horns. Hunt at the grounds staff mark in the wilds, with a bow and an arrow for each shot.",11,8,8,P_hunting,1,X_hunting},
+  {"fishing","Fishing","Rod, net and patience in the rivers, lakes and the Sea of Ghosts: salmon, perch, slaughterfish and rarer catches.",17,9,9,P_fishing,0,nullptr},
+  {"farming","Farming","Tending fields and livestock: wheat, cabbage, potatoes, leeks, gourds, tundra cotton for linen, and chickens and cows.",7,9,9,P_farming,2,X_farming},
 };
 static const int kSkillCount = 18;
