@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "rev": "2026-10-12.1",
+  "off": false,
+  "checks": {
+    "firewallFix": true,
+    "udpProbe": true,
+    "connectWatch": true,
+    "platformGuard": true,
+    "sessionUpload": true,
+    "serverOrder": "fail"
+  },
+  "order": {
+    "emptyCcc": true,
+    "rewriteLoadorderTxt": true,
+    "ignore": []
+  },
+  "allow": {
+    "files": []
+  },
+  "text": {}
+}

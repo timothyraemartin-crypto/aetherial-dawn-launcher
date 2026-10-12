@@ -3,6 +3,8 @@
 # Run on the server (or anywhere that has the web root and the key):
 #   sudo scripts/publish-feed.sh                  fill hashes, sign, verify
 #   sudo scripts/publish-feed.sh --check          only report; changes nothing
+#   sudo scripts/publish-feed.sh --rules FILE     also publish FILE as launcher-rules.json (checked, signed, verified with the rest);
+#                                                 the hot-fix route: no launcher release (docs/launcher-rules.md)
 #   sudo scripts/publish-feed.sh --pin-only       BEFORE a launcher release: fill missing sha256 pins in mods.json,
 #                                                 no signing (needs no sign-feed and no key); refuses a signed list
 # Needs bash, jq, curl, sha256sum. Fetches the sign-feed tool from the newest GitHub release
@@ -22,9 +24,9 @@ BASE_URL=${AD_BASE_URL:-https://vps-d38c928e.vps.ovh.us/launcher}
 REPO=${AD_RELEASE_REPO:-timothyraemartin-crypto/aetherial-dawn-launcher}
 BACKUP_DIR=${AD_BACKUP_DIR:-/var/backups/aetherial-deploy/feed-$(date +%Y%m%d%H%M%S)}
 RELEASE_BASE=${AD_RELEASE_BASE:-https://github.com/$REPO/releases/latest/download}
-CHECK=0; PIN_ONLY=0
-case "${1:-}" in --check) CHECK=1 ;; --pin-only) PIN_ONLY=1 ;; "") ;; *) echo "unknown option ${1}"; exit 1 ;; esac
-FEEDS=(mods.json client/manifest.json)
+CHECK=0; PIN_ONLY=0; RULES_IN=""
+case "${1:-}" in --check) CHECK=1 ;; --pin-only) PIN_ONLY=1 ;; --rules) RULES_IN=${2:-}; [ -f "$RULES_IN" ] || { echo "--rules needs a file"; exit 1; } ;; "") ;; *) echo "unknown option ${1}"; exit 1 ;; esac
+FEEDS=(mods.json client/manifest.json launcher-rules.json)
 
 for t in jq curl sha256sum; do command -v "$t" >/dev/null || { echo "$t is needed"; exit 1; }; done
 MODS="$WEB_ROOT/mods.json"
@@ -69,7 +71,13 @@ fi
 
 # 2. Build the new feed in a temp copy.
 STAGE=$WORK/stage; mkdir -p "$STAGE/client"
-for f in "${FEEDS[@]}"; do [ -f "$WEB_ROOT/$f" ] && cp "$WEB_ROOT/$f" "$STAGE/$f"; done
+for f in "${FEEDS[@]}"; do if [ -f "$WEB_ROOT/$f" ]; then cp "$WEB_ROOT/$f" "$STAGE/$f"; fi; done
+if [ -n "$RULES_IN" ]; then
+  # Same checks as the launcher's own reader (core/src/rules.rs): JSON object, schema 1, small.
+  jq -e 'type == "object" and ((.schema // 1) == 1)' "$RULES_IN" >/dev/null || { echo "$RULES_IN is not a launcher rules file (schema 1)"; exit 1; }
+  [ "$(wc -c < "$RULES_IN")" -le 65536 ] || { echo "$RULES_IN is too big"; exit 1; }
+  cp "$RULES_IN" "$STAGE/launcher-rules.json"
+fi
 for id in $missing; do
   url=$(jq -r --arg id "$id" '.mods[] | select(.id == $id) | .url' "$MODS")
   if [[ "$url" == "$BASE_URL"/* && -f "$WEB_ROOT/${url#"$BASE_URL"/}" ]]; then
@@ -93,14 +101,16 @@ fi
 
 # 3. Sign and verify the copy. Nothing live has changed yet.
 "$tool" sign "$KEY" "$STAGE"
+# An older sign-feed (from a release before the rules file) would leave the rules unsigned.
+[ ! -f "$STAGE/launcher-rules.json" ] || [ -f "$STAGE/launcher-rules.json.sig" ] || { echo "this sign-feed doesn't sign launcher-rules.json; publish after the launcher release that includes it"; exit 1; }
 "$tool" verify "$STAGE"
 
 # 4. Swap in. Backups go outside the web root; any failure from here restores them.
 mkdir -p "$BACKUP_DIR/client"
-for f in "${FEEDS[@]}"; do for e in "" .sig; do [ -f "$WEB_ROOT/$f$e" ] && cp -p "$WEB_ROOT/$f$e" "$BACKUP_DIR/$f$e"; done; done
+for f in "${FEEDS[@]}"; do for e in "" .sig; do if [ -f "$WEB_ROOT/$f$e" ]; then cp -p "$WEB_ROOT/$f$e" "$BACKUP_DIR/$f$e"; fi; done; done
 restore() {
   echo "swap failed, restoring the previous files from $BACKUP_DIR"
-  for f in "${FEEDS[@]}"; do for e in "" .sig; do [ -f "$BACKUP_DIR/$f$e" ] && cp -p "$BACKUP_DIR/$f$e" "$WEB_ROOT/$f$e"; done; done
+  for f in "${FEEDS[@]}"; do for e in "" .sig; do if [ -f "$BACKUP_DIR/$f$e" ]; then cp -p "$BACKUP_DIR/$f$e" "$WEB_ROOT/$f$e"; fi; done; done
 }
 trap 'restore; rm -rf "$WORK"' ERR
 for f in "${FEEDS[@]}"; do

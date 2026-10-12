@@ -1,0 +1,64 @@
+name: Release tag
+
+# Makes the release tag from the cloud, so a launcher release no longer needs the
+# PC. Run it by hand (Actions > Release tag > Run workflow) with the commit on main
+# that should ship. It creates vX.Y.Z (X.Y.Z from Cargo.toml at that commit) and
+# starts "Build launcher" on the tag, which tests, builds, signs and publishes.
+# Tags made with the repo token do not start workflows by themselves, so the build
+# is started explicitly below. Pushing the tag by hand still works the same way.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit on main to release (full 40-character sha)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  tag:
+    runs-on: [self-hosted, linux, x64]
+    concurrency:
+      group: aetherial-dawn-launcher-release-tag
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.sha }}
+      - name: Check the commit and make the tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Give the full 40-character sha"; exit 1; }
+          [[ "$(git rev-parse HEAD)" == "$SHA" ]] || { echo "Checked out commit differs from $SHA"; exit 1; }
+          git fetch origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$SHA" origin/main || { echo "$SHA is not on main"; exit 1; }
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Cargo.toml needs a stable X.Y.Z version"; exit 1; }
+          tag="v$version"
+          if git ls-remote --exit-code origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists; release tags are never moved"; exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; published releases are never replaced"; exit 1
+          fi
+          if latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null); then
+            newest=$(printf '%s\n%s\n' "$latest" "$tag" | sort -V | tail -n 1)
+            [[ "$newest" == "$tag" && "$latest" != "$tag" ]] || { echo "$tag is not newer than $latest"; exit 1; }
+          fi
+          # The commit must already have passed the full Windows build: a manual run of Build launcher on it
+          # (runs on main only skip the Windows job, so only a manual run counts).
+          ok=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/runs?head_sha=$SHA&event=workflow_dispatch&status=success&per_page=50" --jq '.total_count')
+          [[ "$ok" -ge 1 ]] || { echo "No successful manual Build launcher run on $SHA yet: run it on main first (Actions > Build launcher > Run workflow, branch main)"; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$tag" -f "sha=$SHA" >/dev/null
+          echo "Created $tag at $SHA"
+          gh workflow run build.yml --repo "$GITHUB_REPOSITORY" --ref "$tag"
+          echo "Started Build launcher on $tag"

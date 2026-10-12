@@ -20,8 +20,8 @@ cat > "$T/sign-feed" <<'SH'
 root=$3; [ "$1" = verify ] && root=$2
 case "$1" in
   sign) [ -z "${FAIL_SIGN:-}" ] || { echo "sign failed" >&2; exit 1; }
-        for f in mods.json client/manifest.json; do [ -f "$root/$f" ] && sha256sum "$root/$f" | cut -d' ' -f1 > "$root/$f.sig"; done ;;
-  verify) for f in mods.json client/manifest.json; do [ -f "$root/$f" ] || continue
+        for f in mods.json client/manifest.json launcher-rules.json; do [ -f "$root/$f" ] && sha256sum "$root/$f" | cut -d' ' -f1 > "$root/$f.sig"; done; true ;;
+  verify) for f in mods.json client/manifest.json launcher-rules.json; do [ -f "$root/$f" ] || continue
             [ "$(cat "$root/$f.sig" 2>/dev/null)" = "$(sha256sum "$root/$f" | cut -d' ' -f1)" ] || { echo "BAD $f"; exit 1; }; done ;;
 esac
 SH
@@ -94,4 +94,18 @@ out=$(SIGN_FEED= "$here/publish-feed.sh" --check 2>&1) && { echo "FAIL: --check 
 echo "$out" | grep -q "no full sha256 (the launcher drops them): nx" || { echo "FAIL: nexus file entry not named: $out"; exit 1; }
 jq '.mods[2].sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$T/root/mods.json" > "$T/m" && mv "$T/m" "$T/root/mods.json"
 out=$(SIGN_FEED= "$here/publish-feed.sh" --check 2>&1) || { echo "FAIL: a full sha256 on the file entry should pass: $out"; exit 1; }
+# --rules FILE: published with the feeds, signed and verified; a bad file or a sign-feed that can't sign it changes nothing.
+fresh; printf '{"schema":1,"rev":"t1"}' > "$T/rules.json"
+"$here/publish-feed.sh" --rules "$T/rules.json" >/dev/null || { echo "FAIL: --rules should publish"; exit 1; }
+[ "$(jq -r .rev "$T/root/launcher-rules.json")" = t1 ] && [ -f "$T/root/launcher-rules.json.sig" ] || { echo "FAIL: rules not published and signed"; exit 1; }
+fresh; before=$(snap); echo '[1]' > "$T/bad.json"
+"$here/publish-feed.sh" --rules "$T/bad.json" >/dev/null 2>&1 && { echo "FAIL: a rules file that is not an object should be refused"; exit 1; }
+printf '{"schema":2}' > "$T/bad.json"
+"$here/publish-feed.sh" --rules "$T/bad.json" >/dev/null 2>&1 && { echo "FAIL: a newer schema should be refused"; exit 1; }
+"$here/publish-feed.sh" --rules "$T/missing.json" >/dev/null 2>&1 && { echo "FAIL: a missing rules file should be refused"; exit 1; }
+[ "$before" = "$(snap)" ] && [ ! -e "$T/root/launcher-rules.json" ] || { echo "FAIL: refused rules changed live files"; exit 1; }
+sed -i 's/ launcher-rules.json; do \[ -f/; do [ -f/' "$T/sign-feed"
+fresh; before=$(snap)
+"$here/publish-feed.sh" --rules "$T/rules.json" >/dev/null 2>&1 && { echo "FAIL: an older sign-feed must not publish unsigned rules"; exit 1; }
+[ "$before" = "$(snap)" ] && [ ! -e "$T/root/launcher-rules.json" ] || { echo "FAIL: unsigned rules reached live files"; exit 1; }
 echo "publish-feed test ok"

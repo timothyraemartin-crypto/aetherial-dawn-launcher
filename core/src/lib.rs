@@ -25,6 +25,7 @@ pub mod patcher;
 pub mod pristine;
 pub mod profile;
 pub mod requirements;
+pub mod rules;
 pub mod serverorder;
 pub mod settings;
 pub mod setup;
