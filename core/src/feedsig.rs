@@ -40,6 +40,8 @@ const SEEN_FILE: &str = "signed-feeds.json";
 pub enum Feed {
     Mods,
     Manifest,
+    /// Play-time checks and load-order policy (rules.rs).
+    Rules,
 }
 
 impl Feed {
@@ -48,6 +50,7 @@ impl Feed {
         match self {
             Feed::Mods => "mods.json",
             Feed::Manifest => "client/manifest.json",
+            Feed::Rules => "launcher-rules.json",
         }
     }
 }
