@@ -19,49 +19,31 @@ permissions:
   contents: read
 
 jobs:
-  # Pull requests and main are checked by linux-checks below. The Windows runner is not always
-  # available, so the full Windows build and installer test runs only for release tags and by hand
-  # (Actions > Build launcher > Run workflow).
-  windows:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+  # The Windows work is two jobs that run side by side, so a release takes as long as the slower one
+  # instead of the sum: windows-checks (tests, clippy, UI checks) and windows-build (installer build
+  # and the install test). The release job needs both. Both run for release tags, by hand, and on
+  # pushes to main; the main runs are what save the Rust cache that tag builds restore (a tag can only
+  # read caches saved on the default branch). Pull requests get linux-checks only.
+  windows-checks:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
     runs-on: windows-latest
-    env:
-      # Where the server publishes launcher files, and the Discord login service.
-      # Override with repository variables if the server moves.
-      AD_BASE_URL: ${{ vars.AD_BASE_URL || 'https://vps-d38c928e.vps.ovh.us/launcher' }}
-      AD_AUTH_URL: ${{ vars.AD_AUTH_URL || 'https://vps-d38c928e.vps.ovh.us/ad' }}
+    timeout-minutes: 30
     steps:
       - name: Preflight (tools this runner must have)
         shell: pwsh
         run: |
-          $missing = @('git', 'node', 'rustup', 'cargo', 'pwsh') | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) }
-          if (-not (Test-Path 'C:\Program Files\Git\bin\bash.exe')) { $missing += 'Git for Windows (bash.exe)' }
+          $missing = @('git', 'node', 'rustup', 'cargo') | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) }
           if (-not ((Test-Path 'C:\Program Files\Google\Chrome\Application\chrome.exe') -or (Test-Path 'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'))) { $missing += 'Google Chrome' }
-          if (-not (Get-Command link.exe -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe")) { $missing += 'Visual Studio Build Tools (C++)' }
           if ($missing) { throw "This runner is missing: $($missing -join ', '). See docs/self-hosted-runners.md." }
-          # `shell: bash` must be Git's bash, not WSL's C:\Windows\System32\bash.exe.
-          $b = (Get-Command bash -ErrorAction SilentlyContinue).Source
-          Write-Host "bash resolves to $b"
-          if ($b -and $b -like '*\System32\bash.exe') { throw 'bash resolves to WSL; put C:\Program Files\Git\bin before C:\Windows\System32 in the runner user PATH.' }
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      # shared-key: tag builds restore what the last main run saved; only main saves.
       - uses: Swatinem/rust-cache@v2
-      - name: Check version and release tag
-        shell: bash
-        run: |
-          set -euo pipefail
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Cargo.toml needs a stable X.Y.Z version"; exit 1; }
-          echo "VERSION=$version" >> "$GITHUB_ENV"
-          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/v* ]]; then
-            [[ "$GITHUB_REF_NAME" == "v$version" ]] || { echo "Tag $GITHUB_REF_NAME does not match Cargo.toml $version"; exit 1; }
-            git fetch origin main:refs/remotes/origin/main
-            git merge-base --is-ancestor HEAD origin/main || { echo "Release tag must point to a commit on main"; exit 1; }
-          fi
+        with:
+          shared-key: windows-checks
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/claude/faster-launcher-builds-xijhie' }}
       - name: Test
         run: cargo test -p launcher-core -- --skip rehearsal
       # The Tauri app layer (src-tauri) has its own tests; the line above
@@ -86,7 +68,8 @@ jobs:
         run: cargo test -p launcher-core rehearsal -- --nocapture
       # The launcher's page in headless Chrome with a fake back end: PLAY from
       # the last session never starts the game for a banned account, an update
-      # or a wrong game version, and the news box never jumps.
+      # or a wrong game version, and the news box never jumps. Runs its
+      # scenarios 4 at a time (AD_UI_JOBS); the result lines keep their order.
       - name: Fast Play checks
         run: node .github/scripts/ui-fast-play-test.js
       # Sheets and pages animate in, and not at all for reduced motion.
@@ -99,6 +82,49 @@ jobs:
         run: node .github/scripts/ui-contract-test.js
       - name: Discord notice checks
         run: node --test .github/scripts/patch-notes.test.js
+
+  windows-build:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      # Where the server publishes launcher files, and the Discord login service.
+      # Override with repository variables if the server moves.
+      AD_BASE_URL: ${{ vars.AD_BASE_URL || 'https://vps-d38c928e.vps.ovh.us/launcher' }}
+      AD_AUTH_URL: ${{ vars.AD_AUTH_URL || 'https://vps-d38c928e.vps.ovh.us/ad' }}
+    steps:
+      - name: Preflight (tools this runner must have)
+        shell: pwsh
+        run: |
+          $missing = @('git', 'node', 'rustup', 'cargo', 'pwsh') | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) }
+          if (-not (Test-Path 'C:\Program Files\Git\bin\bash.exe')) { $missing += 'Git for Windows (bash.exe)' }
+          if (-not ((Test-Path 'C:\Program Files\Google\Chrome\Application\chrome.exe') -or (Test-Path 'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'))) { $missing += 'Google Chrome' }
+          if (-not (Get-Command link.exe -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe")) { $missing += 'Visual Studio Build Tools (C++)' }
+          if ($missing) { throw "This runner is missing: $($missing -join ', '). See docs/self-hosted-runners.md." }
+          # `shell: bash` must be Git's bash, not WSL's C:\Windows\System32\bash.exe.
+          $b = (Get-Command bash -ErrorAction SilentlyContinue).Source
+          Write-Host "bash resolves to $b"
+          if ($b -and $b -like '*\System32\bash.exe') { throw 'bash resolves to WSL; put C:\Program Files\Git\bin before C:\Windows\System32 in the runner user PATH.' }
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-build
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/claude/faster-launcher-builds-xijhie' }}
+      - name: Check version and release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Cargo.toml needs a stable X.Y.Z version"; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/v* ]]; then
+            [[ "$GITHUB_REF_NAME" == "v$version" ]] || { echo "Tag $GITHUB_REF_NAME does not match Cargo.toml $version"; exit 1; }
+            git fetch origin main:refs/remotes/origin/main
+            git merge-base --is-ancestor HEAD origin/main || { echo "Release tag must point to a commit on main"; exit 1; }
+          fi
       - name: Install Tauri CLI
         uses: taiki-e/install-action@v2
         with:
@@ -231,7 +257,7 @@ jobs:
 
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, canonical-plugins-linux]
+    needs: [windows-checks, windows-build, canonical-plugins-linux]
     runs-on: [self-hosted, linux, x64]
     permissions:
       contents: write
@@ -378,7 +404,7 @@ jobs:
   # Staff hear about a failed release even though the release job itself stopped.
   release-failed-notice:
     if: failure() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, canonical-plugins-linux, release]
+    needs: [windows-checks, windows-build, canonical-plugins-linux, release]
     runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v4

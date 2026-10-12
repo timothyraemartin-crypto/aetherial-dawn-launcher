@@ -4,7 +4,7 @@ Every workflow job except `bug-investigate.yml` runs on one of two runners:
 
 | Labels | Where | Jobs |
 |---|---|---|
-| `windows-latest` (GitHub-hosted) | since 0.1.134 | `build.yml` `windows`, release tags and manual runs only; PRs and main use `linux-checks` |
+| `windows-latest` (GitHub-hosted) | since 0.1.134 | `build.yml` `windows-checks` + `windows-build` (side by side), release tags, pushes to main (they save the Rust cache tags restore) and manual runs; PRs use `linux-checks` |
 | `self-hosted, linux, x64` | WSL2 Ubuntu 22.04+ | everything else (`canonical-plugins-linux`, `release`, contract, scripts, publish-feed, autofix-bridge, capture-errors) |
 
 No macOS jobs exist. `bug-investigate.yml` stays on GitHub-hosted runners: its verify job runs a model-written patch.
