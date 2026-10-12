@@ -1,4 +1,4 @@
-// AetherialSkillTree 0.1.4 (adlite kit, Skyrim 1.6.1170 only).
+// AetherialSkillTree 0.1.5 (adlite kit, Skyrim 1.6.1170 only).
 // Shows our server skills in Skyrim's own Tab constellation menu (StatsMenu):
 //  - while the menu is open, the 18 vanilla constellations carry our skill names, perk names and descriptions;
 //  - the menu's own list is NEVER reordered or shortened (0.1.2 cut it to the learned skills, but the 3D constellations keep the
@@ -8,7 +8,7 @@
 //  - skill levels in the menu come from the server rank (15/30/50/75/100) for every learned skill, so no vanilla skill value has to be changed;
 //  - perk stars show "learned" from the server state (Actor::HasPerk answers for our perks only while the menu is open);
 //  - a learned perk with no star in its vanilla sky (a constellation has 6 to 15 stars, our trees up to 12 perks) is named in the skill's description.
-// Server state comes as JSON in an inert GMST (sTestFile1, 2 or 3: the client script uses the first that exists) or, for offline tests, from
+// Server state comes as JSON in an inert GMST (one of three real string settings, see kSettingNames: the client script uses the first that exists) or, for offline tests, from
 // Data\SKSE\Plugins\AetherialSkillTree.test.json. Nothing is written to the game's records outside the menu session:
 // names are put back when the menu hides. No inventory/equipment calls, no Papyrus, no per-tick work.
 // Kill switches (Data\SKSE\Plugins): AetherialSkillTree.off = idle; AetherialSkillTree.keeplevels = unlearned skills keep the game's own
@@ -83,7 +83,9 @@ std::string ReadFileText(const std::wstring& path) {
 // (same layout the freeze plugin verified). sTestFile2 does not exist in every install (Bart's skse64.log: "SetGameSettingString:
 // sTestFile2 not found"), so the client probes this same list in order and keeps the first one that reads back; here every one
 // that exists is remembered and the first holding JSON wins. Keep the list in step with "gmst" in skills-vanilla-map.json.
-const char* const kSettingNames[] = {"sTestFile1", "sTestFile2", "sTestFile3"};
+// 0.1.5: sTestFile1/2/3 do not exist in this game (log: "0 of sTestFile1/2/3 found" among 3619 entries). These three are real string settings from
+// Skyrim.esm that Aetherial Dawn never shows (old-save error, Creation Club downloads dialog, a calendar holiday name).
+const char* const kSettingNames[] = {"sSaveGameOldVersion", "sOldDownloadsAvailable", "sHolidayOldLifeFestival"};
 const int kSettingCount = 3;
 uintptr_t g_settings[kSettingCount] = {0, 0, 0}; bool g_scanTried = false;
 // The settings table is a NiTMap (BSTCaseInsensitiveStringMap) at GameSettingCollection+0x118: vptr, bucket count (+0x08), bucket array (+0x10);
@@ -108,11 +110,11 @@ void FindSetting() {
             if (!key || !val || !adlite::Readable(reinterpret_cast<void*>(key), 12)) continue;
             const char* k = reinterpret_cast<const char*>(key);
             for (int n = 0; n < kSettingCount; ++n)
-                if (!g_settings[n] && _stricmp(k, kSettingNames[n]) == 0) { g_settings[n] = val; ++found; adlite::Log::Write("found %s setting at %p", kSettingNames[n], (void*)val); }
+                if (!g_settings[n] && _stricmp(k, kSettingNames[n]) == 0) { g_settings[n] = val; ++found; { uintptr_t sp = rd<uintptr_t>(val + 8); char head[13] = {0}; if (sp && adlite::Readable(reinterpret_cast<void*>(sp), 12)) memcpy(head, reinterpret_cast<const char*>(sp), 12); for (int h = 0; h < 12; ++h) if (head[h] && (head[h] < 32 || head[h] > 126)) head[h] = '?'; adlite::Log::Write("found %s setting at %p, value starts '%s'", kSettingNames[n], (void*)val, head); } }
         }
     }
-    adlite::Log::Write("settings table: %u buckets, %u entries walked, %d of sTestFile1/2/3 found", cap, seen, found);
-    if (!found) adlite::Log::Write("none of sTestFile1/2/3 exist: only the test file can feed the menu");
+    adlite::Log::Write("settings table: %u buckets, %u entries walked, %d of our setting names found", cap, seen, found);
+    if (!found) adlite::Log::Write("none of our setting names exist: only the test file can feed the menu");
 }
 
 // Reads the server state; false = no usable data (menu stays vanilla).
@@ -385,7 +387,7 @@ DWORD WINAPI Init(LPVOID) {
 
 bool Load(const void*) {
     adlite::Log::Open("AetherialSkillTree");
-    adlite::Log::Write("AetherialSkillTree 0.1.4 loading");
+    adlite::Log::Write("AetherialSkillTree 0.1.5 loading");
     wchar_t exe[MAX_PATH]{}; GetModuleFileNameW(nullptr, exe, MAX_PATH);
     g_dir = exe; g_dir = g_dir.substr(0, g_dir.find_last_of(L"\\/"));
     auto has = [](const std::wstring& f) { return GetFileAttributesW((g_dir + L"\\Data\\SKSE\\Plugins\\" + f).c_str()) != INVALID_FILE_ATTRIBUTES; };
@@ -397,4 +399,4 @@ bool Load(const void*) {
 }
 }  // namespace
 
-ADLITE_PLUGIN("AetherialSkillTree", "Aetherial Dawn", 0x00010004, Load)
+ADLITE_PLUGIN("AetherialSkillTree", "Aetherial Dawn", 0x00010005, Load)
