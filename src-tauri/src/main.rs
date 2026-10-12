@@ -433,7 +433,17 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
         tokio::task::spawn_blocking(move || launcher_core::modguard::extras(&dir, &names, &files)).await.map_err(|e| e.to_string())?
     };
     // Another server's Skyrim Platform scripts: set aside like other mods, unless staff switched it off.
-    let extras: Vec<_> = extras.into_iter().filter(|e| e.kind != "script" || flags.platform_guard).collect();
+    let mut extras: Vec<_> = extras.into_iter().filter(|e| e.kind != "script" || flags.platform_guard).collect();
+    // The last game ran to the main menu and never joined: this one also runs without the official
+    // Creation Club files (they come back when it closes). status.json `launcher.connectLadder`: false switches it off.
+    if flags.connect_ladder {
+        let level = launcher_core::ladder::level(&dir);
+        if level > 0 {
+            let cc = launcher_core::ladder::cc_extras(&dir, &server_names);
+            log::line(&format!("play: the last {level} game(s) never connected; setting {} Creation Club file(s) aside for this session", cc.len()));
+            extras.extend(cc);
+        }
+    }
     let foreign_scripts: Vec<String> = extras.iter().filter(|e| e.kind == "script").map(|e| e.rel.clone()).collect();
     if !foreign_scripts.is_empty() {
         log::line(&format!("play: another server's Skyrim Platform script(s) found, set aside for this session: {}", foreign_scripts.join(", ")));
@@ -578,6 +588,14 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     .map_err(err)?;
     settings::write_auth_data(&dir, &session, &config.account.clone().unwrap_or_default()).map_err(err)?;
     log::line("play: wrote skymp5-client-settings.txt and auth data");
+    // Read the settings back the way the SkyMP client will: where it dials, the login session, and that its script is there.
+    let bad = settings::verify(&dir, &m.server.ip, m.server.port, &session);
+    if bad.is_empty() {
+        log::line(&format!("play: settings checked: the client will dial {}:{} with the login session just issued", m.server.ip, m.server.port));
+    } else {
+        log::line(&format!("play: settings check failed: {}", bad.join("; ")));
+        return Err("Couldn't set up your connection to the server. Press Play again; if it keeps happening, use Report a problem.".into());
+    }
     state.music.stop();
     // Last look before the game starts: Steam can put Skyrim.ccc back after the
     // first set-up, which would put Creation Club masters ahead of the server's
@@ -756,17 +774,22 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
             let browser_seen = browser_probe();
             browser_seen.store(-1, Ordering::SeqCst);
             tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+              // At 12 s too: players often close a game that sits at the main menu before 30 s.
+              let mut waited = 0u64;
+              for at in [12u64, 30] {
+                tokio::time::sleep(std::time::Duration::from_secs(at - waited)).await;
+                waited = at;
                 if watch::find_process(watch::GAME_PROCESS) != Some(pid) {
                     return;
                 }
                 // Evidence for the load order: what Skyrim.ccc and plugins.txt hold while the game runs.
                 let ccc_sizes: Vec<String> = ["Skyrim.ccc", "Data/Skyrim.ccc"].iter().filter_map(|f| std::fs::metadata(ccc_dir.join(f)).ok().map(|m| format!("{f} {} bytes", m.len()))).collect();
                 let head: Vec<String> = ccc_txt.as_ref().and_then(|t| std::fs::read_to_string(t).ok()).unwrap_or_default().lines().filter(|l| !l.trim_start().starts_with('#') && !l.trim().is_empty()).take(8).map(|l| l.trim().to_string()).collect();
-                log::line(&format!("game: 30 seconds in, {}; plugins.txt starts with: {}", if ccc_sizes.is_empty() { "no Skyrim.ccc".to_string() } else { ccc_sizes.join(", ") }, head.join(", ")));
+                log::line(&format!("game: {at} seconds in, {}; plugins.txt starts with: {}", if ccc_sizes.is_empty() { "no Skyrim.ccc".to_string() } else { ccc_sizes.join(", ") }, head.join(", ")));
                 let up = watch::BROWSER_HELPERS.iter().any(|h| watch::find_process(h).is_some());
                 browser_probe().store(up as i8, Ordering::SeqCst);
-                log::line(&format!("game: Skyrim Platform's in-game browser (SkyrimPlatformCEF.exe) {} 30 seconds after the game started", if up { "is running" } else { "is NOT running" }));
+                log::line(&format!("game: Skyrim Platform's in-game browser (SkyrimPlatformCEF.exe) {} {at} seconds after the game started", if up { "is running" } else { "is NOT running" }));
+              }
             });
             // Face sharing for as long as the game runs.
             let stop = std::sync::Arc::new(AtomicBool::new(false));
@@ -818,10 +841,13 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
     // Skyrim ran a while, did not crash, and never loaded a world: it most likely
     // never connected (switch off with status.json `launcher.connectWatch`: false).
     let flags = launcher_flags(&http, &config.base_url).await;
-    let never_connected = !crashed && pid.is_some() && flags.connect_watch && {
-        let skse_text = std::fs::read_to_string(skse_logs.join("skse64.log")).unwrap_or_default();
-        netcheck::never_connected(&skse_text, ran.as_secs())
-    };
+    let skse_text = std::fs::read_to_string(skse_logs.join("skse64.log")).unwrap_or_default();
+    let never_connected = !crashed && pid.is_some() && flags.connect_watch && netcheck::never_connected(&skse_text, ran.as_secs());
+    if flags.connect_ladder && !crashed && pid.is_some() {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let level = launcher_core::ladder::record(&game_dir, never_connected, netcheck::world_loaded(&skse_text), now);
+        log::line(&format!("game: connect ladder level is now {level} (0 = the last game got into a world; the next Play sets Creation Club files aside from 1)"));
+    }
     if never_connected {
         log::line(&format!("game: ran {} seconds without crashing but never loaded into the world; it most likely never connected to the server", ran.as_secs()));
         let mut connect = netcheck::connect_check(ran.as_secs());

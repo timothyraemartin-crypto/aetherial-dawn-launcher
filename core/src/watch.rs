@@ -311,6 +311,19 @@ fn tail(path: &Path, lines: usize) -> String {
     all[all.len().saturating_sub(lines)..].join("\n")
 }
 
+/// Skyrim Platform's log with its hundreds of "VirtualMachine::Bind called"
+/// lines left out: they pushed the lines that matter (the client script
+/// starting, its settings file, the browser) out of the last 120.
+fn tail_without_binds(path: &Path, lines: usize) -> String {
+    let bytes = std::fs::read(path).unwrap_or_default();
+    tail_text_without_binds(&String::from_utf8_lossy(&bytes), lines)
+}
+
+fn tail_text_without_binds(text: &str, lines: usize) -> String {
+    let all: Vec<&str> = text.lines().filter(|l| !l.contains("VirtualMachine::Bind called")).collect();
+    all[all.len().saturating_sub(lines)..].join("\n")
+}
+
 /// The logs written since `since`: everything under the SKSE log folder
 /// (skse64.log, skyrim-platform.log, crash logger output) and SkyrimPlatform's
 /// browser log in the temp folder. Crash logs are included in full-ish.
@@ -334,7 +347,11 @@ pub fn collect(skse_log_dir: &Path, temp_dir: &Path, since: SystemTime) -> Strin
         if n.starts_with("crash-") {
             o.push_str(&format!("\n===== {} (exception, call stack and plugin lists) =====\n{}\n", f.display(), crash_log_parts(&f)));
         } else {
-            o.push_str(&format!("\n===== {} (last 120 lines) =====\n{}\n", f.display(), tail(&f, 120)));
+            if n == "skyrim-platform.log" {
+                o.push_str(&format!("\n===== {} (last 200 lines, without the VirtualMachine::Bind lines) =====\n{}\n", f.display(), tail_without_binds(&f, 200)));
+            } else {
+                o.push_str(&format!("\n===== {} (last 120 lines) =====\n{}\n", f.display(), tail(&f, 120)));
+            }
         }
     }
     o
@@ -487,6 +504,19 @@ fn newest_crash_log(skse_log_dir: &Path, since: SystemTime) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_platform_log_tail_drops_the_bind_lines() {
+        let mut t = String::new();
+        t.push_str("[1] Found settings file Data/Platform/Plugins\\skymp5-client-settings.txt for plugin skymp5-client.\n");
+        for i in 0..500 {
+            t.push_str(&format!("[2] VirtualMachine::Bind called Game Fn{i} [0] 1 2 3\n"));
+        }
+        t.push_str("[3] SetVisible false\n");
+        let out = tail_text_without_binds(&t, 5);
+        assert_eq!(out.lines().count(), 2);
+        assert!(out.contains("Found settings file") && out.contains("SetVisible false") && !out.contains("Bind"));
+    }
+
     use super::*;
 
     #[test]

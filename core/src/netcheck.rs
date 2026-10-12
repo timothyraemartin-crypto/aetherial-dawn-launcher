@@ -31,11 +31,13 @@ pub struct Flags {
     pub platform_guard: bool,
     /// Send the post-game session report (logs included) to staff when a game never connected.
     pub session_upload: bool,
+    /// After a game that never connected, set Creation Club files aside for the next one (ladder.rs).
+    pub connect_ladder: bool,
 }
 
 impl Default for Flags {
     fn default() -> Self {
-        Flags { firewall_fix: true, udp_probe: true, connect_watch: true, platform_guard: true, session_upload: true }
+        Flags { firewall_fix: true, udp_probe: true, connect_watch: true, platform_guard: true, session_upload: true, connect_ladder: true }
     }
 }
 
@@ -43,7 +45,7 @@ impl Flags {
     pub fn from_status(status: Option<&serde_json::Value>) -> Flags {
         let launcher = status.and_then(|s| s.get("launcher"));
         let on = |key: &str| launcher.and_then(|l| l.get(key)).and_then(|v| v.as_bool()) != Some(false);
-        Flags { firewall_fix: on("firewallFix"), udp_probe: on("udpProbe"), connect_watch: on("connectWatch"), platform_guard: on("platformGuard"), session_upload: on("sessionUpload") }
+        Flags { firewall_fix: on("firewallFix"), udp_probe: on("udpProbe"), connect_watch: on("connectWatch"), platform_guard: on("platformGuard"), session_upload: on("sessionUpload"), connect_ladder: on("connectLadder") }
     }
 }
 
@@ -398,12 +400,17 @@ pub fn platform_check(set_aside: &[String]) -> Check {
 /// "data loaded" (8) but none of those means the client never got a session.
 /// Short runs are the player backing out, not a finding.
 pub fn never_connected(skse_log: &str, ran_secs: u64) -> bool {
-    const MIN_RUN_SECS: u64 = 30;
+    const MIN_RUN_SECS: u64 = 15;
     if ran_secs < MIN_RUN_SECS {
         return false;
     }
     let sent = |id: u32| skse_log.contains(&format!("dispatch message ({id})"));
     sent(8) && !(sent(2) || sent(3) || sent(7))
+}
+
+/// A world was loaded (pre/post load-game or new-game message), so the player got in.
+pub fn world_loaded(skse_log: &str) -> bool {
+    [2u32, 3, 7].iter().any(|id| skse_log.contains(&format!("dispatch message ({id})")))
 }
 
 pub fn connect_check(ran_secs: u64) -> Check {
@@ -520,7 +527,9 @@ mod tests {
     fn never_connected_needs_a_long_clean_run_that_loaded_no_world() {
         let menu = "init complete\ndispatch message (6)\ndispatch message (8)\n";
         assert!(never_connected(menu, 99));
-        assert!(!never_connected(menu, 12), "a short run is the player backing out");
+        assert!(!never_connected(menu, 9), "a short run is the player backing out");
+        assert!(never_connected(menu, 19), "19 s at the menu is a game that never joined");
+        assert!(world_loaded(&format!("{menu}dispatch message (7)\n")) && !world_loaded(menu));
         assert!(!never_connected(&format!("{menu}dispatch message (3)\n"), 99), "a world loaded");
         assert!(!never_connected(&format!("{menu}dispatch message (7)\n"), 99));
         assert!(!never_connected("init complete\n", 99), "never reached the main menu: a different problem");
