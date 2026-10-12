@@ -7,6 +7,7 @@ pub mod aliases;
 pub mod aside;
 pub mod auth;
 pub mod atomicfile;
+pub mod browsercheck;
 pub mod bsa;
 pub mod clientstatus;
 pub mod community;

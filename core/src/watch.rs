@@ -314,6 +314,11 @@ fn tail(path: &Path, lines: usize) -> String {
 /// Skyrim Platform's log with its hundreds of "VirtualMachine::Bind called"
 /// lines left out: they pushed the lines that matter (the client script
 /// starting, its settings file, the browser) out of the last 120.
+fn head_text(path: &Path, lines: usize) -> String {
+    let bytes = std::fs::read(path).unwrap_or_default();
+    String::from_utf8_lossy(&bytes).lines().take(lines).collect::<Vec<_>>().join("\n")
+}
+
 fn tail_without_binds(path: &Path, lines: usize) -> String {
     let bytes = std::fs::read(path).unwrap_or_default();
     tail_text_without_binds(&String::from_utf8_lossy(&bytes), lines)
@@ -348,6 +353,7 @@ pub fn collect(skse_log_dir: &Path, temp_dir: &Path, since: SystemTime) -> Strin
             o.push_str(&format!("\n===== {} (exception, call stack and plugin lists) =====\n{}\n", f.display(), crash_log_parts(&f)));
         } else {
             if n == "skyrim-platform.log" {
+                o.push_str(&format!("\n===== {} (first 40 lines: settings and browser start-up) =====\n{}\n", f.display(), head_text(&f, 40)));
                 o.push_str(&format!("\n===== {} (last 200 lines, without the VirtualMachine::Bind lines) =====\n{}\n", f.display(), tail_without_binds(&f, 200)));
             } else {
                 o.push_str(&format!("\n===== {} (last 120 lines) =====\n{}\n", f.display(), tail(&f, 120)));

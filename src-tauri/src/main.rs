@@ -467,6 +467,13 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
         }
     }
     tidy_game(&app, &dir, &m, &server_names)?;
+    // Skyrim Platform's in-game browser draws the login box; without it nobody can connect.
+    let (browser_check, browser_temp_fallback) = if flags.browser_guard {
+        let (c, alt) = browser_guard(&dir);
+        (Some(c), alt)
+    } else {
+        (None, None)
+    };
     // Once the server loads more than the five base masters, this PC loads
     // exactly its plugins in its order: no Creation Club masters for the
     // session, and plugins.txt in the server's order (serverorder.rs).
@@ -548,6 +555,9 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     report.checks.push(netcheck::firewall_check(&firewall));
     report.checks.push(netcheck::platform_check(&foreign_scripts));
     report.checks.push(netcheck::udp_check(&udp, m.server.port));
+    if let Some(c) = browser_check.clone() {
+        report.checks.push(c);
+    }
     report.worst = report.checks.iter().map(|c| c.status).max().unwrap_or(health::Status::Ok);
     if report.worst >= health::Status::Warn && config.share_health {
         // Nobody needs the report number here, and the staff service can
@@ -622,7 +632,22 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
         }
     }
     play_step(&app, "Starting Skyrim through SKSE…");
-    game::launch(&dir).map_err(err)?;
+    let temp_before = (std::env::var_os("TEMP"), std::env::var_os("TMP"));
+    if let Some(alt) = &browser_temp_fallback {
+        std::env::set_var("TEMP", alt);
+        std::env::set_var("TMP", alt);
+    }
+    let launched = game::launch(&dir);
+    if browser_temp_fallback.is_some() {
+        // Only the game was meant to see the other temp folder.
+        for (k, v) in [("TEMP", temp_before.0), ("TMP", temp_before.1)] {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+    launched.map_err(err)?;
     state.active_session.store(true, Ordering::SeqCst);
     let google = game::google_env_present();
     if !google.is_empty() {
@@ -900,6 +925,7 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
     let filed = Filed::default();
     report.push_str(&format!("\n===== game data =====\n{}{}", bundled::report_line(&game_dir, plugins_txt(&app).as_deref()), game_data_report(&app, &game_dir)));
     let session_logs = watch::collect(&skse_logs, &std::env::temp_dir(), started);
+    let browser_text = launcher_core::browsercheck::report_text(&game_dir);
     report.push_str(&session_logs);
     report.push_str(&format!("\n===== launcher log (last 40 lines) =====\n{}\n", log::tail(40)));
     // Staff can read what happened on the next attempt: the whole session report
@@ -908,7 +934,7 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
     // the crash log field and the size limit trims it. Switch: launcher.sessionUpload=false.
     if never_connected && config.share_health {
         let (app2, http2, health2, summary2, config2, build2) = (app.clone(), http.clone(), health.clone(), staff_summary.clone(), config.clone(), build.clone());
-        let session_text = if flags.session_upload { Some(watch::redact_paths(&format!("Session logs after a game that never connected (browser helper at 30 s: {})\n{session_logs}\n===== launcher log (last 40 lines) =====\n{}", match browser_probe().load(Ordering::SeqCst) { 1 => "running", 0 => "NOT running", _ => "not known" }, log::tail(40)), &private)) } else { None };
+        let session_text = if flags.session_upload { Some(watch::redact_paths(&format!("Session logs after a game that never connected (browser helper at 30 s: {})\n{session_logs}\n{browser_text}\n===== launcher log (last 40 lines) =====\n{}", match browser_probe().load(Ordering::SeqCst) { 1 => "running", 0 => "NOT running", _ => "not known" }, log::tail(40)), &private)) } else { None };
         tauri::async_runtime::spawn(async move {
             send_health(&app2, &http2, &config2, &build2, "game ran but never connected", None, session_text, Some(summary2), &health2).await;
         });
@@ -1775,6 +1801,48 @@ fn send_client_status(app: &AppHandle, dir: &std::path::Path) {
             Err(e) => log::line(&format!("play: couldn't send the install report: {}", launcher_core::scrub(&e.to_string()))),
         }
     });
+}
+
+/// Before Play: what Skyrim Platform's in-game browser needs (core/src/browsercheck.rs).
+/// Puts a browser backend that cannot work (off, nirnlab) back to auto, checks the
+/// temp folder the browser keeps its profile in (a folder under the game's
+/// .aetherial-dawn is used for the game's TEMP when it isn't writable), and lists the
+/// browser's files. Switch: status.json `launcher.browserGuard`: false.
+fn browser_guard(dir: &std::path::Path) -> (health::Check, Option<std::path::PathBuf>) {
+    let fixed = match launcher_core::browsercheck::apply_ini_fix(dir) {
+        Ok(Some((old, new))) => {
+            log::line(&format!("play: SkyrimPlatform.ini had the in-game browser set to \"{old}\"; set it to \"{new}\" so the login box can show"));
+            Some((old, new))
+        }
+        Ok(None) => None,
+        Err(e) => {
+            log::line(&format!("play: couldn't fix the browser setting in SkyrimPlatform.ini: {e}"));
+            None
+        }
+    };
+    let backend = std::fs::read_to_string(launcher_core::browsercheck::ini_path(dir)).ok().and_then(|t| launcher_core::browsercheck::backend(&t));
+    let mut temp = launcher_core::browsercheck::temp_probe(&std::env::temp_dir().join("Skyrim Platform"));
+    let mut fallback = None;
+    if let Err(e) = &temp {
+        log::line(&format!("play: the in-game browser's temp folder is not usable ({e})"));
+        let alt = dir.join(".aetherial-dawn").join("tmp");
+        match launcher_core::browsercheck::temp_probe(&alt.join("Skyrim Platform")) {
+            Ok(()) => {
+                log::line(&format!("play: the game will use {} for its temp files this session", alt.display()));
+                fallback = Some(alt);
+                temp = Ok(());
+            }
+            Err(e2) => log::line(&format!("play: no fallback temp folder either ({e2})")),
+        }
+    }
+    let inv = launcher_core::browsercheck::inventory(dir);
+    log::line(&format!(
+        "play: browser check: backend {}, {} browser file(s): {}",
+        backend.as_deref().unwrap_or("not set"),
+        inv.len(),
+        inv.iter().take(12).map(|(n, s)| format!("{n} ({s} B)")).collect::<Vec<_>>().join(", ")
+    ));
+    (launcher_core::browsercheck::check(&inv, backend.as_deref(), &temp, fixed.as_ref()), fallback)
 }
 
 /// Skyrim Platform's built-in browser (CEF) keeps its profile in
