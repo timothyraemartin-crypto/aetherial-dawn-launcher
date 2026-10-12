@@ -5,7 +5,7 @@
 //! Everything here is advisory. Nothing in this module may stop Play: every
 //! failure is a log line and a health check, never an error for the player.
 //! Staff can switch each part off in status.json (`launcher.firewallFix`,
-//! `launcher.udpProbe`, `launcher.connectWatch`, `launcher.platformGuard` set to false).
+//! `launcher.udpProbe`, `launcher.connectWatch`, `launcher.platformGuard`, `launcher.sessionUpload` set to false).
 
 use std::path::Path;
 use std::time::Duration;
@@ -29,11 +29,13 @@ pub struct Flags {
     pub connect_watch: bool,
     /// Set other servers' Skyrim Platform scripts aside for the session.
     pub platform_guard: bool,
+    /// Send the post-game session report (logs included) to staff when a game never connected.
+    pub session_upload: bool,
 }
 
 impl Default for Flags {
     fn default() -> Self {
-        Flags { firewall_fix: true, udp_probe: true, connect_watch: true, platform_guard: true }
+        Flags { firewall_fix: true, udp_probe: true, connect_watch: true, platform_guard: true, session_upload: true }
     }
 }
 
@@ -41,7 +43,7 @@ impl Flags {
     pub fn from_status(status: Option<&serde_json::Value>) -> Flags {
         let launcher = status.and_then(|s| s.get("launcher"));
         let on = |key: &str| launcher.and_then(|l| l.get(key)).and_then(|v| v.as_bool()) != Some(false);
-        Flags { firewall_fix: on("firewallFix"), udp_probe: on("udpProbe"), connect_watch: on("connectWatch"), platform_guard: on("platformGuard") }
+        Flags { firewall_fix: on("firewallFix"), udp_probe: on("udpProbe"), connect_watch: on("connectWatch"), platform_guard: on("platformGuard"), session_upload: on("sessionUpload") }
     }
 }
 
@@ -430,6 +432,7 @@ mod tests {
         let f = Flags::from_status(Some(&serde_json::json!({"launcher": {"firewallFix": false, "connectWatch": false}})));
         assert!(!f.firewall_fix && f.udp_probe && !f.connect_watch && f.platform_guard);
         assert!(!Flags::from_status(Some(&serde_json::json!({"launcher": {"platformGuard": false}}))).platform_guard);
+        assert!(!Flags::from_status(Some(&serde_json::json!({"launcher": {"sessionUpload": false}}))).session_upload);
     }
 
     #[test]

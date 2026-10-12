@@ -788,7 +788,8 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
     let mut health = run_health(&app, &http, &config.base_url, &game_dir, manifest.as_ref()).await;
     // Skyrim ran a while, did not crash, and never loaded a world: it most likely
     // never connected (switch off with status.json `launcher.connectWatch`: false).
-    let never_connected = !crashed && pid.is_some() && launcher_flags(&http, &config.base_url).await.connect_watch && {
+    let flags = launcher_flags(&http, &config.base_url).await;
+    let never_connected = !crashed && pid.is_some() && flags.connect_watch && {
         let skse_text = std::fs::read_to_string(skse_logs.join("skse64.log")).unwrap_or_default();
         netcheck::never_connected(&skse_text, ran.as_secs())
     };
@@ -832,12 +833,6 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
     // (one report per 20 s), and the crash window shouldn't wait for it.
     // Where the player was and who was near, from the log ad-report.js writes (names and numbers only).
     let position = if crashed { launcher_core::adreport::position_text(&platform_log_text(&app)) } else { None };
-    if never_connected && config.share_health {
-        let (app2, http2, health2, summary2, config2, build2) = (app.clone(), http.clone(), health.clone(), staff_summary.clone(), config.clone(), build.clone());
-        tauri::async_runtime::spawn(async move {
-            send_health(&app2, &http2, &config2, &build2, "game ran but never connected", None, None, Some(summary2), &health2).await;
-        });
-    }
     if crashed && config.share_health {
         let (app2, http2, health2)= (app.clone(), http.clone(), health.clone());
         tauri::async_runtime::spawn(async move {
@@ -849,8 +844,20 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
     }
     let filed = Filed::default();
     report.push_str(&format!("\n===== game data =====\n{}{}", bundled::report_line(&game_dir, plugins_txt(&app).as_deref()), game_data_report(&app, &game_dir)));
-    report.push_str(&watch::collect(&skse_logs, &std::env::temp_dir(), started));
+    let session_logs = watch::collect(&skse_logs, &std::env::temp_dir(), started);
+    report.push_str(&session_logs);
     report.push_str(&format!("\n===== launcher log (last 40 lines) =====\n{}\n", log::tail(40)));
+    // Staff can read what happened on the next attempt: the whole session report
+    // (health, SKSE and Skyrim Platform log tails, the launcher log) goes up with
+    // the "never connected" health report, paths left out. The bot keeps it in
+    // the crash log field and the size limit trims it. Switch: launcher.sessionUpload=false.
+    if never_connected && config.share_health {
+        let (app2, http2, health2, summary2, config2, build2) = (app.clone(), http.clone(), health.clone(), staff_summary.clone(), config.clone(), build.clone());
+        let session_text = if flags.session_upload { Some(watch::redact_paths(&format!("Session logs after a game that never connected (browser helper at 30 s: {})\n{session_logs}\n===== launcher log (last 40 lines) =====\n{}", match browser_probe().load(Ordering::SeqCst) { 1 => "running", 0 => "NOT running", _ => "not known" }, log::tail(40)), &private)) } else { None };
+        tauri::async_runtime::spawn(async move {
+            send_health(&app2, &http2, &config2, &build2, "game ran but never connected", None, session_text, Some(summary2), &health2).await;
+        });
+    }
     if let Some(dir) = reports_dir() {
         let name = format!("game-{}.txt", log::timestamp().replace([':', ' '], "-"));
         if std::fs::write(dir.join(&name), &report).is_ok() {
