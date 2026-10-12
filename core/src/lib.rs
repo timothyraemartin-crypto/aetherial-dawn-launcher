@@ -33,6 +33,7 @@ pub mod setup;
 pub mod skse;
 pub mod sync;
 pub mod version;
+pub mod visuals;
 pub mod watch;
 pub mod whatsnew;
 pub mod window;

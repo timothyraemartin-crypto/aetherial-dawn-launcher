@@ -270,7 +270,7 @@ fn restore_profile(dir: &std::path::Path, why: &str) {
         return;
     }
     match launcher_core::profile::restore(dir) {
-        Ok(r) if r.kept.is_empty() => log::line(&format!("profile: put {} mod file(s) back ({why})", r.files)),
+        Ok(r) if r.kept.is_empty() => log::line(&format!("profile: put {} mod file(s) back ({why}){}", r.files, if r.duplicates > 0 { format!("; dropped {} identical copy(ies) already in place", r.duplicates) } else { String::new() })),
         Ok(r) => log::line(&format!("profile: put {} mod file(s) back ({why}); {} stay in .aetherial-dawn/aside because something new sits at their place: {}", r.files, r.kept.len(), r.kept.iter().take(10).cloned().collect::<Vec<_>>().join(", "))),
         Err(e) => log::line(&format!("profile: couldn't put the mod files back ({why}): {e}")),
     }
@@ -943,7 +943,7 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
         });
     }
     let filed = Filed::default();
-    report.push_str(&format!("\n===== game data =====\n{}{}", bundled::report_line(&game_dir, plugins_txt(&app).as_deref()), game_data_report(&app, &game_dir)));
+    report.push_str(&format!("\n===== game data =====\n{}{}", bundled::report_line(&game_dir, plugins_txt(&app).as_deref()), game_data_report(&app, &game_dir, flags.asset_report)));
     let session_logs = watch::collect(&skse_logs, &std::env::temp_dir(), started);
     let browser_text = {
         let t = launcher_core::browsercheck::report_text(&game_dir);
@@ -1020,7 +1020,7 @@ async fn set_music(app: AppHandle, state: State<'_, AppState>, on: bool) -> CmdR
 /// What's in the game folder that can crash Skyrim before the main menu:
 /// every master, plugin and archive in Data (Creation Club content included),
 /// the Creation Club list, the player's load order, and DLLs next to the exe.
-fn game_data_report(app: &AppHandle, dir: &std::path::Path) -> String {
+fn game_data_report(app: &AppHandle, dir: &std::path::Path, assets: bool) -> String {
     let mut o = String::new();
     let mut files: Vec<(String, u64, String)> = std::fs::read_dir(dir.join("Data"))
         .map(|r| {
@@ -1064,6 +1064,15 @@ fn game_data_report(app: &AppHandle, dir: &std::path::Path) -> String {
         .map(|r| r.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.to_ascii_lowercase().ends_with(".dll")).collect())
         .unwrap_or_default();
     o.push_str(&format!("DLLs next to SkyrimSE.exe: {}\n", if dlls.is_empty() { "none".into() } else { dlls.join(", ") }));
+    // Texture check (switch off: status.json launcher.assetReport=false).
+    if assets {
+        let docs = app.path().document_dir().or_else(|_| app.path().home_dir().map(|h| h.join("Documents"))).ok();
+        let text = launcher_core::visuals::report(dir, docs.as_deref());
+        for l in text.lines().filter(|l| l.contains("MISSING OR EMPTY")) {
+            log::line(&format!("game: {}", l.trim()));
+        }
+        o.push_str(&text);
+    }
     o
 }
 
@@ -2517,7 +2526,7 @@ async fn diagnostics(app: AppHandle, state: State<'_, AppState>) -> CmdResult<St
             let _ = writeln!(o, "Version check: {}", serde_json::to_string(&gc).unwrap_or_default());
             let settings = dir.join(settings::SETTINGS_PATH);
             let _ = writeln!(o, "skymp5-client-settings.txt: {}", if settings.exists() { "present" } else { "not written yet" });
-            o.push_str(&game_data_report(&app, dir));
+            o.push_str(&game_data_report(&app, dir, true));
         }
     }
     let _ = writeln!(o, "\n[Server]");

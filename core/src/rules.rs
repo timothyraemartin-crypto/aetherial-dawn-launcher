@@ -108,6 +108,7 @@ impl Rules {
             connect_watch: on(&checks, "connectWatch"),
             platform_guard: on(&checks, "platformGuard"),
             session_upload: on(&checks, "sessionUpload"),
+            asset_report: on(&checks, "assetReport"),
             connect_ladder: on(&checks, "connectLadder"),
             browser_guard: on(&checks, "browserGuard"),
         };
@@ -158,6 +159,7 @@ impl Rules {
             connect_watch: status.connect_watch && self.flags.connect_watch,
             platform_guard: status.platform_guard && self.flags.platform_guard,
             session_upload: status.session_upload && self.flags.session_upload,
+            asset_report: status.asset_report && self.flags.asset_report,
             connect_ladder: status.connect_ladder && self.flags.connect_ladder,
             browser_guard: status.browser_guard && self.flags.browser_guard,
         }
