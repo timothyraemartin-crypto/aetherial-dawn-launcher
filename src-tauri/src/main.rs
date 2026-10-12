@@ -583,6 +583,30 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     settings::write_auth_data(&dir, &session, &config.account.clone().unwrap_or_default()).map_err(err)?;
     log::line("play: wrote skymp5-client-settings.txt and auth data");
     state.music.stop();
+    // Last look before the game starts: Steam can put Skyrim.ccc back after the
+    // first set-up, which would put Creation Club masters ahead of the server's
+    // plugins. Empty it again, set plugins.txt again, and stop with a clear
+    // message instead of starting a game the server would turn away.
+    if serverorder::beyond_base(&order) {
+        if let Some(txt) = plugins_txt(&app) {
+            match serverorder::hide_ccc(&dir) {
+                Ok(h) if !h.is_empty() => {
+                    ccc_guard.armed = true;
+                    log::line(&format!("play: Skyrim.ccc had been refilled since set-up; emptied it again right before launch: {}", h.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")));
+                }
+                Ok(_) => {}
+                Err(e) => log::line(&format!("play: couldn't re-check Skyrim.ccc before launch: {e}")),
+            }
+            if let Err(e) = serverorder::set_exact(&dir, &txt, &order) {
+                log::line(&format!("play: couldn't re-check plugins.txt before launch: {e}"));
+            }
+            let bad = serverorder::mismatches_with(&dir, &txt, &order, true);
+            if !bad.is_empty() {
+                return Err(format!("Your plugins don't match the server's order, so the game would refuse to connect: {}. Close Steam's Creation Club downloads and press Play again.", bad.iter().take(3).cloned().collect::<Vec<_>>().join("; ")));
+            }
+            log::line(&format!("play: load order verified right before launch: the game's first {} plugins are the server's", order.len()));
+        }
+    }
     play_step(&app, "Starting Skyrim through SKSE…");
     game::launch(&dir).map_err(err)?;
     state.active_session.store(true, Ordering::SeqCst);
@@ -732,6 +756,7 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
             // way into the server). Whether its helper process is up 30 s in,
             // for the report: no helper means no login box (overlay, graphics
             // card or antivirus trouble).
+            let (ccc_dir, ccc_txt) = (game_dir.clone(), plugins_txt(&app));
             let browser_seen = browser_probe();
             browser_seen.store(-1, Ordering::SeqCst);
             tokio::spawn(async move {
@@ -739,6 +764,10 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
                 if watch::find_process(watch::GAME_PROCESS) != Some(pid) {
                     return;
                 }
+                // Evidence for the load order: what Skyrim.ccc and plugins.txt hold while the game runs.
+                let ccc_sizes: Vec<String> = ["Skyrim.ccc", "Data/Skyrim.ccc"].iter().filter_map(|f| std::fs::metadata(ccc_dir.join(f)).ok().map(|m| format!("{f} {} bytes", m.len()))).collect();
+                let head: Vec<String> = ccc_txt.as_ref().and_then(|t| std::fs::read_to_string(t).ok()).unwrap_or_default().lines().filter(|l| !l.trim_start().starts_with('#') && !l.trim().is_empty()).take(8).map(|l| l.trim().to_string()).collect();
+                log::line(&format!("game: 30 seconds in, {}; plugins.txt starts with: {}", if ccc_sizes.is_empty() { "no Skyrim.ccc".to_string() } else { ccc_sizes.join(", ") }, head.join(", ")));
                 let up = watch::BROWSER_HELPERS.iter().any(|h| watch::find_process(h).is_some());
                 browser_probe().store(up as i8, Ordering::SeqCst);
                 log::line(&format!("game: Skyrim Platform's in-game browser (SkyrimPlatformCEF.exe) {} 30 seconds after the game started", if up { "is running" } else { "is NOT running" }));
