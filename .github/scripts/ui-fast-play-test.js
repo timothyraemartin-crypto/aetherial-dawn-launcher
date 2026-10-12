@@ -7,7 +7,7 @@
 //   node .github/scripts/ui-fast-play-test.js [path to chrome]
 'use strict';
 const fs = require('fs'), os = require('os'), path = require('path');
-const { execFileSync } = require('child_process');
+const { execFile } = require('child_process');
 
 const UI = path.join(__dirname, '..', '..', 'ui');
 const VERSION = '9.9.9';
@@ -806,8 +806,20 @@ scenarios.push({ name: 'Tokens: errors and failures are clearly not gold', s: { 
   ['an error line is far from gold in hue (25 degrees or more)', Math.abs(hueOf(r.errorColor) - hueOf(r.goldColor)) >= 25, `${r.errorColor} vs ${r.goldColor}`],
   ['a failed-save message is far from gold too', Math.abs(hueOf(r.badToastColor) - hueOf(r.goldColor)) >= 25, `${r.badToastColor} vs ${r.goldColor}`],
 ] });
-for (const sc of scenarios) {
-  if (process.env.AD_UI_SCENARIO && !sc.name.includes(process.env.AD_UI_SCENARIO)) continue;
+// Scenarios are independent (own temp dir, own Chrome profile), so several run
+// at once. Output is collected per scenario and printed in scenario order, so
+// the log reads the same as a serial run. Serial by default: timing-based scenarios
+// failed now and then when 4 Chromes shared a 4-core CI machine. AD_UI_JOBS=4 opts in
+// for a quick local run. AD_UI_SHARD=i/n runs every n-th scenario (CI splits the
+// list over several machines instead).
+const JOBS = Math.max(1, Number(process.env.AD_UI_JOBS) || 1);
+const [shardI, shardN] = (process.env.AD_UI_SHARD || '1/1').split('/').map(Number);
+const runChrome = (args) => new Promise(resolve => {
+  execFile(chrome, args, { encoding: 'utf8', timeout: 60000, maxBuffer: 64 * 1024 * 1024 }, (err, stdout) => resolve(String(stdout || '')));
+});
+async function runScenario(sc) {
+  const lines = [];
+  let bad = 0;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-ui-'));
   fs.cpSync(UI, dir, { recursive: true });
   const html = fs.readFileSync(path.join(dir, 'index.html'), 'utf8')
@@ -815,16 +827,14 @@ for (const sc of scenarios) {
   fs.writeFileSync(path.join(dir, 'index.html'), html);
   const url = 'file:///' + path.join(dir, 'index.html').replace(/\\/g, '/').replace(/^\//, '');
   const run = () => {
-    try {
-      // Chrome refuses to run as root on Linux without this.
-      const root = process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : [];
-      return execFileSync(chrome, [...root, '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-        `--user-data-dir=${path.join(dir, 'profile')}`, '--allow-file-access-from-files', '--window-size=1360,880',
-        `--virtual-time-budget=${Math.max(8000, (sc.s.end || 6000) + 2000)}`, '--dump-dom', url], { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] });
-    } catch (e) { return String(e.stdout || ''); }
+    // Chrome refuses to run as root on Linux without this.
+    const root = process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : [];
+    return runChrome([...root, '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+      `--user-data-dir=${path.join(dir, 'profile')}`, '--allow-file-access-from-files', '--window-size=1360,880',
+      `--virtual-time-budget=${Math.max(8000, (sc.s.end || 6000) + 2000)}`, '--dump-dom', url]);
   };
   const result = /<pre id="ui-test-result">([\s\S]*?)<\/pre>/;
-  let out = run();
+  let out = await run();
   // A cold Chrome on a fresh CI machine can take longer than the 60 s limit
   // to open its first page, before the scenario runs at all: that one
   // scenario gets a second, fresh start. A page that runs and fails a check
@@ -833,18 +843,34 @@ for (const sc of scenarios) {
   if (!result.test(out)) {
     retried = true;
     fs.rmSync(path.join(dir, 'profile'), { recursive: true, force: true });
-    out = run();
+    out = await run();
   }
   const m = out.match(result);
-  console.log(`== ${sc.name}${retried ? ' (Chrome gave no page on the first start; started again)' : ''}`);
-  if (!m) { console.log('FAIL  the page gave no result'); failed++; continue; }
+  lines.push(`== ${sc.name}${retried ? ' (Chrome gave no page on the first start; started again)' : ''}`);
+  if (!m) { lines.push('FAIL  the page gave no result'); return { lines, bad: 1 }; }
   const r = JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
-  for (const [what, pass, shown] of sc.expect(r)) {
-    console.log(`${pass ? 'PASS' : 'FAIL'}  ${what}${shown ? `  (${shown})` : ''}`);
-    if (!pass) failed++;
+  const checks = sc.expect(r);
+  for (const [what, pass, shown] of checks) {
+    lines.push(`${pass ? 'PASS' : 'FAIL'}  ${what}${shown ? `  (${shown})` : ''}`);
+    if (!pass) bad++;
   }
-  if (sc.expect(r).some(x => !x[1])) console.log('      labels: ' + JSON.stringify(r.labels) + '\n      invokes: ' + JSON.stringify(r.invokes.filter(i => i[1] !== 'answer' || ['auth_status', 'check', 'update'].includes(i[2]))));
+  if (checks.some(x => !x[1])) lines.push('      labels: ' + JSON.stringify(r.labels) + '\n      invokes: ' + JSON.stringify(r.invokes.filter(i => i[1] !== 'answer' || ['auth_status', 'check', 'update'].includes(i[2]))));
   fs.rmSync(dir, { recursive: true, force: true });
+  return { lines, bad };
 }
-if (failed) { console.log(`${failed} check(s) failed`); process.exit(1); }
-console.log('fast-Play checks passed: every check');
+(async () => {
+  const todo = scenarios.filter((sc, i) => i % shardN === shardI - 1 && (!process.env.AD_UI_SCENARIO || sc.name.includes(process.env.AD_UI_SCENARIO)));
+  const done = new Array(todo.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(JOBS, todo.length) }, async () => {
+    while (next < todo.length) {
+      const n = next++;
+      done[n] = await runScenario(todo[n]);
+    }
+  }));
+  for (const d of done) { console.log(d.lines.join('\n')); failed += d.bad; }
+  const failedLines = done.flatMap(d => d.lines.filter(l => /^FAIL/.test(l) || (l.startsWith('==') && d.bad)));
+  if (failed) console.log('--- failed ---\n' + failedLines.join('\n'));
+  if (failed) { console.log(`${failed} check(s) failed`); process.exit(1); }
+  console.log('fast-Play checks passed: every check');
+})();
