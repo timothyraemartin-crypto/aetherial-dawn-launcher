@@ -41,18 +41,18 @@ struct MenuDef {
 };
 
 MenuDef g_menus[] = {
-    {"Journal", 216685, 0, false},      // Esc / quests / system
+    {"Journal", 216685, 0, true},      // Esc / quests / system
     {"Inventory", 215494, 0, true},
     {"Magic", 215652, 0, true},
     {"Favorites", 215307, 0, true},
-    {"Map", 216502, 0, false},
+    {"Map", 216502, 0, true},
     {"Container", 215061, 0, true},
     {"Crafting", 215111, 0, true},
     {"Barter", 214926, 0, true},
     {"Gift", 215323, 0, true},
-    {"Book", 214975, 0, true},
+    {"Book", 214975, 0, false},
     {"Stats", 215973, 0, false},
-    {"Tween", 216145, 0, false},
+    {"Tween", 216145, 0, true},
     {"SleepWait", 215936, 0, true},
     {"Training", 216116, 0, true},
     {"LevelUp", 215560, 0, false},
@@ -64,6 +64,11 @@ MenuDef g_menus[] = {
 
 bool g_dead = false;
 unsigned g_calls = 0;
+bool g_allowFreeze = true;    // [Options] AllowFreezeFrame=1 lets freeze-frame menus (Esc/Journal) be unpaused (test only)
+bool g_heartbeat = true;      // [Options] Heartbeat=1: once a second while a known menu is open, log stack/pause counter
+bool g_anyKnown = false;
+unsigned long long g_lastHb = 0;
+unsigned g_callsSinceHb = 0;
 std::vector<uintptr_t> g_handled;  // allow-listed menu objects whose pause count we already undid
 std::vector<uintptr_t> g_seen;     // menu objects already noted in the log
 
@@ -98,10 +103,12 @@ void Reconcile() {
         if (present) ++h; else g_handled.erase(g_handled.begin() + static_cast<std::ptrdiff_t>(h));
     }
     uint32_t& pauses = *reinterpret_cast<uint32_t*>(ui + kNumPauses);
+    g_anyKnown = false;
     for (uint32_t i = 0; i < size; ++i) {
         uint8_t* menu = data[i];
         if (!menu || !adlite::Readable(menu, 0x30)) continue;
         uintptr_t vt = *reinterpret_cast<uintptr_t*>(menu);
+        for (const auto& km : g_menus) if (km.vtable == vt) g_anyKnown = true;
         const MenuDef* d = Match(vt);
         if (!d) {  // not on the allow list: never touched, but note it once for the log
             const uintptr_t k = reinterpret_cast<uintptr_t>(menu);
@@ -114,7 +121,7 @@ void Reconcile() {
         }
         uint32_t& flags = *reinterpret_cast<uint32_t*>(menu + kFlags);
         const uintptr_t key = reinterpret_cast<uintptr_t>(menu);
-        if (flags & kFreezeFrameGuard) {  // freeze-frame menus (blurred still of the world) break when the world runs
+        if (!g_allowFreeze && (flags & kFreezeFrameGuard)) {  // freeze-frame menus (blurred still of the world) break when the world runs
             if (std::find(g_seen.begin(), g_seen.end(), key) == g_seen.end()) {
                 g_seen.push_back(key);
                 adlite::Log::Write("saw menu %s with freeze-frame flags 0x%08x (left paused)", d->name, flags);
@@ -126,7 +133,7 @@ void Reconcile() {
             if (!known) g_handled.push_back(key);
             continue;
         }
-        flags &= ~kPausesGame;
+        flags &= ~(kPausesGame | (1u << 5));  // also drop kFreezeFrameBackground: an unpaused menu that keeps it deadlocks the game
         if (!known) {
             // The engine counted this menu once when it opened; undo exactly that one count.
             g_handled.push_back(key);
@@ -140,12 +147,21 @@ void Reconcile() {
             adlite::Log::Write("menu %s re-set its pause flag; cleared again without touching the counter", d->name);
         }
     }
+    if (g_heartbeat && g_anyKnown) {  // proof of life while a menu is open: a hang shows as the last heartbeat
+        const unsigned long long now = GetTickCount64();
+        if (now - g_lastHb >= 1000) {
+            adlite::Log::Write("hb stack=%u numPausesGame=%u frames=%u", size, pauses, g_callsSinceHb);
+            g_lastHb = now;
+            g_callsSinceHb = 0;
+        }
+    }
 }
 
 void Detour(void* self) {
     g_orig(self);
     if (g_dead) return;
     ++g_calls;
+    ++g_callsSinceHb;
     if (g_calls <= 3) adlite::Log::Write("hook active (call %u)", g_calls);
     __try {
         Reconcile();
@@ -157,7 +173,7 @@ void Detour(void* self) {
 
 bool Load(const void*) {
     adlite::Log::Open("AetherialDawn-NoPause");
-    adlite::Log::Write("AetherialDawn-NoPause 1.0.5 loading");
+    adlite::Log::Write("AetherialDawn-NoPause 1.0.8 loading");
     if (!g_lib.Load()) return true;  // never block the game
     g_uiPtrAddr = g_lib.Address(kUiSingletonId);
     uintptr_t target = g_lib.Address(kProcessCommandsId);
@@ -169,6 +185,9 @@ bool Load(const void*) {
     std::wstring dir(exe);
     dir = dir.substr(0, dir.find_last_of(L"\\/"));
     std::wstring ini = dir + L"\\Data\\SKSE\\Plugins\\AetherialDawn-NoPause.ini";
+    g_allowFreeze = GetPrivateProfileIntW(L"Options", L"AllowFreezeFrame", 1, ini.c_str()) != 0;
+    g_heartbeat = GetPrivateProfileIntW(L"Options", L"Heartbeat", 1, ini.c_str()) != 0;
+    adlite::Log::Write("options: AllowFreezeFrame=%d Heartbeat=%d", g_allowFreeze ? 1 : 0, g_heartbeat ? 1 : 0);
     for (auto& m : g_menus) {
         m.vtable = g_lib.Address(m.vtableId);
         std::wstring key(m.name, m.name + strlen(m.name));
@@ -190,4 +209,4 @@ bool Load(const void*) {
 
 }  // namespace
 
-ADLITE_PLUGIN("AetherialDawn-NoPause", "Aetherial Dawn", 0x01000005, Load)
+ADLITE_PLUGIN("AetherialDawn-NoPause", "Aetherial Dawn", 0x01000008, Load)
