@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "rev": "2026-10-12.1",
+  "rev": "2026-10-12.2",
   "off": false,
   "checks": {
     "firewallFix": true,
@@ -8,7 +8,8 @@
     "connectWatch": true,
     "platformGuard": true,
     "sessionUpload": true,
-    "serverOrder": "fail"
+    "serverOrder": "fail",
+    "pingStats": true
   },
   "order": {
     "emptyCcc": true,
@@ -18,5 +19,46 @@
   "allow": {
     "files": []
   },
-  "text": {}
+  "text": {},
+  "tune": {
+    "on": true,
+    "settings": [
+      {
+        "file": "SkyrimPrefs.ini",
+        "section": "Display",
+        "key": "fShadowDistance",
+        "mode": "max",
+        "value": 8000,
+        "on": false,
+        "note": "caps long shadow distance (GPU cost); lowers only"
+      },
+      {
+        "file": "SkyrimPrefs.ini",
+        "section": "Display",
+        "key": "iShadowMapResolution",
+        "mode": "max",
+        "value": 2048,
+        "on": false,
+        "note": "caps shadow map size; lowers only"
+      },
+      {
+        "file": "Skyrim.ini",
+        "section": "General",
+        "key": "fPostLoadUpdateTimeMS",
+        "mode": "set",
+        "value": 500,
+        "on": false,
+        "note": "already 500 on Timothy's PC; set only if a player's differs"
+      },
+      {
+        "file": "Skyrim.ini",
+        "section": "General",
+        "key": "uGridsToLoad",
+        "mode": "max",
+        "value": 5,
+        "on": false,
+        "note": "caps loaded cells (CPU/stream cost); lowers only"
+      }
+    ]
+  }
 }

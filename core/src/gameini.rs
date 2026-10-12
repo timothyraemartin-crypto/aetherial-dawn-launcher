@@ -157,6 +157,129 @@ pub fn ensure_always_active(ini: &Path) -> Result<bool> {
     Ok(true)
 }
 
+/// One hot-fixable setting from launcher-rules.json (`tune.settings`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tune {
+    pub file: String,
+    pub section: String,
+    pub key: String,
+    pub mode: TuneMode,
+    pub value: f64,
+}
+
+/// `Set` writes the value (adding the line when missing); `Max` only lowers a
+/// number above the value and `Min` only raises one below it. Max and Min
+/// leave a missing line alone, so a setting the player never had stays unset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TuneMode {
+    Set,
+    Max,
+    Min,
+}
+
+/// The settings the rules file may touch: (file, section, key, integer, lowest, highest).
+/// Anything else, and any value outside its range, is ignored.
+pub const TUNABLE: [(&str, &str, &str, bool, f64, f64); 4] = [
+    ("SkyrimPrefs.ini", "Display", "fShadowDistance", false, 1000.0, 20000.0),
+    ("SkyrimPrefs.ini", "Display", "iShadowMapResolution", true, 512.0, 4096.0),
+    ("Skyrim.ini", "General", "fPostLoadUpdateTimeMS", false, 100.0, 2000.0),
+    ("Skyrim.ini", "General", "uGridsToLoad", true, 3.0, 7.0),
+];
+
+impl Tune {
+    /// A setting from the rules file when it names a tunable key, in range, with a known mode.
+    pub fn checked(file: &str, section: &str, key: &str, mode: &str, value: f64) -> Option<Tune> {
+        let (f, sec, k, int, lo, hi) = TUNABLE.iter().find(|t| t.0.eq_ignore_ascii_case(file) && t.1.eq_ignore_ascii_case(section) && t.2.eq_ignore_ascii_case(key))?;
+        let mode = match mode {
+            "set" => TuneMode::Set,
+            "max" => TuneMode::Max,
+            "min" => TuneMode::Min,
+            _ => return None,
+        };
+        let ok = value.is_finite() && value >= *lo && value <= *hi && (!*int || value.fract() == 0.0);
+        ok.then(|| Tune { file: f.to_string(), section: sec.to_string(), key: k.to_string(), mode, value })
+    }
+
+    fn text(&self) -> String {
+        if self.value.fract() == 0.0 {
+            format!("{}", self.value as i64)
+        } else {
+            format!("{}", self.value)
+        }
+    }
+}
+
+/// The text with the tunes for `file` applied, plus one line per change.
+/// None when nothing changes.
+pub fn with_tunes(text: &str, file: &str, tunes: &[Tune]) -> Option<(String, Vec<String>)> {
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let mut changes = Vec::new();
+    for t in tunes.iter().filter(|t| t.file.eq_ignore_ascii_case(file)) {
+        let (mut section_at, mut line_at, mut in_sec) = (None, None, false);
+        for (i, l) in lines.iter().enumerate() {
+            let l = l.trim();
+            if l.starts_with('[') {
+                in_sec = l.trim_matches(|c| c == '[' || c == ']').eq_ignore_ascii_case(&t.section);
+                if in_sec && section_at.is_none() {
+                    section_at = Some(i);
+                }
+            } else if in_sec && line_at.is_none() {
+                if let Some((k, _)) = l.split_once('=') {
+                    if k.trim().eq_ignore_ascii_case(&t.key) {
+                        line_at = Some(i);
+                    }
+                }
+            }
+        }
+        let new_line = format!("{}={}", t.key, t.text());
+        match line_at {
+            Some(i) => {
+                let old = lines[i].split_once('=').map(|(_, v)| v.trim().to_string()).unwrap_or_default();
+                let cur: Option<f64> = old.parse().ok();
+                let write = match (t.mode, cur) {
+                    (TuneMode::Set, Some(c)) => (c - t.value).abs() > f64::EPSILON,
+                    (TuneMode::Set, None) => true,
+                    (TuneMode::Max, Some(c)) => c > t.value,
+                    (TuneMode::Min, Some(c)) => c < t.value,
+                    // A value that isn't a number is left alone by Max and Min.
+                    _ => false,
+                };
+                if write {
+                    lines[i] = new_line;
+                    changes.push(format!("{}: {} -> {}", t.key, old, t.text()));
+                }
+            }
+            None if t.mode == TuneMode::Set => {
+                match section_at {
+                    Some(i) => lines.insert(i + 1, new_line),
+                    None => {
+                        lines.push(format!("[{}]", t.section));
+                        lines.push(new_line);
+                    }
+                }
+                changes.push(format!("{}: (not set) -> {}", t.key, t.text()));
+            }
+            None => {}
+        }
+    }
+    (!changes.is_empty()).then(|| (joined(&lines, nl, text), changes))
+}
+
+/// Applies the tunes to one ini file in the Skyrim documents folder, keeping
+/// the first original as `<name>.aetherial-dawn-backup`. Returns the changes.
+pub fn apply_tunes(ini: &Path, tunes: &[Tune]) -> Result<Vec<String>> {
+    let Ok(text) = std::fs::read_to_string(ini) else { return Ok(Vec::new()) };
+    let name = ini.file_name().unwrap().to_string_lossy().to_string();
+    let Some((new, changes)) = with_tunes(&text, &name, tunes) else { return Ok(Vec::new()) };
+    let backup = ini.with_file_name(format!("{name}.aetherial-dawn-backup"));
+    if !backup.exists() {
+        crate::loadorder::atomic_write(&backup, text.as_bytes())?;
+    }
+    crate::loadorder::atomic_write(ini, new.as_bytes())?;
+    Ok(changes)
+}
+
 /// Cleans one ini file in place. The first time it changes a file it keeps the
 /// original next to it as `<name>.aetherial-dawn-backup`.
 pub fn repair(ini: &Path, data_dir: &Path) -> Result<Repair> {
@@ -228,6 +351,43 @@ mod tests {
         );
         assert!(tmp.path().join("Skyrim.ini.aetherial-dawn-backup").exists());
         assert!(repair(&ini, &data).unwrap().is_empty());
+    }
+
+    #[test]
+    fn tunes_only_lower_raise_or_set_inside_their_range() {
+        let t = |k, m, v| {
+            let f = if k == "fPostLoadUpdateTimeMS" { "Skyrim.ini" } else { "SkyrimPrefs.ini" };
+            let sec = if f == "Skyrim.ini" { "General" } else { "Display" };
+            Tune::checked(f, sec, k, m, v).unwrap()
+        };
+        assert!(Tune::checked("SkyrimPrefs.ini", "Display", "bFull Screen", "set", 0.0).is_none());
+        assert!(Tune::checked("SkyrimPrefs.ini", "Display", "fShadowDistance", "set", 50.0).is_none());
+        assert!(Tune::checked("SkyrimPrefs.ini", "Display", "iShadowMapResolution", "set", 1000.5).is_none());
+        assert!(Tune::checked("SkyrimPrefs.ini", "Display", "fShadowDistance", "wild", 8000.0).is_none());
+        let prefs = "[Display]\r\nfShadowDistance=10000.0000\r\niShadowMapResolution=1024\r\n";
+        let tunes = [t("fShadowDistance", "max", 8000.0), t("iShadowMapResolution", "max", 2048.0)];
+        let (out, ch) = with_tunes(prefs, "SkyrimPrefs.ini", &tunes).unwrap();
+        assert_eq!(out, "[Display]\r\nfShadowDistance=8000\r\niShadowMapResolution=1024\r\n");
+        assert_eq!(ch.len(), 1);
+        assert!(with_tunes(&out, "SkyrimPrefs.ini", &tunes).is_none());
+        // Max and Min leave a missing line alone; Set adds it, and the section if needed.
+        assert!(with_tunes("[Display]\n", "SkyrimPrefs.ini", &tunes).is_none());
+        let (out, _) = with_tunes("[Other]\nx=1\n", "Skyrim.ini", &[t("fPostLoadUpdateTimeMS", "set", 500.0)]).unwrap();
+        assert_eq!(out, "[Other]\nx=1\n[General]\nfPostLoadUpdateTimeMS=500\n");
+        // Another file's tunes do nothing here.
+        assert!(with_tunes(prefs, "Skyrim.ini", &tunes).is_none());
+    }
+
+    #[test]
+    fn tunes_are_written_to_the_file_and_the_original_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let ini = d.path().join("SkyrimPrefs.ini");
+        std::fs::write(&ini, "[Display]\nfShadowDistance=10000\n").unwrap();
+        let tunes = [Tune::checked("SkyrimPrefs.ini", "Display", "fShadowDistance", "max", 8000.0).unwrap()];
+        assert_eq!(apply_tunes(&ini, &tunes).unwrap().len(), 1);
+        assert_eq!(std::fs::read_to_string(&ini).unwrap(), "[Display]\nfShadowDistance=8000\n");
+        assert_eq!(std::fs::read_to_string(d.path().join("SkyrimPrefs.ini.aetherial-dawn-backup")).unwrap(), "[Display]\nfShadowDistance=10000\n");
+        assert!(apply_tunes(&d.path().join("missing.ini"), &tunes).unwrap().is_empty());
     }
 
     #[test]

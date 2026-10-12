@@ -468,7 +468,7 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
             Err(e) => return Err(format!("Couldn't set your other mods aside ({e}). Close Skyrim and Vortex, then press Play again.")),
         }
     }
-    tidy_game(&app, &dir, &m, &server_names)?;
+    tidy_game(&app, &dir, &m, &server_names, &rules.tune)?;
     // Skyrim Platform's in-game browser draws the login box; without it nobody can connect.
     let (browser_check, browser_temp_fallback) = if flags.browser_guard {
         let (c, alt) = browser_guard(&dir);
@@ -566,6 +566,12 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     report.checks.push(netcheck::firewall_check(&firewall));
     report.checks.push(netcheck::platform_check(&foreign_scripts));
     report.checks.push(netcheck::udp_check(&udp, m.server.port));
+    if rules.ping_stats && matches!(udp, netcheck::Probe::Answered(_)) {
+        if let Some(st) = netcheck::ping_stats(&m.server.ip, m.server.port, 10, std::time::Duration::from_millis(200)).await {
+            log::line(&format!("play: server ping {st:?}"));
+            report.checks.push(netcheck::ping_check(&st));
+        }
+    }
     if let Some(c) = browser_check.clone() {
         report.checks.push(c);
     }
@@ -1630,7 +1636,7 @@ async fn game_spec(state: &AppState) -> CmdResult<launcher_core::manifest::GameS
 /// downloads Steam updated after a downgrade) and broken stub plugins are put
 /// aside, and the Skyrim Platform cache, graphics preference and Skyrim.ini
 /// archive list are tidied. Nothing is deleted.
-fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, server_names: &[String]) -> CmdResult<()> {
+fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, server_names: &[String], tunes: &[gameini::Tune]) -> CmdResult<()> {
     // Light plugins the server's list runs as full plugins get a "<stem>.esm"
     // copy with the light flag cleared, the same bytes as the server's.
     let full = launcher_core::aliases::light_as_full(dir, server_names);
@@ -1727,6 +1733,16 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, server_names:
             Ok(true) => log::line(&format!("play: set bAlwaysActive=1 in {}", ini.display())),
             Ok(false) => {}
             Err(e) => log::line(&format!("play: couldn't set bAlwaysActive in {}: {e}", ini.display())),
+        }
+    }
+    // Staff-set ini limits from launcher-rules.json (gameini::TUNABLE keys only; each change is logged).
+    if !tunes.is_empty() {
+        for ini in gameini::ini_paths(&docs) {
+            match gameini::apply_tunes(&ini, tunes) {
+                Ok(ch) if !ch.is_empty() => log::line(&format!("play: tuned {}: {}", ini.display(), ch.join("; "))),
+                Ok(_) => {}
+                Err(e) => log::line(&format!("play: couldn't tune {}: {e}", ini.display())),
+            }
         }
     }
     Ok(())
