@@ -11,7 +11,9 @@
 //!   so the browser code never got as far as creating its profile);
 //! - the temp folder the browser keeps its profile in is writable;
 //! - the browser's files (SkyrimPlatformCEF.exe, libcef.dll) are listed, so a
-//!   report shows at once whether they are on the PC.
+//!   report shows at once whether they are on the PC. The launcher can only
+//!   re-fetch files the server's client manifest lists; a browser missing here
+//!   and absent from that manifest has to be added to the manifest.
 
 use std::path::{Path, PathBuf};
 
@@ -103,6 +105,15 @@ pub fn inventory(game_dir: &Path) -> Vec<(String, u64)> {
         }
     }
     let mut out = Vec::new();
+    // Next to SkyrimSE.exe too (not its subfolders): the helper may sit there.
+    if let Ok(rd) = std::fs::read_dir(game_dir) {
+        for e in rd.flatten().filter(|e| e.path().is_file()) {
+            let n = e.file_name().to_string_lossy().to_string();
+            if n.to_ascii_lowercase().contains("cef") {
+                out.push((n, e.metadata().map(|m| m.len()).unwrap_or(0)));
+            }
+        }
+    }
     for d in ["Data/Platform", "Data/SKSE/Plugins"] {
         walk(game_dir, &game_dir.join(d), 0, &mut out);
     }
