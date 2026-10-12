@@ -1,7 +1,7 @@
 // Hides the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use launcher_core::{aside, auth, game, gameini, health, loadorder, manifest::Manifest, pristine, requirements, serverorder, settings, sync, version, watch, Error};
+use launcher_core::{aside, auth, game, gameini, health, loadorder, manifest::Manifest, netcheck, pristine, requirements, serverorder, settings, sync, version, watch, Error};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -474,7 +474,7 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
         }
     }
     play_step(&app, "Checking your game…");
-    let report = run_health_with_masters(&app, &dir, Some(&m), Some(masters)).await;
+    let mut report = run_health_with_masters(&app, &dir, Some(&m), Some(masters)).await;
     log::line(&format!("health before play: worst={:?}\n{}", report.worst, report.text()));
     let base_check = report.checks.iter().find(|c| c.id == "masters")
         .ok_or("Could not finish checking the base game files. Try Play again.")?;
@@ -494,6 +494,38 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
         };
         return Err(format!("Your plugins don't match the server's order, so the game would refuse to connect: {which}. {tell}"));
     }
+    // Skyrim that starts but never reaches the server: Windows Firewall rules
+    // for SkyrimSE.exe and the server's UDP port. Advisory only: nothing here
+    // stops Play. Staff switch parts off in status.json (`launcher.firewallFix`,
+    // `launcher.udpProbe`).
+    let flags = launcher_flags(&state.http, &config.base_url).await;
+    let firewall = if flags.firewall_fix {
+        play_step(&app, "Checking Windows Firewall for Skyrim…");
+        let (exe, marker) = (dir.join(game::GAME_EXE), app.path().app_local_data_dir().ok().map(|d| d.join("firewall-fix.txt")));
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let notify = app.clone();
+        tokio::task::spawn_blocking(move || {
+            netcheck::ensure_firewall(&exe, marker.as_deref(), now, &|| {
+                log::line("play: Windows Firewall blocks or doesn't allow Skyrim; asking Windows for permission to fix it");
+                let _ = notify.emit("play-step", "Windows will ask permission to let Skyrim through its firewall. Press Yes…");
+            })
+        })
+        .await
+        .unwrap_or_else(|e| netcheck::Firewall::Unknown(e.to_string()))
+    } else {
+        netcheck::Firewall::Off
+    };
+    log::line(&format!("play: firewall check: {firewall:?}"));
+    let udp = if flags.udp_probe {
+        play_step(&app, "Checking the connection to the server…");
+        netcheck::probe_udp(&m.server.ip, m.server.port, 3, std::time::Duration::from_millis(1500)).await
+    } else {
+        netcheck::Probe::Off
+    };
+    log::line(&format!("play: server UDP probe {}:{}: {udp:?}", m.server.ip, m.server.port));
+    report.checks.push(netcheck::firewall_check(&firewall));
+    report.checks.push(netcheck::udp_check(&udp, m.server.port));
+    report.worst = report.checks.iter().map(|c| c.status).max().unwrap_or(health::Status::Ok);
     if report.worst >= health::Status::Warn && config.share_health {
         // Nobody needs the report number here, and the staff service can
         // rate-limit for 90 s or more, so the upload runs beside Play.
@@ -718,7 +750,19 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
         let c = st.config.lock().await.clone();
         (st.http.clone(), c, m.as_ref().map(|m| m.build.clone()).unwrap_or_default(), m)
     };
-    let health = run_health(&app, &http, &config.base_url, &game_dir, manifest.as_ref()).await;
+    let mut health = run_health(&app, &http, &config.base_url, &game_dir, manifest.as_ref()).await;
+    // Skyrim ran a while, did not crash, and never loaded a world: it most likely
+    // never connected (switch off with status.json `launcher.connectWatch`: false).
+    let never_connected = !crashed && pid.is_some() && launcher_flags(&http, &config.base_url).await.connect_watch && {
+        let skse_text = std::fs::read_to_string(skse_logs.join("skse64.log")).unwrap_or_default();
+        netcheck::never_connected(&skse_text, ran.as_secs())
+    };
+    if never_connected {
+        log::line(&format!("game: ran {} seconds without crashing but never loaded into the world; it most likely never connected to the server", ran.as_secs()));
+        health.checks.push(netcheck::connect_check(ran.as_secs()));
+        health.worst = health.checks.iter().map(|c| c.status).max().unwrap_or(health::Status::Ok);
+        summary.push_str(" Skyrim never loaded into the world, so it most likely never connected to the server. Staff can see why if you leave sharing on; a firewall, router or VPN blocking UDP is the usual cause.");
+    }
     report.push_str(&format!("\n===== game health =====\n{}", health.text()));
     // The player's own folders stay private in what staff get (quality L1).
     let private: Vec<PathBuf> = [app.path().home_dir().ok(), app.path().document_dir().ok()].into_iter().flatten().collect();
@@ -748,8 +792,14 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
     // (one report per 20 s), and the crash window shouldn't wait for it.
     // Where the player was and who was near, from the log ad-report.js writes (names and numbers only).
     let position = if crashed { launcher_core::adreport::position_text(&platform_log_text(&app)) } else { None };
+    if never_connected && config.share_health {
+        let (app2, http2, health2, summary2, config2, build2) = (app.clone(), http.clone(), health.clone(), staff_summary.clone(), config.clone(), build.clone());
+        tauri::async_runtime::spawn(async move {
+            send_health(&app2, &http2, &config2, &build2, "game ran but never connected", None, None, Some(summary2), &health2).await;
+        });
+    }
     if crashed && config.share_health {
-        let (app2, http2, health2) = (app.clone(), http.clone(), health.clone());
+        let (app2, http2, health2)= (app.clone(), http.clone(), health.clone());
         tauri::async_runtime::spawn(async move {
             let f = send_health(&app2, &http2, &config, &build, "after a crash", Some(&staff_summary), crash_log, position, &health2).await;
             if f.report_id.is_some() {
@@ -2183,6 +2233,14 @@ async fn server_status(state: State<'_, AppState>) -> CmdResult<Option<serde_jso
 }
 
 static HEALTH_OK: AtomicBool = AtomicBool::new(true);
+
+/// The parts of the connection help staff left switched on (status.json
+/// `launcher.firewallFix`, `udpProbe`, `connectWatch`). An unreadable status
+/// file leaves them on.
+async fn launcher_flags(http: &reqwest::Client, base_url: &str) -> netcheck::Flags {
+    let url = format!("{}/status.json", base_url.trim_end_matches('/'));
+    netcheck::Flags::from_status(get_json(http, &url).await.as_ref())
+}
 
 async fn get_json(http: &reqwest::Client, url: &str) -> Option<serde_json::Value> {
     let resp = http.get(url).timeout(std::time::Duration::from_secs(8)).send().await.ok()?.error_for_status().ok()?;

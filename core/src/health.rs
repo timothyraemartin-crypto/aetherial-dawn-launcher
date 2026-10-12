@@ -387,6 +387,15 @@ pub fn likely_cause(r: &Report) -> Option<String> {
     if failed("loadorder", Status::Warn).is_some() {
         return Some("Plugins the game can't load are switched on".to_string());
     }
+    for (id, why) in [
+        ("firewall", "Windows Firewall may be blocking Skyrim"),
+        ("udp", "The game server didn't answer on UDP (firewall, router or VPN)"),
+        ("connect", "Skyrim ran but never connected to the server"),
+    ] {
+        if failed(id, Status::Warn).is_some() {
+            return Some(why.to_string());
+        }
+    }
     None
 }
 
