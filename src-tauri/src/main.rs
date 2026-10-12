@@ -478,6 +478,12 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
                 Ok(false) => {}
                 Err(e) => return Err(format!("Couldn't set your load order ({e}). Close Skyrim, then try again.")),
             }
+            // loadorder.txt is only a record for mod tools, but it should list nothing else.
+            match serverorder::set_loadorder_exact(&txt.with_file_name("loadorder.txt"), &order) {
+                Ok(true) => log::line(&format!("play: loadorder.txt now lists exactly the server's {} plugins (the old list is kept beside it)", order.len())),
+                Ok(false) => {}
+                Err(e) => log::line(&format!("play: couldn't rewrite loadorder.txt: {e}")),
+            }
         }
     }
     play_step(&app, "Checking your game…");
