@@ -270,7 +270,7 @@ fn restore_profile(dir: &std::path::Path, why: &str) {
         return;
     }
     match launcher_core::profile::restore(dir) {
-        Ok(r) if r.kept.is_empty() => log::line(&format!("profile: put {} mod file(s) back ({why})", r.files)),
+        Ok(r) if r.kept.is_empty() => log::line(&format!("profile: put {} mod file(s) back ({why}){}", r.files, if r.duplicates > 0 { format!("; dropped {} identical copy(ies) already in place", r.duplicates) } else { String::new() })),
         Ok(r) => log::line(&format!("profile: put {} mod file(s) back ({why}); {} stay in .aetherial-dawn/aside because something new sits at their place: {}", r.files, r.kept.len(), r.kept.iter().take(10).cloned().collect::<Vec<_>>().join(", "))),
         Err(e) => log::line(&format!("profile: couldn't put the mod files back ({why}): {e}")),
     }
