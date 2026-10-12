@@ -292,7 +292,9 @@ fn server_order(i: &Inputs) -> Check {
     let Some(dir) = i.appdata else {
         return check("serverorder", "Server plugin order", Status::Info, "Couldn't find the load order folder.", vec![]);
     };
-    let bad = crate::serverorder::mismatches(i.game_dir, &dir.join("plugins.txt"), &order);
+    // As the game will start: Play empties Skyrim.ccc for the session, so the
+    // Creation Club masters it lists (restored when the game closes) don't count.
+    let bad = crate::serverorder::mismatches_with(i.game_dir, &dir.join("plugins.txt"), &order, false);
     if bad.is_empty() {
         check("serverorder", "Server plugin order", Status::Ok, format!("The game loads the server's {} plugins in the same order.", order.len()), vec![])
     } else {
