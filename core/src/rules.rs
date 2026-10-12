@@ -103,6 +103,8 @@ impl Rules {
             platform_guard: on(&checks, "platformGuard"),
             session_upload: on(&checks, "sessionUpload"),
             asset_report: on(&checks, "assetReport"),
+            connect_ladder: on(&checks, "connectLadder"),
+            browser_guard: on(&checks, "browserGuard"),
         };
         r.server_order = match checks.get("serverOrder").and_then(Value::as_str) {
             Some("warn") => Level::Warn,
@@ -133,6 +135,8 @@ impl Rules {
             platform_guard: status.platform_guard && self.flags.platform_guard,
             session_upload: status.session_upload && self.flags.session_upload,
             asset_report: status.asset_report && self.flags.asset_report,
+            connect_ladder: status.connect_ladder && self.flags.connect_ladder,
+            browser_guard: status.browser_guard && self.flags.browser_guard,
         }
     }
 

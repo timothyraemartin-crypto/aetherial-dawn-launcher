@@ -67,6 +67,31 @@ pub fn write(game_dir: &Path, s: &ClientSettings) -> Result<()> {
     Ok(())
 }
 
+/// Reads the settings file back the way the SkyMP client will: the server it
+/// dials, the port and a login session, and that the client script exists.
+/// Returns what is wrong (empty when all is as written).
+pub fn verify(game_dir: &Path, server_ip: &str, server_port: u16, session: &str) -> Vec<String> {
+    let mut bad = Vec::new();
+    match std::fs::read_to_string(game_dir.join(SETTINGS_PATH)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+        None => bad.push("skymp5-client-settings.txt is missing or unreadable".to_string()),
+        Some(v) => {
+            if v["server-ip"] != json!(server_ip) {
+                bad.push(format!("server-ip is {} (should be {server_ip})", v["server-ip"]));
+            }
+            if v["server-port"] != json!(server_port) {
+                bad.push(format!("server-port is {} (should be {server_port})", v["server-port"]));
+            }
+            if v["gameData"]["session"] != json!(session) || session.is_empty() {
+                bad.push("the login session in the settings is not the one just issued".to_string());
+            }
+        }
+    }
+    if !game_dir.join("Data/Platform/Plugins/skymp5-client.js").is_file() {
+        bad.push("Data/Platform/Plugins/skymp5-client.js is missing".to_string());
+    }
+    bad
+}
+
 /// The SkyMP client's remembered login (skymp5-client authService.ts reads it
 /// from PluginsNoLoad). With it the in-game login box already shows the player
 /// as signed in.
@@ -102,6 +127,21 @@ pub fn clear_login(game_dir: &Path) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn verify_reads_the_file_back_and_names_what_is_wrong() {
+        let g = std::env::temp_dir().join(format!("ad-settings-verify-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&g);
+        let c = ClientSettings { server_ip: "play.example.org", server_port: 7777, master: "https://m", server_master_key: "k", session: "abc" };
+        write(&g, &c).unwrap();
+        let bad = verify(&g, "play.example.org", 7777, "abc");
+        assert_eq!(bad, ["Data/Platform/Plugins/skymp5-client.js is missing"]);
+        std::fs::write(g.join("Data/Platform/Plugins/skymp5-client.js"), b"x").unwrap();
+        assert!(verify(&g, "play.example.org", 7777, "abc").is_empty());
+        assert_eq!(verify(&g, "other", 7777, "abc").len(), 1);
+        assert_eq!(verify(&g, "play.example.org", 7778, "zzz").len(), 2);
+        let _ = std::fs::remove_dir_all(&g);
+    }
+
     use super::*;
 
     const S: ClientSettings = ClientSettings {
