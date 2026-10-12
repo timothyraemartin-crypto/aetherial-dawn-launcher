@@ -214,6 +214,12 @@ fn find(data: &Path, name: &str) -> Option<PathBuf> {
 /// lists them: the base masters, Skyrim.ccc's masters that are in Data, then
 /// plugins.txt's active plugins with masters before the rest.
 pub fn game_order(game_dir: &Path, plugins_txt: &Path) -> Vec<String> {
+    game_order_with(game_dir, plugins_txt, true)
+}
+
+/// `game_order`, optionally as the game will see it once Play has emptied
+/// Skyrim.ccc (`use_ccc` false): no Creation Club masters ahead of the server's.
+pub fn game_order_with(game_dir: &Path, plugins_txt: &Path, use_ccc: bool) -> Vec<String> {
     let data = game_dir.join("Data");
     let mut out: Vec<String> = Vec::new();
     let has = |out: &Vec<String>, n: &str| out.iter().any(|o| o.eq_ignore_ascii_case(n));
@@ -231,7 +237,7 @@ pub fn game_order(game_dir: &Path, plugins_txt: &Path) -> Vec<String> {
         }
         Some((master || l.ends_with(".esm"), p))
     };
-    if let Some(ccc) = ccc_paths(game_dir).first() {
+    if let Some(ccc) = ccc_paths(game_dir).first().filter(|_| use_ccc) {
         for n in crate::loadorder::read_text(ccc).unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()) {
             if !has(&out, n) && full(n).is_some() {
                 out.push(n.to_string());
@@ -306,8 +312,14 @@ fn crc_update(table: &[u32; 256], mut crc: u32, bytes: &[u8]) -> u32 {
 /// masters check). A PC with more plugins than the server is fine, as it is
 /// for SkyMP.
 pub fn mismatches(game_dir: &Path, plugins_txt: &Path, server: &[ServerPlugin]) -> Vec<String> {
+    mismatches_with(game_dir, plugins_txt, server, true)
+}
+
+/// `mismatches`, with `use_ccc` false for the game as Play will start it
+/// (Skyrim.ccc emptied for the session).
+pub fn mismatches_with(game_dir: &Path, plugins_txt: &Path, server: &[ServerPlugin], use_ccc: bool) -> Vec<String> {
     let data = game_dir.join("Data");
-    let mine = game_order(game_dir, plugins_txt);
+    let mine = game_order_with(game_dir, plugins_txt, use_ccc);
     let mut out = Vec::new();
     for (i, s) in server.iter().enumerate() {
         let Some(m) = mine.get(i) else {
@@ -523,6 +535,8 @@ mod tests {
         // Creation Club and Vortex's order put the wrong plugins at 5 and 6.
         assert_eq!(game_order(g, &txt)[5], "ccASVSSE001-ALMSIVI.esm");
         assert!(!mismatches(g, &txt, &server).is_empty());
+        // The same game as Play will start it, with Skyrim.ccc emptied for the session, is not blamed for them.
+        assert_ne!(game_order_with(g, &txt, false)[5], "ccASVSSE001-ALMSIVI.esm");
 
         hide_ccc(g).unwrap();
         assert!(set_exact(g, &txt, &server).unwrap());

@@ -1,7 +1,9 @@
 name: Build launcher
 
 # Build and test on main and pull requests. Only an explicit vX.Y.Z tag can
-# publish a signed release, after both platform artifacts have passed.
+# publish a signed release, after both platform artifacts have passed. The tag
+# can be pushed by hand or made by the Release tag workflow, which then runs this
+# one on the tag (workflow_dispatch with the tag as ref counts as a tag run).
 #
 # The Windows build runs on a GitHub-hosted runner (windows-latest), so a release
 # never waits on Timothy's PC. The Linux jobs run on the self-hosted Linux runner
@@ -137,7 +139,7 @@ jobs:
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Cargo.toml needs a stable X.Y.Z version"; exit 1; }
           echo "VERSION=$version" >> "$GITHUB_ENV"
-          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/v* ]]; then
+          if [[ "$GITHUB_EVENT_NAME" =~ ^(push|workflow_dispatch)$ && "$GITHUB_REF" == refs/tags/v* ]]; then
             [[ "$GITHUB_REF_NAME" == "v$version" ]] || { echo "Tag $GITHUB_REF_NAME does not match Cargo.toml $version"; exit 1; }
             git fetch origin main:refs/remotes/origin/main
             git merge-base --is-ancestor HEAD origin/main || { echo "Release tag must point to a commit on main"; exit 1; }
@@ -148,12 +150,12 @@ jobs:
           tool: tauri-cli@2.12.0
       # PRs, main and manual runs never receive the update-signing key.
       - name: Build unsigned installer for checks
-        if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v')
+        if: ${{ !((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/tags/v')) }}
         shell: bash
         run: |
           cargo tauri build --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
       - name: Build signed release installer
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/tags/v')
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -174,7 +176,7 @@ jobs:
           mkdir dist
           cp "$f" "dist/$out"
           cp "$f" dist/AetherialDawn-Setup.exe
-          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/v* ]]; then
+          if [[ "$GITHUB_EVENT_NAME" =~ ^(push|workflow_dispatch)$ && "$GITHUB_REF" == refs/tags/v* ]]; then
             [[ -s "$f.sig" ]] || { echo "Signed release is missing its updater signature"; exit 1; }
             cp "$f.sig" "dist/$out.sig"
             SETUP_NAME="$out" SIGNATURE_FILE="$f.sig" node <<'NODE'
@@ -224,7 +226,7 @@ jobs:
   # checks, on the Linux runner. cfg(windows) code, the Tauri build and the installer test are
   # not covered here.
   linux-checks:
-    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v')
+    if: ${{ !((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 60
     env:
@@ -273,7 +275,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/tags/v')
     needs: [windows-checks, windows-ui, windows-build, canonical-plugins-linux]
     runs-on: [self-hosted, linux, x64]
     permissions:
@@ -420,7 +422,7 @@ jobs:
           node .github/scripts/patch-notes.js staff --event released ${prev:+--from "$prev"} --to "$GITHUB_REF_NAME"
   # Staff hear about a failed release even though the release job itself stopped.
   release-failed-notice:
-    if: failure() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: failure() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/tags/v')
     needs: [windows-checks, windows-ui, windows-build, canonical-plugins-linux, release]
     runs-on: [self-hosted, linux, x64]
     steps:

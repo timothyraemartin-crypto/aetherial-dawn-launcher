@@ -421,7 +421,8 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     // No mods: anything beyond the game, SKSE and SkyMP's own files keeps the
     // player out (core/src/modguard.rs). Checked on every Play, before the
     // launcher changes anything on the PC.
-    let flags = launcher_flags(&state.http, &config.base_url).await;
+    let rules = server_rules(&app, &state.http, &config.base_url).await;
+    let flags = rules.narrow(launcher_flags(&state.http, &config.base_url).await);
     play_step(&app, "Setting other mods aside…");
     let extras = {
         let (dir, names, files) = (dir.clone(), server_names.clone(), m.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>());
@@ -429,6 +430,7 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
         let mut files = files;
         // Our own mods ship inside the launcher: written into the game on every Play and always allowed.
         files.extend(bundled::deploy(&dir));
+        files.extend(rules.allow_files.iter().cloned());
         files.extend(std::fs::read_to_string(dir.join(".aetherial-dawn").join("local-allow.txt")).unwrap_or_default().lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()));
         tokio::task::spawn_blocking(move || launcher_core::modguard::extras(&dir, &names, &files)).await.map_err(|e| e.to_string())?
     };
@@ -463,7 +465,8 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     play_step(&app, "Setting the server's load order…");
     let mut ccc_guard = CccGuard { dir: dir.clone(), armed: false };
     if serverorder::beyond_base(&order) {
-        match serverorder::hide_ccc(&dir) {
+        // The server's launcher rules can switch the Creation Club step off (rules.rs).
+        match if rules.empty_ccc { serverorder::hide_ccc(&dir) } else { Ok(Vec::new()) } {
             Ok(h) => {
                 ccc_guard.armed = true;
                 if !h.is_empty() {
@@ -479,7 +482,7 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
                 Err(e) => return Err(format!("Couldn't set your load order ({e}). Close Skyrim, then try again.")),
             }
             // loadorder.txt is only a record for mod tools, but it should list nothing else.
-            match serverorder::set_loadorder_exact(&txt.with_file_name("loadorder.txt"), &order) {
+            match if rules.rewrite_loadorder { serverorder::set_loadorder_exact(&txt.with_file_name("loadorder.txt"), &order) } else { Ok(false) } {
                 Ok(true) => log::line(&format!("play: loadorder.txt now lists exactly the server's {} plugins (the old list is kept beside it)", order.len())),
                 Ok(false) => {}
                 Err(e) => log::line(&format!("play: couldn't rewrite loadorder.txt: {e}")),
@@ -488,6 +491,7 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     }
     play_step(&app, "Checking your game…");
     let mut report = run_health_with_masters(&app, &dir, Some(&m), Some(masters)).await;
+    rules.adjust_order_check(&mut report);
     log::line(&format!("health before play: worst={:?}\n{}", report.worst, report.text()));
     let base_check = report.checks.iter().find(|c| c.id == "masters")
         .ok_or("Could not finish checking the base game files. Try Play again.")?;
@@ -505,7 +509,7 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
             Some(id) => format!("Staff have been sent a report ({id})."),
             None => "Send Copy diagnostics to staff.".into(),
         };
-        return Err(format!("Your plugins don't match the server's order, so the game would refuse to connect: {which}. {tell}"));
+        return Err(rules.order_mismatch_message(&which, &tell));
     }
     // Skyrim that starts but never reaches the server: Windows Firewall rules
     // for SkyrimSE.exe and the server's UDP port. Advisory only: nothing here
@@ -579,6 +583,30 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     settings::write_auth_data(&dir, &session, &config.account.clone().unwrap_or_default()).map_err(err)?;
     log::line("play: wrote skymp5-client-settings.txt and auth data");
     state.music.stop();
+    // Last look before the game starts: Steam can put Skyrim.ccc back after the
+    // first set-up, which would put Creation Club masters ahead of the server's
+    // plugins. Empty it again, set plugins.txt again, and stop with a clear
+    // message instead of starting a game the server would turn away.
+    if serverorder::beyond_base(&order) {
+        if let Some(txt) = plugins_txt(&app) {
+            match serverorder::hide_ccc(&dir) {
+                Ok(h) if !h.is_empty() => {
+                    ccc_guard.armed = true;
+                    log::line(&format!("play: Skyrim.ccc had been refilled since set-up; emptied it again right before launch: {}", h.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")));
+                }
+                Ok(_) => {}
+                Err(e) => log::line(&format!("play: couldn't re-check Skyrim.ccc before launch: {e}")),
+            }
+            if let Err(e) = serverorder::set_exact(&dir, &txt, &order) {
+                log::line(&format!("play: couldn't re-check plugins.txt before launch: {e}"));
+            }
+            let bad = serverorder::mismatches_with(&dir, &txt, &order, true);
+            if !bad.is_empty() {
+                return Err(format!("Your plugins don't match the server's order, so the game would refuse to connect: {}. Close Steam's Creation Club downloads and press Play again.", bad.iter().take(3).cloned().collect::<Vec<_>>().join("; ")));
+            }
+            log::line(&format!("play: load order verified right before launch: the game's first {} plugins are the server's", order.len()));
+        }
+    }
     play_step(&app, "Starting Skyrim through SKSE…");
     game::launch(&dir).map_err(err)?;
     state.active_session.store(true, Ordering::SeqCst);
@@ -728,6 +756,7 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
             // way into the server). Whether its helper process is up 30 s in,
             // for the report: no helper means no login box (overlay, graphics
             // card or antivirus trouble).
+            let (ccc_dir, ccc_txt) = (game_dir.clone(), plugins_txt(&app));
             let browser_seen = browser_probe();
             browser_seen.store(-1, Ordering::SeqCst);
             tokio::spawn(async move {
@@ -735,6 +764,10 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
                 if watch::find_process(watch::GAME_PROCESS) != Some(pid) {
                     return;
                 }
+                // Evidence for the load order: what Skyrim.ccc and plugins.txt hold while the game runs.
+                let ccc_sizes: Vec<String> = ["Skyrim.ccc", "Data/Skyrim.ccc"].iter().filter_map(|f| std::fs::metadata(ccc_dir.join(f)).ok().map(|m| format!("{f} {} bytes", m.len()))).collect();
+                let head: Vec<String> = ccc_txt.as_ref().and_then(|t| std::fs::read_to_string(t).ok()).unwrap_or_default().lines().filter(|l| !l.trim_start().starts_with('#') && !l.trim().is_empty()).take(8).map(|l| l.trim().to_string()).collect();
+                log::line(&format!("game: 30 seconds in, {}; plugins.txt starts with: {}", if ccc_sizes.is_empty() { "no Skyrim.ccc".to_string() } else { ccc_sizes.join(", ") }, head.join(", ")));
                 let up = watch::BROWSER_HELPERS.iter().any(|h| watch::find_process(h).is_some());
                 browser_probe().store(up as i8, Ordering::SeqCst);
                 log::line(&format!("game: Skyrim Platform's in-game browser (SkyrimPlatformCEF.exe) {} 30 seconds after the game started", if up { "is running" } else { "is NOT running" }));
@@ -788,7 +821,7 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
     let mut health = run_health(&app, &http, &config.base_url, &game_dir, manifest.as_ref()).await;
     // Skyrim ran a while, did not crash, and never loaded a world: it most likely
     // never connected (switch off with status.json `launcher.connectWatch`: false).
-    let flags = launcher_flags(&http, &config.base_url).await;
+    let flags = server_rules(&app, &http, &config.base_url).await.narrow(launcher_flags(&http, &config.base_url).await);
     let never_connected = !crashed && pid.is_some() && flags.connect_watch && {
         let skse_text = std::fs::read_to_string(skse_logs.join("skse64.log")).unwrap_or_default();
         netcheck::never_connected(&skse_text, ran.as_secs())
@@ -2287,6 +2320,17 @@ static HEALTH_OK: AtomicBool = AtomicBool::new(true);
 async fn launcher_flags(http: &reqwest::Client, base_url: &str) -> netcheck::Flags {
     let url = format!("{}/status.json", base_url.trim_end_matches('/'));
     netcheck::Flags::from_status(get_json(http, &url).await.as_ref())
+}
+
+/// This Play's launcher rules (core/src/rules.rs): the server's signed
+/// `launcher-rules.json`, else the last good copy, else the built-in defaults.
+async fn server_rules(app: &AppHandle, http: &reqwest::Client, base_url: &str) -> launcher_core::rules::Rules {
+    use launcher_core::rules::Source;
+    let dir = app.path().app_local_data_dir().ok();
+    let (rules, source, note) = launcher_core::rules::load(http, base_url, dir.as_deref(), launcher_core::feedsig::trust()).await;
+    let from = match source { Source::Server => "the server", Source::Cache => "the saved copy", Source::BuiltIn => "the built-in defaults" };
+    log::line(&format!("rules: launcher rules {} from {from}{}", rules.rev, note.map(|n| format!(" ({n})")).unwrap_or_default()));
+    rules
 }
 
 async fn get_json(http: &reqwest::Client, url: &str) -> Option<serde_json::Value> {
