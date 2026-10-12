@@ -421,7 +421,8 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     // No mods: anything beyond the game, SKSE and SkyMP's own files keeps the
     // player out (core/src/modguard.rs). Checked on every Play, before the
     // launcher changes anything on the PC.
-    let flags = launcher_flags(&state.http, &config.base_url).await;
+    let rules = server_rules(&app, &state.http, &config.base_url).await;
+    let flags = rules.narrow(launcher_flags(&state.http, &config.base_url).await);
     play_step(&app, "Setting other mods aside…");
     let extras = {
         let (dir, names, files) = (dir.clone(), server_names.clone(), m.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>());
@@ -429,6 +430,7 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
         let mut files = files;
         // Our own mods ship inside the launcher: written into the game on every Play and always allowed.
         files.extend(bundled::deploy(&dir));
+        files.extend(rules.allow_files.iter().cloned());
         files.extend(std::fs::read_to_string(dir.join(".aetherial-dawn").join("local-allow.txt")).unwrap_or_default().lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()));
         tokio::task::spawn_blocking(move || launcher_core::modguard::extras(&dir, &names, &files)).await.map_err(|e| e.to_string())?
     };
@@ -480,7 +482,8 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     play_step(&app, "Setting the server's load order…");
     let mut ccc_guard = CccGuard { dir: dir.clone(), armed: false };
     if serverorder::beyond_base(&order) {
-        match serverorder::hide_ccc(&dir) {
+        // The server's launcher rules can switch the Creation Club step off (rules.rs).
+        match if rules.empty_ccc { serverorder::hide_ccc(&dir) } else { Ok(Vec::new()) } {
             Ok(h) => {
                 ccc_guard.armed = true;
                 if !h.is_empty() {
@@ -496,7 +499,7 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
                 Err(e) => return Err(format!("Couldn't set your load order ({e}). Close Skyrim, then try again.")),
             }
             // loadorder.txt is only a record for mod tools, but it should list nothing else.
-            match serverorder::set_loadorder_exact(&txt.with_file_name("loadorder.txt"), &order) {
+            match if rules.rewrite_loadorder { serverorder::set_loadorder_exact(&txt.with_file_name("loadorder.txt"), &order) } else { Ok(false) } {
                 Ok(true) => log::line(&format!("play: loadorder.txt now lists exactly the server's {} plugins (the old list is kept beside it)", order.len())),
                 Ok(false) => {}
                 Err(e) => log::line(&format!("play: couldn't rewrite loadorder.txt: {e}")),
@@ -505,6 +508,7 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     }
     play_step(&app, "Checking your game…");
     let mut report = run_health_with_masters(&app, &dir, Some(&m), Some(masters)).await;
+    rules.adjust_order_check(&mut report);
     log::line(&format!("health before play: worst={:?}\n{}", report.worst, report.text()));
     let base_check = report.checks.iter().find(|c| c.id == "masters")
         .ok_or("Could not finish checking the base game files. Try Play again.")?;
@@ -522,7 +526,7 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
             Some(id) => format!("Staff have been sent a report ({id})."),
             None => "Send Copy diagnostics to staff.".into(),
         };
-        return Err(format!("Your plugins don't match the server's order, so the game would refuse to connect: {which}. {tell}"));
+        return Err(rules.order_mismatch_message(&which, &tell));
     }
     // Skyrim that starts but never reaches the server: Windows Firewall rules
     // for SkyrimSE.exe and the server's UDP port. Advisory only: nothing here
@@ -865,7 +869,7 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
     let mut health = run_health(&app, &http, &config.base_url, &game_dir, manifest.as_ref()).await;
     // Skyrim ran a while, did not crash, and never loaded a world: it most likely
     // never connected (switch off with status.json `launcher.connectWatch`: false).
-    let flags = launcher_flags(&http, &config.base_url).await;
+    let flags = server_rules(&app, &http, &config.base_url).await.narrow(launcher_flags(&http, &config.base_url).await);
     let skse_text = std::fs::read_to_string(skse_logs.join("skse64.log")).unwrap_or_default();
     let never_connected = !crashed && pid.is_some() && flags.connect_watch && netcheck::never_connected(&skse_text, ran.as_secs());
     if flags.connect_ladder && !crashed && pid.is_some() {
@@ -2410,6 +2414,17 @@ static HEALTH_OK: AtomicBool = AtomicBool::new(true);
 async fn launcher_flags(http: &reqwest::Client, base_url: &str) -> netcheck::Flags {
     let url = format!("{}/status.json", base_url.trim_end_matches('/'));
     netcheck::Flags::from_status(get_json(http, &url).await.as_ref())
+}
+
+/// This Play's launcher rules (core/src/rules.rs): the server's signed
+/// `launcher-rules.json`, else the last good copy, else the built-in defaults.
+async fn server_rules(app: &AppHandle, http: &reqwest::Client, base_url: &str) -> launcher_core::rules::Rules {
+    use launcher_core::rules::Source;
+    let dir = app.path().app_local_data_dir().ok();
+    let (rules, source, note) = launcher_core::rules::load(http, base_url, dir.as_deref(), launcher_core::feedsig::trust()).await;
+    let from = match source { Source::Server => "the server", Source::Cache => "the saved copy", Source::BuiltIn => "the built-in defaults" };
+    log::line(&format!("rules: launcher rules {} from {from}{}", rules.rev, note.map(|n| format!(" ({n})")).unwrap_or_default()));
+    rules
 }
 
 async fn get_json(http: &reqwest::Client, url: &str) -> Option<serde_json::Value> {

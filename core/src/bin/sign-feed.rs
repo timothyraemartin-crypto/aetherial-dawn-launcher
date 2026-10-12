@@ -14,7 +14,7 @@ use ed25519_dalek::SigningKey;
 use launcher_core::feedsig::{self, Feed};
 use std::path::Path;
 
-const FEEDS: [Feed; 2] = [Feed::Mods, Feed::Manifest];
+const FEEDS: [Feed; 3] = [Feed::Mods, Feed::Manifest, Feed::Rules];
 
 fn die(msg: String) -> ! {
     eprintln!("sign-feed: {msg}");
