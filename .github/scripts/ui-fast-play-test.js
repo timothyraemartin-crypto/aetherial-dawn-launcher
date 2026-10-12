@@ -158,7 +158,13 @@ function fakeBackEnd() {
     // Cancel while the first answer is on its way, then sign in again.
     if (S.signIn && S.signIn.cancelAt) setTimeout(() => document.getElementById('si-cancel').click(), S.signIn.cancelAt);
     if (S.signIn && S.signIn.restartAt) setTimeout(() => { document.getElementById('si-cancel').click(); document.getElementById('si-go').click(); }, S.signIn.restartAt);
-    for (const t of S.clicks || []) setTimeout(() => { log.invokes.push([at(), 'click', label.textContent]); btn.click(); }, t);
+    // A press at 1000 ms or later is the player pressing Play once it shows enabled, so it waits out CHECKING
+    // (up to 8 s) instead of racing the checks on a slow runner. Earlier presses are deliberate early presses.
+    for (const t of S.clicks || []) {
+      const press = () => { log.invokes.push([at(), 'click', label.textContent]); btn.click(); };
+      const pressWhenEnabled = waited => (label.textContent === 'CHECKING' && waited < 8000) ? setTimeout(() => pressWhenEnabled(waited + 25), 25) : press();
+      setTimeout(() => (t >= 1000 ? pressWhenEnabled(0) : press()), t);
+    }
     for (const action of S.actions || []) setTimeout(() => {
       if (action.kind === 'click') document.getElementById(action.id).click();
       if (action.kind === 'event') for (const callback of listeners[action.name] || []) callback({ payload: action.payload });
@@ -471,6 +477,11 @@ const scenarios = [
   ] },
   { name: 'Play with no update available: the game starts', s: { ...base, clicks: [1250] }, expect: r => [
     ['nothing is installed', askedAt(r, 'updater_install') === null],
+    ['the game starts', played(r)],
+  ] },
+  // A slow runner (or a slow check) must not turn "press Play once it shows enabled" into a press on CHECKING.
+  { name: 'Play pressed once it is enabled, even when the checks are slow: the game starts', s: { ...base, clicks: [1250], delay: { check: 2000 }, end: 6000 }, expect: r => [
+    ['the press waited for PLAY, not CHECKING', (r.invokes.find(i => i[1] === 'click') || [0, ''])[2] === 'PLAY', JSON.stringify(r.invokes.filter(i => i[1] === 'click'))],
     ['the game starts', played(r)],
   ] },
   { name: 'Play when the update check fails or is offline: the game still starts', s: { ...base, updaterFails: true, clicks: [1250] }, expect: r => [
