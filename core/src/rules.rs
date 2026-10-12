@@ -102,6 +102,7 @@ impl Rules {
             connect_watch: on(&checks, "connectWatch"),
             platform_guard: on(&checks, "platformGuard"),
             session_upload: on(&checks, "sessionUpload"),
+            asset_report: on(&checks, "assetReport"),
         };
         r.server_order = match checks.get("serverOrder").and_then(Value::as_str) {
             Some("warn") => Level::Warn,
@@ -131,6 +132,7 @@ impl Rules {
             connect_watch: status.connect_watch && self.flags.connect_watch,
             platform_guard: status.platform_guard && self.flags.platform_guard,
             session_upload: status.session_upload && self.flags.session_upload,
+            asset_report: status.asset_report && self.flags.asset_report,
         }
     }
 
