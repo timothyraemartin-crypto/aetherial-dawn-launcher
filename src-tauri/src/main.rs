@@ -532,7 +532,14 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     // for SkyrimSE.exe and the server's UDP port. Advisory only: nothing here
     // stops Play. Staff switch parts off in status.json (`launcher.firewallFix`,
     // `launcher.udpProbe`).
-    let firewall = if flags.firewall_fix {
+    // Which antivirus and firewall products this PC has. When another product has switched Windows' own
+    // firewall off, rules in it change nothing, so the launcher doesn't ask Windows for permission to edit them.
+    let security = tokio::task::spawn_blocking(netcheck::security_summary).await.unwrap_or_default();
+    log::line(&format!("play: security software: {security}"));
+    let windows_firewall_off = netcheck::windows_firewall_off(&security);
+    let firewall = if flags.firewall_fix && windows_firewall_off {
+        netcheck::Firewall::Unknown("Windows Firewall is turned off on this PC (another security product manages it), so the launcher left its rules alone".into())
+    } else if flags.firewall_fix {
         play_step(&app, "Checking Windows Firewall for Skyrim…");
         let (exe, marker) = (dir.join(game::GAME_EXE), app.path().app_local_data_dir().ok().map(|d| d.join("firewall-fix.txt")));
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
@@ -935,7 +942,8 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
     let browser_text = {
         let t = launcher_core::browsercheck::report_text(&game_dir);
         let defender = tokio::task::spawn_blocking(netcheck::defender_history).await.unwrap_or_default();
-        format!("{t}===== Windows Defender detections naming Skyrim, cef or Platform =====\n{defender}\n")
+        let security = tokio::task::spawn_blocking(netcheck::security_summary).await.unwrap_or_default();
+        format!("{t}===== security software =====\n{security}\n===== Windows Defender detections naming Skyrim, cef or Platform =====\n{defender}\n")
     };
     report.push_str(&session_logs);
     report.push_str(&format!("\n===== launcher log (last 40 lines) =====\n{}\n", log::tail(40)));

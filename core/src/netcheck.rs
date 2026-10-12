@@ -257,6 +257,16 @@ mod win {
         }
     }
 
+    /// The antivirus and firewall products registered with Windows Security Center and
+    /// whether Windows' own firewall is on per profile (read only).
+    pub fn security_summary() -> String {
+        let script = "try { $av = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction Stop | ForEach-Object { $_.displayName + ' (state ' + $_.productState + ')' }; $fw = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName FirewallProduct -ErrorAction Stop | ForEach-Object { $_.displayName + ' (state ' + $_.productState + ')' }; $np = Get-NetFirewallProfile -ErrorAction Stop | ForEach-Object { $_.Name + '=' + $_.Enabled }; 'antivirus: ' + ($av -join '; ') + ' | firewall products: ' + ($fw -join '; ') + ' | Windows Firewall profiles: ' + ($np -join ', ') } catch { 'could not read Security Center: ' + $_.Exception.Message }";
+        match powershell(&["-EncodedCommand", encode_command(script).as_str()]) {
+            Ok(o) => String::from_utf8_lossy(&o.stdout).trim().chars().take(1500).collect(),
+            Err(e) => format!("could not run PowerShell: {e}"),
+        }
+    }
+
     /// Runs the fix in an elevated PowerShell (one Windows permission prompt)
     /// and waits for it. Err when the player declined or Windows refused.
     pub fn run_elevated(script: &str) -> Result<(), String> {
@@ -271,6 +281,24 @@ mod win {
             Err(String::from_utf8_lossy(&out.stderr).trim().chars().take(200).collect::<String>())
         }
     }
+}
+
+/// Whether `security_summary` says every Windows Firewall profile is off (another
+/// product has taken the firewall over, so rules for SkyrimSE.exe in Windows' own
+/// firewall change nothing). False when the summary could not be read.
+pub fn windows_firewall_off(summary: &str) -> bool {
+    summary.split("Windows Firewall profiles:").nth(1).is_some_and(|p| p.contains("=False") && !p.contains("=True"))
+}
+
+/// Which antivirus and firewall products Windows knows of, and whether its own firewall is on.
+#[cfg(windows)]
+pub fn security_summary() -> String {
+    win::security_summary()
+}
+
+#[cfg(not(windows))]
+pub fn security_summary() -> String {
+    "(Windows only)".into()
 }
 
 /// What Windows Defender logged about Skyrim or the browser engine (read only).
@@ -448,6 +476,13 @@ pub fn connect_check(ran_secs: u64) -> Check {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn windows_firewall_off_only_when_every_profile_says_false() {
+        assert!(windows_firewall_off("antivirus: Norton (state 397568) | firewall products: Norton | Windows Firewall profiles: Domain=False, Private=False, Public=False"));
+        assert!(!windows_firewall_off("antivirus: Defender | Windows Firewall profiles: Domain=True, Private=True, Public=False"));
+        assert!(!windows_firewall_off("could not read Security Center: access denied"));
+    }
+
     use super::*;
 
     fn rule(name: &str, enabled: &str, action: &str, direction: &str) -> Rule {
