@@ -26,7 +26,8 @@ jobs:
   # read caches saved on the default branch). Pull requests get linux-checks only.
   windows-checks:
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
-    runs-on: windows-latest
+    # Set repository variable AD_WINDOWS_RUNNER to a larger-runner label (organization repos only); unset = standard.
+    runs-on: ${{ vars.AD_WINDOWS_RUNNER || 'windows-latest' }}
     timeout-minutes: 30
     steps:
       - name: Preflight (tools this runner must have)
@@ -85,7 +86,8 @@ jobs:
 
   windows-build:
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
-    runs-on: windows-latest
+    # Set repository variable AD_WINDOWS_RUNNER to a larger-runner label (organization repos only); unset = standard.
+    runs-on: ${{ vars.AD_WINDOWS_RUNNER || 'windows-latest' }}
     timeout-minutes: 30
     env:
       # Where the server publishes launcher files, and the Discord login service.
