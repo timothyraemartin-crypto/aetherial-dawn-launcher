@@ -48,7 +48,7 @@ function fakeBackEnd() {
     auth_status: () => (S.authSequence && S.authSequence.shift()) || ((S.authAfter && (S.authCalls = (S.authCalls || 0) + 1) > 1) ? S.authAfter : S.auth),
     check: () => Object.assign({ build: 'B2', server: { name: 'Aetherial Dawn', ip: '127.0.0.1', port: 7777 }, files: 0, remove: 0, bytes: 0, game }, (S.checkSequence && S.checkSequence.shift()) || S.check || {}),
     update: () => null,
-    server_status: () => ({ online: true, players: 1, maxPlayers: 50, ...(typeof S.statusNow === 'object' ? S.statusNow : {}), ...(S.statusFileDown ? { launcher: undefined } : { fromFile: true }), discordInvite: S.invite, news: [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
+    server_status: () => ({ online: true, players: 1, maxPlayers: 50, ...(typeof S.statusNow === 'object' ? S.statusNow : {}), ...(S.statusFileDown ? { launcher: undefined } : { fromFile: true }), discordInvite: S.invite, news: (typeof S.statusNow === 'object' && Array.isArray(S.statusNow.news)) ? S.statusNow.news : [{ title: 'News', date: '28 Sep', body: 'Body.' }, { title: 'More', date: '27 Sep', body: 'Body.' }] }),
     setup_state: () => S.setup || [{ id: 'folder', title: 'Choose your Skyrim folder', hint: 'x', done: true }],
     bug_state: () => ({ available: true, summary: 't2 pos 4,5,6 cell Whiterun world Tamriel nearby: Dovah (120)' }),
     send_bug: a => { (window.__T.bugs ||= []).push(a.note); return 'R-test'; },
@@ -96,6 +96,7 @@ function fakeBackEnd() {
       }, pickDelay || (delay[cmd] ?? delay.default));
     }) },
     event: { listen: async (name, callback) => {
+      if (S.listenFails === name) throw new Error('events are not available');
       (listeners[name] ||= []).push(callback);
       return () => { listeners[name] = listeners[name].filter(fn => fn !== callback); };
     } },
@@ -238,6 +239,8 @@ function fakeBackEnd() {
       log.musicChecked = document.getElementById('set-music').getAttribute('aria-checked');
       log.bgChecked = document.getElementById('set-bg').getAttribute('aria-checked');
       log.gameRow = document.querySelector('#c-game small').textContent;
+      log.srvPlayers = document.getElementById('srv-players').textContent;
+      log.newsText = document.getElementById('news').textContent + '|' + document.getElementById('news-full').textContent;
       const join = document.getElementById('si-join');
       log.join = join.hidden ? null : join.textContent;
       const errLink = document.querySelector('#si-error button');
@@ -787,6 +790,17 @@ scenarios.push({ name: 'Release hold: if the status file cannot be read the last
 ] });
 scenarios.push({ name: 'Release hold: staff removing the hold lets the update through', s: { ...base, update: '9.9.10', clicks: [], statusNow: holdOf(['9.9.10'], new Date(Date.now() + 36e5).toISOString()), updaterDelay: 33000, actions: [{ at: 3000, kind: 'status', value: {} }], end: 37000 }, expect: r => [
   ['the update installs', askedAt(r, 'updater_install') !== null],
+] });
+scenarios.push({ name: 'Server page: when the status call stops answering, the player count is not left showing the last number', s: { ...base, clicks: [], statusPollMs: 1000, end: 6000, actions: [{ at: 3000, kind: 'status', value: 'down' }] }, expect: r => [
+  ['the count shows a dash, not 1 / 50', r.srvPlayers === '–', String(r.srvPlayers)],
+] });
+scenarios.push({ name: 'News: when staff remove every item, the news panels go back to the empty line', s: { ...base, clicks: [], statusPollMs: 1000, end: 6000, actions: [{ at: 3000, kind: 'status', value: { news: [] } }] }, expect: r => [
+  ['the old items are gone', !/Body\./.test(r.newsText || ''), String(r.newsText)],
+  ['the empty line shows in both panels', (r.newsText || '').split('News from the server will show here.').length === 3, String(r.newsText)],
+] });
+scenarios.push({ name: 'Update button: if the progress listener cannot be set up, the button is released with RETRY and nothing is downloaded', s: { ...base, clicks: [2500], check: { build: 'B2', files: 3, bytes: 3000000 }, listenFails: 'sync-progress', end: 5000 }, expect: r => [
+  ['the update is never started', askedAt(r, 'update') === null],
+  ['the button shows RETRY after the press, not UPDATING for good', r.labels.some(l => l[0] > 2500 && /^RETRY/.test(l[1])), JSON.stringify(r.labels.slice(-6))],
 ] });
 scenarios.push({ name: 'Minimum launcher version: a long message is cut at a word with an ellipsis', s: { ...base, clicks: [], statusNow: { launcher: { minVersion: '99.0.0', message: 'Server changes need a newer launcher. '.repeat(10).trim() } }, end: 4000 }, expect: r => [
   ['it ends with an ellipsis', /…$/.test(r.minNotice || ''), r.minNotice],

@@ -1,0 +1,5 @@
+# 2026-10-13 Launcher UI items BG-5 (LA-F16) read and three fixed
+
+Read of ui/app.js against the four BG-5 items. Gone: settings toggles ARE rolled back when set_prefs fails (existing scenario "a setting that cannot be saved flips back"). Present and fixed (draft PR): (1) update() set busy and the UPDATING button, then awaited the sync-progress listener outside its try, so a listener failure left busy stuck when UPDATE was pressed directly (via checkNow the outer finally hid it); the listener is now inside the try, so the button goes to RETRY. (2) After a failed server_status the Server page kept the last player count; it now shows a dash. (3) News could not be cleared: an empty news list from the server left the old items; it now restores the empty line. Not fixed: patchGame (downgrade) has the same listener-outside-try shape (INFERRED, not traced to a real failing caller); the progress listener "outside try" for patch-progress is the same class.
+
+Tests: three new scenarios in .github/scripts/ui-fast-play-test.js. Not run locally (no Chrome in the cloud container; node --check only). CI runs them. Needs a launcher release; no server restart.

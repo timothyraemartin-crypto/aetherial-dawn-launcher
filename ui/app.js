@@ -387,7 +387,10 @@
     // Once every byte is in, the quiet is the launcher checking the file, not the server.
     let allIn = false;
     const stallTimer = setInterval(() => { if (performance.now() - lastEvent > 3000) $('p-speed').textContent = allIn ? 'Checking file…' : 'Waiting for the server…'; }, 1000);
-    const off = await T.event.listen('sync-progress', ({ payload: p }) => {
+    let off = () => {};
+    try {
+    // The listener is inside the try: if it cannot be set up, busy and the UPDATING button are released.
+    off = await T.event.listen('sync-progress', ({ payload: p }) => {
       const pct = p.bytesTotal ? (p.bytesDone / p.bytesTotal) * 100 : 100;
       $('p-bar').style.width = pct.toFixed(1) + '%';
       $('p-progress').setAttribute('aria-valuenow', String(Math.round(Math.min(100, pct))));
@@ -409,7 +412,6 @@
         last = { t: now, b: p.bytesDone };
       }
     });
-    try {
       await invoke('update', { verifyAll });
       // The update command completed and verified the pending file changes.
       pending = { ...pending, files: 0, remove: 0 };
@@ -831,6 +833,7 @@
          <div><h3>${esc(n.title)}</h3><time>${esc(n.date)}</time><p>${esc(n.body)}</p></div></article>`).join('');
   }
   let shownNews = '';
+  const EMPTY_NEWS = '<p class="empty">News from the server will show here.</p>';
   async function loadStatus() {
     status = await invoke('server_status').catch(() => null);
     statusAsked = true;
@@ -844,6 +847,8 @@
     if (!status) {
       online.className = 'online' + (pending ? '' : ' off');
       online.querySelector('span').textContent = pending ? 'Reachable' : 'Status unavailable';
+      // No current answer: do not keep showing the last count as if it were live.
+      $('srv-players').textContent = '–';
       return;
     }
     online.className = 'online' + (status.online ? '' : ' off');
@@ -853,6 +858,10 @@
     if (status.sinceReset) $('srv-reset').textContent = status.sinceReset;
     if (Array.isArray(status.news) && status.news.length) {
       showNews(status.news);
+    } else if (Array.isArray(status.news) && shownNews) {
+      // Staff removed every item: the panels go back to the empty line.
+      shownNews = '';
+      $('news').innerHTML = $('news-full').innerHTML = EMPTY_NEWS;
     }
   }
   // News changes the height of the box above Play, so it is only redrawn when
