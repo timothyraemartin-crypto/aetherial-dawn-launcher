@@ -509,6 +509,7 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     play_step(&app, "Checking your game…");
     let mut report = run_health_with_masters(&app, &dir, Some(&m), Some(masters)).await;
     rules.adjust_order_check(&mut report);
+    rules.add_collection_check(&dir, plugins_txt(&app).as_deref(), &mut report);
     log::line(&format!("health before play: worst={:?}\n{}", report.worst, report.text()));
     let base_check = report.checks.iter().find(|c| c.id == "masters")
         .ok_or("Could not finish checking the base game files. Try Play again.")?;

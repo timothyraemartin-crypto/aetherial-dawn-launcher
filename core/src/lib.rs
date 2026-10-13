@@ -10,6 +10,7 @@ pub mod atomicfile;
 pub mod browsercheck;
 pub mod bsa;
 pub mod clientstatus;
+pub mod collection;
 pub mod community;
 pub mod detach;
 pub mod faces;
