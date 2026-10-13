@@ -111,11 +111,42 @@ pub struct Trust {
 
 impl Trust {
     pub fn new(keys: Vec<VerifyingKey>, require: bool, dir: Option<&Path>) -> Trust {
-        let seen = dir
-            .and_then(|d| std::fs::read(d.join(SEEN_FILE)).ok())
-            .and_then(|b| serde_json::from_slice::<Vec<String>>(&b).ok())
-            .unwrap_or_default();
-        Trust { keys, require, seen: Mutex::new(seen.into_iter().collect()), dir: dir.map(Path::to_path_buf), retry_after: Duration::from_secs(3) }
+        let mut damaged = false;
+        let seen: Vec<String> = match dir.map(|d| std::fs::read(d.join(SEEN_FILE))) {
+            Some(Ok(b)) => serde_json::from_slice::<Vec<String>>(&b).unwrap_or_else(|_| {
+                damaged = true;
+                Vec::new()
+            }),
+            // Never written: this launcher has not seen a signature yet.
+            Some(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Some(Err(_)) => {
+                damaged = true;
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
+        let mut seen: HashSet<String> = seen.into_iter().collect();
+        // The file is only written after a valid signature, so one that exists
+        // but can't be read (a cut-short write, a lock) must not reopen the
+        // window where an unsigned feed is accepted: treat every feed as signed
+        // and write the file again whole. AD_FEEDSIG_LENIENT_SEEN=1 restores
+        // the old behaviour (an unreadable file counts as nothing seen).
+        let lenient = std::env::var_os("AD_FEEDSIG_LENIENT_SEEN").is_some_and(|v| v == "1");
+        if damaged && !lenient {
+            eprintln!("feedsig: {SEEN_FILE} is unreadable, so every feed must be signed from now on");
+            seen.extend([Feed::Mods, Feed::Manifest, Feed::Rules].map(|f| f.path().to_string()));
+            if let Some(dir) = dir {
+                Self::persist(dir, &seen);
+            }
+        }
+        Trust { keys, require, seen: Mutex::new(seen), dir: dir.map(Path::to_path_buf), retry_after: Duration::from_secs(3) }
+    }
+
+    fn persist(dir: &Path, seen: &HashSet<String>) {
+        let mut all: Vec<_> = seen.iter().cloned().collect();
+        all.sort();
+        let _ = std::fs::create_dir_all(dir);
+        let _ = crate::atomicfile::write(&dir.join(SEEN_FILE), &serde_json::to_vec(&all).unwrap_or_default());
     }
 
     /// Whether `bytes` may be used, given the signature file's contents
@@ -146,10 +177,7 @@ impl Trust {
             return;
         }
         if let Some(dir) = &self.dir {
-            let mut all: Vec<_> = seen.iter().cloned().collect();
-            all.sort();
-            let _ = std::fs::create_dir_all(dir);
-            let _ = std::fs::write(dir.join(SEEN_FILE), serde_json::to_vec(&all).unwrap_or_default());
+            Self::persist(dir, &seen);
         }
     }
 
@@ -292,6 +320,37 @@ pub(crate) mod tests {
         let again = trust_for(&k, false, Some(dir.path()));
         assert!(again.check(Feed::Manifest, BODY, None).is_err());
         assert!(again.check(Feed::Mods, BODY, None).is_ok());
+    }
+
+    /// A signed-feeds.json that can't be read must not turn the check off: it
+    /// is only ever written after a valid signature, so unsigned feeds stay
+    /// refused (and the file is rewritten whole).
+    #[test]
+    fn a_damaged_seen_file_does_not_reopen_the_unsigned_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let k = key(1);
+        trust_for(&k, false, Some(dir.path())).check(Feed::Manifest, BODY, Some(&sign(&k, Feed::Manifest, BODY))).unwrap();
+        // A power cut mid-write leaves part of the JSON.
+        std::fs::write(dir.path().join(SEEN_FILE), b"[\"client/man").unwrap();
+        let again = trust_for(&k, false, Some(dir.path()));
+        for feed in [Feed::Manifest, Feed::Mods, Feed::Rules] {
+            assert!(again.check(feed, BODY, None).is_err(), "{feed:?} accepted unsigned after the seen file was damaged");
+        }
+        // Healed on disk: the next start parses it and still refuses.
+        let third = trust_for(&k, false, Some(dir.path()));
+        assert!(third.check(Feed::Manifest, BODY, None).is_err());
+        // A launcher with no seen file at all (never saw a signature) keeps the rollout rule.
+        let fresh = tempfile::tempdir().unwrap();
+        assert!(trust_for(&k, false, Some(fresh.path())).check(Feed::Mods, BODY, None).is_ok());
+    }
+
+    #[test]
+    fn remembering_a_signed_feed_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let k = key(1);
+        trust_for(&k, false, Some(dir.path())).check(Feed::Mods, BODY, Some(&sign(&k, Feed::Mods, BODY))).unwrap();
+        assert!(!dir.path().join(format!("{SEEN_FILE}.tmp")).exists());
+        assert!(serde_json::from_slice::<Vec<String>>(&std::fs::read(dir.path().join(SEEN_FILE)).unwrap()).is_ok());
     }
 
     /// The trust the launcher builds for real (pinned keys), as it would be with `REQUIRE_SIGNED` on.
