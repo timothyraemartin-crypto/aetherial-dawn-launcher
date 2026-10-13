@@ -1,0 +1,3 @@
+# 2026-10-13 Kill switch for ending a leftover Skyrim
+
+Audit fix D2 (draft PR): `end_leftover_skyrim` ends any SkyrimSE.exe that is 30 s old with no window for 8 s while no launcher session runs, including a game started from Steam that is still loading or has a hidden window, and it had no switch. Before it ends one it now reads status.json `launcher.leftoverKill`; only an explicit `false` stops it (default on, unreadable status leaves it on). Pure helper `netcheck::leftover_kill_on` with a core test (passes locally). The `src-tauri/src/main.rs` change could NOT be compiled here (no GTK/webkit libraries): it is checked by a manual Build launcher run on this branch (windows-checks) and must pass before merge. Age threshold left at 30 s. Not game-verified.
