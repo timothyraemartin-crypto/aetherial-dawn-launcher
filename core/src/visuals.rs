@@ -9,15 +9,14 @@
 
 use std::path::Path;
 
-/// The base game's archives in Data (SkyrimSE 1.6.x). A missing or empty one
+/// The base game's archives in Data (SkyrimSE 1.6.1170). Patch, Update, Dawnguard and Dragonborn .bsa are not in this version's Data folder (installs of this version lack them), so they are not listed. A missing or empty one
 /// means missing meshes, textures, animations or UI.
-pub const BASE_ARCHIVES: [&str; 20] = [
+pub const BASE_ARCHIVES: [&str; 16] = [
     "Skyrim - Animations.bsa",
     "Skyrim - Interface.bsa",
     "Skyrim - Meshes0.bsa",
     "Skyrim - Meshes1.bsa",
     "Skyrim - Misc.bsa",
-    "Skyrim - Patch.bsa",
     "Skyrim - Shaders.bsa",
     "Skyrim - Sounds.bsa",
     "Skyrim - Textures0.bsa",
@@ -29,9 +28,6 @@ pub const BASE_ARCHIVES: [&str; 20] = [
     "Skyrim - Textures6.bsa",
     "Skyrim - Textures7.bsa",
     "Skyrim - Textures8.bsa",
-    "Update.bsa",
-    "Dawnguard.bsa",
-    "Dragonborn.bsa",
 ];
 
 /// Settings that change how textures, LODs and loaded objects stream in.
