@@ -522,6 +522,13 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     let mut report = run_health_with_masters(&app, &dir, Some(&m), Some(masters)).await;
     rules.adjust_order_check(&mut report);
     rules.add_collection_check(&dir, plugins_txt(&app).as_deref(), &mut report);
+    // "Same game files as the server": warn-only, so it can never stop Play (core/src/parity.rs).
+    if flags.parity_report {
+        if let Some(txt) = plugins_txt(&app) {
+            let fp = launcher_core::parity::build(&app.package_info().version.to_string(), &dir, &txt, Some(&order));
+            report.checks.push(launcher_core::parity::check(&fp));
+        }
+    }
     log::line(&format!("health before play: worst={:?}\n{}", report.worst, report.text()));
     let base_check = report.checks.iter().find(|c| c.id == "masters")
         .ok_or("Could not finish checking the base game files. Try Play again.")?;
@@ -673,6 +680,10 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
             log::line(&format!("play: load order verified right before launch: the game's first {} plugins are the server's", order.len()));
         }
     }
+    // What this PC will start with, for the server to compare with its own order. Background, best effort.
+    if flags.parity_report {
+        send_client_parity(&app, &dir, &order, false, 0);
+    }
     play_step(&app, "Starting Skyrim through SKSE…");
     // The game gets its own TEMP (core/src/isolate.rs) so nothing another SkyMP client left in %TEMP%
     // reaches it; if that cannot be made, the writable-fallback folder from the browser check is used.
@@ -708,6 +719,12 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     if config.close_on_launch {
         if let Some(w) = app.get_webview_window("main") {
             let _ = w.hide();
+        }
+    }
+    // Read the order again while the game runs: plugins.txt was seen rewritten ~12 s after the start, after the launch reading matched.
+    if flags.parity_report {
+        for secs in [45, 180] {
+            send_client_parity(&app, &dir, &order, true, secs);
         }
     }
     tauri::async_runtime::spawn(watch_game(app.clone(), dir.clone(), started, config.close_on_launch));
@@ -1887,6 +1904,43 @@ fn send_client_status(app: &AppHandle, dir: &std::path::Path) {
             Ok(r) if r.status().is_success() || r.status().as_u16() == 404 => {}
             Ok(r) => log::line(&format!("play: the install report got {}", r.status().as_u16())),
             Err(e) => log::line(&format!("play: couldn't send the install report: {}", launcher_core::scrub(&e.to_string()))),
+        }
+    });
+}
+
+/// Tells the login service, in the background, what this PC will start the game with: game version,
+/// the plugin order, Creation Club files and archive names (core/src/parity.rs; names and hashes only).
+/// Nothing is awaited, so Play never waits; 404 (route not live) and any failure are silent for the player.
+fn send_client_parity(app: &AppHandle, dir: &std::path::Path, order: &[launcher_core::serverorder::ServerPlugin], running: bool, after_secs: u64) {
+    let (Some(token), Some(txt)) = (token(app), plugins_txt(app)) else { return };
+    let (app, dir, order) = (app.clone(), dir.to_path_buf(), order.to_vec());
+    tauri::async_runtime::spawn(async move {
+        if after_secs > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(after_secs)).await;
+        }
+        let state = app.state::<AppState>();
+        // A reading after the game closed would see the order the launcher put back, not the one the game ran with.
+        if running && !state.active_session.load(Ordering::SeqCst) {
+            return;
+        }
+        let launcher = app.package_info().version.to_string();
+        let fp = tauri::async_runtime::spawn_blocking(move || {
+            let fp = launcher_core::parity::build(&launcher, &dir, &txt, Some(&order));
+            if running { fp.running() } else { fp }
+        })
+        .await;
+        let Ok(fp) = fp else { return };
+        log::line(&format!(
+            "play: {} fingerprint: game {} ({}), {} Creation Club file(s) present, {} switched on, matches the server: {}{}",
+            fp.phase, fp.game_version.as_deref().unwrap_or("unknown"), fp.edition_guess, fp.cc_present_count, fp.cc_active.len(),
+            fp.server_match.map_or("no list".to_string(), |m| m.to_string()),
+            fp.server_diff.first().map(|d| format!(" ({d})")).unwrap_or_default()
+        ));
+        let url = format!("{}/api/client-parity", AUTH_URL.trim_end_matches('/'));
+        match state.http.post(&url).header("authorization", token).json(&fp).timeout(std::time::Duration::from_secs(10)).send().await {
+            Ok(r) if r.status().is_success() || r.status().as_u16() == 404 => {}
+            Ok(r) => log::line(&format!("play: the {} fingerprint got {}", fp.phase, r.status().as_u16())),
+            Err(e) => log::line(&format!("play: couldn't send the {} fingerprint: {}", fp.phase, launcher_core::scrub(&e.to_string()))),
         }
     });
 }

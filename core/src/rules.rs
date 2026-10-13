@@ -116,6 +116,7 @@ impl Rules {
             browser_guard: on(&checks, "browserGuard"),
             isolate_temp: on(&checks, "isolateTemp"),
             archive_gate: checks.get("archiveGate").and_then(Value::as_bool) == Some(true),
+            parity_report: on(&checks, "parityReport"),
         };
         r.server_order = match checks.get("serverOrder").and_then(Value::as_str) {
             Some("warn") => Level::Warn,
@@ -173,6 +174,7 @@ impl Rules {
             browser_guard: status.browser_guard && self.flags.browser_guard,
             isolate_temp: status.isolate_temp && self.flags.isolate_temp,
             archive_gate: status.archive_gate && self.flags.archive_gate,
+            parity_report: status.parity_report && self.flags.parity_report,
         }
     }
 

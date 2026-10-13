@@ -41,11 +41,13 @@ pub struct Flags {
     pub isolate_temp: bool,
     /// Stop Play when Skyrim's own base archives are missing or empty (health.rs "archives"). Off unless rules checks.archiveGate is true.
     pub archive_gate: bool,
+    /// Send the join fingerprint (game version, plugin order, Creation Club files) and show the "same files as the server" row (parity.rs).
+    pub parity_report: bool,
 }
 
 impl Default for Flags {
     fn default() -> Self {
-        Flags { firewall_fix: true, udp_probe: true, connect_watch: true, platform_guard: true, session_upload: true, connect_ladder: true, browser_guard: true, isolate_temp: true, asset_report: true, archive_gate: false }
+        Flags { firewall_fix: true, udp_probe: true, connect_watch: true, platform_guard: true, session_upload: true, connect_ladder: true, browser_guard: true, isolate_temp: true, asset_report: true, archive_gate: false, parity_report: true }
     }
 }
 
@@ -53,7 +55,7 @@ impl Flags {
     pub fn from_status(status: Option<&serde_json::Value>) -> Flags {
         let launcher = status.and_then(|s| s.get("launcher"));
         let on = |key: &str| launcher.and_then(|l| l.get(key)).and_then(|v| v.as_bool()) != Some(false);
-        Flags { firewall_fix: on("firewallFix"), udp_probe: on("udpProbe"), connect_watch: on("connectWatch"), platform_guard: on("platformGuard"), session_upload: on("sessionUpload"), connect_ladder: on("connectLadder"), browser_guard: on("browserGuard"), isolate_temp: on("isolateTemp"), asset_report: on("assetReport"), archive_gate: launcher.and_then(|l| l.get("archiveGate")).and_then(|v| v.as_bool()) == Some(true) }
+        Flags { firewall_fix: on("firewallFix"), udp_probe: on("udpProbe"), connect_watch: on("connectWatch"), platform_guard: on("platformGuard"), session_upload: on("sessionUpload"), connect_ladder: on("connectLadder"), browser_guard: on("browserGuard"), isolate_temp: on("isolateTemp"), asset_report: on("assetReport"), archive_gate: launcher.and_then(|l| l.get("archiveGate")).and_then(|v| v.as_bool()) == Some(true), parity_report: on("parityReport") }
     }
 }
 

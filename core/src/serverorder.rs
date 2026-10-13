@@ -146,6 +146,11 @@ fn ccc_paths(game_dir: &Path) -> Vec<PathBuf> {
     [game_dir.join("Skyrim.ccc"), game_dir.join("Data").join("Skyrim.ccc")].into_iter().filter(|p| p.is_file()).collect()
 }
 
+/// Plugin lines left in Skyrim.ccc (0 once Play has emptied it, or when there is none).
+pub fn ccc_line_count(game_dir: &Path) -> usize {
+    ccc_paths(game_dir).iter().filter_map(|p| crate::loadorder::read_text(p).ok()).map(|t| t.lines().filter(|l| !l.trim().is_empty()).count()).max().unwrap_or(0)
+}
+
 /// Empties Skyrim.ccc for a session, keeping the original beside it. A
 /// non-empty Skyrim.ccc is the real one (Steam may have put it back), so it
 /// replaces any older backup; an empty one keeps the backup an unfinished
