@@ -144,3 +144,11 @@ Status key used: no row is Staging-verified. "Offline-tested" = tests present (c
 | LA-AUTO-13 | CI: auto-fix bridge | .github/workflows/autofix-bridge.yml:7-12 | cron every 5 min (3,8,...), label event, dispatch | May merge a labelled PR via GITHUB_TOKEN after re-checking CI | self-hosted runner offline: skipped | n/a | idempotent per PR (INFERRED) | next cron | Actions log | Needs AD_SSH_* secrets |
 | LA-AUTO-14 | CI: capture-errors | .github/workflows/capture-errors.yml:5-8 | workflow_run completed on failure | Opens/updates one `auto-error` issue | n/a | n/a | updates open issue | none | issues | none |
 | LA-AUTO-15 | CI: bug-investigate, collection-refresh, publish-feed, release-tag, sign-release | .github/workflows/*.yml | Issue label `player-bug`; PR/dispatch; dispatch (human) | Draft PRs only; publish/tag only by dispatch | n/a | n/a | publish keeps backups | manual | Actions log | none |
+
+## Updates since the baseline (2026-10-13 16:38Z, REPORTED by the coordinator; cross-repo detail in program/register.md)
+
+- Launcher 0.1.148 released (REPORTED); includes the client-parity fingerprint. Row below. Installed versions on player PCs UNKNOWN.
+
+| ID | Feature | Status | Evidence | Next action |
+|---|---|---|---|---|
+| LA-PARITY-1 | Join fingerprint and "same game files as the server" row (launcher PR 162 line, released in 0.1.148) | Implemented | REPORTED released 0.1.148 (coordinator 16:38Z); PR 162 body: 223 core tests pass, warn-level only; not game-verified | Confirm fingerprints arrive for a real join and a seeded mismatch is journaled (Standing Goal quality check 3) |
