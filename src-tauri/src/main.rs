@@ -817,6 +817,18 @@ async fn end_leftover_skyrim(app: AppHandle) {
         gone += 1;
         if gone >= 8 {
             gone = 0;
+            // Staff can switch this off (status.json launcher.leftoverKill=false): a Skyrim started from Steam that is
+            // still loading, or whose window is hidden, looks the same as a left-behind one.
+            let (http, base_url) = {
+                let state = app.state::<AppState>();
+                let http = state.http.clone();
+                let base_url = state.config.lock().await.base_url.clone();
+                (http, base_url)
+            };
+            let status = get_json(&http, &format!("{}/status.json", base_url.trim_end_matches('/'))).await;
+            if !netcheck::leftover_kill_on(status.as_ref()) {
+                continue;
+            }
             log::line("game: a Skyrim with no window was left running (force-closed, or from an earlier launcher); ending it so Play works");
             watch::terminate(pid);
             for helper in watch::BROWSER_HELPERS {

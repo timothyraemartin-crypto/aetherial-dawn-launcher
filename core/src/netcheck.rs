@@ -59,6 +59,12 @@ impl Flags {
     }
 }
 
+/// Whether the launcher may end a Skyrim it did not start (status.json `launcher.leftoverKill`). Like the other
+/// flags, only an explicit `false` turns it off; a missing key or an unreadable status file leaves it on.
+pub fn leftover_kill_on(status: Option<&serde_json::Value>) -> bool {
+    status.and_then(|s| s.get("launcher")).and_then(|l| l.get("leftoverKill")).and_then(|v| v.as_bool()) != Some(false)
+}
+
 // ---------- Windows Firewall ----------
 
 /// One firewall rule that names SkyrimSE.exe, as PowerShell reports it.
@@ -569,6 +575,15 @@ mod tests {
         assert!(Flags::from_status(None).isolate_temp);
         assert!(!Flags::from_status(Some(&serde_json::json!({"launcher": {"isolateTemp": false}}))).isolate_temp);
         assert!(!Flags::from_status(Some(&serde_json::json!({"launcher": {"sessionUpload": false}}))).session_upload);
+    }
+
+    #[test]
+    fn leftover_kill_only_turns_off_on_an_explicit_false() {
+        assert!(leftover_kill_on(None));
+        assert!(leftover_kill_on(Some(&serde_json::json!({}))));
+        assert!(leftover_kill_on(Some(&serde_json::json!({"launcher": {"leftoverKill": "no"}}))));
+        assert!(leftover_kill_on(Some(&serde_json::json!({"launcher": {"leftoverKill": true}}))));
+        assert!(!leftover_kill_on(Some(&serde_json::json!({"launcher": {"leftoverKill": false}}))));
     }
 
     #[test]
