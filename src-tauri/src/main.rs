@@ -508,6 +508,14 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
             }
         }
     }
+    // The collection's plugins must be on in plugins.txt (Vortex leaves some off); only when the rules say so.
+    if let Some(txt) = plugins_txt(&app) {
+        match launcher_core::collection::enable_plugins(&rules.collection, &dir, &txt) {
+            Ok(v) if !v.is_empty() => log::line(&format!("play: switched on the collection's plugins in plugins.txt: {}", v.join(", "))),
+            Ok(_) => {}
+            Err(e) => log::line(&format!("play: couldn't switch on the collection's plugins: {e}")),
+        }
+    }
     play_step(&app, "Checking your game…");
     let mut report = run_health_with_masters(&app, &dir, Some(&m), Some(masters)).await;
     rules.adjust_order_check(&mut report);
@@ -537,6 +545,11 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
             None => "Send Copy diagnostics to staff.".into(),
         };
         return Err(rules.order_mismatch_message(&which, &tell));
+    }
+    // The required Nexus collection (rules `collection.level` = "block"): a missing mod or a plugin that is off stops Play.
+    if let Some(c) = report.checks.iter().find(|c| c.id == "collection" && c.status == health::Status::Fail) {
+        log::line(&format!("play: stopped, the required collection is incomplete: {}", c.items.join("; ")));
+        return Err(launcher_core::collection::block_message(&rules.collection, &c.items));
     }
     // Skyrim that starts but never reaches the server: Windows Firewall rules
     // for SkyrimSE.exe and the server's UDP port. Advisory only: nothing here
@@ -659,21 +672,25 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
         }
     }
     play_step(&app, "Starting Skyrim through SKSE…");
-    let temp_before = (std::env::var_os("TEMP"), std::env::var_os("TMP"));
-    if let Some(alt) = &browser_temp_fallback {
-        std::env::set_var("TEMP", alt);
-        std::env::set_var("TMP", alt);
-    }
-    let launched = game::launch(&dir);
-    if browser_temp_fallback.is_some() {
-        // Only the game was meant to see the other temp folder.
-        for (k, v) in [("TEMP", temp_before.0), ("TMP", temp_before.1)] {
-            match v {
-                Some(v) => std::env::set_var(k, v),
-                None => std::env::remove_var(k),
+    // The game gets its own TEMP (core/src/isolate.rs) so nothing another SkyMP client left in %TEMP%
+    // reaches it; if that cannot be made, the writable-fallback folder from the browser check is used.
+    let game_temp = if flags.isolate_temp {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0).to_string();
+        match launcher_core::isolate::prepare(&dir, &stamp) {
+            Ok(t) => {
+                log::line(&format!("play: the game gets its own temp folder {} (other Skyrim servers' temp files stay out)", t.display()));
+                Some(t)
+            }
+            Err(e) => {
+                log::line(&format!("play: couldn't make the game's own temp folder ({e}); using the system temp"));
+                browser_temp_fallback.clone()
             }
         }
-    }
+    } else {
+        browser_temp_fallback.clone()
+    };
+    *GAME_TEMP.lock().unwrap_or_else(|p| p.into_inner()) = game_temp.clone();
+    let launched = game::launch(&dir, game_temp.as_deref());
     launched.map_err(err)?;
     state.active_session.store(true, Ordering::SeqCst);
     let google = game::google_env_present();
@@ -795,6 +812,13 @@ async fn end_leftover_skyrim(app: AppHandle) {
 
 /// Follows Skyrim from launch to exit. Every session leaves a report in the
 /// log folder; a crash brings the launcher back with that report on screen.
+/// The TEMP folder the running game was given (None: the system's).
+static GAME_TEMP: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+fn game_temp_dir() -> std::path::PathBuf {
+    GAME_TEMP.lock().unwrap_or_else(|p| p.into_inner()).clone().unwrap_or_else(std::env::temp_dir)
+}
+
 async fn watch_game(app: AppHandle, game_dir: std::path::PathBuf, started: std::time::SystemTime, close_on_launch: bool) {
     let close = watch_game_inner(app.clone(), &game_dir, started, close_on_launch).await;
     app.state::<AppState>().active_session.store(false, Ordering::SeqCst);
@@ -843,7 +867,7 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
                 let cc_on: Vec<&str> = entries.iter().filter(|l| l.starts_with('*') && l[1..].trim_start().to_ascii_lowercase().starts_with("cc")).map(|l| l.as_str()).collect();
                 log::line(&format!("game: {at} seconds in, plugins.txt has {} Creation Club plugin(s) listed, {} switched on{}", entries.iter().filter(|l| l.trim_start_matches('*').trim_start().to_ascii_lowercase().starts_with("cc")).count(), cc_on.len(), if cc_on.is_empty() { String::new() } else { format!(": {}", cc_on.join(", ")) }));
                 // The browser creates its profile folder in TEMP when it starts; no folder means its code never got that far.
-                let temp_made = std::env::temp_dir().join("Skyrim Platform").exists();
+                let temp_made = game_temp_dir().join("Skyrim Platform").exists();
                 log::line(&format!("game: {at} seconds in, the browser's temp folder {} exists", if temp_made { "DOES" } else { "does NOT" }));
                 let up = watch::BROWSER_HELPERS.iter().any(|h| watch::find_process(h).is_some());
                 browser_probe().store(up as i8, Ordering::SeqCst);
@@ -958,7 +982,7 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
     }
     let filed = Filed::default();
     report.push_str(&format!("\n===== game data =====\n{}{}", bundled::report_line(&game_dir, plugins_txt(&app).as_deref()), game_data_report(&app, &game_dir, flags.asset_report)));
-    let session_logs = watch::collect(&skse_logs, &std::env::temp_dir(), started);
+    let session_logs = watch::collect(&skse_logs, &game_temp_dir(), started);
     let browser_text = {
         let t = launcher_core::browsercheck::report_text(&game_dir);
         let defender = tokio::task::spawn_blocking(netcheck::defender_history).await.unwrap_or_default();

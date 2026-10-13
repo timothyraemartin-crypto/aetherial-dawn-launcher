@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "rev": "2026-10-13.1",
+  "rev": "2026-10-13.4",
   "off": false,
   "checks": {
     "firewallFix": true,
@@ -65,7 +65,7 @@
     "slug": "nzwgrw",
     "game": "skyrimspecialedition",
     "name": "Aetherial Dawn",
-    "revision": 3,
+    "revision": 6,
     "url": "https://www.nexusmods.com/games/skyrimspecialedition/collections/nzwgrw",
     "level": "warn",
     "mods": [
@@ -146,11 +146,178 @@
         "files": [
           "Data/SKSE/Plugins/CrashLoggerSSE.dll"
         ]
+      },
+      {
+        "name": "Armory of the Dragon Cult - Dragon Priest Armor",
+        "modId": 94244,
+        "fileId": 506924,
+        "version": "2.0",
+        "files": [
+          "Data/DragonPriestArmor.esp",
+          "Data/DragonPriestArmorKP.esp",
+          "Data/DragonPriestArmorWyrmstooth.esp"
+        ],
+        "allow": [
+          "Data/DPA_DISTR.ini",
+          "Data/meshes/armor/dragon priests",
+          "Data/textures/actors/dragon priest",
+          "Data/textures/armor/dragon priests",
+          "Data/scripts/dpa_"
+        ]
+      },
+      {
+        "name": "Dragon Priests Retexture SE",
+        "modId": 101101,
+        "fileId": 506852,
+        "version": "1.1",
+        "files": [
+          "Data/DragonPriestRetextureSE_KonAcc.esp"
+        ],
+        "allow": [
+          "Data/meshes/actors/dragonpriest",
+          "Data/meshes/armor/beltdpmask",
+          "Data/meshes/armor/dragon priests",
+          "Data/meshes/armor/dragonpriesthelms",
+          "Data/meshes/clutter/dragonpriestmaskaltar",
+          "Data/meshes/dlc02/clothes",
+          "Data/textures/actors/dlc02",
+          "Data/textures/actors/dragon priest",
+          "Data/textures/armor/dragon priests",
+          "Data/textures/armor/dragonpriesthelm",
+          "Data/textures/clothes/cloaksofskyrim",
+          "Data/textures/dlc02/",
+          "Data/textures/konahacc",
+          "Data/textures/weapons/dragon priest",
+          "Data/textures/weapons/uniqueweaps"
+        ]
+      },
+      {
+        "name": "powerofthree's Tweaks",
+        "modId": 51073,
+        "fileId": 794717,
+        "version": "1.17.1",
+        "files": [
+          "Data/SKSE/Plugins/po3_Tweaks.dll"
+        ]
+      },
+      {
+        "name": "Spell Perk Item Distributor (SPID)",
+        "modId": 36869,
+        "fileId": 795621,
+        "version": "7.3.3",
+        "files": [
+          "Data/SKSE/Plugins/po3_SpellPerkItemDistributor.dll"
+        ]
+      },
+      {
+        "name": "More Craftable Equipment - Unenchanted Clothing and Specialty Gear",
+        "modId": 44666,
+        "fileId": 363683,
+        "version": "1.4.0",
+        "files": [
+          "Data/MoreCraftableEquipment.esp",
+          "Data/MoreCraftableEquipment_AdvCyrus.esp",
+          "Data/MoreCraftableEquipment_BYOHLooms.esp",
+          "Data/MoreCraftableEquipment_Fish.esp"
+        ],
+        "allow": [
+          "Data/MoreCraftableEquipment",
+          "Data/interface/mce",
+          "Data/interface/translations/morecraftableequipment",
+          "Data/SKSE/Plugins/InventoryInjector",
+          "Data/SKSE/Plugins/CraftingCategories"
+        ]
+      },
+      {
+        "name": "Beard Mask Fix - Beards Use Slot 44 SKSE Plugin",
+        "modId": 80232,
+        "fileId": 796514,
+        "version": "1.0.2",
+        "files": [
+          "Data/BeardMaskFix.esp"
+        ]
+      },
+      {
+        "name": "Inventory Interface Information Injector",
+        "modId": 85702,
+        "fileId": 796498,
+        "version": "1.1.1",
+        "files": [
+          "Data/I4IconAddon.esp",
+          "Data/SKSE/Plugins/InventoryInjector.dll"
+        ]
+      },
+      {
+        "name": "Keyword Item Distributor (KID)",
+        "modId": 55728,
+        "fileId": 794743,
+        "version": "4.1.0",
+        "files": [
+          "Data/SKSE/Plugins/KeywordItemDistributor.dll"
+        ]
+      },
+      {
+        "name": "King-Priest - Enhanced Dragon Priests",
+        "modId": 59652,
+        "fileId": 506454,
+        "version": "4.0.2",
+        "files": [
+          "Data/King-Priest.esp"
+        ],
+        "allow": [
+          "Data/interface/king-priest",
+          "Data/meshes/jelidity",
+          "Data/meshes/prvti",
+          "Data/meshes/sacrosanctnew",
+          "Data/textures/example/effects",
+          "Data/textures/jelidity",
+          "Data/textures/prvti",
+          "Data/SKSE/Plugins/InventoryInjector"
+        ]
+      },
+      {
+        "name": "Konahrik's Accoutrements - Dragon Priest Armory",
+        "modId": 22206,
+        "fileId": 76929,
+        "version": "5.5.3",
+        "files": [
+          "Data/konahrik_accoutrements.esp"
+        ],
+        "allow": [
+          "Data/KA_Readme.txt",
+          "Data/meshes/actors/character",
+          "Data/meshes/armor/dragon-medallion",
+          "Data/meshes/armor/dragonpriesthelms",
+          "Data/meshes/dlc02/armor",
+          "Data/meshes/konahacc",
+          "Data/scripts/ka",
+          "Data/scripts/archive/ka_",
+          "Data/scripts/pf_ka_",
+          "Data/scripts/qf_ka_",
+          "Data/scripts/kahevnoraak",
+          "Data/scripts/kakrosis",
+          "Data/scripts/karestore",
+          "Data/textures/actors/character",
+          "Data/textures/armor/dragon_medallion",
+          "Data/textures/konahacc"
+        ]
       }
     ],
     "pluginOrder": [
       "Unofficial Skyrim Special Edition Patch.esp",
-      "SkyUI_SE.esp"
+      "SkyUI_SE.esp",
+      "BeardMaskFix.esp",
+      "I4IconAddon.esp",
+      "MoreCraftableEquipment.esp",
+      "MoreCraftableEquipment_AdvCyrus.esp",
+      "MoreCraftableEquipment_BYOHLooms.esp",
+      "MoreCraftableEquipment_Fish.esp",
+      "DragonPriestArmor.esp",
+      "DragonPriestArmorKP.esp",
+      "DragonPriestArmorWyrmstooth.esp",
+      "DragonPriestRetextureSE_KonAcc.esp",
+      "King-Priest.esp",
+      "konahrik_accoutrements.esp"
     ]
   }
 }

@@ -37,13 +37,15 @@ pub struct Flags {
     pub connect_ladder: bool,
     /// Check and repair what Skyrim Platform's in-game browser needs before Play (browsercheck.rs).
     pub browser_guard: bool,
+    /// Start the game with its own TEMP folder (isolate.rs).
+    pub isolate_temp: bool,
     /// Stop Play when Skyrim's own base archives are missing or empty (health.rs "archives"). Off unless rules checks.archiveGate is true.
     pub archive_gate: bool,
 }
 
 impl Default for Flags {
     fn default() -> Self {
-        Flags { firewall_fix: true, udp_probe: true, connect_watch: true, platform_guard: true, session_upload: true, connect_ladder: true, browser_guard: true, asset_report: true, archive_gate: false }
+        Flags { firewall_fix: true, udp_probe: true, connect_watch: true, platform_guard: true, session_upload: true, connect_ladder: true, browser_guard: true, isolate_temp: true, asset_report: true, archive_gate: false }
     }
 }
 
@@ -51,7 +53,7 @@ impl Flags {
     pub fn from_status(status: Option<&serde_json::Value>) -> Flags {
         let launcher = status.and_then(|s| s.get("launcher"));
         let on = |key: &str| launcher.and_then(|l| l.get(key)).and_then(|v| v.as_bool()) != Some(false);
-        Flags { firewall_fix: on("firewallFix"), udp_probe: on("udpProbe"), connect_watch: on("connectWatch"), platform_guard: on("platformGuard"), session_upload: on("sessionUpload"), connect_ladder: on("connectLadder"), browser_guard: on("browserGuard"), asset_report: on("assetReport"), archive_gate: launcher.and_then(|l| l.get("archiveGate")).and_then(|v| v.as_bool()) == Some(true) }
+        Flags { firewall_fix: on("firewallFix"), udp_probe: on("udpProbe"), connect_watch: on("connectWatch"), platform_guard: on("platformGuard"), session_upload: on("sessionUpload"), connect_ladder: on("connectLadder"), browser_guard: on("browserGuard"), isolate_temp: on("isolateTemp"), asset_report: on("assetReport"), archive_gate: launcher.and_then(|l| l.get("archiveGate")).and_then(|v| v.as_bool()) == Some(true) }
     }
 }
 
@@ -562,6 +564,8 @@ mod tests {
         let f = Flags::from_status(Some(&serde_json::json!({"launcher": {"firewallFix": false, "connectWatch": false}})));
         assert!(!f.firewall_fix && f.udp_probe && !f.connect_watch && f.platform_guard);
         assert!(!Flags::from_status(Some(&serde_json::json!({"launcher": {"platformGuard": false}}))).platform_guard);
+        assert!(Flags::from_status(None).isolate_temp);
+        assert!(!Flags::from_status(Some(&serde_json::json!({"launcher": {"isolateTemp": false}}))).isolate_temp);
         assert!(!Flags::from_status(Some(&serde_json::json!({"launcher": {"sessionUpload": false}}))).session_upload);
     }
 

@@ -18,6 +18,7 @@ pub mod feedsig;
 pub mod game;
 pub mod gameini;
 pub mod health;
+pub mod isolate;
 pub mod ladder;
 pub mod loadorder;
 pub mod manifest;
