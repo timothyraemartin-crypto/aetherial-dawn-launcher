@@ -366,7 +366,9 @@ mod tests {
     fn the_shipped_server_file_is_todays_behaviour() {
         let shipped = include_bytes!("../../server/launcher-rules.json");
         let r = Rules::parse(shipped).unwrap();
-        assert_eq!(Rules { rev: r.rev.clone(), ..Rules::default() }, r);
+        // Everything but the collection is today's behaviour; the collection comes from the file (revision moves with Nexus).
+        assert_eq!(Rules { rev: r.rev.clone(), collection: r.collection.clone(), ..Rules::default() }, r);
+        assert_eq!(r.collection.level, crate::collection::Level::Warn);
         assert_ne!(r.rev, "unnamed");
     }
 
