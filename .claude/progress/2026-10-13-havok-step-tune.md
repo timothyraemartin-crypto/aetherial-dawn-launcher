@@ -14,3 +14,6 @@ Kill switch: rules `on:false`, or remove the entry. Next: Windows build, release
 - `SSEDisplayTweaks.ini [Render] FramerateLimit` (30 to 240) is now a tunable key; Play applies it to `Data/SKSE/Plugins/SSEDisplayTweaks.ini` before reading the cap, so fMaxTime follows (60 gives 0.0166667). If that ini does not exist yet nothing is written that Play; the next Play (after the game has made it) does.
 - Rules entry `FramerateLimit set 60` ships `on:false`; 0.1.152 is not tagged yet, so this rides 0.1.152.
 - A 60 cap on a 120 Hz monitor is a visible change. Off switch: rules `on:false` for both entries (values already written stay; the first original is kept as `<name>.aetherial-dawn-backup` next to the ini).
+
+## 23:05Z live
+Launcher 0.1.152 released (f7f9b88). Served rules rev 2026-10-13.8 has FramerateLimit=60 and fMaxTime (framerate mode) on (REPORTED by the wiring thread, signed and verified by the publish script). The repo copy is synced to .8 with both on:true; the shipped-file test now expects exactly those two tunes. NOT verified: any in-game effect; Timothy's PC writes the Display Tweaks ini on his next Play after updating.

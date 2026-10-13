@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "rev": "2026-10-13.7",
+  "rev": "2026-10-13.8",
   "off": false,
   "checks": {
     "firewallFix": true,
@@ -56,7 +56,7 @@
         "key": "FramerateLimit",
         "mode": "set",
         "value": 60,
-        "on": false,
+        "on": true,
         "note": "frame cap for everyone (Timothy 2026-10-13); Display Tweaks ini in Data/SKSE/Plugins. on:false to stop"
       },
       {
@@ -65,8 +65,8 @@
         "key": "fMaxTime",
         "mode": "framerate",
         "value": 0.004,
-        "on": false,
-        "note": "physics step = 1 / the player's own FramerateLimit (SSEDisplayTweaks.ini); skipped when no cap is set. Creature sink test: set on:true once the launcher carrying this mode is released"
+        "on": true,
+        "note": "physics step = 1 / the player's own FramerateLimit (SSEDisplayTweaks.ini); skipped when no cap is set. Creature sink test; on:false to stop"
       },
       {
         "file": "Skyrim.ini",
