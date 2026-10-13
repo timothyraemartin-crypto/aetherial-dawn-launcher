@@ -22,5 +22,5 @@ for pair in $(jq -r '.mods[] | select(.source.modId != null) | "\(.source.modId)
   m=${pair%:*}; f=${pair#*:}
   P=$(curl -fsS -m 60 -H "apikey: $NEXUS_API_KEY" "https://api.nexusmods.com/v1/games/$GAME/mods/$m/files/$f.json" | jq -r '.content_preview_link // empty')
   echo "-- mod $m file $f"
-  [ -n "$P" ] && curl -fsS -m 60 "${P// /%20}" | jq -r '[.. | objects | select(.type=="file") | .path] | .[]' | head -80 || echo "(no preview)"
+  [ -n "$P" ] && curl -fsS -m 60 "${P// /%20}" | jq -r '[.. | objects | select(.type=="file") | .path] | .[]' | grep -iE '\.(esp|esm|esl|dll|ini|json|toml|bin)$|^[^/]*/?[^/]*$' | grep -viE '/(textures|meshes|sound|scripts|interface)/' | head -60 || echo "(no preview)"
 done
