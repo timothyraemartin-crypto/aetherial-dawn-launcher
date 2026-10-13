@@ -24,6 +24,7 @@ pub mod loadorder;
 pub mod manifest;
 pub mod modguard;
 pub mod netcheck;
+pub mod parity;
 pub mod patcher;
 pub mod pristine;
 pub mod profile;
