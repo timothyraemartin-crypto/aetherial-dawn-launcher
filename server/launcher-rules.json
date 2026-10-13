@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "rev": "2026-10-13.4",
+  "rev": "2026-10-13.5",
   "off": false,
   "checks": {
     "firewallFix": true,
@@ -114,7 +114,7 @@
         "fileId": 690123,
         "version": "1.2.0",
         "files": [
-          "Data/SKSE/Plugins/ImGuiIcons"
+          "Data/Interface/ImGuiIcons"
         ]
       },
       {
@@ -144,7 +144,11 @@
         "fileId": 792670,
         "version": "1.25.0",
         "files": [
-          "Data/SKSE/Plugins/CrashLoggerSSE.dll"
+          "Data/SKSE/Plugins/CrashLogger.dll"
+        ],
+        "allow": [
+          "Data/SKSE/Plugins/CrashLogger",
+          "Data/SKSE/Plugins/msdia140"
         ]
       },
       {
@@ -235,6 +239,9 @@
         "version": "1.0.2",
         "files": [
           "Data/BeardMaskFix.esp"
+        ],
+        "allow": [
+          "Data/SKSE/Plugins/BeardMaskFix"
         ]
       },
       {
@@ -253,7 +260,10 @@
         "fileId": 794743,
         "version": "4.1.0",
         "files": [
-          "Data/SKSE/Plugins/KeywordItemDistributor.dll"
+          "Data/SKSE/Plugins/po3_KeywordItemDistributor.dll"
+        ],
+        "allow": [
+          "Data/SKSE/Plugins/po3_KeywordItemDistributor"
         ]
       },
       {
