@@ -8,16 +8,16 @@ use std::path::Path;
 const ESP_NAME: &str = "AetherialDawn.esp";
 
 const FILES: &[(&str, &[u8])] = &[
-    ("Data/SKSE/Plugins/AetherialDawn-NoPause.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialDawn-NoPause.dll")),
     ("Data/SKSE/Plugins/AetherialQuietPickups.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialQuietPickups.dll")),
 ];
 
 /// Settings files: written once, then the player's (or staff's) edits stay.
-const SETTINGS: &[(&str, &[u8])] = &[("Data/SKSE/Plugins/AetherialQuietPickups.ini", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialQuietPickups.ini")), ("Data/SKSE/Plugins/AetherialDawn-NoPause.ini", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialDawn-NoPause.ini"))];
+const SETTINGS: &[(&str, &[u8])] = &[("Data/SKSE/Plugins/AetherialQuietPickups.ini", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialQuietPickups.ini"))];
 
 /// Our own mods that are switched off or gone: the launcher takes its own copies back out on every Play.
 /// AetherialSkillTree (the Tab skill menu mod) is removed for good: its DLL, the sample skill data it
-/// read as a fallback, and its switch files.
+/// read as a fallback, and its switch files. AetherialDawn-NoPause (our own unpause DLL) is removed too:
+/// the server now requires Skyrim Souls RE instead (see PROGRESS.md).
 const RETIRED: &[&str] = &[
     "Data/SKSE/Plugins/AetherialFreezeMenus.dll",
     "Data/SKSE/Plugins/AetherialSkillTree.dll",
@@ -27,6 +27,9 @@ const RETIRED: &[&str] = &[
     "Data/SKSE/Plugins/AetherialSkillTree.nohide",
     "Data/SKSE/Plugins/AetherialSkillTree.keeplevels",
     "Data/SKSE/Plugins/AetherialSkillTree.usetest",
+    "Data/SKSE/Plugins/AetherialDawn-NoPause.dll",
+    "Data/SKSE/Plugins/AetherialDawn-NoPause.ini",
+    "Data/SKSE/Plugins/AetherialDawn-NoPause.off",
 ];
 
 fn same(path: &Path, bytes: &[u8]) -> bool {
@@ -78,9 +81,22 @@ mod tests {
         std::fs::write(&ini, b"edited").unwrap();
         super::deploy(d.path());
         assert_ne!(std::fs::read(&dll).unwrap(), b"old");
-        let np = std::fs::read_to_string(d.path().join("Data/SKSE/Plugins/AetherialDawn-NoPause.ini")).unwrap();
-        assert!(np.contains("Book=0"));
         assert_eq!(std::fs::read(&ini).unwrap(), b"edited");
+    }
+
+    #[test]
+    fn removes_the_retired_nopause_files() {
+        let d = tempfile::tempdir().unwrap();
+        let plugins = d.path().join("Data/SKSE/Plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        for f in ["AetherialDawn-NoPause.dll", "AetherialDawn-NoPause.ini"] {
+            std::fs::write(plugins.join(f), b"x").unwrap();
+        }
+        let ours = super::deploy(d.path());
+        for f in ["AetherialDawn-NoPause.dll", "AetherialDawn-NoPause.ini"] {
+            assert!(!plugins.join(f).exists(), "{f} removed");
+        }
+        assert!(!ours.iter().any(|p| p.contains("NoPause")), "no longer counted as ours");
     }
 
     #[test]

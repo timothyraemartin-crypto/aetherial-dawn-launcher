@@ -23,3 +23,6 @@ Timothy, 2026-10-11: however many mods a player has installed, the game should o
 
 ## D-2026-10-11-4 Never pause: bAlwaysActive, no Skyrim Souls RE
 Timothy, 2026-10-11: "No I dont want the mod I want to create our own of it." Skyrim Souls RE stays out of the allowed set. On every Play the launcher writes `bAlwaysActive=1` under `[General]` in Skyrim.ini and Skyrim.ini.base (original kept as `.aetherial-dawn-backup`), so the game keeps running when its window loses focus. Our own never-pause plugin comes from the Never-pause thread; its file name is added to the allowed set when it exists.
+
+## D-2026-10-13-1 NoPause removed, third-party unpause mod instead
+Timothy, 2026-10-13 00:56Z: "im going to have all the no pause stuff removed and adding a mod to the server that will require it". Supersedes D-2026-10-11-4 and the own-mods-only rule for this one mod. AetherialDawn-NoPause is retired (bundled.rs RETIRED). Mod choice (recommended: Skyrim Souls RE) waits for his OK.
