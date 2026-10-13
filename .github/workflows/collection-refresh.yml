@@ -27,6 +27,7 @@ jobs:
           sudo apt-get install -y p7zip-full >/dev/null
           scripts/collection-rules.sh $REVISION
           git diff --stat
+          jq -c '.collection | {revision, pluginOrder, mods: [.mods[].name]}' server/launcher-rules.json
       - uses: actions/upload-artifact@v4
         with:
           name: collection-rules
