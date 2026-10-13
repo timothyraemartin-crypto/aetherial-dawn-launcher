@@ -50,3 +50,13 @@ It cannot download, run or delete anything. Text is stripped of control characte
 Needs a launcher that contains `core/src/rules.rs` (the release after this
 change) and a `sign-feed` from that release; the script refuses to publish
 unsigned rules.
+
+## `collection` (required Nexus collection)
+
+The required mod list is the Nexus collection "Aetherial Dawn" (slug `nzwgrw`, revision 1). The launcher does not download or install it; Play adds a health row "Required mods (Nexus collection)" that lists mods that are missing and plugins that are not switched on or out of order. Default level `warn`: Play goes on. `"level": "block"` stops Play (only when Timothy asks for it by name), `"off"` hides the row.
+
+- `mods[]`: `name`, `modId`, `fileId`, `version` (from the Nexus API) and `files`, game-relative paths that must all exist (INFERRED from each mod's usual files; neither the API nor collection.json lists them, and Nexus files carry no version marker, so versions are shown but not compared).
+- `pluginOrder`: the collection's plugins in load order, checked against the active lines of plugins.txt. A name with spaces ("Unofficial Skyrim Special Edition Patch.esp") also matches its dash-joined alias (aliases.rs), the name the launcher actually runs.
+- New revision: `scripts/collection-rules.sh [REVISION]`, review the diff, `publish-feed.sh --rules server/launcher-rules.json`. The built-in copy is `core/data/collection-nzwgrw-r1.json` (used until a file is fetched); update it and the `include_str!` name in `core/src/collection.rs` at the next launcher release.
+
+The no-mods guard (modguard.rs) no longer sets the collection's files aside: `Collection::owns` exempts its plugins (and alias names), archives and inis named like them, detection files and folders, and each mod's `allow` prefixes (e.g. SkyUI `Data/Interface`; INFERRED). `NEXUS_API_KEY` (Actions secret) lets the "Refresh Nexus collection list" workflow read the real plugin order from the collection's own `collection.json`; CONFIRMED for revision 1: unofficial skyrim special edition patch.esp, then SkyUI_SE.esp.
