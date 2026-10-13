@@ -517,6 +517,13 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
             .is_some_and(|want| version::exe_version(&dir.join(game::GAME_EXE)) == Some(want));
         return Err(health::masters_fix_message(&dir, &base_check.items, exe_is_servers));
     }
+    // Skyrim's own archives missing or empty: the game starts, then crashes or shows no textures or meshes.
+    if flags.archive_gate {
+        if let Some(c) = report.checks.iter().find(|c| c.id == "archives").filter(|c| c.status != health::Status::Ok) {
+            log::line(&format!("play: stopped, Skyrim's own archives are missing or empty: {}", c.items.join(", ")));
+            return Err(format!("Skyrim's own game archives are missing or empty ({}), so the game would crash or show missing textures and meshes. In Steam, right-click Skyrim Special Edition, Properties, Installed Files, Verify integrity of game files; then press Play again.", c.items.iter().take(4).cloned().collect::<Vec<_>>().join(", ")));
+        }
+    }
     // The game would stop with SkyMP's "LOAD ORDER ERROR"; say it here.
     if let Some(c) = report.checks.iter().find(|c| c.id == "serverorder" && c.status == health::Status::Fail) {
         let which = c.items.iter().take(3).cloned().collect::<Vec<_>>().join("; ");
@@ -826,8 +833,12 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
                 }
                 // Evidence for the load order: what Skyrim.ccc and plugins.txt hold while the game runs.
                 let ccc_sizes: Vec<String> = ["Skyrim.ccc", "Data/Skyrim.ccc"].iter().filter_map(|f| std::fs::metadata(ccc_dir.join(f)).ok().map(|m| format!("{f} {} bytes", m.len()))).collect();
-                let head: Vec<String> = ccc_txt.as_ref().and_then(|t| std::fs::read_to_string(t).ok()).unwrap_or_default().lines().filter(|l| !l.trim_start().starts_with('#') && !l.trim().is_empty()).take(8).map(|l| l.trim().to_string()).collect();
+                let entries: Vec<String> = ccc_txt.as_ref().and_then(|t| std::fs::read_to_string(t).ok()).unwrap_or_default().lines().filter(|l| !l.trim_start().starts_with('#') && !l.trim().is_empty()).map(|l| l.trim().to_string()).collect();
+                let head: Vec<String> = entries.iter().take(8).cloned().collect();
                 log::line(&format!("game: {at} seconds in, {}; plugins.txt starts with: {}", if ccc_sizes.is_empty() { "no Skyrim.ccc".to_string() } else { ccc_sizes.join(", ") }, head.join(", ")));
+                // A "*" means switched on. The game may list Creation Club plugins itself, switched off; only a switched-on one can load.
+                let cc_on: Vec<&str> = entries.iter().filter(|l| l.starts_with('*') && l[1..].trim_start().to_ascii_lowercase().starts_with("cc")).map(|l| l.as_str()).collect();
+                log::line(&format!("game: {at} seconds in, plugins.txt has {} Creation Club plugin(s) listed, {} switched on{}", entries.iter().filter(|l| l.trim_start_matches('*').trim_start().to_ascii_lowercase().starts_with("cc")).count(), cc_on.len(), if cc_on.is_empty() { String::new() } else { format!(": {}", cc_on.join(", ")) }));
                 // The browser creates its profile folder in TEMP when it starts; no folder means its code never got that far.
                 let temp_made = std::env::temp_dir().join("Skyrim Platform").exists();
                 log::line(&format!("game: {at} seconds in, the browser's temp folder {} exists", if temp_made { "DOES" } else { "does NOT" }));
