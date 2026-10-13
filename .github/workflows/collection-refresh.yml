@@ -28,7 +28,7 @@ jobs:
         run: |
           set +x
           sudo apt-get install -y p7zip-full >/dev/null
-          scripts/collection-inspect.sh "$REVISION" 2>&1 | tee inspect.txt
+          bash scripts/collection-inspect.sh "$REVISION" 2>&1 | tee inspect.txt
       - name: Rebuild the collection list
         continue-on-error: true
         env:
