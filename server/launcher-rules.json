@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "rev": "2026-10-13.1",
+  "rev": "2026-10-13.2",
   "off": false,
   "checks": {
     "firewallFix": true,
@@ -65,7 +65,7 @@
     "slug": "nzwgrw",
     "game": "skyrimspecialedition",
     "name": "Aetherial Dawn",
-    "revision": 3,
+    "revision": 4,
     "url": "https://www.nexusmods.com/games/skyrimspecialedition/collections/nzwgrw",
     "level": "warn",
     "mods": [
@@ -146,11 +146,77 @@
         "files": [
           "Data/SKSE/Plugins/CrashLoggerSSE.dll"
         ]
+      },
+      {
+        "name": "Armory of the Dragon Cult - Dragon Priest Armor",
+        "modId": 94244,
+        "fileId": 506924,
+        "version": "2.0",
+        "files": [
+          "Data/DragonPriestArmor.esp",
+          "Data/DragonPriestArmorKP.esp",
+          "Data/DragonPriestArmorWyrmstooth.esp"
+        ],
+        "allow": [
+          "Data/DPA_DISTR.ini",
+          "Data/meshes/armor/dragon priests",
+          "Data/textures/actors/dragon priest",
+          "Data/textures/armor/dragon priests",
+          "Data/scripts/dpa_"
+        ]
+      },
+      {
+        "name": "Dragon Priests Retexture SE",
+        "modId": 101101,
+        "fileId": 506852,
+        "version": "1.1",
+        "files": [
+          "Data/DragonPriestRetextureSE_KonAcc.esp"
+        ],
+        "allow": [
+          "Data/meshes/actors/dragonpriest",
+          "Data/meshes/armor/beltdpmask",
+          "Data/meshes/armor/dragon priests",
+          "Data/meshes/armor/dragonpriesthelms",
+          "Data/meshes/clutter/dragonpriestmaskaltar",
+          "Data/meshes/dlc02/clothes",
+          "Data/textures/actors/dlc02",
+          "Data/textures/actors/dragon priest",
+          "Data/textures/armor/dragon priests",
+          "Data/textures/armor/dragonpriesthelm",
+          "Data/textures/clothes/cloaksofskyrim",
+          "Data/textures/dlc02/",
+          "Data/textures/konahacc",
+          "Data/textures/weapons/dragon priest",
+          "Data/textures/weapons/uniqueweaps"
+        ]
+      },
+      {
+        "name": "powerofthree's Tweaks",
+        "modId": 51073,
+        "fileId": 794717,
+        "version": "1.17.1",
+        "files": [
+          "Data/SKSE/Plugins/po3_Tweaks.dll"
+        ]
+      },
+      {
+        "name": "Spell Perk Item Distributor (SPID)",
+        "modId": 36869,
+        "fileId": 795621,
+        "version": "7.3.3",
+        "files": [
+          "Data/SKSE/Plugins/po3_SpellPerkItemDistributor.dll"
+        ]
       }
     ],
     "pluginOrder": [
       "Unofficial Skyrim Special Edition Patch.esp",
-      "SkyUI_SE.esp"
+      "SkyUI_SE.esp",
+      "DragonPriestRetextureSE_KonAcc.esp",
+      "DragonPriestArmor.esp",
+      "DragonPriestArmorKP.esp",
+      "DragonPriestArmorWyrmstooth.esp"
     ]
   }
 }
