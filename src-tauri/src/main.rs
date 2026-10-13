@@ -421,7 +421,7 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     // No mods: anything beyond the game, SKSE and SkyMP's own files keeps the
     // player out (core/src/modguard.rs). Checked on every Play, before the
     // launcher changes anything on the PC.
-    let rules = server_rules(&app, &state.http, &config.base_url).await;
+    let mut rules = server_rules(&app, &state.http, &config.base_url).await;
     let flags = rules.narrow(launcher_flags(&state.http, &config.base_url).await);
     play_step(&app, "Setting other mods aside…");
     let extras = {
@@ -508,6 +508,8 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
             }
         }
     }
+    // The server's own plugins are not the collection's to switch on or order (collection.rs `pinned`).
+    rules.collection.pinned = order.iter().map(|p| p.name.clone()).collect();
     // The collection's plugins must be on in plugins.txt (Vortex leaves some off); only when the rules say so.
     if let Some(txt) = plugins_txt(&app) {
         match launcher_core::collection::enable_plugins(&rules.collection, &dir, &txt) {
