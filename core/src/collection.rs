@@ -174,9 +174,12 @@ pub fn check(c: &Collection, game_dir: &Path, plugins_txt: Option<&Path>) -> Che
         return Check { id: "collection", title, status: Status::Info, detail: "The server's launcher rules switched this check off.".into(), items: vec![] };
     }
     let mut items = Vec::new();
+    let mut found = Vec::new();
     for m in &c.mods {
-        if !m.files.iter().all(|f| present(game_dir, f)) {
-            let v = if m.version.is_empty() { String::new() } else { format!(" {}", m.version) };
+        let v = if m.version.is_empty() { String::new() } else { format!(" {}", m.version) };
+        if m.files.iter().all(|f| present(game_dir, f)) {
+            found.push(format!("Installed: {}{v}", m.name));
+        } else {
             items.push(format!("Missing: {}{v}", m.name));
         }
     }
@@ -200,17 +203,24 @@ pub fn check(c: &Collection, game_dir: &Path, plugins_txt: Option<&Path>) -> Che
         }
     }
     let rev = format!("revision {}", c.revision);
-    if items.is_empty() {
+    let problems = items.len();
+    // The row lists every mod of the collection, problems first, so nothing looks left out.
+    items.extend(found);
+    if problems == 0 {
         return Check { id: "collection", title, status: Status::Ok, detail: format!("All {} mods of {} ({rev}) are installed and in order.", c.mods.len(), c.name), items };
     }
     let status = if c.level == Level::Block { Status::Fail } else { Status::Warn };
     let link = if c.url.is_empty() { String::new() } else { format!(" Get them from the collection: {}", c.url) };
-    Check { id: "collection", title, status, detail: format!("{} of the collection {} ({rev}) is missing or out of order.{link}", items.len(), c.name), items }
+    Check { id: "collection", title, status, detail: format!("{problems} of the collection {} ({rev}) is missing or out of order.{link}", c.name), items }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn problems(r: &Check) -> Vec<String> {
+        r.items.iter().filter(|i| !i.starts_with("Installed: ")).cloned().collect()
+    }
 
     const USSEP: &str = "Unofficial Skyrim Special Edition Patch.esp";
 
@@ -256,7 +266,7 @@ mod tests {
         std::fs::remove_file(t.path().join("Data/SKSE/Plugins/SkyrimSoulsRE.dll")).unwrap();
         let r = check(&c, t.path(), None);
         assert_eq!(r.status, Status::Warn);
-        assert_eq!(r.items, vec!["Missing: Skyrim Souls RE - Unpaused Menus 3.2.0".to_string()]);
+        assert_eq!(problems(&r), vec!["Missing: Skyrim Souls RE - Unpaused Menus 3.2.0".to_string()]);
     }
 
     #[test]
@@ -278,7 +288,7 @@ mod tests {
         std::fs::write(&txt, format!("*SkyUI_SE.esp\r\n*{USSEP}\r\n")).unwrap();
         let r = check(&c, t.path(), Some(&txt));
         assert_eq!(r.status, Status::Warn);
-        assert_eq!(r.items, vec![format!("Out of order: SkyUI_SE.esp must load after {USSEP}")]);
+        assert_eq!(problems(&r), vec![format!("Out of order: SkyUI_SE.esp must load after {USSEP}")]);
     }
 
     #[test]
@@ -305,7 +315,7 @@ mod tests {
         let txt = t.path().join("plugins.txt");
         std::fs::write(&txt, format!("{USSEP}\r\n*SkyUI_SE.esp\r\n")).unwrap();
         let r = check(&c, t.path(), Some(&txt));
-        assert_eq!(r.items, vec![format!("Not switched on in your load order: {USSEP}")]);
+        assert_eq!(problems(&r), vec![format!("Not switched on in your load order: {USSEP}")]);
     }
 
     #[test]
