@@ -22,6 +22,6 @@ for pair in $(jq -r '.mods[] | select(.source.modId != null) | "\(.source.modId)
   m=${pair%:*}; f=${pair#*:}
   P=$(curl -fsS -m 60 -H "apikey: $NEXUS_API_KEY" "https://api.nexusmods.com/v1/games/$GAME/mods/$m/files/$f.json" | jq -r '.content_preview_link // empty')
   echo "-- mod $m file $f"
-  case $m in 94244|101101|59652|44666) [ -n "$P" ] && curl -fsS -m 60 "${P// /%20}" | jq -r '[.. | objects | select(.type=="file") | .path] | .[]' | sed -E 's#^[^/]+/00 Data/[^/]+/##' | grep -iE '^(meshes|textures|sound|interface|scripts)/' | cut -d/ -f1-3 | tr 'A-Z' 'a-z' | sort -u | head -150;; esac
-  [ -n "$P" ] && curl -fsS -m 60 "${P// /%20}" | jq -r '[.. | objects | select(.type=="file") | .path] | .[]' | grep -iE '\.(esp|esm|esl|dll|ini|json|toml|bin)$|^[^/]*/?[^/]*$' | grep -viE '/(textures|meshes|sound|scripts|interface)/' | head -60 || echo "(no preview)"
+  case $m in 22206|81409|85702) [ -n "$P" ] && curl -fsS -m 60 "${P// /%20}" | jq -r '[.. | objects | select(.type=="file") | .path] | .[]' | sed -E 's#^[^/]+/00 Data/[^/]+/##' | grep -iE '^(meshes|textures|sound|interface|scripts)/' | cut -d/ -f1-3 | tr 'A-Z' 'a-z' | sort -u | head -150;; esac
+  [ -n "$P" ] && curl -fsS -m 60 "${P// /%20}" | jq -r '[.. | objects | select(.type=="file") | .path] | .[]' | grep -iE '\.(esp|esm|esl|dll|ini|json|toml|bin)$|^[^/]*/?[^/]*$' | grep -viE '/(textures|meshes|sound|scripts|interface)/' | head -90 || echo "(no preview)"
 done
