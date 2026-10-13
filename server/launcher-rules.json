@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "rev": "2026-10-13.2",
+  "rev": "2026-10-13.3",
   "off": false,
   "checks": {
     "firewallFix": true,
@@ -65,7 +65,7 @@
     "slug": "nzwgrw",
     "game": "skyrimspecialedition",
     "name": "Aetherial Dawn",
-    "revision": 4,
+    "revision": 5,
     "url": "https://www.nexusmods.com/games/skyrimspecialedition/collections/nzwgrw",
     "level": "warn",
     "mods": [
@@ -208,15 +208,94 @@
         "files": [
           "Data/SKSE/Plugins/po3_SpellPerkItemDistributor.dll"
         ]
+      },
+      {
+        "name": "More Craftable Equipment - Unenchanted Clothing and Specialty Gear",
+        "modId": 44666,
+        "fileId": 363683,
+        "version": "1.4.0",
+        "files": [
+          "Data/MoreCraftableEquipment.esp",
+          "Data/MoreCraftableEquipment_AdvCyrus.esp",
+          "Data/MoreCraftableEquipment_BYOHLooms.esp",
+          "Data/MoreCraftableEquipment_Fish.esp"
+        ],
+        "allow": [
+          "Data/MoreCraftableEquipment",
+          "Data/interface/mce",
+          "Data/interface/translations/morecraftableequipment",
+          "Data/SKSE/Plugins/InventoryInjector",
+          "Data/SKSE/Plugins/CraftingCategories"
+        ]
+      },
+      {
+        "name": "Beard Mask Fix - Beards Use Slot 44 SKSE Plugin",
+        "modId": 80232,
+        "fileId": 796514,
+        "version": "1.0.2",
+        "files": [
+          "Data/BeardMaskFix.esp"
+        ]
+      },
+      {
+        "name": "Constructible Object Custom Keyword System",
+        "modId": 81409,
+        "fileId": 795909,
+        "version": "1.2.0",
+        "files": []
+      },
+      {
+        "name": "Inventory Interface Information Injector",
+        "modId": 85702,
+        "fileId": 796498,
+        "version": "1.1.1",
+        "files": [
+          "Data/I4IconAddon.esp",
+          "Data/SKSE/Plugins/InventoryInjector.dll"
+        ]
+      },
+      {
+        "name": "Keyword Item Distributor (KID)",
+        "modId": 55728,
+        "fileId": 794743,
+        "version": "4.1.0",
+        "files": [
+          "Data/SKSE/Plugins/KeywordItemDistributor.dll"
+        ]
+      },
+      {
+        "name": "King-Priest - Enhanced Dragon Priests",
+        "modId": 59652,
+        "fileId": 506454,
+        "version": "4.0.2",
+        "files": [
+          "Data/King-Priest.esp"
+        ],
+        "allow": [
+          "Data/interface/king-priest",
+          "Data/meshes/jelidity",
+          "Data/meshes/prvti",
+          "Data/meshes/sacrosanctnew",
+          "Data/textures/example/effects",
+          "Data/textures/jelidity",
+          "Data/textures/prvti",
+          "Data/SKSE/Plugins/InventoryInjector"
+        ]
       }
     ],
     "pluginOrder": [
       "Unofficial Skyrim Special Edition Patch.esp",
       "SkyUI_SE.esp",
-      "DragonPriestRetextureSE_KonAcc.esp",
       "DragonPriestArmor.esp",
       "DragonPriestArmorKP.esp",
-      "DragonPriestArmorWyrmstooth.esp"
+      "DragonPriestArmorWyrmstooth.esp",
+      "MoreCraftableEquipment.esp",
+      "MoreCraftableEquipment_AdvCyrus.esp",
+      "MoreCraftableEquipment_BYOHLooms.esp",
+      "MoreCraftableEquipment_Fish.esp",
+      "BeardMaskFix.esp",
+      "I4IconAddon.esp",
+      "King-Priest.esp"
     ]
   }
 }
