@@ -1817,6 +1817,7 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, server_names:
                 r.duplicates.len(),
                 r.duplicates.join(", ")
             )),
+            Ok(r) if r.skipped => log::line(&format!("play: left {} alone: the Data folder could not be read or holds no .bsa archive", ini.display())),
             Ok(_) => {}
             Err(e) => log::line(&format!("play: couldn't clean {}: {e}", ini.display())),
         }
