@@ -118,8 +118,8 @@
       "auth": "token",
       "request": {
         "required": { "schema": "number", "launcher": "string", "fullOrder": "array", "activeOrder": "array", "ccPresent": "array", "ccActive": "array", "archives": "array" },
-        "optional": { "gameVersion": "string", "editionGuess": "string", "ccPresentCount": "number", "cccLines": "number", "ccSetAside": "array", "setAsideCount": "number", "activeHash": "string", "fullHash": "string", "archiveCount": "number", "archivesHash": "string", "serverMatch": "boolean", "serverDiff": "array" },
-        "example": { "schema": 1, "launcher": "0.1.148", "gameVersion": "1.6.1170.0", "editionGuess": "AE", "ccPresentCount": 2, "ccPresent": ["ccBGSSSE001-Fish.esm"], "ccActive": [], "cccLines": 0, "ccSetAside": [], "setAsideCount": 0, "activeOrder": ["AetherialDawn.esp"], "activeHash": "00", "fullOrder": ["Skyrim.esm", "Update.esm", "Dawnguard.esm", "HearthFires.esm", "Dragonborn.esm", "AetherialDawn.esp"], "fullHash": "00", "archiveCount": 1, "archives": ["Mod.bsa"], "archivesHash": "00", "serverMatch": true, "serverDiff": [] }
+        "optional": { "phase": "string", "gameVersion": "string", "editionGuess": "string", "ccPresentCount": "number", "cccLines": "number", "ccSetAside": "array", "setAsideCount": "number", "activeHash": "string", "fullHash": "string", "archiveCount": "number", "archivesHash": "string", "serverMatch": "boolean", "serverDiff": "array" },
+        "example": { "schema": 1, "phase": "launch", "launcher": "0.1.148", "gameVersion": "1.6.1170.0", "editionGuess": "AE", "ccPresentCount": 2, "ccPresent": ["ccBGSSSE001-Fish.esm"], "ccActive": [], "cccLines": 0, "ccSetAside": [], "setAsideCount": 0, "activeOrder": ["AetherialDawn.esp"], "activeHash": "00", "fullOrder": ["Skyrim.esm", "Update.esm", "Dawnguard.esm", "HearthFires.esm", "Dragonborn.esm", "AetherialDawn.esp"], "fullHash": "00", "archiveCount": 1, "archives": ["Mod.bsa"], "archivesHash": "00", "serverMatch": true, "serverDiff": [] }
       },
       "success": 202,
       "launcherHandles": [202, 404],

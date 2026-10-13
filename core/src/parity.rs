@@ -7,6 +7,9 @@
 //! warn but never stops Play (0.1.143 rule). Switch: status.json
 //! `launcher.parityReport:false` or rules `checks.parityReport:false`.
 //!
+//! A second and third reading are taken while the game runs (phase "running"): on Timothy's PC
+//! plugins.txt was rewritten ~12 s after the game started, after the launch reading matched.
+//!
 //! Evidence labels: the edition is a GUESS from how many Creation Club files
 //! are installed (INFERRED); the exe version, the active plugin order and the
 //! file lists are read straight from the PC (CONFIRMED when sent).
@@ -29,6 +32,8 @@ const AE_LIKE_CC: usize = 50;
 #[serde(rename_all = "camelCase")]
 pub struct Fingerprint {
     pub schema: u32,
+    /// "launch" (read just before the game starts) or "running" (read again while it runs: something can rewrite plugins.txt after the launcher checked it).
+    pub phase: &'static str,
     pub launcher: String,
     /// SkyrimSE.exe file version, e.g. "1.6.1170.0".
     pub game_version: Option<String>,
@@ -148,6 +153,7 @@ pub fn build(launcher: &str, game_dir: &Path, plugins_txt: &Path, server: Option
     };
     Fingerprint {
         schema: SCHEMA,
+        phase: "launch",
         launcher: launcher.chars().filter(|c| !c.is_control()).take(32).collect(),
         game_version,
         edition_guess: if cc_present_count >= AE_LIKE_CC { "AE" } else { "SE" },
@@ -166,6 +172,14 @@ pub fn build(launcher: &str, game_dir: &Path, plugins_txt: &Path, server: Option
         archives: archives_all.into_iter().take(MAX_LIST).collect(),
         server_match,
         server_diff,
+    }
+}
+
+impl Fingerprint {
+    /// The same reading, labelled as taken while the game runs.
+    pub fn running(mut self) -> Fingerprint {
+        self.phase = "running";
+        self
     }
 }
 
@@ -226,6 +240,7 @@ mod tests {
     fn a_matching_pc_reports_names_hashes_and_no_difference() {
         let (d, txt) = pc("match");
         let fp = build("0.1.148", &d, &txt, Some(&server()));
+        assert_eq!((fp.phase, fp.clone().running().phase), ("launch", "running"));
         assert_eq!(fp.server_match, Some(true), "{:?}", fp.server_diff);
         assert_eq!(fp.edition_guess, "SE");
         assert_eq!(fp.cc_present_count, 2);
@@ -273,6 +288,20 @@ mod tests {
         assert!(!json.contains(&d.display().to_string()), "no game folder path in the report");
         assert!(!json.contains('\\'), "{json}");
         assert!(!name_ok("..\\evil.esp") && !name_ok("C:evil.esp") && name_ok("Good Name.esp"));
+    }
+
+    /// The case seen on a real PC: the order matched at launch, then plugins.txt was rewritten.
+    #[test]
+    fn a_rewrite_after_launch_shows_in_the_running_reading() {
+        let (d, txt) = pc("rewrite");
+        let at_launch = build("0.1.148", &d, &txt, Some(&server()));
+        assert_eq!(at_launch.server_match, Some(true));
+        std::fs::write(d.join("Data/MoreCraftable.esp"), tes4(0)).unwrap();
+        std::fs::write(&txt, "*MoreCraftable.esp\r\n*ccQDRSSE001-SurvivalMode.esl\r\n*AetherialDawn.esp\r\n").unwrap();
+        let later = build("0.1.148", &d, &txt, Some(&server())).running();
+        assert_eq!((later.phase, later.server_match), ("running", Some(false)));
+        assert_eq!(later.server_diff, vec!["position 5: the server loads AetherialDawn.esp, this PC loads MoreCraftable.esp".to_string()]);
+        assert_ne!(at_launch.full_hash, later.full_hash);
     }
 
     #[test]

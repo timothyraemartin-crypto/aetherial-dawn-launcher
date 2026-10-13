@@ -682,7 +682,7 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     }
     // What this PC will start with, for the server to compare with its own order. Background, best effort.
     if flags.parity_report {
-        send_client_parity(&app, &dir, &order);
+        send_client_parity(&app, &dir, &order, false, 0);
     }
     play_step(&app, "Starting Skyrim through SKSE…");
     // The game gets its own TEMP (core/src/isolate.rs) so nothing another SkyMP client left in %TEMP%
@@ -719,6 +719,12 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     if config.close_on_launch {
         if let Some(w) = app.get_webview_window("main") {
             let _ = w.hide();
+        }
+    }
+    // Read the order again while the game runs: plugins.txt was seen rewritten ~12 s after the start, after the launch reading matched.
+    if flags.parity_report {
+        for secs in [45, 180] {
+            send_client_parity(&app, &dir, &order, true, secs);
         }
     }
     tauri::async_runtime::spawn(watch_game(app.clone(), dir.clone(), started, config.close_on_launch));
@@ -1905,24 +1911,36 @@ fn send_client_status(app: &AppHandle, dir: &std::path::Path) {
 /// Tells the login service, in the background, what this PC will start the game with: game version,
 /// the plugin order, Creation Club files and archive names (core/src/parity.rs; names and hashes only).
 /// Nothing is awaited, so Play never waits; 404 (route not live) and any failure are silent for the player.
-fn send_client_parity(app: &AppHandle, dir: &std::path::Path, order: &[launcher_core::serverorder::ServerPlugin]) {
+fn send_client_parity(app: &AppHandle, dir: &std::path::Path, order: &[launcher_core::serverorder::ServerPlugin], running: bool, after_secs: u64) {
     let (Some(token), Some(txt)) = (token(app), plugins_txt(app)) else { return };
     let (app, dir, order) = (app.clone(), dir.to_path_buf(), order.to_vec());
     tauri::async_runtime::spawn(async move {
-        let launcher = app.package_info().version.to_string();
-        let fp = tauri::async_runtime::spawn_blocking(move || launcher_core::parity::build(&launcher, &dir, &txt, Some(&order))).await;
-        let Ok(fp) = fp else { return };
+        if after_secs > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(after_secs)).await;
+        }
         let state = app.state::<AppState>();
+        // A reading after the game closed would see the order the launcher put back, not the one the game ran with.
+        if running && !state.active_session.load(Ordering::SeqCst) {
+            return;
+        }
+        let launcher = app.package_info().version.to_string();
+        let fp = tauri::async_runtime::spawn_blocking(move || {
+            let fp = launcher_core::parity::build(&launcher, &dir, &txt, Some(&order));
+            if running { fp.running() } else { fp }
+        })
+        .await;
+        let Ok(fp) = fp else { return };
         log::line(&format!(
-            "play: join fingerprint: game {} ({}), {} Creation Club file(s) present, {} switched on, matches the server: {}",
-            fp.game_version.as_deref().unwrap_or("unknown"), fp.edition_guess, fp.cc_present_count, fp.cc_active.len(),
-            fp.server_match.map_or("no list".to_string(), |m| m.to_string())
+            "play: {} fingerprint: game {} ({}), {} Creation Club file(s) present, {} switched on, matches the server: {}{}",
+            fp.phase, fp.game_version.as_deref().unwrap_or("unknown"), fp.edition_guess, fp.cc_present_count, fp.cc_active.len(),
+            fp.server_match.map_or("no list".to_string(), |m| m.to_string()),
+            fp.server_diff.first().map(|d| format!(" ({d})")).unwrap_or_default()
         ));
         let url = format!("{}/api/client-parity", AUTH_URL.trim_end_matches('/'));
         match state.http.post(&url).header("authorization", token).json(&fp).timeout(std::time::Duration::from_secs(10)).send().await {
             Ok(r) if r.status().is_success() || r.status().as_u16() == 404 => {}
-            Ok(r) => log::line(&format!("play: the join fingerprint got {}", r.status().as_u16())),
-            Err(e) => log::line(&format!("play: couldn't send the join fingerprint: {}", launcher_core::scrub(&e.to_string()))),
+            Ok(r) => log::line(&format!("play: the {} fingerprint got {}", fp.phase, r.status().as_u16())),
+            Err(e) => log::line(&format!("play: couldn't send the {} fingerprint: {}", fp.phase, launcher_core::scrub(&e.to_string()))),
         }
     });
 }
