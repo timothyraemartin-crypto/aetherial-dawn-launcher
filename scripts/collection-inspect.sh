@@ -25,3 +25,18 @@ for pair in $(jq -r '.mods[] | select(.source.modId != null) | "\(.source.modId)
   case $m in 22206|81409|85702) [ -n "$P" ] && curl -fsS -m 60 "${P// /%20}" | jq -r '[.. | objects | select(.type=="file") | .path] | .[]' | sed -E 's#^[^/]+/00 Data/[^/]+/##' | grep -iE '^(meshes|textures|sound|interface|scripts)/' | cut -d/ -f1-3 | tr 'A-Z' 'a-z' | sort -u | head -150 || true;; esac
   [ -n "$P" ] && curl -fsS -m 60 "${P// /%20}" | jq -r '[.. | objects | select(.type=="file") | .path] | .[]' | grep -iE '\.(esp|esm|esl|dll|ini|json|toml|bin)$|^[^/]*/?[^/]*$' | grep -viE '/(textures|meshes|sound|scripts|interface)/' | head -90 || echo "(no preview)"
 done
+# Mods whose content preview 404s: with ARCHIVE_MODS="id id ..." download the file and list it (read-only; needs a key that may download).
+if [ -n "${ARCHIVE_MODS:-}" ]; then
+  echo "== archive listings"
+  for pair in $(jq -r '.mods[] | select(.source.modId != null) | "\(.source.modId):\(.source.fileId)"' "$W/x/collection.json"); do
+    m=${pair%:*}; f=${pair#*:}
+    case " $ARCHIVE_MODS " in *" $m "*) ;; *) continue;; esac
+    echo "-- archive mod $m file $f"
+    U=$(curl -sS -m 60 -H "apikey: $NEXUS_API_KEY" "https://api.nexusmods.com/v1/games/$GAME/mods/$m/files/$f/download_link.json" | jq -r '.[0].URI // empty' || true)
+    if [ -z "$U" ]; then echo "(no download link)"; continue; fi
+    A="$W/a$m"; mkdir -p "$A"
+    curl -fsS -m 300 -o "$A/f.bin" "$U" || { echo "(download failed)"; continue; }
+    7z l -ba -slt "$A/f.bin" 2>/dev/null | sed -n 's/^Path = //p' | grep -iE '\.(esp|esm|esl|dll|ini|json|toml|bsa|ba2|swf)$|^[^/]*$' | head -80 || echo "(cannot list)"
+    rm -rf "$A"
+  done
+fi
