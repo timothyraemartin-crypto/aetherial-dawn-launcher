@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "rev": "2026-10-13.8",
+  "rev": "2026-10-13.9",
   "off": false,
   "checks": {
     "firewallFix": true,
@@ -83,7 +83,7 @@
     "slug": "nzwgrw",
     "game": "skyrimspecialedition",
     "name": "Aetherial Dawn",
-    "revision": 6,
+    "revision": 7,
     "url": "https://www.nexusmods.com/games/skyrimspecialedition/collections/nzwgrw",
     "level": "warn",
     "mods": [
@@ -238,9 +238,8 @@
         "version": "1.4.0",
         "files": [
           "Data/MoreCraftableEquipment.esp",
-          "Data/MoreCraftableEquipment_AdvCyrus.esp",
           "Data/MoreCraftableEquipment_BYOHLooms.esp",
-          "Data/MoreCraftableEquipment_Fish.esp"
+          "Data/MoreCraftableEquipment_USSEP.esp"
         ],
         "allow": [
           "Data/MoreCraftableEquipment",
@@ -329,23 +328,162 @@
           "Data/textures/armor/dragon_medallion",
           "Data/textures/konahacc"
         ]
+      },
+      {
+        "name": "Constructible Object Custom Keyword System",
+        "modId": 81409,
+        "fileId": 795909,
+        "version": "1.2.0",
+        "files": [
+          "Data/SKSE/Plugins/CraftingCategories.dll"
+        ],
+        "allow": [
+          "Data/SKSE/Plugins/CraftingCategories",
+          "Data/Interface/constructibleobjectmenu.swf",
+          "Data/Interface/craftingcategories"
+        ]
+      },
+      {
+        "name": "Actor Limit Fix",
+        "modId": 32349,
+        "fileId": 795423,
+        "version": "9",
+        "files": [
+          "Data/SKSE/Plugins/ActorLimitFix.dll"
+        ],
+        "allow": [
+          "Data/SKSE/Plugins/ActorLimitFix"
+        ]
+      },
+      {
+        "name": "Custom Skills Framework",
+        "modId": 41780,
+        "fileId": 799487,
+        "version": "3.2.0",
+        "files": [
+          "Data/SKSE/Plugins/CustomSkills.dll"
+        ],
+        "allow": [
+          "Data/SKSE/Plugins/CustomSkills"
+        ]
+      },
+      {
+        "name": "Fores New Idles in Skyrim SE - FNIS SE",
+        "modId": 3038,
+        "fileId": 124617,
+        "version": "7.6",
+        "files": [
+          "Data/FNIS.esp"
+        ],
+        "allow": [
+          "Data/FNIS",
+          "Data/tools/GenerateFNIS_for_Users",
+          "Data/meshes/actors/character/animations",
+          "Data/meshes/actors/character/behaviors"
+        ]
+      },
+      {
+        "name": "FSMP - Faster HDT-SMP",
+        "modId": 57339,
+        "fileId": 795580,
+        "version": "4.1.1",
+        "files": [
+          "Data/SKSE/Plugins/hdtSMP64.dll"
+        ],
+        "allow": [
+          "Data/SKSE/Plugins/hdtSMP64",
+          "Data/SKSE/Plugins/hdtSkinnedMeshConfigs"
+        ]
+      },
+      {
+        "name": "JContainers SE",
+        "modId": 16495,
+        "fileId": 800245,
+        "version": "4.3.2",
+        "files": [
+          "Data/SKSE/Plugins/JContainers64.dll"
+        ],
+        "allow": [
+          "Data/SKSE/Plugins/JCData"
+        ]
+      },
+      {
+        "name": "MCM Helper",
+        "modId": 53000,
+        "fileId": 795510,
+        "version": "1.6.3",
+        "files": [
+          "Data/MCMHelper.esp",
+          "Data/SKSE/Plugins/MCMHelper.dll"
+        ],
+        "allow": [
+          "Data/MCM"
+        ]
+      },
+      {
+        "name": "RaceMenu",
+        "modId": 19080,
+        "fileId": 743640,
+        "version": "0.4.20.0",
+        "files": [
+          "Data/RaceMenu.esp",
+          "Data/RaceMenuPlugin.esp",
+          "Data/SKSE/Plugins/skee64.dll"
+        ],
+        "allow": [
+          "Data/SKSE/Plugins/skee64",
+          "Data/SKSE/Plugins/CharGen",
+          "Data/Interface/racemenu",
+          "Data/Interface/exported"
+        ]
+      },
+      {
+        "name": "SKSE Menu Framework",
+        "modId": 120352,
+        "fileId": 806684,
+        "version": "3.18",
+        "files": [
+          "Data/SKSE/Plugins/SKSEMenuFramework.dll"
+        ],
+        "allow": [
+          "Data/SKSE/Plugins/SKSEMenuFramework"
+        ]
+      },
+      {
+        "name": "XP32 Maximum Skeleton Special Extended - XPMSSE",
+        "modId": 1988,
+        "fileId": 469854,
+        "version": "5.06",
+        "files": [
+          "Data/XPMSE.esp"
+        ],
+        "allow": [
+          "Data/meshes/actors/character/character assets",
+          "Data/meshes/actors/character/animations",
+          "Data/meshes/actors/character/behaviors",
+          "Data/SKSE/Plugins/XPMSE"
+        ]
       }
     ],
     "pluginOrder": [
+      "FNIS.esp",
+      "RaceMenu.esp",
+      "RaceMenuPlugin.esp",
+      "XPMSE.esp",
       "Unofficial Skyrim Special Edition Patch.esp",
-      "SkyUI_SE.esp",
-      "BeardMaskFix.esp",
-      "I4IconAddon.esp",
-      "MoreCraftableEquipment.esp",
-      "MoreCraftableEquipment_AdvCyrus.esp",
-      "MoreCraftableEquipment_BYOHLooms.esp",
-      "MoreCraftableEquipment_Fish.esp",
+      "King-Priest.esp",
       "DragonPriestArmor.esp",
       "DragonPriestArmorKP.esp",
-      "DragonPriestArmorWyrmstooth.esp",
+      "konahrik_accoutrements.esp",
       "DragonPriestRetextureSE_KonAcc.esp",
-      "King-Priest.esp",
-      "konahrik_accoutrements.esp"
+      "SkyUI_SE.esp",
+      "DragonPriestArmorWyrmstooth.esp",
+      "I4IconAddon.esp",
+      "BeardMaskFix.esp",
+      "MoreCraftableEquipment.esp",
+      "MoreCraftableEquipment_BYOHLooms.esp",
+      "MoreCraftableEquipment_USSEP.esp",
+      "MCMHelper.esp"
     ]
   }
 }
