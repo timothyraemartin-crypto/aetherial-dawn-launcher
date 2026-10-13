@@ -36,6 +36,8 @@ pub struct Moved {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Restored {
     pub files: usize,
+    /// Aside copies dropped because an identical file already sat at their place.
+    pub duplicates: usize,
     /// Files left in the aside folder because something new sits at their place.
     pub kept: Vec<String>,
 }
@@ -95,6 +97,26 @@ pub fn set_aside(game_dir: &Path, extras: &[Extra], stamp: &str) -> std::io::Res
     Ok(done)
 }
 
+/// Same size and same bytes.
+fn same_file(a: &Path, b: &Path) -> bool {
+    use std::io::Read;
+    let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) else { return false };
+    if ma.len() != mb.len() {
+        return false;
+    }
+    let (Ok(mut fa), Ok(mut fb)) = (std::fs::File::open(a), std::fs::File::open(b)) else { return false };
+    let (mut x, mut y) = (vec![0u8; 1 << 16], vec![0u8; 1 << 16]);
+    loop {
+        let (Ok(n), Ok(m)) = (fa.read(&mut x), fb.read(&mut y)) else { return false };
+        if n != m || x[..n] != y[..m] {
+            return false;
+        }
+        if n == 0 {
+            return true;
+        }
+    }
+}
+
 /// Puts back everything the journal lists. A file whose place has something
 /// new in it stays in the aside folder (and is reported); nothing is ever
 /// overwritten.
@@ -110,6 +132,12 @@ pub fn restore(game_dir: &Path) -> std::io::Result<Restored> {
             continue;
         }
         if to.exists() {
+            // A mod manager put the same file back while the game ran: the aside copy
+            // is a duplicate, so drop it instead of leaving it behind for ever.
+            if same_file(&from, &to) && std::fs::remove_file(&from).is_ok() {
+                out.duplicates += 1;
+                continue;
+            }
             out.kept.push(rel.clone());
             left.push(rel.clone());
             continue;
@@ -204,6 +232,21 @@ mod tests {
         assert!(moved.failed[0].starts_with("Data/Missing.esp"));
         restore(d.path()).unwrap();
         assert!(d.path().join("Data/A.esp").exists());
+    }
+
+    #[test]
+    fn an_identical_file_already_at_the_place_drops_the_aside_copy_a_different_one_stays() {
+        let d = tempfile::tempdir().unwrap();
+        let g = d.path();
+        put(g, "Data/a.esp", "same");
+        put(g, "Data/b.esp", "old");
+        set_aside(g, &[extra("Data/a.esp"), extra("Data/b.esp")], "1").unwrap();
+        put(g, "Data/a.esp", "same");
+        put(g, "Data/b.esp", "new");
+        let r = restore(g).unwrap();
+        assert_eq!((r.files, r.duplicates, r.kept.len()), (0, 1, 1));
+        assert!(!g.join(".aetherial-dawn/aside/1/Data/a.esp").exists());
+        assert!(g.join(".aetherial-dawn/aside/1/Data/b.esp").exists());
     }
 
     #[test]

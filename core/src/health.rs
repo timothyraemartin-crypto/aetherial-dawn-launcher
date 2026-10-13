@@ -91,6 +91,7 @@ pub fn run(i: &Inputs) -> Report {
         stub_plugins(i),
         newer_plugins(i),
         ini_archives(i),
+        game_archives(i),
         injectors(i),
         overlays(),
         steam_updates(i),
@@ -451,6 +452,17 @@ fn ini_archives(i: &Inputs) -> Check {
         check("ini", "Game settings file", Status::Ok, "Every file Skyrim's settings file lists is there.", vec![])
     } else {
         check("ini", "Game settings file", Status::Warn, "Skyrim's settings file lists files that aren't there. The launcher cleans this before Play.", items)
+    }
+}
+
+/// The base game's own archives. One that is missing or empty means missing
+/// meshes, textures, animations or UI no matter what the server sends.
+fn game_archives(i: &Inputs) -> Check {
+    let missing = crate::visuals::missing_archives(&i.game_dir.join("Data"));
+    if missing.is_empty() {
+        check("archives", "Game archives", Status::Ok, format!("All {} base game archives are there.", crate::visuals::BASE_ARCHIVES.len()), vec![])
+    } else {
+        check("archives", "Game archives", Status::Warn, "Skyrim's own archives are missing or empty, which shows as missing textures or meshes. Verify Skyrim in Steam, then click Fix version.", missing)
     }
 }
 

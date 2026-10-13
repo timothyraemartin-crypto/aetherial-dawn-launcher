@@ -56,6 +56,12 @@ pub struct Rules {
     pub allow_files: Vec<String>,
     /// Replacement for the "plugins don't match" message; `{which}` and `{tell}` are filled in.
     pub order_mismatch_text: Option<String>,
+    /// Ini settings staff may lower, raise or set (gameini::TUNABLE keys only).
+    pub tune: Vec<crate::gameini::Tune>,
+    /// Ping the server ten times and report round-trip time and loss.
+    pub ping_stats: bool,
+    /// The required Nexus collection (collection.rs); the file's `collection` object replaces the built-in one.
+    pub collection: crate::collection::Collection,
 }
 
 impl Default for Rules {
@@ -69,6 +75,9 @@ impl Default for Rules {
             rewrite_loadorder: true,
             allow_files: Vec::new(),
             order_mismatch_text: None,
+            tune: Vec::new(),
+            ping_stats: true,
+            collection: crate::collection::Collection::built_in(),
         }
     }
 }
@@ -102,6 +111,10 @@ impl Rules {
             connect_watch: on(&checks, "connectWatch"),
             platform_guard: on(&checks, "platformGuard"),
             session_upload: on(&checks, "sessionUpload"),
+            asset_report: on(&checks, "assetReport"),
+            connect_ladder: on(&checks, "connectLadder"),
+            browser_guard: on(&checks, "browserGuard"),
+            archive_gate: checks.get("archiveGate").and_then(Value::as_bool) == Some(true),
         };
         r.server_order = match checks.get("serverOrder").and_then(Value::as_str) {
             Some("warn") => Level::Warn,
@@ -119,6 +132,29 @@ impl Rules {
             .filter(|p| !p.contains('\\') && crate::manifest::safe_relative(p).is_ok())
             .collect();
         r.order_mismatch_text = text.get("orderMismatch").and_then(Value::as_str).and_then(clean_text);
+        r.ping_stats = on(&checks, "pingStats");
+        // A collection that doesn't parse keeps the built-in one.
+        if let Some(c) = v.get("collection").and_then(|c| crate::collection::Collection::parse(c.to_string().as_bytes()).ok()) {
+            r.collection = c;
+        }
+        // tune.settings: [{file, section, key, mode, value, on?}]; "tune.on": false drops all.
+        let tune = section("tune");
+        if on(&tune, "on") {
+            r.tune = tune
+                .get("settings")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter(|e| on(e, "on"))
+                        .filter_map(|e| {
+                            let s = |k: &str| e.get(k).and_then(Value::as_str).unwrap_or("");
+                            crate::gameini::Tune::checked(s("file"), s("section"), s("key"), s("mode"), e.get("value")?.as_f64()?)
+                        })
+                        .take(MAX_LIST)
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
         Ok(r)
     }
 
@@ -131,6 +167,10 @@ impl Rules {
             connect_watch: status.connect_watch && self.flags.connect_watch,
             platform_guard: status.platform_guard && self.flags.platform_guard,
             session_upload: status.session_upload && self.flags.session_upload,
+            asset_report: status.asset_report && self.flags.asset_report,
+            connect_ladder: status.connect_ladder && self.flags.connect_ladder,
+            browser_guard: status.browser_guard && self.flags.browser_guard,
+            archive_gate: status.archive_gate && self.flags.archive_gate,
         }
     }
 
@@ -159,6 +199,14 @@ impl Rules {
                 }
             }
         }
+        report.worst = report.checks.iter().map(|c| c.status).max().unwrap_or(Status::Ok);
+    }
+
+    /// Adds the required-collection row. A `block` level that fails stops Play
+    /// like the base-file checks; the default (warn) never does.
+    pub fn add_collection_check(&self, game_dir: &Path, plugins_txt: Option<&Path>, report: &mut Report) {
+        report.checks.retain(|c| c.id != "collection");
+        report.checks.push(crate::collection::check(&self.collection, game_dir, plugins_txt));
         report.worst = report.checks.iter().map(|c| c.status).max().unwrap_or(Status::Ok);
     }
 
@@ -213,6 +261,17 @@ mod tests {
     }
 
     #[test]
+    fn collection_comes_from_the_file_and_a_bad_one_keeps_the_built_in() {
+        let r = Rules::parse(br#"{"collection":{"slug":"nzwgrw","name":"A","revision":2,"level":"block","mods":[{"name":"M","files":["Data/M.esp"]}]}}"#).unwrap();
+        assert_eq!((r.collection.revision, r.collection.level, r.collection.mods.len()), (2, crate::collection::Level::Block, 1));
+        let r = Rules::parse(br#"{"collection":{"slug":"x","name":"x","revision":9,"mods":[{"name":"M","files":["../x"]}]}}"#).unwrap();
+        assert_eq!(r.collection, crate::collection::Collection::built_in());
+        let mut rep = Report { checks: vec![], worst: Status::Ok };
+        Rules::default().add_collection_check(std::path::Path::new("/nonexistent"), None, &mut rep);
+        assert_eq!((rep.checks[0].id, rep.worst), ("collection", Status::Warn));
+    }
+
+    #[test]
     fn empty_or_unknown_files_mean_todays_behaviour() {
         let r = Rules::parse(b"{}").unwrap();
         assert_eq!(Rules { rev: "unnamed".into(), ..Rules::default() }, r);
@@ -234,6 +293,23 @@ mod tests {
         assert_eq!(r.order_ignore, vec!["Foo.esp".to_string()]);
         assert_eq!(r.allow_files, vec!["Data/Foo.esp".to_string()]);
         assert_eq!(r.order_mismatch_message("a", "b"), "Order: a b");
+    }
+
+    #[test]
+    fn tunes_keep_only_known_in_range_enabled_settings() {
+        let r = Rules::parse(
+            br#"{"tune":{"settings":[
+            {"file":"SkyrimPrefs.ini","section":"Display","key":"fShadowDistance","mode":"max","value":8000},
+            {"file":"SkyrimPrefs.ini","section":"Display","key":"iShadowMapResolution","mode":"max","value":2048,"on":false},
+            {"file":"Skyrim.ini","section":"General","key":"sStartingCell","mode":"set","value":1},
+            {"file":"Skyrim.ini","section":"General","key":"uGridsToLoad","mode":"set","value":99}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(r.tune.len(), 1);
+        assert_eq!(r.tune[0].key, "fShadowDistance");
+        let off = Rules::parse(br#"{"tune":{"on":false,"settings":[{"file":"SkyrimPrefs.ini","section":"Display","key":"fShadowDistance","mode":"max","value":8000}]}}"#).unwrap();
+        assert!(off.tune.is_empty() && off.ping_stats);
+        assert!(!Rules::parse(br#"{"checks":{"pingStats":false}}"#).unwrap().ping_stats);
     }
 
     #[test]

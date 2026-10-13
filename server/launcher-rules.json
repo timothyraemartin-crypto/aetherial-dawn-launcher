@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "rev": "2026-10-12.1",
+  "rev": "2026-10-13.1",
   "off": false,
   "checks": {
     "firewallFix": true,
@@ -8,7 +8,8 @@
     "connectWatch": true,
     "platformGuard": true,
     "sessionUpload": true,
-    "serverOrder": "fail"
+    "serverOrder": "fail",
+    "pingStats": true
   },
   "order": {
     "emptyCcc": true,
@@ -18,5 +19,138 @@
   "allow": {
     "files": []
   },
-  "text": {}
+  "text": {},
+  "tune": {
+    "on": true,
+    "settings": [
+      {
+        "file": "SkyrimPrefs.ini",
+        "section": "Display",
+        "key": "fShadowDistance",
+        "mode": "max",
+        "value": 8000,
+        "on": false,
+        "note": "caps long shadow distance (GPU cost); lowers only"
+      },
+      {
+        "file": "SkyrimPrefs.ini",
+        "section": "Display",
+        "key": "iShadowMapResolution",
+        "mode": "max",
+        "value": 2048,
+        "on": false,
+        "note": "caps shadow map size; lowers only"
+      },
+      {
+        "file": "Skyrim.ini",
+        "section": "General",
+        "key": "fPostLoadUpdateTimeMS",
+        "mode": "set",
+        "value": 500,
+        "on": false,
+        "note": "already 500 on Timothy's PC; set only if a player's differs"
+      },
+      {
+        "file": "Skyrim.ini",
+        "section": "General",
+        "key": "uGridsToLoad",
+        "mode": "max",
+        "value": 5,
+        "on": false,
+        "note": "caps loaded cells (CPU/stream cost); lowers only"
+      }
+    ]
+  },
+  "collection": {
+    "slug": "nzwgrw",
+    "game": "skyrimspecialedition",
+    "name": "Aetherial Dawn",
+    "revision": 1,
+    "url": "https://www.nexusmods.com/games/skyrimspecialedition/collections/nzwgrw",
+    "level": "warn",
+    "mods": [
+      {
+        "name": "Address Library for SKSE Plugins",
+        "modId": 32444,
+        "fileId": 795954,
+        "version": "13",
+        "files": [
+          "Data/SKSE/Plugins/versionlib-1-6-1170-0.bin"
+        ]
+      },
+      {
+        "name": "SSE Display Tweaks",
+        "modId": 34705,
+        "fileId": 797175,
+        "version": "0.5.25",
+        "files": [
+          "Data/SKSE/Plugins/SSEDisplayTweaks.dll"
+        ]
+      },
+      {
+        "name": "SkyUI",
+        "modId": 12604,
+        "fileId": 749043,
+        "version": "6.11",
+        "files": [
+          "Data/SkyUI_SE.esp"
+        ],
+        "allow": [
+          "Data/Interface"
+        ]
+      },
+      {
+        "name": "Crash Logger",
+        "modId": 59596,
+        "fileId": 246928,
+        "version": "1.0.0",
+        "files": [
+          "Data/SKSE/Plugins/CrashLogger.dll"
+        ]
+      },
+      {
+        "name": "Skyrim Souls RE - Unpaused Menus",
+        "modId": 27859,
+        "fileId": 810395,
+        "version": "3.2.0",
+        "files": [
+          "Data/SKSE/Plugins/SkyrimSoulsRE.dll"
+        ]
+      },
+      {
+        "name": "ImGui Icons",
+        "modId": 114790,
+        "fileId": 690123,
+        "version": "1.2.0",
+        "files": [
+          "Data/SKSE/Plugins/ImGuiIcons"
+        ]
+      },
+      {
+        "name": "SSE Engine Fixes (skse64 plugin)",
+        "modId": 17230,
+        "fileId": 669326,
+        "version": "7.0.19-AIO",
+        "files": [
+          "Data/SKSE/Plugins/EngineFixes.dll"
+        ]
+      },
+      {
+        "name": "Unofficial Skyrim Special Edition Patch - USSEP",
+        "modId": 266,
+        "fileId": 800977,
+        "version": "4.3.9c",
+        "files": [
+          "Data/Unofficial Skyrim Special Edition Patch.esp"
+        ],
+        "allow": [
+          "Data/Unofficial Skyrim Special Edition Patch"
+        ]
+      }
+    ],
+    "pluginOrder": [
+      "Unofficial Skyrim Special Edition Patch.esp",
+      "SkyUI_SE.esp"
+    ]
+  }
 }
