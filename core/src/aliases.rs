@@ -462,6 +462,20 @@ fn rename_in(txt: &Path, from: &str, to: &str) -> std::io::Result<bool> {
     Ok(true)
 }
 
+/// Points plugins.txt at the launcher's links again: a line naming an original it made a link for ("Unofficial Skyrim
+/// Special Edition Patch.esp", which Vortex switches back on) becomes the link's name, keeping its `*` and place.
+/// For use while the game runs, when something else has rewritten the file. Returns (original, link) for each change.
+pub fn point_at_links(game_dir: &Path, plugins_txt: &Path) -> std::io::Result<Vec<(String, String)>> {
+    let mut done = Vec::new();
+    for l in load(game_dir).links {
+        let (Some(from), Some(to)) = (l.from.strip_prefix("Data/"), l.to.strip_prefix("Data/")) else { continue };
+        if is_plugin(to) && game_dir.join(&l.to).is_file() && rename_in(plugins_txt, from, to)? {
+            done.push((from.to_string(), to.to_string()));
+        }
+    }
+    Ok(done)
+}
+
 /// Gives each .esl in `full` (from `light_as_full`: the game's own light
 /// plugins that the server runs as full ones, _ResourcePack.esl) its
 /// "<stem>.esm" copy with the light flag cleared, the same bytes as the
@@ -565,6 +579,22 @@ pub fn ensure_full(game_dir: &Path, plugins_txt: Option<&Path>, full: &[String])
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn point_at_links_turns_a_switched_on_original_back_into_the_link() {
+        let d = std::env::temp_dir().join(format!("ad-pointlinks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("Data")).unwrap();
+        std::fs::write(d.join("Data/Unofficial-Skyrim-Special-Edition-Patch.esp"), b"x").unwrap();
+        save(&d, &Record { links: vec![Alias { from: "Data/Unofficial Skyrim Special Edition Patch.esp".into(), to: "Data/Unofficial-Skyrim-Special-Edition-Patch.esp".into() }] });
+        let txt = d.join("plugins.txt");
+        std::fs::write(&txt, "# x\r\n*AetherialDawn.esp\r\n*Unofficial Skyrim Special Edition Patch.esp\r\n*RaceMenu.esp\r\n").unwrap();
+        let done = point_at_links(&d, &txt).unwrap();
+        assert_eq!(done, vec![("Unofficial Skyrim Special Edition Patch.esp".to_string(), "Unofficial-Skyrim-Special-Edition-Patch.esp".to_string())]);
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "# x\r\n*AetherialDawn.esp\r\n*Unofficial-Skyrim-Special-Edition-Patch.esp\r\n*RaceMenu.esp\r\n");
+        assert!(point_at_links(&d, &txt).unwrap().is_empty(), "already pointing at the link");
+        let _ = std::fs::remove_dir_all(&d);
+    }
     use super::*;
 
     fn plugin_with_masters(ms: &[&str]) -> Vec<u8> {

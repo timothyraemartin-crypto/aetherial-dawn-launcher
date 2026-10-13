@@ -1966,20 +1966,23 @@ fn send_client_status(app: &AppHandle, dir: &std::path::Path) {
 /// Tells the login service, in the background, what this PC will start the game with: game version,
 /// the plugin order, Creation Club files and archive names (core/src/parity.rs; names and hashes only).
 /// Nothing is awaited, so Play never waits; 404 (route not live) and any failure are silent for the player.
-/// For the first 3 minutes of a session, every 2 s: if plugins.txt no longer lists the server's plugins first, in order,
+/// For the first 10 minutes of a session (the client reads the list around login, about 2.5 minutes in), every second: if plugins.txt no longer lists the server's plugins first, in order,
 /// with nothing the client can't load switched on, write it that way again and log what it had and when.
 async fn keep_load_order(app: AppHandle, dir: PathBuf, txt: PathBuf, order: Vec<launcher_core::serverorder::ServerPlugin>) {
     let started = std::time::Instant::now();
     let mut fixes = 0u32;
-    while started.elapsed() < std::time::Duration::from_secs(180) {
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    while started.elapsed() < std::time::Duration::from_secs(600) {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         if !app.state::<AppState>().active_session.load(Ordering::SeqCst) {
             return;
         }
         let (d, t, o) = (dir.clone(), txt.clone(), order.clone());
         let res = tauri::async_runtime::spawn_blocking(move || {
             let before = launcher_core::loadorder::read_text(&t).unwrap_or_default();
-            (before, serverorder::set_exact(&d, &t, &o))
+            // A ticked original ("Unofficial Skyrim Special Edition Patch.esp") goes back to the link the game runs, not just off.
+            let pointed = launcher_core::aliases::point_at_links(&d, &t);
+            let exact = serverorder::set_exact(&d, &t, &o);
+            (before, match (pointed, exact) { (Err(e), _) | (_, Err(e)) => Err(e), (Ok(p), Ok(e)) => Ok(e || !p.is_empty()) })
         })
         .await;
         match res {
