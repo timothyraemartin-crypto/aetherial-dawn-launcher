@@ -94,6 +94,9 @@
         "version": "6.11",
         "files": [
           "Data/SkyUI_SE.esp"
+        ],
+        "allow": [
+          "Data/Interface"
         ]
       },
       {
@@ -139,6 +142,9 @@
         "version": "4.3.9c",
         "files": [
           "Data/Unofficial Skyrim Special Edition Patch.esp"
+        ],
+        "allow": [
+          "Data/Unofficial Skyrim Special Edition Patch"
         ]
       }
     ],

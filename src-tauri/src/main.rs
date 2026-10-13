@@ -436,6 +436,8 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     };
     // Another server's Skyrim Platform scripts: set aside like other mods, unless staff switched it off.
     let mut extras: Vec<_> = extras.into_iter().filter(|e| e.kind != "script" || flags.platform_guard).collect();
+    // The required Nexus collection's own files are not "other mods" (core/src/collection.rs).
+    extras.retain(|e| !rules.collection.owns(e.kind, &e.rel));
     // The last game ran to the main menu and never joined: this one also runs without the official
     // Creation Club files (they come back when it closes). status.json `launcher.connectLadder`: false switches it off.
     if flags.connect_ladder {

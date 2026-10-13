@@ -46,6 +46,9 @@ pub struct CollMod {
     /// Game-relative paths (files or folders) that must all exist for the mod to count as installed.
     #[serde(default)]
     pub files: Vec<String>,
+    /// More game-relative prefixes this mod owns (loose files, archives) that the no-mods guard must leave alone.
+    #[serde(default)]
+    pub allow: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -79,7 +82,7 @@ impl Collection {
             if m.name.trim().is_empty() || m.files.is_empty() {
                 return Err(format!("collection: mod '{}' needs a name and files", m.name));
             }
-            for f in &m.files {
+            for f in m.files.iter().chain(&m.allow) {
                 if f.contains('\\') || crate::manifest::safe_relative(f).is_err() {
                     return Err(format!("collection: unsafe path '{f}'"));
                 }
@@ -130,6 +133,38 @@ fn active_plugins(plugins_txt: &Path) -> Vec<String> {
         .map(|n| n.trim().to_string())
         .filter(|n| !n.is_empty())
         .collect()
+}
+
+impl Collection {
+    /// True when the no-mods guard (modguard.rs) must leave this file alone because
+    /// the required collection owns it: its plugins (also under the alias name),
+    /// the archives and inis named like those plugins, its detection files and
+    /// folders, and its `allow` prefixes. Nothing is allowed when the check is off.
+    pub fn owns(&self, kind: &str, rel: &str) -> bool {
+        if self.level == Level::Off {
+            return false;
+        }
+        let rel_l = rel.to_ascii_lowercase();
+        let file = rel_l.rsplit('/').next().unwrap_or("");
+        let under = |p: &str| {
+            let p = p.to_ascii_lowercase();
+            rel_l == p || rel_l.starts_with(&format!("{p}/"))
+        };
+        // `files` are exact paths or folders; `allow` entries are plain prefixes (a folder, or a file-name start).
+        if self.mods.iter().any(|m| m.files.iter().any(|p| under(p)) || m.allow.iter().any(|p| rel_l.starts_with(&p.to_ascii_lowercase()))) {
+            return true;
+        }
+        if kind == "plugin" || kind == "archive" {
+            let stem = |n: &str| n.rsplit_once('.').map_or(n.to_string(), |(s, _)| s.to_string()).to_ascii_lowercase();
+            let fs = stem(file);
+            return self.plugin_order.iter().any(|p| {
+                let ps = stem(p);
+                let pa = stem(&alias_name(p));
+                kind == "plugin" && same_plugin(file, p) || [&ps, &pa].iter().any(|x| fs == **x || fs.starts_with(&format!("{x} - ")))
+            });
+        }
+        false
+    }
 }
 
 /// The health row for this collection. `plugins_txt` None skips the order part.
@@ -271,6 +306,30 @@ mod tests {
         std::fs::write(&txt, format!("{USSEP}\r\n*SkyUI_SE.esp\r\n")).unwrap();
         let r = check(&c, t.path(), Some(&txt));
         assert_eq!(r.items, vec![format!("Not switched on in your load order: {USSEP}")]);
+    }
+
+    #[test]
+    fn the_no_mods_guard_leaves_the_collections_files_alone() {
+        let c = Collection::built_in();
+        for (k, rel) in [
+            ("plugin", "Data/SkyUI_SE.esp"),
+            ("plugin", "Data/Unofficial Skyrim Special Edition Patch.esp"),
+            ("plugin", "Data/Unofficial-Skyrim-Special-Edition-Patch.esp"),
+            ("archive", "Data/Unofficial Skyrim Special Edition Patch.bsa"),
+            ("archive", "Data/Unofficial-Skyrim-Special-Edition-Patch - Textures.bsa"),
+            ("dll", "Data/SKSE/Plugins/SkyrimSoulsRE.dll"),
+            ("dll", "Data/skse/plugins/enginefixes.dll"),
+            ("files", "Data/SKSE/Plugins/ImGuiIcons/a.png"),
+            ("files", "Data/Interface/skyui/x.swf"),
+        ] {
+            assert!(c.owns(k, rel), "{rel}");
+        }
+        for (k, rel) in [("plugin", "Data/Other.esp"), ("dll", "Data/SKSE/Plugins/Cheat.dll"), ("files", "Data/Meshes/x.nif"), ("archive", "Data/SkyUI_Other.bsa")] {
+            assert!(!c.owns(k, rel), "{rel}");
+        }
+        let mut off = c.clone();
+        off.level = Level::Off;
+        assert!(!off.owns("plugin", "Data/SkyUI_SE.esp"));
     }
 
     #[test]
