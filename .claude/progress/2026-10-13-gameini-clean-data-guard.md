@@ -1,0 +1,5 @@
+# 2026-10-13 Skyrim.ini archive cleanup no longer empties the list when Data cannot be read
+
+Bug hunt (launcher gameini). CONFIRMED by test: `gameini::clean` treated a Data folder that could not be read, or that held no .bsa at all, as "no archives present", so every name in sResourceArchiveList/2 counted as missing and the player's lists were written back empty before Play (the .aetherial-dawn-backup copy was the only way back). Now `clean` judges nothing in that case (`Repair.skipped`), `repair` writes no file and no backup, and Play logs "left <ini> alone". Failing test first: `an_unreadable_or_archive_less_data_folder_wipes_nothing`. Kill switch: env `AD_INI_CLEAN_UNGUARDED=1` restores the old behaviour. Launcher health check unchanged (stays warn-only).
+
+Verified: `cargo test -p launcher-core` 229 pass. NOT verified: src-tauri main.rs log arm (not built on Linux), Windows run. INFERRED, not fixed: the health check reports "every file is there" when the cleanup was skipped. Needs a launcher release.

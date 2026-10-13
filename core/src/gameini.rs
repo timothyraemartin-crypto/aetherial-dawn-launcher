@@ -14,6 +14,8 @@ const KEYS: [&str; 2] = ["sresourcearchivelist", "sresourcearchivelist2"];
 pub struct Repair {
     pub missing: Vec<String>,
     pub duplicates: Vec<String>,
+    /// The Data folder could not be read or holds no .bsa at all, so nothing was judged.
+    pub skipped: bool,
 }
 
 impl Repair {
@@ -60,9 +62,15 @@ pub fn preset_for(height: Option<u32>) -> &'static str {
 /// Rewrites the text, dropping archives that aren't in `data_dir` and repeats
 /// (across both lists, first one wins).
 pub fn clean(text: &str, data_dir: &Path) -> (String, Repair) {
-    let present: Vec<String> = std::fs::read_dir(data_dir)
-        .map(|r| r.flatten().map(|e| e.file_name().to_string_lossy().to_ascii_lowercase()).collect())
-        .unwrap_or_default();
+    let listing = std::fs::read_dir(data_dir).map(|r| r.flatten().map(|e| e.file_name().to_string_lossy().to_ascii_lowercase()).collect::<Vec<String>>());
+    // A Data folder that cannot be read, or holds no archive at all (wrong game folder, unplugged drive, half
+    // installed game), would make every listed archive look missing and empty the player's list. Judge nothing.
+    // AD_INI_CLEAN_UNGUARDED=1 restores the old behaviour.
+    let unguarded = std::env::var_os("AD_INI_CLEAN_UNGUARDED").is_some_and(|v| v == "1");
+    let present = match listing {
+        Ok(p) if unguarded || p.iter().any(|n| n.ends_with(".bsa")) => p,
+        _ => return (text.to_string(), Repair { skipped: true, ..Repair::default() }),
+    };
     let mut seen: Vec<String> = Vec::new();
     let mut rep = Repair::default();
     let mut out = Vec::new();
@@ -396,6 +404,30 @@ mod tests {
         );
         assert!(tmp.path().join("Skyrim.ini.aetherial-dawn-backup").exists());
         assert!(repair(&ini, &data).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_or_archive_less_data_folder_wipes_nothing() {
+        // A wrong game folder, an unplugged drive or a half-installed game must not make every archive
+        // look "missing": the list would be emptied and Skyrim would start without its own archives.
+        let tmp = tempfile::tempdir().unwrap();
+        let text = "[Archive]\r\nsResourceArchiveList=Skyrim - Misc.bsa\r\nsResourceArchiveList2=SkyUI_SE.bsa\r\n";
+        let (out, rep) = clean(text, &tmp.path().join("NoSuchData"));
+        assert_eq!(out, text);
+        assert!(rep.is_empty());
+        let empty = tmp.path().join("Data");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::write(empty.join("readme.txt"), b"").unwrap();
+        let (out, rep) = clean(text, &empty);
+        assert_eq!(out, text);
+        assert!(rep.is_empty());
+        assert!(rep.skipped, "the skip is reported so the caller can log it");
+        // repair() leaves the file and writes no backup
+        let ini = tmp.path().join("Skyrim.ini");
+        std::fs::write(&ini, text).unwrap();
+        assert!(repair(&ini, &empty).unwrap().is_empty());
+        assert_eq!(std::fs::read_to_string(&ini).unwrap(), text);
+        assert!(!tmp.path().join("Skyrim.ini.aetherial-dawn-backup").exists());
     }
 
     #[test]
