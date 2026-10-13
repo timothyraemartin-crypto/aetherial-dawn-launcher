@@ -508,6 +508,14 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
             }
         }
     }
+    // The collection's plugins must be on in plugins.txt (Vortex leaves some off); only when the rules say so.
+    if let Some(txt) = plugins_txt(&app) {
+        match launcher_core::collection::enable_plugins(&rules.collection, &dir, &txt) {
+            Ok(v) if !v.is_empty() => log::line(&format!("play: switched on the collection's plugins in plugins.txt: {}", v.join(", "))),
+            Ok(_) => {}
+            Err(e) => log::line(&format!("play: couldn't switch on the collection's plugins: {e}")),
+        }
+    }
     play_step(&app, "Checking your game…");
     let mut report = run_health_with_masters(&app, &dir, Some(&m), Some(masters)).await;
     rules.adjust_order_check(&mut report);
@@ -537,6 +545,11 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
             None => "Send Copy diagnostics to staff.".into(),
         };
         return Err(rules.order_mismatch_message(&which, &tell));
+    }
+    // The required Nexus collection (rules `collection.level` = "block"): a missing mod or a plugin that is off stops Play.
+    if let Some(c) = report.checks.iter().find(|c| c.id == "collection" && c.status == health::Status::Fail) {
+        log::line(&format!("play: stopped, the required collection is incomplete: {}", c.items.join("; ")));
+        return Err(launcher_core::collection::block_message(&rules.collection, &c.items));
     }
     // Skyrim that starts but never reaches the server: Windows Firewall rules
     // for SkyrimSE.exe and the server's UDP port. Advisory only: nothing here
