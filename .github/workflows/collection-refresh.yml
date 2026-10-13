@@ -18,10 +18,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Rebuild the collection list
+      - name: Inspect the revision (read-only)
+        continue-on-error: true
         env:
           NEXUS_API_KEY: ${{ secrets.NEXUS_API_KEY }}
-          REVISION: ${{ inputs.revision || (github.event_name == 'pull_request' && '1' || '') }}
+          REVISION: ${{ inputs.revision || '6' }}
+        run: |
+          set +x
+          sudo apt-get install -y p7zip-full >/dev/null
+          scripts/collection-inspect.sh "$REVISION" 2>&1 | tee inspect.txt
+      - name: Rebuild the collection list
+        continue-on-error: true
+        env:
+          NEXUS_API_KEY: ${{ secrets.NEXUS_API_KEY }}
+          REVISION: ${{ inputs.revision || (github.event_name == 'pull_request' && '6' || '') }}
         run: |
           set +x
           sudo apt-get install -y p7zip-full >/dev/null
@@ -32,5 +42,6 @@ jobs:
         with:
           name: collection-rules
           path: |
+            inspect.txt
             server/launcher-rules.json
             core/data/collection-*.json
