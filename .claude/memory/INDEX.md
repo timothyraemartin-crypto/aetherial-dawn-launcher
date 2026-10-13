@@ -15,3 +15,4 @@ Before ANY work: read project memory, PROGRESS.md and this index; name them in y
 - [quality-reviews](quality-reviews.md), [-2](quality-reviews-2.md), [-3](quality-reviews-3.md), [-4](quality-reviews-4.md) - open findings: sign-in/UI (1), file sync (2), mod list/Vortex (3), Tauri shell (4)
 - [signed-feeds](signed-feeds.md) - before editing mods.json/manifest on the server or the feed signing code
 - [launcher-improvements](launcher-improvements.md) - before planning new launcher features
+- [program-baseline](program-baseline.md) - before planning or changing a feature: register, 5-tier backlog, evidence checklist
