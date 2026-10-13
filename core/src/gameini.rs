@@ -182,13 +182,15 @@ pub enum TuneMode {
 
 /// The settings the rules file may touch: (file, section, key, integer, lowest, highest).
 /// Anything else, and any value outside its range, is ignored.
-pub const TUNABLE: [(&str, &str, &str, bool, f64, f64); 5] = [
+pub const TUNABLE: [(&str, &str, &str, bool, f64, f64); 6] = [
     ("SkyrimPrefs.ini", "Display", "fShadowDistance", false, 1000.0, 20000.0),
     ("SkyrimPrefs.ini", "Display", "iShadowMapResolution", true, 512.0, 4096.0),
     ("Skyrim.ini", "General", "fPostLoadUpdateTimeMS", false, 100.0, 2000.0),
     ("Skyrim.ini", "General", "uGridsToLoad", true, 3.0, 7.0),
     // Havok's longest physics step; 1 / frame cap (Framerate mode), 30 to 240 fps.
     ("Skyrim.ini", "HAVOK", "fMaxTime", false, 0.004, 0.034),
+    // SSE Display Tweaks' frame cap, in Data/SKSE/Plugins (the game folder, not Documents).
+    ("SSEDisplayTweaks.ini", "Render", "FramerateLimit", true, 30.0, 240.0),
 ];
 
 impl Tune {
@@ -460,5 +462,16 @@ mod tests {
         assert!(out.contains("[HAVOK]\r\nfMaxTime=0.0084034"), "{out}");
         assert_eq!(ch.len(), 1);
         assert!(with_tunes(&out, "Skyrim.ini", &r).is_none());
+    }
+
+    #[test]
+    fn frame_cap_is_a_tunable_display_tweaks_key() {
+        let t = Tune::checked("SSEDisplayTweaks.ini", "Render", "FramerateLimit", "set", 60.0).unwrap();
+        assert!(Tune::checked("SSEDisplayTweaks.ini", "Render", "FramerateLimit", "set", 500.0).is_none());
+        let (out, _) = with_tunes("[Render]\nEnableVSync=true\n;FramerateLimit=0\n", "SSEDisplayTweaks.ini", std::slice::from_ref(&t)).unwrap();
+        assert!(out.contains("[Render]\nFramerateLimit=60\n"), "{out}");
+        assert_eq!(framerate_limit(&out), Some(60.0));
+        assert!(with_tunes(&out, "SSEDisplayTweaks.ini", std::slice::from_ref(&t)).is_none());
+        assert!(with_tunes("[General]\n", "Skyrim.ini", std::slice::from_ref(&t)).is_none());
     }
 }

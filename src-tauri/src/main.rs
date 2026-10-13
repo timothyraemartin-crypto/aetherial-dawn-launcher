@@ -1831,7 +1831,14 @@ fn tidy_game(app: &AppHandle, dir: &std::path::Path, m: &Manifest, server_names:
     }
     // Staff-set ini limits from launcher-rules.json (gameini::TUNABLE keys only; each change is logged).
     if !tunes.is_empty() {
-        let cap = std::fs::read_to_string(dir.join("Data/SKSE/Plugins/SSEDisplayTweaks.ini")).ok().and_then(|t| gameini::framerate_limit(&t));
+        // The frame cap lives in the game folder; set it first so fMaxTime below follows it.
+        let tweaks = dir.join("Data/SKSE/Plugins/SSEDisplayTweaks.ini");
+        match gameini::apply_tunes(&tweaks, tunes) {
+            Ok(ch) if !ch.is_empty() => log::line(&format!("play: tuned {}: {}", tweaks.display(), ch.join("; "))),
+            Ok(_) => {}
+            Err(e) => log::line(&format!("play: couldn't tune {}: {e}", tweaks.display())),
+        }
+        let cap = std::fs::read_to_string(&tweaks).ok().and_then(|t| gameini::framerate_limit(&t));
         let tunes = gameini::resolve_framerate(tunes, cap);
         for ini in gameini::ini_paths(&docs) {
             match gameini::apply_tunes(&ini, &tunes) {
