@@ -1,0 +1,3 @@
+# 2026-10-13 Collection revision 3 list
+
+Collection revision 3 list (draft PR claude/collection-rev2): server/launcher-rules.json carries Nexus revision 3 (Ryan's Crash Logger 59596 replaced by alandtse's Crash Logger SSE AE VR 59818 file 792670, 1.25.0; detection Data/SKSE/Plugins/CrashLoggerSSE.dll INFERRED). Cause: Ryan's 2021 CrashLogger.dll is disabled by SKSE on 1.6.1170 (Timothy's screenshot). collection-rules.sh now keeps each mod's `allow` prefixes (it dropped them; they exempt SkyUI/USSEP files from the no-mods guard). NOT published to the server: needs Timothy's phrase "Publish the collection list revision 3" and the Publish launcher feed workflow, mode rules. Checked: cargo test -p launcher-core 212. No release.

@@ -1,0 +1,3 @@
+# 2026-10-12 Remove AetherialSkillTree
+
+Remove AetherialSkillTree (draft PR claude/remove-skill-tree-mod-7ii7ze, Timothy: remove the mod that was trying to make the in-game skill menu work): DLL no longer bundled, native-mods/skill-tree/ deleted, bundled.rs RETIRED now lists the DLL, AetherialSkillTree.test.json/.test.keep/.off/.nohide/.keeplevels so the next Play removes them from every player's game folder (no unchanged-bytes check; the sample-skills special case is gone). Checked: bundled.rs unit tests in a standalone build (see PR). NOT compiled as the full src-tauri app here; no game check. Not merged or released. Server writer (ingame-ui skills 1.1.1, skillState kill switch) is a separate PR.

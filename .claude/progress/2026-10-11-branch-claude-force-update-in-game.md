@@ -1,0 +1,3 @@
+# 2026-10-11 Branch claude/force-update-in-game
+
+Branch claude/force-update-in-game (on top of #117): a launcher release published while Skyrim runs shows a 60 s countdown (window raised), ends Skyrim (new Tauri commands close_game_for_update, raise_launcher), installs and relaunches. Kill switch: status.json launcher.forceClose=false; launcher.forceCloseSecs 5-300. Text: "Launcher X is ready. Skyrim closes in N seconds to install it. Save your game." (needs Timothy's OK). Checked: ui-fast-play-test (2 new scenarios), ui-contract-test. src-tauri NOT compiled here (no Windows/GTK toolchain); Windows build and in-game visibility of the raised window over fullscreen NEED game check. Not released.

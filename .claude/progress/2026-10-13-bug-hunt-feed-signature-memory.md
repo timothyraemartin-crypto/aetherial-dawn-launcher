@@ -1,0 +1,3 @@
+# 2026-10-13 Bug hunt, feed signature memory
+
+Bug hunt, feed signature memory (draft PR claude/hunt-feedsig-seen): CONFIRMED an unreadable signed-feeds.json (cut-short write, lock) made the launcher forget it had seen signed feeds and accept unsigned mods.json/manifest/rules again; the file was also written non-atomically. Now an existing-but-unreadable file means every feed must be signed (rewritten whole), writes go through atomicfile::write; kill switch AD_FEEDSIG_LENIENT_SEEN=1. Failing test first (feedsig::tests::a_damaged_seen_file_does_not_reopen_the_unsigned_window); `cargo test` in core 226 pass. Not built on Windows, not tested on a PC; needs a launcher release to reach players.

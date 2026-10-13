@@ -7,6 +7,8 @@ here. Check `wc -c CLAUDE.md` before committing.
 
 See README.md for the project overview.
 
+Progress: one file per entry in `.claude/progress/` (README there); never edit a shared block in PROGRESS.md.
+
 
 # Aetherial Dawn hook v2
 @.claude/ad-system/BOOTSTRAP.md
