@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "rev": "2026-10-13.5",
+  "rev": "2026-10-13.6",
   "off": false,
   "checks": {
     "firewallFix": true,
@@ -49,6 +49,15 @@
         "value": 500,
         "on": false,
         "note": "already 500 on Timothy's PC; set only if a player's differs"
+      },
+      {
+        "file": "Skyrim.ini",
+        "section": "HAVOK",
+        "key": "fMaxTime",
+        "mode": "framerate",
+        "value": 0.004,
+        "on": false,
+        "note": "physics step = 1 / the player's own FramerateLimit (SSEDisplayTweaks.ini); skipped when no cap is set. Creature sink test: set on:true once the launcher carrying this mode is released"
       },
       {
         "file": "Skyrim.ini",

@@ -175,15 +175,20 @@ pub enum TuneMode {
     Set,
     Max,
     Min,
+    /// Sets the value to 1 / the player's own `FramerateLimit` (SSEDisplayTweaks.ini);
+    /// skipped when no limit is set. The rules file's `value` is ignored.
+    Framerate,
 }
 
 /// The settings the rules file may touch: (file, section, key, integer, lowest, highest).
 /// Anything else, and any value outside its range, is ignored.
-pub const TUNABLE: [(&str, &str, &str, bool, f64, f64); 4] = [
+pub const TUNABLE: [(&str, &str, &str, bool, f64, f64); 5] = [
     ("SkyrimPrefs.ini", "Display", "fShadowDistance", false, 1000.0, 20000.0),
     ("SkyrimPrefs.ini", "Display", "iShadowMapResolution", true, 512.0, 4096.0),
     ("Skyrim.ini", "General", "fPostLoadUpdateTimeMS", false, 100.0, 2000.0),
     ("Skyrim.ini", "General", "uGridsToLoad", true, 3.0, 7.0),
+    // Havok's longest physics step; 1 / frame cap (Framerate mode), 30 to 240 fps.
+    ("Skyrim.ini", "HAVOK", "fMaxTime", false, 0.004, 0.034),
 ];
 
 impl Tune {
@@ -194,8 +199,10 @@ impl Tune {
             "set" => TuneMode::Set,
             "max" => TuneMode::Max,
             "min" => TuneMode::Min,
+            "framerate" if key.eq_ignore_ascii_case("fMaxTime") => TuneMode::Framerate,
             _ => return None,
         };
+        let value = if mode == TuneMode::Framerate { *lo } else { value };
         let ok = value.is_finite() && value >= *lo && value <= *hi && (!*int || value.fract() == 0.0);
         ok.then(|| Tune { file: f.to_string(), section: sec.to_string(), key: k.to_string(), mode, value })
     }
@@ -242,6 +249,7 @@ pub fn with_tunes(text: &str, file: &str, tunes: &[Tune]) -> Option<(String, Vec
                     (TuneMode::Set, None) => true,
                     (TuneMode::Max, Some(c)) => c > t.value,
                     (TuneMode::Min, Some(c)) => c < t.value,
+                    (TuneMode::Framerate, _) => false,
                     // A value that isn't a number is left alone by Max and Min.
                     _ => false,
                 };
@@ -264,6 +272,41 @@ pub fn with_tunes(text: &str, file: &str, tunes: &[Tune]) -> Option<(String, Vec
         }
     }
     (!changes.is_empty()).then(|| (joined(&lines, nl, text), changes))
+}
+
+/// The player's `FramerateLimit` from SSEDisplayTweaks.ini ([Render]); None when
+/// unset, commented out, zero or outside 30 to 240.
+pub fn framerate_limit(text: &str) -> Option<f64> {
+    let mut render = false;
+    for line in text.lines() {
+        let l = line.trim();
+        if l.starts_with('[') {
+            render = l.eq_ignore_ascii_case("[render]");
+        } else if render && !l.starts_with(';') && !l.starts_with('#') {
+            if let Some((k, v)) = l.split_once('=') {
+                if k.trim().eq_ignore_ascii_case("FramerateLimit") {
+                    let n: f64 = v.split([';', '#']).next()?.trim().parse().ok()?;
+                    return (30.0..=240.0).contains(&n).then_some(n);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Turns Framerate-mode tunes into plain `Set` ones using the player's frame
+/// cap (1 / limit, 7 decimals); with no usable cap they are dropped.
+pub fn resolve_framerate(tunes: &[Tune], limit: Option<f64>) -> Vec<Tune> {
+    tunes
+        .iter()
+        .filter_map(|t| {
+            if t.mode != TuneMode::Framerate {
+                return Some(t.clone());
+            }
+            let v = (1.0 / limit?) * 1e7;
+            Some(Tune { mode: TuneMode::Set, value: v.round() / 1e7, ..t.clone() })
+        })
+        .collect()
 }
 
 /// Applies the tunes to one ini file in the Skyrim documents folder, keeping
@@ -400,5 +443,22 @@ mod tests {
         assert_eq!(preset_for(screen_height(t.path())), "1440");
         assert_eq!(preset_for(Some(1080)), "1080");
         assert_eq!(preset_for(None), "1080");
+    }
+
+    #[test]
+    fn havok_step_follows_the_players_frame_cap() {
+        assert_eq!(framerate_limit("[Render]\r\nEnableVSync=true\r\nFramerateLimit=119 ; cap\r\n"), Some(119.0));
+        assert_eq!(framerate_limit("[Render]\n;FramerateLimit=119\n"), None);
+        assert_eq!(framerate_limit("[Render]\nFramerateLimit=0\n"), None);
+        assert_eq!(framerate_limit("[Other]\nFramerateLimit=60\n"), None);
+        let t = Tune::checked("Skyrim.ini", "HAVOK", "fMaxTime", "framerate", 0.0).unwrap();
+        assert!(Tune::checked("Skyrim.ini", "General", "uGridsToLoad", "framerate", 5.0).is_none());
+        assert!(resolve_framerate(std::slice::from_ref(&t), None).is_empty());
+        let r = resolve_framerate(&[t], Some(119.0));
+        assert_eq!(r[0].mode, TuneMode::Set);
+        let (out, ch) = with_tunes("[General]\r\nbAlwaysActive=1\r\n", "Skyrim.ini", &r).unwrap();
+        assert!(out.contains("[HAVOK]\r\nfMaxTime=0.0084034"), "{out}");
+        assert_eq!(ch.len(), 1);
+        assert!(with_tunes(&out, "Skyrim.ini", &r).is_none());
     }
 }
