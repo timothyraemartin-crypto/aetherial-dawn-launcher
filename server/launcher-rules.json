@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "rev": "2026-10-13.6",
+  "rev": "2026-10-13.7",
   "off": false,
   "checks": {
     "firewallFix": true,
@@ -49,6 +49,15 @@
         "value": 500,
         "on": false,
         "note": "already 500 on Timothy's PC; set only if a player's differs"
+      },
+      {
+        "file": "SSEDisplayTweaks.ini",
+        "section": "Render",
+        "key": "FramerateLimit",
+        "mode": "set",
+        "value": 60,
+        "on": false,
+        "note": "frame cap for everyone (Timothy 2026-10-13); Display Tweaks ini in Data/SKSE/Plugins. on:false to stop"
       },
       {
         "file": "Skyrim.ini",
