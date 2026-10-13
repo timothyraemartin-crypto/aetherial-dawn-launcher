@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "rev": "2026-10-13.3",
+  "rev": "2026-10-13.4",
   "off": false,
   "checks": {
     "firewallFix": true,
@@ -65,7 +65,7 @@
     "slug": "nzwgrw",
     "game": "skyrimspecialedition",
     "name": "Aetherial Dawn",
-    "revision": 5,
+    "revision": 6,
     "url": "https://www.nexusmods.com/games/skyrimspecialedition/collections/nzwgrw",
     "level": "warn",
     "mods": [
@@ -274,21 +274,50 @@
           "Data/textures/prvti",
           "Data/SKSE/Plugins/InventoryInjector"
         ]
+      },
+      {
+        "name": "Konahrik's Accoutrements - Dragon Priest Armory",
+        "modId": 22206,
+        "fileId": 76929,
+        "version": "5.5.3",
+        "files": [
+          "Data/konahrik_accoutrements.esp"
+        ],
+        "allow": [
+          "Data/KA_Readme.txt",
+          "Data/meshes/actors/character",
+          "Data/meshes/armor/dragon-medallion",
+          "Data/meshes/armor/dragonpriesthelms",
+          "Data/meshes/dlc02/armor",
+          "Data/meshes/konahacc",
+          "Data/scripts/ka",
+          "Data/scripts/archive/ka_",
+          "Data/scripts/pf_ka_",
+          "Data/scripts/qf_ka_",
+          "Data/scripts/kahevnoraak",
+          "Data/scripts/kakrosis",
+          "Data/scripts/karestore",
+          "Data/textures/actors/character",
+          "Data/textures/armor/dragon_medallion",
+          "Data/textures/konahacc"
+        ]
       }
     ],
     "pluginOrder": [
       "Unofficial Skyrim Special Edition Patch.esp",
       "SkyUI_SE.esp",
-      "DragonPriestArmor.esp",
-      "DragonPriestArmorKP.esp",
-      "DragonPriestArmorWyrmstooth.esp",
+      "BeardMaskFix.esp",
+      "I4IconAddon.esp",
       "MoreCraftableEquipment.esp",
       "MoreCraftableEquipment_AdvCyrus.esp",
       "MoreCraftableEquipment_BYOHLooms.esp",
       "MoreCraftableEquipment_Fish.esp",
-      "BeardMaskFix.esp",
-      "I4IconAddon.esp",
-      "King-Priest.esp"
+      "DragonPriestArmor.esp",
+      "DragonPriestArmorKP.esp",
+      "DragonPriestArmorWyrmstooth.esp",
+      "DragonPriestRetextureSE_KonAcc.esp",
+      "King-Priest.esp",
+      "konahrik_accoutrements.esp"
     ]
   }
 }
