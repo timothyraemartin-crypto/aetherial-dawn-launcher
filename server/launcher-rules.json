@@ -238,13 +238,6 @@
         ]
       },
       {
-        "name": "Constructible Object Custom Keyword System",
-        "modId": 81409,
-        "fileId": 795909,
-        "version": "1.2.0",
-        "files": []
-      },
-      {
         "name": "Inventory Interface Information Injector",
         "modId": 85702,
         "fileId": 796498,
