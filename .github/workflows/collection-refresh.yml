@@ -1,0 +1,32 @@
+name: Refresh Nexus collection list
+# Rebuilds the `collection` object of server/launcher-rules.json for a Nexus revision, using the
+# NEXUS_API_KEY secret to read the collection's own collection.json (real plugin order).
+# It publishes nothing: download the artifact, review it, then use Publish launcher feed (rules mode).
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Nexus collection revision number (empty = current + 1)
+        required: false
+permissions:
+  contents: read
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rebuild the collection list
+        env:
+          NEXUS_API_KEY: ${{ secrets.NEXUS_API_KEY }}
+          REVISION: ${{ inputs.revision }}
+        run: |
+          set +x
+          sudo apt-get install -y p7zip-full >/dev/null
+          scripts/collection-rules.sh $REVISION
+          git diff --stat
+      - uses: actions/upload-artifact@v4
+        with:
+          name: collection-rules
+          path: |
+            server/launcher-rules.json
+            core/data/collection-*.json
