@@ -371,7 +371,10 @@ mod tests {
         let shipped = include_bytes!("../../server/launcher-rules.json");
         let r = Rules::parse(shipped).unwrap();
         // Everything but the collection is today's behaviour; the collection comes from the file (revision moves with Nexus).
-        assert_eq!(Rules { rev: r.rev.clone(), collection: r.collection.clone(), ..Rules::default() }, r);
+        // The frame cap and Havok step entries (Timothy, 2026-10-13) are the only tunes the file switches on.
+        let keys: Vec<_> = r.tune.iter().map(|t| t.key.as_str()).collect();
+        assert_eq!(keys, ["FramerateLimit", "fMaxTime"]);
+        assert_eq!(Rules { rev: r.rev.clone(), collection: r.collection.clone(), tune: r.tune.clone(), ..Rules::default() }, r);
         assert_eq!(r.collection.level, crate::collection::Level::Warn);
         assert_ne!(r.rev, "unnamed");
     }
