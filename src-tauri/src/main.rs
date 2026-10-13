@@ -819,10 +819,12 @@ async fn end_leftover_skyrim(app: AppHandle) {
             gone = 0;
             // Staff can switch this off (status.json launcher.leftoverKill=false): a Skyrim started from Steam that is
             // still loading, or whose window is hidden, looks the same as a left-behind one.
-            let state = app.state::<AppState>();
-            let http = state.http.clone();
-            let base_url = state.config.lock().await.base_url.clone();
-            drop(state);
+            let (http, base_url) = {
+                let state = app.state::<AppState>();
+                let http = state.http.clone();
+                let base_url = state.config.lock().await.base_url.clone();
+                (http, base_url)
+            };
             let status = get_json(&http, &format!("{}/status.json", base_url.trim_end_matches('/'))).await;
             if !netcheck::leftover_kill_on(status.as_ref()) {
                 continue;
