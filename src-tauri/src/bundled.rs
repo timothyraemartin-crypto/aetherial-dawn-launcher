@@ -10,6 +10,7 @@ const ESP_NAME: &str = "AetherialDawn.esp";
 const FILES: &[(&str, &[u8])] = &[
     ("Data/SKSE/Plugins/AetherialDawn-NoPause.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialDawn-NoPause.dll")),
     ("Data/SKSE/Plugins/AetherialQuietPickups.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialQuietPickups.dll")),
+    ("Data/SKSE/Plugins/AetherialDawn-CrashLog.dll", include_bytes!("../bundled/Data/SKSE/Plugins/AetherialDawn-CrashLog.dll")),
 ];
 
 /// Settings files: written once, then the player's (or staff's) edits stay.

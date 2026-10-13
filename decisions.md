@@ -1,5 +1,8 @@
 # Decisions (newest first)
 
+## D-2026-10-13-1 Crash handler is its own plugin, not part of NoPause
+Timothy, 2026-10-13: first asked for a crash handler in NoPause 1.0.9, then (NoPause is being removed, a third-party required mod replaces it) as a standalone DLL, AetherialDawn-CrashLog 1.0.0. Same design: vectored handler last in line + unhandled-exception filter, report in AetherialDawn-Crash.log, kill switch AetherialDawn-Crash.off. Stack is walked from the fault context (RtlVirtualUnwind) instead of CaptureStackBackTrace, which would start inside the handler; CaptureStackBackTrace is the fallback. The brief's "last 20 NoPause heartbeat lines" are dropped (nothing writes them without NoPause). Conflict noted: the operating protocol file named in the project instructions (/mnt/project-files/aetherial-dawn/claude-setup/operating-protocol-v2.md) does not exist on this PC; the repo copy .claude/ad-system/OPERATING_PROTOCOL.md was used.
+
 ## D-2026-10-11-1 No mods: Play refuses while anything extra is installed
 Timothy, 2026-10-11: the launcher checks the game version on every launch and must not let a player join if any mod beyond the allowed set is installed; the allowed set is exactly none.
 

@@ -351,6 +351,9 @@ pub fn collect(skse_log_dir: &Path, temp_dir: &Path, since: SystemTime) -> Strin
         let n = f.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
         if n.starts_with("crash-") {
             o.push_str(&format!("\n===== {} (exception, call stack and plugin lists) =====\n{}\n", f.display(), crash_log_parts(&f)));
+        } else if n == OWN_CRASH_LOG.to_ascii_lowercase() {
+            let whole = String::from_utf8_lossy(&std::fs::read(&f).unwrap_or_default()).into_owned();
+            o.push_str(&format!("\n===== {} (our crash handler, AetherialDawn-CrashLog.dll) =====\n{}\n", f.display(), cut_chars(&whole, OWN_CRASH_LOG_MAX)));
         } else {
             if n == "skyrim-platform.log" {
                 o.push_str(&format!("\n===== {} (first 40 lines: settings and browser start-up) =====\n{}\n", f.display(), head_text(&f, 40)));
@@ -407,6 +410,11 @@ pub fn crash_logger_summary(skse_log_dir: &Path, since: SystemTime) -> Option<St
     Some(out.join("\n"))
 }
 
+/// The crash report our own SKSE plugin (AetherialDawn-CrashLog.dll) writes next to skse64.log.
+pub const OWN_CRASH_LOG: &str = "AetherialDawn-Crash.log";
+/// Most of it kept for staff (the report is ~100 lines; the middle of a very long module list is cut).
+pub const OWN_CRASH_LOG_MAX: usize = 12_000;
+
 /// Longest crash log sent to staff (the bot's crashLog field, CONTRACT.md).
 pub const CRASH_LOG_MAX: usize = 30_000;
 
@@ -414,8 +422,17 @@ pub const CRASH_LOG_MAX: usize = 30_000;
 /// file when it fits, else its header and plugin lists; never over
 /// `CRASH_LOG_MAX` characters.
 pub fn crash_log_for_staff(skse_log_dir: &Path, since: SystemTime, private: &[&Path]) -> Option<String> {
-    let path = newest_crash_log(skse_log_dir, since)?;
+    // Our own handler's report (AetherialDawn-CrashLog.dll) goes in as well, after the crash logger's.
+    let own = own_crash_log(skse_log_dir, since).and_then(|p| std::fs::read(p).ok()).map(|b| {
+        let t = redact_paths(&String::from_utf8_lossy(&b), private);
+        format!("===== AetherialDawn-Crash.log (our crash handler) =====\n{}", cut_chars(&t, OWN_CRASH_LOG_MAX))
+    });
+    let Some(path) = newest_crash_log_other(skse_log_dir, since) else { return own };
     let whole = redact_paths(&String::from_utf8_lossy(&std::fs::read(&path).ok()?), private);
+    if let Some(own) = own {
+        let room = CRASH_LOG_MAX.saturating_sub(own.chars().count() + 2);
+        return Some(format!("{}\n\n{own}", cut_chars(&whole, room)));
+    }
     // Whole when it fits, else cut from the middle only, so the registers,
     // stack and objects near the top and the lists at the end both stay.
     Some(cut_chars(&whole, CRASH_LOG_MAX))
@@ -493,14 +510,27 @@ pub fn cut_chars(text: &str, max: usize) -> String {
     out
 }
 
+/// The newest crash log written since `since`: another crash logger's, else our own.
 fn newest_crash_log(skse_log_dir: &Path, since: SystemTime) -> Option<PathBuf> {
+    newest_crash_log_other(skse_log_dir, since).or_else(|| own_crash_log(skse_log_dir, since))
+}
+
+/// Our own handler's report (AetherialDawn-Crash.log), if written since `since`.
+fn own_crash_log(skse_log_dir: &Path, since: SystemTime) -> Option<PathBuf> {
+    let p = skse_log_dir.join(OWN_CRASH_LOG);
+    let t = std::fs::metadata(&p).ok()?.modified().ok()?;
+    (t + Duration::from_secs(2) >= since).then_some(p)
+}
+
+/// The newest crash log of another crash logger (CrashLogger SSE, Trainwreck ...).
+fn newest_crash_log_other(skse_log_dir: &Path, since: SystemTime) -> Option<PathBuf> {
     let mut files = Vec::new();
     walk(skse_log_dir, &mut files, 2);
     files
         .into_iter()
         .filter(|p| {
             let n = p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-            n.contains("crash") && n.ends_with(".log")
+            n.contains("crash") && n.ends_with(".log") && n != OWN_CRASH_LOG.to_ascii_lowercase() && !n.ends_with(".prev.log")
         })
         .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
         .filter(|(t, _)| *t + Duration::from_secs(2) >= since)
@@ -613,6 +643,36 @@ mod tests {
         let s = crash_logger_summary(&tmp.join("SKSE"), SystemTime::now() - Duration::from_secs(60)).unwrap();
         assert!(s.starts_with("Unhandled exception \"EXCEPTION_ACCESS_VIOLATION\""));
         assert!(s.contains("[1] 0x7FF9 SkyrimPlatformImpl.dll+0000ABC"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn our_crash_handler_report_goes_to_staff_and_the_summary() {
+        let tmp = std::env::temp_dir().join(format!("ad-own-crash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let skse = tmp.join("SKSE");
+        std::fs::create_dir_all(&skse).unwrap();
+        let since = SystemTime::now() - Duration::from_secs(60);
+        assert_eq!(crash_log_for_staff(&skse, since, &[]), None);
+        let own = "===== AetherialDawn-CrashLog 1.0.0 crash report =====\nException 0xc0000005 EXCEPTION_ACCESS_VIOLATION at SkyrimSE.exe+0x1234 [UNHANDLED]\nCALL STACK:\n  [0] SkyrimSE.exe+0x1234\n  [1] X.dll+0x10\nACTIVE MENUS: Map\n";
+        std::fs::write(skse.join(OWN_CRASH_LOG), own).unwrap();
+        // only ours: it is the crash log, and the summary reads its exception and stack
+        let got = crash_log_for_staff(&skse, since, &[]).unwrap();
+        assert!(got.contains("our crash handler") && got.contains("ACTIVE MENUS: Map"));
+        let s = crash_logger_summary(&skse, since).unwrap();
+        assert!(s.starts_with("Exception 0xc0000005") && s.contains("[1] X.dll+0x10"));
+        // a stale one from an earlier run is not sent
+        assert_eq!(crash_log_for_staff(&skse, SystemTime::now() + Duration::from_secs(3600), &[]), None);
+        // with CrashLogger's file too: its text first (it stays the summary), ours after it
+        std::fs::write(skse.join("crash-2026-10-13-01-02-03.log"), "Unhandled exception \"EXCEPTION_ACCESS_VIOLATION\" at 0x1 SkyrimSE.exe+0123456\nPROBABLE CALL STACK:\n\t[0] 0x1 SkyrimSE.exe+0123456\n").unwrap();
+        let both = crash_log_for_staff(&skse, since, &[]).unwrap();
+        assert!(both.find("Unhandled exception").unwrap() < both.find("our crash handler").unwrap());
+        assert!(crash_logger_summary(&skse, since).unwrap().starts_with("Unhandled exception"));
+        // an old .prev.log is never taken for a fresh crash log
+        std::fs::write(skse.join("AetherialDawn-Crash.prev.log"), "old run").unwrap();
+        assert!(!crash_log_for_staff(&skse, since, &[]).unwrap().contains("old run"));
+        // the session logs carry ours whole
+        assert!(collect(&skse, &tmp.join("temp"), since).contains("our crash handler, AetherialDawn-CrashLog.dll"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
