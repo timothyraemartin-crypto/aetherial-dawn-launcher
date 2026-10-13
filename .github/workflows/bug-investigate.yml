@@ -32,6 +32,7 @@ jobs:
     # Only the label `player-bug`, and only when the repo owner's account applied it (the bot's
     # token). Players cannot label issues, so a report someone opens by hand never runs this.
     if: >-
+      vars.BUG_INVESTIGATE != 'off' &&
       github.event.label.name == 'player-bug' &&
       github.event.sender.login == github.repository_owner
     runs-on: ubuntu-latest
