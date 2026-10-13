@@ -3,6 +3,9 @@ name: Refresh Nexus collection list
 # NEXUS_API_KEY secret to read the collection's own collection.json (real plugin order).
 # It publishes nothing: download the artifact, review it, then use Publish launcher feed (rules mode).
 on:
+  # Also runs on pull requests that touch it, so it can be tried before it is on main (dispatch needs the file on main).
+  pull_request:
+    paths: ['.github/workflows/collection-refresh.yml', 'scripts/collection-rules.sh']
   workflow_dispatch:
     inputs:
       revision:
@@ -18,7 +21,7 @@ jobs:
       - name: Rebuild the collection list
         env:
           NEXUS_API_KEY: ${{ secrets.NEXUS_API_KEY }}
-          REVISION: ${{ inputs.revision }}
+          REVISION: ${{ inputs.revision || (github.event_name == 'pull_request' && '1' || '') }}
         run: |
           set +x
           sudo apt-get install -y p7zip-full >/dev/null
