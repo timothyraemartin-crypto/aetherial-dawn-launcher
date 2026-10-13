@@ -517,11 +517,11 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
             .is_some_and(|want| version::exe_version(&dir.join(game::GAME_EXE)) == Some(want));
         return Err(health::masters_fix_message(&dir, &base_check.items, exe_is_servers));
     }
-    // Skyrim's own archives missing or empty: the game starts, then crashes or shows no textures or meshes.
+    // Skyrim's own archives missing or empty: warning only (0.1.144). The check wrongly refused Play on PCs
+    // where the game runs fine, so it never blocks; the health report still lists it.
     if flags.archive_gate {
         if let Some(c) = report.checks.iter().find(|c| c.id == "archives").filter(|c| c.status != health::Status::Ok) {
-            log::line(&format!("play: stopped, Skyrim's own archives are missing or empty: {}", c.items.join(", ")));
-            return Err(format!("Skyrim's own game archives are missing or empty ({}), so the game would crash or show missing textures and meshes. In Steam, right-click Skyrim Special Edition, Properties, Installed Files, Verify integrity of game files; then press Play again.", c.items.iter().take(4).cloned().collect::<Vec<_>>().join(", ")));
+            log::line(&format!("play: warning only, Skyrim's own archives look missing or empty: {}", c.items.join(", ")));
         }
     }
     // The game would stop with SkyMP's "LOAD ORDER ERROR"; say it here.
