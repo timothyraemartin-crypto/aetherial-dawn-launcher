@@ -35,6 +35,7 @@
     ".claude/runtime",
     ".claude/runtime/**",
     ".claude/memory/**",
+    ".claude/progress/**",
     "PROGRESS.md",
     "docs/operations/**",
     "target/**",

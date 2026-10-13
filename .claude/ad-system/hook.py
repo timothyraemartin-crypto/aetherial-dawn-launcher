@@ -264,6 +264,17 @@ def file_hash(path):
     return digest(path.read_bytes())
 
 
+def progress_state(root):
+    """Hash of PROGRESS.md plus every .claude/progress/*.md entry (one file per entry)."""
+    main = file_hash(root / "PROGRESS.md")
+    folder = root / ".claude" / "progress"
+    entries = sorted(p for p in folder.glob("*.md") if p.name != "README.md") if folder.is_dir() else []
+    if not entries:
+        return main
+    parts = [main or ""] + [p.name + ":" + (file_hash(p) or "") for p in entries]
+    return digest("\n".join(parts).encode("utf-8"))
+
+
 def session_path(root, session):
     if not isinstance(session, str) or not session.strip() or len(session) > 1024:
         raise HookError("A real nonempty session_id is required")
@@ -339,7 +350,7 @@ def start(root, config, payload):
         if not path.exists():
             snap = snapshot(root, config)
             write_json(path, {"version": VERSION, "session_id": session, "repo": str(root),
-                              "source": snap, "progress_hash": file_hash(root / "PROGRESS.md"), "time": now()})
+                              "source": snap, "progress_hash": progress_state(root), "time": now()})
         original = baseline(folder)
         previous = read_json(folder / "outcome.json") if (folder / "outcome.json").exists() else None
         write_json(folder / "context.json", {"time": now(), "source": payload.get("source", "unknown"),
@@ -435,7 +446,7 @@ def record_handoff(root, config, session, input_file):
     with lock(folder):
         original = baseline(folder)
         previous = read_json(folder / "handoff.json") if (folder / "handoff.json").exists() else None
-        progress = file_hash(root / "PROGRESS.md")
+        progress = progress_state(root)
         reference = previous if previous else {"source_fingerprint": original["source"]["fingerprint"],
                                                "progress_hash": original["progress_hash"]}
         if snap["fingerprint"] != reference["source_fingerprint"] and config["require_progress_update"]:
@@ -467,7 +478,7 @@ def evaluate(root, config, session, gate=False):
             issues.append("Missing structured handoff")
         elif record["source_fingerprint"] != snap["fingerprint"]:
             issues.append("Handoff is stale for current source")
-        elif record["progress_hash"] != file_hash(root / "PROGRESS.md"):
+        elif record["progress_hash"] != progress_state(root):
             issues.append("PROGRESS.md changed after the recorded handoff; reconcile and record again")
         else:
             validate_handoff(record["handoff"])
