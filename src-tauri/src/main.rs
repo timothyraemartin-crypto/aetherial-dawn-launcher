@@ -349,19 +349,44 @@ async fn update(app: AppHandle, state: State<'_, AppState>, verify_all: bool) ->
     let _operation = begin_game_operation(&state)?;
     let dir = game_dir(&state).await?;
     let base = state.config.lock().await.base_url.clone();
-    // A cached list can be obsolete by the time Update is pressed.
-    let m = Manifest::fetch(&state.http, &base).await.map_err(err)?;
-    let plan = sync::plan(&dir, &m, verify_all).await.map_err(err)?;
-    if !plan.kept.is_empty() {
-        log::line(&format!("update: the file list asks to remove files this launcher didn't install; left alone: {}", plan.kept.join(", ")));
+    // What the player did is reported once, win or lose, so the scoreboard shows how often Update works (event and result only).
+    let out: CmdResult<String> = async {
+        // A cached list can be obsolete by the time Update is pressed.
+        let m = Manifest::fetch(&state.http, &base).await.map_err(err)?;
+        let plan = sync::plan(&dir, &m, verify_all).await.map_err(err)?;
+        if !plan.kept.is_empty() {
+            log::line(&format!("update: the file list asks to remove files this launcher didn't install; left alone: {}", plan.kept.join(", ")));
+        }
+        sync::apply(&state.http, &base, &dir, &plan, |p| {
+            let _ = app.emit("sync-progress", p);
+        })
+        .await
+        .map_err(err)?;
+        *state.manifest.lock().await = Some(m.clone());
+        Ok(m.build)
     }
-    sync::apply(&state.http, &base, &dir, &plan, |p| {
-        let _ = app.emit("sync-progress", p);
-    })
-    .await
-    .map_err(err)?;
-    *state.manifest.lock().await = Some(m.clone());
-    Ok(m.build)
+    .await;
+    send_client_event(&app, "update", out.is_ok());
+    out
+}
+
+/// Tells the login service, in the background, that a button outside Play finished and whether it worked
+/// (POST {AUTH_URL}/api/client-event; the bot counts it for the scoreboard). Event and result only: no names, paths or accounts.
+/// Nothing is awaited, so the button never waits; 404 (route not live) and any failure are silent for the player.
+fn send_client_event(app: &AppHandle, event: &'static str, ok: bool) {
+    let Some(token) = token(app) else { return };
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let body = serde_json::json!({ "event": event, "result": if ok { "ok" } else { "error" }, "launcher": app.package_info().version.to_string() });
+        let url = format!("{}/api/client-event", AUTH_URL.trim_end_matches('/'));
+        // contract-method: POST
+        match state.http.post(&url).header("authorization", token).json(&body).timeout(std::time::Duration::from_secs(10)).send().await {
+            Ok(r) if r.status().is_success() || r.status().as_u16() == 404 => {}
+            Ok(r) => log::line(&format!("{event}: the outcome report got {}", r.status().as_u16())),
+            Err(e) => log::line(&format!("{event}: couldn't send the outcome report: {}", launcher_core::scrub(&e.to_string()))),
+        }
+    });
 }
 
 /// Gets a game session from the login service, writes the SkyMP client

@@ -95,6 +95,20 @@
       "launcherHandles": [202, 404, 429]
     },
     {
+      "id": "client-event",
+      "note": "What happened when the player pressed a launcher button outside Play (launcher 0.1.151+): update, install, collection or sync, ok or error. Counted on the scoreboard. 404 (route not live) and any failure are ignored by the launcher.",
+      "method": "POST",
+      "path": "/api/client-event",
+      "auth": "token",
+      "request": {
+        "required": { "event": "string", "result": "string" },
+        "optional": { "launcher": "string" },
+        "example": { "event": "update", "result": "ok", "launcher": "0.1.151" }
+      },
+      "success": 202,
+      "launcherHandles": [202, 404, 429]
+    },
+    {
       "id": "crash-reports",
       "note": "Staff health/crash report. 404 means the feature is off; 429 carries retryAfter seconds.",
       "method": "POST",
