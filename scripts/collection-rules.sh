@@ -14,8 +14,8 @@ Q=$(jq -n --arg s "$SLUG" --arg g "$GAME" --argjson r "$REV" '{query:"{ collecti
 OUT=$(curl -fsS -m 60 -X POST https://api.nexusmods.com/v2/graphql -H 'content-type: application/json' -d "$Q")
 echo "$OUT" | jq -e '.data.collectionRevision.revisionStatus == "published"' >/dev/null || { echo "revision $REV of $SLUG not found or not published"; exit 1; }
 NEW=$(echo "$OUT" | jq --slurpfile old "$RULES" '
-  ($old[0].collection.mods | map({key: (.modId|tostring), value: .files}) | from_entries) as $files
-  | [.data.collectionRevision.modFiles[] | select(.optional | not) | {name: .file.mod.name, modId: .file.mod.modId, fileId: .file.fileId, version: .file.version} | . + {files: ($files[(.modId|tostring)] // [])}]')
+  ($old[0].collection.mods | map({key: (.modId|tostring), value: {files, allow: (.allow // [])}}) | from_entries) as $keep
+  | [.data.collectionRevision.modFiles[] | select(.optional | not) | {name: .file.mod.name, modId: .file.mod.modId, fileId: .file.fileId, version: .file.version} | . + ($keep[(.modId|tostring)] // {files: []}) | if (.allow | length) == 0 then del(.allow) else . end]')
 MISSING=$(echo "$NEW" | jq -r '.[] | select(.files | length == 0) | "\(.name) (\(.modId))"')
 [ -z "$MISSING" ] || { echo "add detection files (game-relative) for these mods in $RULES first, then rerun:"; echo "$MISSING"; exit 1; }
 # With NEXUS_API_KEY set (a GitHub Actions secret; never echoed), the real plugin order comes from

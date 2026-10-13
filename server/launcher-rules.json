@@ -65,7 +65,7 @@
     "slug": "nzwgrw",
     "game": "skyrimspecialedition",
     "name": "Aetherial Dawn",
-    "revision": 1,
+    "revision": 3,
     "url": "https://www.nexusmods.com/games/skyrimspecialedition/collections/nzwgrw",
     "level": "warn",
     "mods": [
@@ -97,15 +97,6 @@
         ],
         "allow": [
           "Data/Interface"
-        ]
-      },
-      {
-        "name": "Crash Logger",
-        "modId": 59596,
-        "fileId": 246928,
-        "version": "1.0.0",
-        "files": [
-          "Data/SKSE/Plugins/CrashLogger.dll"
         ]
       },
       {
@@ -145,6 +136,15 @@
         ],
         "allow": [
           "Data/Unofficial Skyrim Special Edition Patch"
+        ]
+      },
+      {
+        "name": "Crash Logger SSE AE VR - PDB support",
+        "modId": 59818,
+        "fileId": 792670,
+        "version": "1.25.0",
+        "files": [
+          "Data/SKSE/Plugins/CrashLoggerSSE.dll"
         ]
       }
     ],
