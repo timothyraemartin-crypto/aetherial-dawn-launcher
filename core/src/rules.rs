@@ -114,6 +114,7 @@ impl Rules {
             asset_report: on(&checks, "assetReport"),
             connect_ladder: on(&checks, "connectLadder"),
             browser_guard: on(&checks, "browserGuard"),
+            isolate_temp: on(&checks, "isolateTemp"),
             archive_gate: checks.get("archiveGate").and_then(Value::as_bool) == Some(true),
         };
         r.server_order = match checks.get("serverOrder").and_then(Value::as_str) {
@@ -170,6 +171,7 @@ impl Rules {
             asset_report: status.asset_report && self.flags.asset_report,
             connect_ladder: status.connect_ladder && self.flags.connect_ladder,
             browser_guard: status.browser_guard && self.flags.browser_guard,
+            isolate_temp: status.isolate_temp && self.flags.isolate_temp,
             archive_gate: status.archive_gate && self.flags.archive_gate,
         }
     }

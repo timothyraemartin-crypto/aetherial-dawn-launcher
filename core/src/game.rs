@@ -106,7 +106,8 @@ pub fn steam_roots() -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-pub fn launch(dir: &Path) -> Result<std::process::Child> {
+/// `temp`: a folder the game gets as TEMP and TMP (only the child sees it; the launcher's own environment is not changed).
+pub fn launch(dir: &Path, temp: Option<&Path>) -> Result<std::process::Child> {
     let info = inspect(dir)?;
     if !info.has_skse {
         return Err(Error::Game("SKSE didn't install. Press Play to try again.".into()));
@@ -116,6 +117,9 @@ pub fn launch(dir: &Path) -> Result<std::process::Child> {
     cmd.current_dir(dir);
     for name in GOOGLE_ENV {
         cmd.env_remove(name);
+    }
+    if let Some(t) = temp {
+        cmd.env("TEMP", t).env("TMP", t);
     }
     Ok(cmd.spawn()?)
 }
