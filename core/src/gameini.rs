@@ -285,7 +285,7 @@ pub fn framerate_limit(text: &str) -> Option<f64> {
         } else if render && !l.starts_with(';') && !l.starts_with('#') {
             if let Some((k, v)) = l.split_once('=') {
                 if k.trim().eq_ignore_ascii_case("FramerateLimit") {
-                    let n: f64 = v.split(|c| c == ';' || c == '#').next()?.trim().parse().ok()?;
+                    let n: f64 = v.split([';', '#']).next()?.trim().parse().ok()?;
                     return (30.0..=240.0).contains(&n).then_some(n);
                 }
             }
@@ -453,7 +453,7 @@ mod tests {
         assert_eq!(framerate_limit("[Other]\nFramerateLimit=60\n"), None);
         let t = Tune::checked("Skyrim.ini", "HAVOK", "fMaxTime", "framerate", 0.0).unwrap();
         assert!(Tune::checked("Skyrim.ini", "General", "uGridsToLoad", "framerate", 5.0).is_none());
-        assert!(resolve_framerate(&[t.clone()], None).is_empty());
+        assert!(resolve_framerate(std::slice::from_ref(&t), None).is_empty());
         let r = resolve_framerate(&[t], Some(119.0));
         assert_eq!(r[0].mode, TuneMode::Set);
         let (out, ch) = with_tunes("[General]\r\nbAlwaysActive=1\r\n", "Skyrim.ini", &r).unwrap();
