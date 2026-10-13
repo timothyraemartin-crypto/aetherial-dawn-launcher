@@ -31,7 +31,7 @@ jobs:
         continue-on-error: true
         env:
           NEXUS_API_KEY: ${{ secrets.NEXUS_API_KEY }}
-          REVISION: ${{ inputs.revision || (github.event_name == 'pull_request' && '1' || '') }}
+          REVISION: ${{ inputs.revision || (github.event_name == 'pull_request' && '4' || '') }}
         run: |
           set +x
           sudo apt-get install -y p7zip-full >/dev/null

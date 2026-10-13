@@ -13,11 +13,14 @@ URL=$(curl -fsS -m 60 -H "apikey: $NEXUS_API_KEY" -H 'accept: application/json' 
 curl -fsS -m 600 -o "$W/c.7z" "$URL"; 7z e -y -o"$W/x" "$W/c.7z" collection.json >/dev/null
 echo "== collection.json top-level keys"; jq -c 'keys' "$W/x/collection.json"
 echo "== plugins"; jq -c '.plugins' "$W/x/collection.json"
+echo "== pluginRules"; jq -c '.pluginRules' "$W/x/collection.json"
+echo "== modRules"; jq -c '.modRules' "$W/x/collection.json" | head -c 3000; echo
+echo "== choices of the new mods"; jq -c '.mods[] | select(.choices != null) | {name, choices}' "$W/x/collection.json" | head -c 6000; echo
 echo "== mods (name, source ids)"; jq -c '.mods[] | {name, folderName, source: (.source | {type, modId, fileId, fileSize}), choices: (.choices | type)}' "$W/x/collection.json"
 echo "== file trees"
 for pair in $(jq -r '.mods[] | select(.source.modId != null) | "\(.source.modId):\(.source.fileId)"' "$W/x/collection.json"); do
   m=${pair%:*}; f=${pair#*:}
   P=$(curl -fsS -m 60 -H "apikey: $NEXUS_API_KEY" "https://api.nexusmods.com/v1/games/$GAME/mods/$m/files/$f.json" | jq -r '.content_preview_link // empty')
   echo "-- mod $m file $f"
-  [ -n "$P" ] && curl -fsS -m 60 "$P" | jq -r '[.. | objects | select(.type=="file") | .path] | .[]' | head -80 || echo "(no preview)"
+  [ -n "$P" ] && curl -fsS -m 60 "${P// /%20}" | jq -r '[.. | objects | select(.type=="file") | .path] | .[]' | head -80 || echo "(no preview)"
 done
