@@ -1802,7 +1802,11 @@ async fn fetch_server_plugins(http: &reqwest::Client, base: &str, dir: &std::pat
             continue;
         }
         let url = format!("{}/{}", base.trim_end_matches('/'), p.name);
-        let fail = |why: String| format!("Couldn't get the server's plugin {} ({why}). Check your internet connection, then press Play again.", p.name);
+        let fail = |why: String| if why.contains("404") {
+            format!("The server is still being updated: its plugin {} isn't available yet. Wait a minute, then press Play again.", p.name)
+        } else {
+            format!("Couldn't get the server's plugin {} ({why}). Check your internet connection, then press Play again.", p.name)
+        };
         let bytes = http.get(&url).timeout(std::time::Duration::from_secs(60)).send().await.and_then(|r| r.error_for_status()).map_err(|e| fail(e.to_string()))?
             .bytes().await.map_err(|e| fail(e.to_string()))?;
         let got = launcher_core::sync::sha256_bytes(&bytes);
