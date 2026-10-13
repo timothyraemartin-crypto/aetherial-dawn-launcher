@@ -65,6 +65,9 @@ pub struct Collection {
     /// The collection's plugins in load order.
     #[serde(default)]
     pub plugin_order: Vec<String>,
+    /// Before Play, switch on every installed collection plugin in plugins.txt (Vortex leaves some off).
+    #[serde(default)]
+    pub enable_plugins: bool,
 }
 
 impl Collection {
@@ -79,8 +82,9 @@ impl Collection {
             return Err("collection: too many mods".into());
         }
         for m in &c.mods {
-            if m.name.trim().is_empty() || m.files.is_empty() {
-                return Err(format!("collection: mod '{}' needs a name and files", m.name));
+            // No files means the mod is listed but cannot be checked yet (its file names are unknown).
+            if m.name.trim().is_empty() {
+                return Err("collection: a mod needs a name".into());
             }
             for f in m.files.iter().chain(&m.allow) {
                 if f.contains('\\') || crate::manifest::safe_relative(f).is_err() {
@@ -167,6 +171,57 @@ impl Collection {
     }
 }
 
+/// A row item that can stop Play when the level is `block`: a missing mod or a plugin that is switched off.
+pub fn is_blocker(item: &str) -> bool {
+    item.starts_with("Missing: ") || item.starts_with("Not switched on")
+}
+
+/// What Play tells the player when the collection stops it: the blocking items (at most 6) and where to get them.
+pub fn block_message(c: &Collection, items: &[String]) -> String {
+    let list: Vec<&str> = items.iter().filter(|i| is_blocker(i)).map(|s| s.as_str()).take(6).collect();
+    let all = items.iter().filter(|i| is_blocker(i)).count();
+    let more = if all > list.len() { format!(" and {} more", all - list.len()) } else { String::new() };
+    let link = if c.url.is_empty() { String::new() } else { format!(" Get them with Vortex from the collection: {}/revisions/{}.", c.url, c.revision) };
+    format!("You need the {} mod collection (revision {}) to join. {}{more}.{link} Install or switch them on, then press Play again.", c.name, c.revision, list.join("; "))
+}
+
+/// Switches on every installed collection plugin in plugins.txt, adding the ones the file does not list
+/// (at the end). Existing order is left alone; a plugin the client cannot load by name is skipped.
+/// Returns the names it changed. A copy of the old file is kept beside it (loadorder::write_list).
+pub fn enable_plugins(c: &Collection, game_dir: &Path, plugins_txt: &Path) -> crate::Result<Vec<String>> {
+    if c.level == Level::Off || !c.enable_plugins {
+        return Ok(Vec::new());
+    }
+    let file = crate::loadorder::ListFile::read(plugins_txt)?;
+    let text = file.as_ref().map_or("", |f| f.text.as_str());
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+    let mut changed = Vec::new();
+    for want in &c.plugin_order {
+        // The name the game client can load: the plugin itself, or the launcher's dash-joined copy of a spaced one.
+        let name = [want.clone(), alias_name(want)].into_iter().find(|n| crate::loadorder::client_can_load_name(n) && present(game_dir, &format!("Data/{n}")));
+        let Some(name) = name else { continue };
+        let at = lines.iter().position(|l| same_plugin(l.trim().trim_start_matches('*').trim(), &name));
+        match at {
+            Some(i) if lines[i].trim().starts_with('*') => {}
+            Some(i) => {
+                lines[i] = format!("*{}", lines[i].trim());
+                changed.push(name);
+            }
+            None => {
+                lines.push(format!("*{name}"));
+                changed.push(name);
+            }
+        }
+    }
+    if !changed.is_empty() {
+        let mut new = lines.join(nl);
+        new.push_str(nl);
+        crate::loadorder::write_list(plugins_txt, file.as_ref(), &new)?;
+    }
+    Ok(changed)
+}
+
 /// The health row for this collection. `plugins_txt` None skips the order part.
 pub fn check(c: &Collection, game_dir: &Path, plugins_txt: Option<&Path>) -> Check {
     let title = "Required mods (Nexus collection)";
@@ -174,9 +229,14 @@ pub fn check(c: &Collection, game_dir: &Path, plugins_txt: Option<&Path>) -> Che
         return Check { id: "collection", title, status: Status::Info, detail: "The server's launcher rules switched this check off.".into(), items: vec![] };
     }
     let mut items = Vec::new();
+    let mut found = Vec::new();
     for m in &c.mods {
-        if !m.files.iter().all(|f| present(game_dir, f)) {
-            let v = if m.version.is_empty() { String::new() } else { format!(" {}", m.version) };
+        let v = if m.version.is_empty() { String::new() } else { format!(" {}", m.version) };
+        if m.files.is_empty() {
+            found.push(format!("Not checked: {}{v}", m.name));
+        } else if m.files.iter().all(|f| present(game_dir, f)) {
+            found.push(format!("Installed: {}{v}", m.name));
+        } else {
             items.push(format!("Missing: {}{v}", m.name));
         }
     }
@@ -200,17 +260,26 @@ pub fn check(c: &Collection, game_dir: &Path, plugins_txt: Option<&Path>) -> Che
         }
     }
     let rev = format!("revision {}", c.revision);
-    if items.is_empty() {
+    let problems = items.len();
+    // The row lists every mod of the collection, problems first, so nothing looks left out.
+    items.extend(found);
+    if problems == 0 {
         return Check { id: "collection", title, status: Status::Ok, detail: format!("All {} mods of {} ({rev}) are installed and in order.", c.mods.len(), c.name), items };
     }
-    let status = if c.level == Level::Block { Status::Fail } else { Status::Warn };
+    // Only a missing mod or a plugin that is off can stop Play; load order alone never does.
+    let blocking = items.iter().take(problems).any(|i| is_blocker(i));
+    let status = if c.level == Level::Block && blocking { Status::Fail } else { Status::Warn };
     let link = if c.url.is_empty() { String::new() } else { format!(" Get them from the collection: {}", c.url) };
-    Check { id: "collection", title, status, detail: format!("{} of the collection {} ({rev}) is missing or out of order.{link}", items.len(), c.name), items }
+    Check { id: "collection", title, status, detail: format!("{problems} of the collection {} ({rev}) is missing or out of order.{link}", c.name), items }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn problems(r: &Check) -> Vec<String> {
+        r.items.iter().filter(|i| !i.starts_with("Installed: ")).cloned().collect()
+    }
 
     const USSEP: &str = "Unofficial Skyrim Special Edition Patch.esp";
 
@@ -256,7 +325,7 @@ mod tests {
         std::fs::remove_file(t.path().join("Data/SKSE/Plugins/SkyrimSoulsRE.dll")).unwrap();
         let r = check(&c, t.path(), None);
         assert_eq!(r.status, Status::Warn);
-        assert_eq!(r.items, vec!["Missing: Skyrim Souls RE - Unpaused Menus 3.2.0".to_string()]);
+        assert_eq!(problems(&r), vec!["Missing: Skyrim Souls RE - Unpaused Menus 3.2.0".to_string()]);
     }
 
     #[test]
@@ -278,7 +347,7 @@ mod tests {
         std::fs::write(&txt, format!("*SkyUI_SE.esp\r\n*{USSEP}\r\n")).unwrap();
         let r = check(&c, t.path(), Some(&txt));
         assert_eq!(r.status, Status::Warn);
-        assert_eq!(r.items, vec![format!("Out of order: SkyUI_SE.esp must load after {USSEP}")]);
+        assert_eq!(problems(&r), vec![format!("Out of order: SkyUI_SE.esp must load after {USSEP}")]);
     }
 
     #[test]
@@ -305,7 +374,7 @@ mod tests {
         let txt = t.path().join("plugins.txt");
         std::fs::write(&txt, format!("{USSEP}\r\n*SkyUI_SE.esp\r\n")).unwrap();
         let r = check(&c, t.path(), Some(&txt));
-        assert_eq!(r.items, vec![format!("Not switched on in your load order: {USSEP}")]);
+        assert_eq!(problems(&r), vec![format!("Not switched on in your load order: {USSEP}")]);
     }
 
     #[test]
@@ -337,5 +406,59 @@ mod tests {
         let bad = br#"{"slug":"a","name":"a","revision":2,"mods":[{"name":"x","files":["../evil.dll"]}]}"#;
         assert!(Collection::parse(bad).is_err());
         assert!(Collection::parse(b"{}").is_err());
+    }
+
+    #[test]
+    fn block_stops_only_for_a_missing_mod_or_a_plugin_that_is_off() {
+        let t = tempfile::tempdir().unwrap();
+        let mut c = Collection::built_in();
+        c.level = Level::Block;
+        install_all(t.path(), &c);
+        let txt = t.path().join("plugins.txt");
+        // Out of order alone: warn, never a stop.
+        std::fs::write(&txt, format!("*SkyUI_SE.esp\r\n*{USSEP}\r\n")).unwrap();
+        assert_eq!(check(&c, t.path(), Some(&txt)).status, Status::Warn);
+        // A mod that is not there: stop, and the message names it with the collection link.
+        std::fs::remove_file(t.path().join("Data/SKSE/Plugins/SkyrimSoulsRE.dll")).unwrap();
+        let r = check(&c, t.path(), None);
+        assert_eq!(r.status, Status::Fail);
+        let msg = block_message(&c, &r.items);
+        assert!(msg.contains("Missing: Skyrim Souls RE") && msg.contains("nexusmods.com") && !msg.contains("Installed:"), "{msg}");
+        // A plugin installed but switched off: stop.
+        std::fs::write(t.path().join("Data/SKSE/Plugins/SkyrimSoulsRE.dll"), b"x").unwrap();
+        std::fs::write(&txt, format!("*{USSEP}\r\nSkyUI_SE.esp\r\n")).unwrap();
+        assert_eq!(check(&c, t.path(), Some(&txt)).status, Status::Fail);
+        // Warn level never stops.
+        c.level = Level::Warn;
+        assert_eq!(check(&c, t.path(), Some(&txt)).status, Status::Warn);
+    }
+
+    #[test]
+    fn enabling_switches_plugins_on_adds_missing_ones_and_keeps_the_order() {
+        let t = tempfile::tempdir().unwrap();
+        let mut c = Collection::built_in();
+        install_all(t.path(), &c);
+        let txt = t.path().join("plugins.txt");
+        std::fs::write(&txt, "# x\r\n*Skyrim.esm\r\nSkyUI_SE.esp\r\n").unwrap();
+        // Off by default: nothing changes.
+        assert!(enable_plugins(&c, t.path(), &txt).unwrap().is_empty());
+        c.enable_plugins = true;
+        let done = enable_plugins(&c, t.path(), &txt).unwrap();
+        // The spaced USSEP file cannot be switched on by name; only the launcher's alias copy can.
+        assert_eq!(done, ["SkyUI_SE.esp"]);
+        std::fs::write(t.path().join("Data").join(alias_name(USSEP)), b"x").unwrap();
+        assert_eq!(enable_plugins(&c, t.path(), &txt).unwrap(), [alias_name(USSEP)]);
+        let text = std::fs::read_to_string(&txt).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[..3], ["# x", "*Skyrim.esm", "*SkyUI_SE.esp"]);
+        assert_eq!(lines[3], format!("*{}", alias_name(USSEP)));
+        assert!(text.contains("\r\n"));
+        // A second run has nothing left to do.
+        assert!(enable_plugins(&c, t.path(), &txt).unwrap().is_empty());
+        // A mod with no known files is listed, not checked, and cannot block.
+        let mut c2 = c.clone();
+        c2.mods.push(CollMod { name: "Mystery".into(), mod_id: 1, file_id: 1, version: String::new(), files: vec![], allow: vec![] });
+        let r = check(&c2, t.path(), None);
+        assert!(r.items.iter().any(|i| i == "Not checked: Mystery"), "{:?}", r.items);
     }
 }
