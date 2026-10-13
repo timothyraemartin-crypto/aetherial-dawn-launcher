@@ -30,8 +30,11 @@ if [ -n "${NEXUS_API_KEY:-}" ]; then
   curl -fsS -m 600 -o "$W/c.7z" "$URL"
   7z e -y -o"$W/x" "$W/c.7z" collection.json >/dev/null
   ORDER=$(jq -c '[(.plugins // [])[] | (if type == "object" then .name else . end) | select(type == "string" and test("\\.(esp|esm|esl)$"; "i"))]' "$W/x/collection.json")
-  [ "$ORDER" != "[]" ] || { echo "collection.json lists no plugins; keeping the old order"; ORDER=$(jq -c '.collection.pluginOrder' "$RULES"); }
-  echo "plugin order taken from collection.json: $(echo "$ORDER" | jq length) plugins"
+  if [ "$ORDER" = "[]" ]; then
+    echo "collection.json lists no plugins; keeping the old plugin order"; ORDER=$(jq -c '.collection.pluginOrder' "$RULES")
+  else
+    echo "plugin order taken from collection.json: $(echo "$ORDER" | jq length) plugins"
+  fi
 fi
 jq --argjson order "$ORDER" --argjson mods "$NEW" --argjson rev "$REV" '.collection.mods = $mods | .collection.pluginOrder = $order | .collection.revision = $rev | .rev = (now | strftime("%Y-%m-%d.1"))' "$RULES" > "$RULES.tmp" && mv "$RULES.tmp" "$RULES"
 jq '.collection' "$RULES" > core/data/collection-$SLUG-r$REV.json
