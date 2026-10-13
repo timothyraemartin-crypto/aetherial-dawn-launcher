@@ -111,6 +111,7 @@ impl Rules {
             asset_report: on(&checks, "assetReport"),
             connect_ladder: on(&checks, "connectLadder"),
             browser_guard: on(&checks, "browserGuard"),
+            archive_gate: on(&checks, "archiveGate"),
         };
         r.server_order = match checks.get("serverOrder").and_then(Value::as_str) {
             Some("warn") => Level::Warn,
@@ -162,6 +163,7 @@ impl Rules {
             asset_report: status.asset_report && self.flags.asset_report,
             connect_ladder: status.connect_ladder && self.flags.connect_ladder,
             browser_guard: status.browser_guard && self.flags.browser_guard,
+            archive_gate: status.archive_gate && self.flags.archive_gate,
         }
     }
 

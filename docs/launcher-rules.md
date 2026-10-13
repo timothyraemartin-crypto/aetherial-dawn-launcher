@@ -23,7 +23,7 @@ file is the fix; nothing is built, tagged or released.
 | `schema` | `1` | A newer schema is refused (saved copy / defaults are used). |
 | `rev` | text | Shown in the log. Change it with every edit. |
 | `off` | `true` | Kill switch: everything below is ignored. |
-| `checks.firewallFix`, `udpProbe`, `connectWatch`, `platformGuard`, `sessionUpload` | `false` | Switches that part off. `status.json` `launcher.*` still works; a part runs only if both allow it. |
+| `checks.firewallFix`, `udpProbe`, `connectWatch`, `platformGuard`, `sessionUpload`, `archiveGate` | `false` | Switches that part off. `status.json` `launcher.*` still works; a part runs only if both allow it. |
 | `checks.pingStats` | `false` | Skips the 10-ping burst after the UDP probe (round trip, loss, jitter; shown as "Connection quality", Warn from 5 % loss, 150 ms average or 100 ms spread; Play never stops). |
 | `tune.on`, `tune.settings` | list | Ini limits applied each Play to `Skyrim.ini` / `SkyrimPrefs.ini` in Documents. Entry: `file`, `section`, `key`, `mode` (`set`, `max` = only lower, `min` = only raise), `value`, `on` (`false` disables that entry; `tune.on:false` all). Only keys in `gameini::TUNABLE` (fShadowDistance, iShadowMapResolution, fPostLoadUpdateTimeMS, uGridsToLoad) and in range are accepted, everything else is ignored. A `max`/`min` entry never adds a missing line. The first original is kept as `<ini>.aetherial-dawn-backup`; each change is logged as `play: tuned <file>: key: old -> new`. The shipped entries are all `"on": false` until staff turn one on. |
 | `checks.serverOrder` | `"fail"` (default), `"warn"`, `"off"` | What a plugin-order mismatch does: stop Play, show a warning and go on, or say nothing. |

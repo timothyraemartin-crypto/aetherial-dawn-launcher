@@ -37,11 +37,13 @@ pub struct Flags {
     pub connect_ladder: bool,
     /// Check and repair what Skyrim Platform's in-game browser needs before Play (browsercheck.rs).
     pub browser_guard: bool,
+    /// Stop Play when Skyrim's own base archives are missing or empty (health.rs "archives").
+    pub archive_gate: bool,
 }
 
 impl Default for Flags {
     fn default() -> Self {
-        Flags { firewall_fix: true, udp_probe: true, connect_watch: true, platform_guard: true, session_upload: true, connect_ladder: true, browser_guard: true, asset_report: true }
+        Flags { firewall_fix: true, udp_probe: true, connect_watch: true, platform_guard: true, session_upload: true, connect_ladder: true, browser_guard: true, asset_report: true, archive_gate: true }
     }
 }
 
@@ -49,7 +51,7 @@ impl Flags {
     pub fn from_status(status: Option<&serde_json::Value>) -> Flags {
         let launcher = status.and_then(|s| s.get("launcher"));
         let on = |key: &str| launcher.and_then(|l| l.get(key)).and_then(|v| v.as_bool()) != Some(false);
-        Flags { firewall_fix: on("firewallFix"), udp_probe: on("udpProbe"), connect_watch: on("connectWatch"), platform_guard: on("platformGuard"), session_upload: on("sessionUpload"), connect_ladder: on("connectLadder"), browser_guard: on("browserGuard"), asset_report: on("assetReport")  }
+        Flags { firewall_fix: on("firewallFix"), udp_probe: on("udpProbe"), connect_watch: on("connectWatch"), platform_guard: on("platformGuard"), session_upload: on("sessionUpload"), connect_ladder: on("connectLadder"), browser_guard: on("browserGuard"), asset_report: on("assetReport"), archive_gate: on("archiveGate") }
     }
 }
 
