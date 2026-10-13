@@ -822,6 +822,7 @@ async fn end_leftover_skyrim(app: AppHandle) {
             let state = app.state::<AppState>();
             let http = state.http.clone();
             let base_url = state.config.lock().await.base_url.clone();
+            drop(state);
             let status = get_json(&http, &format!("{}/status.json", base_url.trim_end_matches('/'))).await;
             if !netcheck::leftover_kill_on(status.as_ref()) {
                 continue;
