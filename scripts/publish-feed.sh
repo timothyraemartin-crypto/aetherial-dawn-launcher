@@ -76,7 +76,7 @@ if [ -n "$RULES_IN" ]; then
   # Same checks as the launcher's own reader (core/src/rules.rs): JSON object, schema 1, small.
   jq -e 'type == "object" and ((.schema // 1) == 1)' "$RULES_IN" >/dev/null || { echo "$RULES_IN is not a launcher rules file (schema 1)"; exit 1; }
   [ "$(wc -c < "$RULES_IN")" -le 65536 ] || { echo "$RULES_IN is too big"; exit 1; }
-  cp "$RULES_IN" "$STAGE/launcher-rules.json"
+  install -m 0644 "$RULES_IN" "$STAGE/launcher-rules.json"   # mktemp files are 0600; the web server must be able to read the published copy
 fi
 for id in $missing; do
   url=$(jq -r --arg id "$id" '.mods[] | select(.id == $id) | .url' "$MODS")
@@ -116,8 +116,8 @@ trap 'restore; rm -rf "$WORK"' ERR
 for f in "${FEEDS[@]}"; do
   [ -f "$STAGE/$f" ] || continue
   # file then signature back to back; a launcher that sees a mismatch retries after 3 seconds
-  if ! cmp -s "$STAGE/$f" "$WEB_ROOT/$f"; then cp "$STAGE/$f" "$WEB_ROOT/$f.new"; fi
-  cp "$STAGE/$f.sig" "$WEB_ROOT/$f.sig.new"
+  if ! cmp -s "$STAGE/$f" "$WEB_ROOT/$f"; then install -m 0644 "$STAGE/$f" "$WEB_ROOT/$f.new"; fi
+  install -m 0644 "$STAGE/$f.sig" "$WEB_ROOT/$f.sig.new"
   [ -f "$WEB_ROOT/$f.new" ] && mv "$WEB_ROOT/$f.new" "$WEB_ROOT/$f"
   mv "$WEB_ROOT/$f.sig.new" "$WEB_ROOT/$f.sig"
 done

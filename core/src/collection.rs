@@ -68,6 +68,9 @@ pub struct Collection {
     /// Before Play, switch on every installed collection plugin in plugins.txt (Vortex leaves some off).
     #[serde(default)]
     pub enable_plugins: bool,
+    /// The server's own plugins (masters.json), set by Play. Their order and on/off state belong to the server order (serverorder.rs).
+    #[serde(skip)]
+    pub pinned: Vec<String>,
 }
 
 impl Collection {
@@ -171,6 +174,20 @@ impl Collection {
     }
 }
 
+
+impl Collection {
+    /// The name the plugins.txt line for a collection plugin must carry, when the collection should ask for it at all:
+    /// None when no client-loadable copy is in Data (a spaced name without its alias), when the server pins the plugin,
+    /// or when the launcher keeps it off (serverorder::kept_off). Those are the launcher's call, never a missing mod.
+    fn wanted_name(&self, game_dir: &Path, want: &str) -> Option<String> {
+        let name = [want.to_string(), alias_name(want)].into_iter().find(|n| crate::loadorder::client_can_load_name(n) && present(game_dir, &format!("Data/{n}")))?;
+        if self.pinned.iter().any(|p| same_plugin(p, &name)) || crate::serverorder::kept_off(game_dir, &name) {
+            return None;
+        }
+        Some(name)
+    }
+}
+
 /// A row item that can stop Play when the level is `block`: a missing mod or a plugin that is switched off.
 pub fn is_blocker(item: &str) -> bool {
     item.starts_with("Missing: ") || item.starts_with("Not switched on")
@@ -198,9 +215,8 @@ pub fn enable_plugins(c: &Collection, game_dir: &Path, plugins_txt: &Path) -> cr
     let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
     let mut changed = Vec::new();
     for want in &c.plugin_order {
-        // The name the game client can load: the plugin itself, or the launcher's dash-joined copy of a spaced one.
-        let name = [want.clone(), alias_name(want)].into_iter().find(|n| crate::loadorder::client_can_load_name(n) && present(game_dir, &format!("Data/{n}")));
-        let Some(name) = name else { continue };
+        // The name the game client can load; plugins the server pins or the launcher keeps off are left alone.
+        let Some(name) = c.wanted_name(game_dir, want) else { continue };
         let at = lines.iter().position(|l| same_plugin(l.trim().trim_start_matches('*').trim(), &name));
         match at {
             Some(i) if lines[i].trim().starts_with('*') => {}
@@ -244,11 +260,10 @@ pub fn check(c: &Collection, game_dir: &Path, plugins_txt: Option<&Path>) -> Che
         let active = active_plugins(txt);
         let mut last: Option<(usize, &str)> = None;
         for want in &c.plugin_order {
-            let Some(pos) = active.iter().position(|a| same_plugin(a, want)) else {
-                // Only a complaint when the file is installed but not switched on.
-                if present(game_dir, &format!("Data/{want}")) {
-                    items.push(format!("Not switched on in your load order: {want}"));
-                }
+            // Only plugins the player controls count: not the server's (their order is the server's), not ones the launcher keeps off.
+            let Some(name) = c.wanted_name(game_dir, want) else { continue };
+            let Some(pos) = active.iter().position(|a| same_plugin(a, &name)) else {
+                items.push(format!("Not switched on in your load order: {want}"));
                 continue;
             };
             if let Some((lp, lname)) = last {
@@ -282,6 +297,12 @@ mod tests {
     }
 
     const USSEP: &str = "Unofficial Skyrim Special Edition Patch.esp";
+    const ALIAS: &str = "Unofficial-Skyrim-Special-Edition-Patch.esp";
+
+    /// The launcher's dash-named copy of USSEP, the one name the game client can load (aliases.rs).
+    fn add_alias(dir: &Path) {
+        std::fs::copy(dir.join("Data").join(USSEP), dir.join("Data").join(ALIAS)).unwrap();
+    }
 
     fn install_all(dir: &Path, c: &Collection) {
         for m in &c.mods {
@@ -343,8 +364,9 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let c = Collection::built_in();
         install_all(t.path(), &c);
+        add_alias(t.path());
         let txt = t.path().join("plugins.txt");
-        std::fs::write(&txt, format!("*SkyUI_SE.esp\r\n*{USSEP}\r\n")).unwrap();
+        std::fs::write(&txt, format!("*SkyUI_SE.esp\r\n*{ALIAS}\r\n")).unwrap();
         let r = check(&c, t.path(), Some(&txt));
         assert_eq!(r.status, Status::Warn);
         assert_eq!(problems(&r), vec![format!("Out of order: SkyUI_SE.esp must load after {USSEP}")]);
@@ -371,8 +393,9 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let c = Collection::built_in();
         install_all(t.path(), &c);
+        add_alias(t.path());
         let txt = t.path().join("plugins.txt");
-        std::fs::write(&txt, format!("{USSEP}\r\n*SkyUI_SE.esp\r\n")).unwrap();
+        std::fs::write(&txt, format!("{ALIAS}\r\n*SkyUI_SE.esp\r\n")).unwrap();
         let r = check(&c, t.path(), Some(&txt));
         assert_eq!(problems(&r), vec![format!("Not switched on in your load order: {USSEP}")]);
     }
@@ -414,9 +437,10 @@ mod tests {
         let mut c = Collection::built_in();
         c.level = Level::Block;
         install_all(t.path(), &c);
+        add_alias(t.path());
         let txt = t.path().join("plugins.txt");
         // Out of order alone: warn, never a stop.
-        std::fs::write(&txt, format!("*SkyUI_SE.esp\r\n*{USSEP}\r\n")).unwrap();
+        std::fs::write(&txt, format!("*SkyUI_SE.esp\r\n*{ALIAS}\r\n")).unwrap();
         assert_eq!(check(&c, t.path(), Some(&txt)).status, Status::Warn);
         // A mod that is not there: stop, and the message names it with the collection link.
         std::fs::remove_file(t.path().join("Data/SKSE/Plugins/SkyrimSoulsRE.dll")).unwrap();
@@ -426,7 +450,7 @@ mod tests {
         assert!(msg.contains("Missing: Skyrim Souls RE") && msg.contains("nexusmods.com") && !msg.contains("Installed:"), "{msg}");
         // A plugin installed but switched off: stop.
         std::fs::write(t.path().join("Data/SKSE/Plugins/SkyrimSoulsRE.dll"), b"x").unwrap();
-        std::fs::write(&txt, format!("*{USSEP}\r\nSkyUI_SE.esp\r\n")).unwrap();
+        std::fs::write(&txt, format!("*{ALIAS}\r\nSkyUI_SE.esp\r\n")).unwrap();
         assert_eq!(check(&c, t.path(), Some(&txt)).status, Status::Fail);
         // Warn level never stops.
         c.level = Level::Warn;
@@ -460,5 +484,42 @@ mod tests {
         c2.mods.push(CollMod { name: "Mystery".into(), mod_id: 1, file_id: 1, version: String::new(), files: vec![], allow: vec![] });
         let r = check(&c2, t.path(), None);
         assert!(r.items.iter().any(|i| i == "Not checked: Mystery"), "{:?}", r.items);
+    }
+
+    /// A plugin file whose TES4 header carries the given record flags.
+    fn write_plugin(dir: &Path, name: &str, flags: u32) {
+        let mut h = b"TES4".to_vec();
+        h.extend_from_slice(&[0u8; 4]);
+        h.extend_from_slice(&flags.to_le_bytes());
+        h.extend_from_slice(&[0u8; 12]);
+        std::fs::write(dir.join("Data").join(name), h).unwrap();
+    }
+
+    #[test]
+    fn the_check_leaves_alone_what_the_launcher_decides() {
+        let t = tempfile::tempdir().unwrap();
+        let mut c = Collection::built_in();
+        c.level = Level::Block;
+        install_all(t.path(), &c);
+        let txt = t.path().join("plugins.txt");
+        // USSEP only under its spaced name: no client can load it, so nobody is asked to switch it on.
+        std::fs::write(&txt, "*SkyUI_SE.esp\r\n").unwrap();
+        let r = check(&c, t.path(), Some(&txt));
+        assert_eq!((r.status, problems(&r)), (Status::Ok, Vec::<String>::new()));
+        // A full master the server does not load stays off (serverorder::kept_off): not a problem, not enabled.
+        write_plugin(t.path(), "SkyUI_SE.esp", 0x1);
+        std::fs::write(&txt, "SkyUI_SE.esp\r\n").unwrap();
+        assert_eq!(check(&c, t.path(), Some(&txt)).status, Status::Ok);
+        c.enable_plugins = true;
+        assert!(enable_plugins(&c, t.path(), &txt).unwrap().is_empty());
+        // A plugin the server pins is the server order's business, not the collection's.
+        write_plugin(t.path(), "SkyUI_SE.esp", 0);
+        c.pinned = vec!["skyui_se.esp".into()];
+        assert_eq!(check(&c, t.path(), Some(&txt)).status, Status::Ok);
+        assert!(enable_plugins(&c, t.path(), &txt).unwrap().is_empty());
+        // Not pinned and an ordinary plugin: it is the player's, so off means a stop and Play switches it on.
+        c.pinned.clear();
+        assert_eq!(check(&c, t.path(), Some(&txt)).status, Status::Fail);
+        assert_eq!(enable_plugins(&c, t.path(), &txt).unwrap(), vec!["SkyUI_SE.esp".to_string()]);
     }
 }

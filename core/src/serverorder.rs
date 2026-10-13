@@ -190,6 +190,13 @@ pub fn restore_ccc(game_dir: &Path) -> std::io::Result<bool> {
     Ok(any)
 }
 
+/// A plugin `set_exact` keeps switched off for a PC (a full master the server does not load), so a check
+/// must not ask for it: the launcher decides, not the player or the collection.
+pub fn kept_off(game_dir: &Path, name: &str) -> bool {
+    let l = name.to_ascii_lowercase();
+    find(&game_dir.join("Data"), name).and_then(|p| flags(&p)).is_some_and(|(master, light)| !light && !l.ends_with(".esl") && (master || l.ends_with(".esm")))
+}
+
 /// The TES4 record flags: (master, light).
 fn flags(path: &Path) -> Option<(bool, bool)> {
     use std::io::Read;
