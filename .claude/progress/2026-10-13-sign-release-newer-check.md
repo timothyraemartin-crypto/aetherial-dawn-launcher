@@ -1,0 +1,3 @@
+# 2026-10-13 sign-release refuses a tag that is not newer than the latest
+
+Audit fix D3/D10 (draft PR): `sign-release.yml` (manual only) published the draft with `--latest` and started the feed publish without checking the tag was newer than the latest release; the build workflow's release job has that check. Added the same `sort -V` newer-than-latest step (a first release with no latest, HTTP 404, still passes) and `timeout-minutes: 30` on the job. The comparison logic was run locally on four tag pairs (newer ok; equal, older and v0.1.99 vs v0.1.100 behave as expected); the workflow itself was not run. Not added: the minisign verify of the .sig against the embedded public key (larger change, needs a real run to prove); left open in the inventory.

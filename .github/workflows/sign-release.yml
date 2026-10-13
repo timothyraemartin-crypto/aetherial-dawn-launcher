@@ -24,6 +24,7 @@ concurrency:
 jobs:
   sign:
     runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 30
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ inputs.tag }}
@@ -47,6 +48,19 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/compare/$sha...main" --jq '.status' | grep -Eq '^(ahead|identical)$' || { echo "$sha is not on main"; exit 1; }
           cargo_version=$(gh api "repos/$GITHUB_REPOSITORY/contents/Cargo.toml?ref=$sha" --jq .content | base64 -d | sed -n 's/^version = "\(.*\)"/\1/p' | head -n 1)
           [ "$cargo_version" = "$VERSION" ] || { echo "Cargo.toml says $cargo_version, the tag says $VERSION"; exit 1; }
+      # Same rule as the build workflow's release job: a release that is not newer than the latest published one
+      # would become "latest" and start the feed publish, and the updater never goes backwards.
+      - name: The tag is newer than the latest release
+        run: |
+          set -euo pipefail
+          if latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>latest-error.txt); then
+            [[ "$latest" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Latest release has an unexpected version: $latest"; exit 1; }
+            newest=$(printf '%s\n%s\n' "$latest" "$TAG" | sort -V | tail -n 1)
+            [[ "$newest" == "$TAG" && "$latest" != "$TAG" ]] || { echo "$TAG is not newer than $latest"; exit 1; }
+          elif ! grep -q 'HTTP 404' latest-error.txt; then
+            cat latest-error.txt
+            exit 1
+          fi
       - name: Download the unsigned installer
         run: |
           set -euo pipefail
