@@ -22,6 +22,12 @@ use crate::{Error, Result};
 const PART_SUFFIX: &str = ".adl-part";
 const CACHE_PATH: &str = ".aetherial-dawn/files.json";
 
+/// AD_SYNC_CACHE_RECOVER=0 gives the old behaviour (an unreadable cache is read
+/// as empty and overwritten, no earlier copies kept).
+fn cache_recovery_off() -> bool {
+    std::env::var_os("AD_SYNC_CACHE_RECOVER").is_some_and(|v| v == "0")
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct HashCache(HashMap<String, Cached>);
 
@@ -34,10 +40,38 @@ struct Cached {
 
 impl HashCache {
     fn load(game_dir: &Path) -> Self {
-        std::fs::read(game_dir.join(CACHE_PATH))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        let path = game_dir.join(CACHE_PATH);
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
+            Err(_) => Vec::new(),
+        };
+        if let Ok(c) = serde_json::from_slice(&bytes) {
+            return c;
+        }
+        if cache_recovery_off() {
+            return Self::default();
+        }
+        // The cache is there but can't be read (cut short or zeroed by a power
+        // cut). It is also the list of files the launcher put in the game
+        // folder, which is what lets the server's remove list delete stale
+        // ones; read as empty it would be overwritten by the next save and
+        // those files would stay for good. Keep the bad copy and fall back to
+        // the newest readable earlier copy that `save` keeps.
+        let stamp = std::time::SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        let mut aside = path.as_os_str().to_owned();
+        aside.push(format!(".corrupt-{stamp}"));
+        let kept = if std::fs::rename(&path, &aside).is_ok() { " (kept as .corrupt-*)" } else { "" };
+        for n in 1..=crate::atomicfile::BACKUPS {
+            let mut b = path.as_os_str().to_owned();
+            b.push(format!(".bak{n}"));
+            if let Some(c) = std::fs::read(&b).ok().and_then(|b| serde_json::from_slice::<HashCache>(&b).ok()) {
+                eprintln!("sync: files.json is unreadable{kept}; using the earlier copy .bak{n} ({} files)", c.0.len());
+                return c;
+            }
+        }
+        eprintln!("sync: files.json is unreadable{kept} and no earlier copy is readable; files the server wants removed are kept until they are synced again");
+        Self::default()
     }
 
     fn save(&self, game_dir: &Path) -> Result<()> {
@@ -45,7 +79,12 @@ impl HashCache {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        crate::atomicfile::write(&path, &serde_json::to_vec(self)?)?;
+        let bytes = serde_json::to_vec(self)?;
+        if cache_recovery_off() {
+            crate::atomicfile::write(&path, &bytes)?;
+        } else {
+            crate::atomicfile::safe_write(&path, &bytes)?;
+        }
         Ok(())
     }
 
@@ -434,6 +473,45 @@ mod tests {
         apply(&reqwest::Client::new(), "http://127.0.0.1:1", game, &hand, |_| {}).await.unwrap();
         assert!(game.join("Data/players-own.esp").exists());
         assert!(!game.join("Data/SKSE/Plugins/served.dll").exists());
+    }
+
+    /// A cache cut short by a power cut used to read as empty, so the server's
+    /// remove list no longer matched anything the launcher "put there" and
+    /// stale files stayed for good.
+    #[tokio::test]
+    async fn an_unreadable_hash_cache_does_not_forget_which_files_the_launcher_put_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path();
+        std::fs::create_dir_all(game.join("Data/SKSE/Plugins")).unwrap();
+        std::fs::write(game.join("Data/SKSE/Plugins/served.dll"), b"served").unwrap();
+        std::fs::write(game.join("Data/other.dll"), b"other").unwrap();
+        std::fs::write(game.join("Data/players-own.esp"), b"mine").unwrap();
+        let a = entry("Data/SKSE/Plugins/served.dll", b"served");
+        let b = entry("Data/other.dll", b"other");
+        plan(game, &manifest(vec![a.clone()], vec![]), false).await.unwrap();
+        plan(game, &manifest(vec![a, b], vec![]), false).await.unwrap();
+        // Power cut: the newest cache write is zeroed.
+        std::fs::write(game.join(CACHE_PATH), b"").unwrap();
+
+        let m = manifest(vec![], ["Data/SKSE/Plugins/served.dll", "Data/players-own.esp"].map(String::from).to_vec());
+        let p = plan(game, &m, false).await.unwrap();
+        assert_eq!(p.remove, ["Data/SKSE/Plugins/served.dll"]);
+        assert_eq!(p.kept, ["Data/players-own.esp"]);
+        let aside = std::fs::read_dir(game.join(".aetherial-dawn")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains(".corrupt-")).count();
+        assert_eq!(aside, 1, "the unreadable copy is kept, not overwritten");
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_hash_cache_with_no_earlier_copy_is_kept_aside_and_removes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path();
+        std::fs::create_dir_all(game.join("Data")).unwrap();
+        std::fs::write(game.join("Data/served.dll"), b"served").unwrap();
+        plan(game, &manifest(vec![entry("Data/served.dll", b"served")], vec![]), false).await.unwrap();
+        std::fs::write(game.join(CACHE_PATH), b"{\"Data/served.dl").unwrap();
+        let p = plan(game, &manifest(vec![], vec!["Data/served.dll".into()]), false).await.unwrap();
+        assert!(p.remove.is_empty(), "never delete what the launcher can't show it put there");
+        assert!(std::fs::read_dir(game.join(".aetherial-dawn")).unwrap().flatten().any(|e| e.file_name().to_string_lossy().contains(".corrupt-")));
     }
 
     /// An own, hash-checked file (the RaceMenu sync guard, skee64_custom.ini)
