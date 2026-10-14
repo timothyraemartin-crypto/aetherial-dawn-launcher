@@ -59,6 +59,52 @@ fn journal_path(game_dir: &Path) -> PathBuf {
     aside_dir(game_dir).join(JOURNAL)
 }
 
+fn validate_path(value: &str, folder: bool) -> std::io::Result<()> {
+    let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Unsafe mod recovery path: {value}"));
+    crate::manifest::safe_relative(value).map_err(|_| invalid())?;
+    if value.split('/').any(|part| part.is_empty() || part == "." || part == ".." || part.ends_with(['.', ' ']))
+        || (folder && value.contains('/'))
+        || (!folder && value.split('/').next().is_some_and(|p| p.eq_ignore_ascii_case(".aetherial-dawn")))
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+// Resolve existing ancestors before moving or pruning anything. A junction or
+// symlink below the selected game folder must not redirect recovery elsewhere.
+fn validate_local(game_dir: &Path, rel: &str) -> std::io::Result<()> {
+    let root = std::fs::canonicalize(game_dir)?;
+    let mut current = game_dir.to_path_buf();
+    for part in Path::new(rel).components() {
+        current.push(part);
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() || !std::fs::canonicalize(&current)?.starts_with(&root) {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Mod recovery cannot follow a link outside its file list"));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+fn validate_sessions(game_dir: &Path, sessions: &[Journal]) -> std::io::Result<()> {
+    validate_local(game_dir, &format!("{DIR}/{JOURNAL}"))?;
+    for j in sessions {
+        validate_path(&j.folder, true)?;
+        validate_local(game_dir, &format!("{DIR}/{}", j.folder))?;
+        for rel in &j.moved {
+            validate_path(rel, false)?;
+            validate_local(game_dir, rel)?;
+            validate_local(game_dir, &format!("{DIR}/{}/{rel}", j.folder))?;
+        }
+    }
+    Ok(())
+}
+
 fn read_journals(game_dir: &Path) -> Option<Vec<Journal>> {
     let bytes = std::fs::read(journal_path(game_dir)).ok()?;
     match serde_json::from_slice(&bytes).ok()? {
@@ -125,16 +171,25 @@ fn write_journals(game_dir: &Path, sessions: Vec<Journal>) -> std::io::Result<()
 
 /// Whether a set-aside is waiting to be put back.
 pub fn pending(game_dir: &Path) -> bool {
+    if validate_local(game_dir, &format!("{DIR}/{JOURNAL}")).is_err() {
+        return true;
+    }
     if journal_unreadable(game_dir) {
         return !rebuilt_journals(game_dir).is_empty();
     }
-    read_journals(game_dir).is_some_and(|sessions| sessions.iter().any(|j| !j.moved.is_empty()))
+    read_journals(game_dir).is_some_and(|sessions| validate_sessions(game_dir, &sessions).is_err() || sessions.iter().any(|j| !j.moved.is_empty()))
 }
 
 /// Moves the extras aside. The journal is saved first, so whatever happens
 /// next, `restore` knows where everything went. A file that cannot be moved is
 /// reported and left where it is (the caller then refuses to start the game).
 pub fn set_aside(game_dir: &Path, extras: &[Extra], stamp: &str) -> std::io::Result<Moved> {
+    // Validate the entire request before even restoring an earlier session.
+    validate_path(stamp, true)?;
+    for e in extras {
+        validate_path(&e.rel, false)?;
+    }
+    validate_sessions(game_dir, &[Journal { folder: stamp.to_string(), moved: extras.iter().map(|e| e.rel.clone()).collect() }])?;
     // Restore what we can; retain earlier conflicts alongside the new session.
     restore(game_dir)?;
     if extras.is_empty() {
@@ -198,6 +253,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
 /// new in it stays in the aside folder (and is reported); nothing is ever
 /// overwritten.
 pub fn restore(game_dir: &Path) -> std::io::Result<Restored> {
+    validate_local(game_dir, &format!("{DIR}/{JOURNAL}"))?;
     let sessions = if journal_unreadable(game_dir) {
         let found = rebuilt_journals(game_dir);
         eprintln!("profile: journal.json is unreadable; putting back the {} session folder(s) found in the aside folder", found.len());
@@ -206,6 +262,8 @@ pub fn restore(game_dir: &Path) -> std::io::Result<Restored> {
         let Some(sessions) = read_journals(game_dir) else { return Ok(Restored::default()) };
         sessions
     };
+    // One bad entry must not allow earlier valid entries to move first.
+    validate_sessions(game_dir, &sessions)?;
     let mut out = Restored::default();
     let mut keep = Vec::new();
     for j in sessions {
@@ -254,9 +312,21 @@ fn restore_folder(game_dir: &Path, j: &Journal) -> (Restored, Vec<String>) {
         }
     }
     if left.is_empty() {
-        let _ = std::fs::remove_dir_all(&src);
+        prune_empty_dirs(&src);
     }
     (out, left)
+}
+
+// Never recursively delete a session's contents: a journal can be incomplete,
+// and unrelated files may have been placed there. Do not follow directory links.
+fn prune_empty_dirs(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_dir() && !kind.is_symlink()) {
+            prune_empty_dirs(&entry.path());
+        }
+    }
+    let _ = std::fs::remove_dir(dir);
 }
 
 #[cfg(test)]
@@ -444,6 +514,77 @@ mod tests {
         assert_eq!(std::fs::read_to_string(aside_dir(g).join("t1/Data/A.esp")).unwrap(), "original a");
         assert_eq!(std::fs::read_to_string(g.join("Data/A.esp")).unwrap(), "replacement a");
         assert!(pending(g));
+    }
+
+    #[test]
+    fn an_escaping_journal_is_rejected_before_any_restore_or_cleanup() {
+        let d = tempfile::tempdir().unwrap();
+        let g = d.path();
+        // Every target, including the deliberately escaping path, is inside this test's temp root.
+        put(g, "victim/keep.txt", "keep");
+        put(g, ".aetherial-dawn/aside/journal.json", r#"{"folder":"../../victim","moved":[]}"#);
+        assert!(restore(g).is_err());
+        assert_eq!(std::fs::read_to_string(g.join("victim/keep.txt")).unwrap(), "keep");
+        assert!(pending(g), "an unsafe journal must not be treated as no pending recovery");
+    }
+
+    #[test]
+    fn invalid_set_aside_paths_are_rejected_before_any_files_move() {
+        let d = tempfile::tempdir().unwrap();
+        let g = d.path().join("game");
+        put(&g, "Data/A.esp", "a");
+        put(d.path(), "outside.esp", "outside");
+        assert!(set_aside(&g, &[extra("Data/A.esp"), extra("../outside.esp")], "t1").is_err());
+        assert_eq!(std::fs::read_to_string(g.join("Data/A.esp")).unwrap(), "a");
+        assert_eq!(std::fs::read_to_string(d.path().join("outside.esp")).unwrap(), "outside");
+        assert!(set_aside(&g, &[extra("Data/A.esp")], "../escape").is_err());
+    }
+
+    #[test]
+    fn restoring_a_session_does_not_delete_unlisted_files_in_its_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let g = d.path();
+        put(g, "Data/A.esp", "a");
+        set_aside(g, &[extra("Data/A.esp")], "t1").unwrap();
+        put(g, ".aetherial-dawn/aside/t1/Data/unlisted.esp", "keep");
+        restore(g).unwrap();
+        assert_eq!(std::fs::read_to_string(aside_dir(g).join("t1/Data/unlisted.esp")).unwrap(), "keep");
+    }
+
+    #[test]
+    fn every_journal_entry_is_validated_before_a_valid_entry_moves() {
+        let d = tempfile::tempdir().unwrap();
+        let g = d.path();
+        put(g, ".aetherial-dawn/aside/t1/Data/A.esp", "a");
+        let sessions = vec![Journal { folder: "t1".into(), moved: vec!["Data/A.esp".into()] },
+            Journal { folder: "t2".into(), moved: vec!["../outside.esp".into()] }];
+        write_journals(g, sessions).unwrap();
+        assert!(restore(g).is_err());
+        assert!(!g.join("Data/A.esp").exists());
+        assert_eq!(std::fs::read_to_string(aside_dir(g).join("t1/Data/A.esp")).unwrap(), "a");
+    }
+
+    #[test]
+    fn recovery_paths_reject_windows_aliases_and_metadata() {
+        for rel in ["", ".", "..", "Data/../a", "Data/./a", "Data/a.", "Data/a ", "Data//a", "C:/a", "Data\\a", ".aetherial-dawn/aside/journal.json"] {
+            assert!(validate_path(rel, false).is_err(), "{rel}");
+        }
+        assert!(validate_path("Data/Jörgen.esp", false).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_link_cannot_redirect_restoration_or_set_aside() {
+        let d = tempfile::tempdir().unwrap();
+        let g = d.path().join("game");
+        put(&g, ".aetherial-dawn/aside/t1/Data/A.esp", "original");
+        put(d.path(), "outside/keep.esp", "keep");
+        std::os::unix::fs::symlink(d.path().join("outside"), g.join("Data")).unwrap();
+        write_journals(&g, vec![Journal { folder: "t1".into(), moved: vec!["Data/A.esp".into()] }]).unwrap();
+        assert!(restore(&g).is_err());
+        assert!(!d.path().join("outside/A.esp").exists());
+        assert!(set_aside(&g, &[extra("Data/keep.esp")], "t2").is_err());
+        assert_eq!(std::fs::read_to_string(d.path().join("outside/keep.esp")).unwrap(), "keep");
     }
 
     #[test]

@@ -11,3 +11,11 @@ Validation on Windows/Node-independent Rust: first sandbox run failed because it
 No version bump, installer build, release, installation, game run or live mod-manager validation. Existing launchers that cannot parse the multiple-session envelope can use their default folder-rebuild path; this is unavailable if AD_ASIDE_REBUILD=0, so do not downgrade with pending multiple-session recovery and that override enabled. No file content migration is performed.
 
 Wider audit remains IN_PROGRESS. Ingame PR #381 and Discord PR #95 now have green Linux CI (exact results recorded in their descriptions). Further follow-up: remaining direct JS short-write sites, profile path-validation review, launcher atomicfile durability and other source areas. Shared project records remain unavailable; this entry is the local handoff.
+
+## Follow-up: validate recovery paths and preserve unlisted files
+
+Three new regressions failed before this follow-up: a journal folder `../../victim` was accepted for cleanup, an extra list with `../outside.esp` moved an earlier valid file before reporting any problem, and restoring a session recursively deleted unlisted files in its folder. All reproduction targets were disposable fixtures inside the test temporary root.
+
+profile.rs now validates the complete journal/request before restoration or new moves, rejects absolute/traversing/Windows-ambiguous/internal-metadata paths, and checks resolved existing ancestors for symlinks/junctions or escape from the selected game folder. Unsafe journals remain pending and return an error. Cleanup prunes empty directories only and does not follow directory links. Additional tests cover a later unsafe entry preventing earlier moves, path variants, and a Unix-only directory-link regression (requires Linux CI).
+
+Final local Windows check: full core suite 257 unit + 4 contract + 1 collection tests pass (audit-core-paths.log), zero failures. The Unix symlink regression is not compiled on Windows. No actual game/mod folders used. Existing power-cut/fsync gaps remain a separate audit item; path checks do not claim protection against concurrent filesystem replacement by another process.
