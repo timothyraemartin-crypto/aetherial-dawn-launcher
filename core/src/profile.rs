@@ -4,7 +4,7 @@
 //! closes. A player keeps their mods; the game only ever sees the allowed
 //! files. Moves stay on the same drive, so they are instant renames.
 //!
-//! The list of what was moved is written to `.aetherial-dawn/aside/journal.json`
+//! The list of what was moved, including unresolved earlier sessions, is written to `.aetherial-dawn/aside/journal.json`
 //! before the first move, so a crash, a power cut or a launcher restart can
 //! still put everything back (`restore`), which the launcher also runs when it
 //! starts and no game is running.
@@ -24,6 +24,15 @@ struct Journal {
     folder: String,
     /// Paths relative to the game folder, `/` separators.
     moved: Vec<String>,
+}
+
+// Keep the original single-session format when possible. Multiple unresolved
+// sessions need one durable list so resolving one cannot forget the others.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum JournalFile {
+    Single(Journal),
+    Multiple { sessions: Vec<Journal> },
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -50,8 +59,12 @@ fn journal_path(game_dir: &Path) -> PathBuf {
     aside_dir(game_dir).join(JOURNAL)
 }
 
-fn read_journal(game_dir: &Path) -> Option<Journal> {
-    std::fs::read(journal_path(game_dir)).ok().and_then(|b| serde_json::from_slice(&b).ok())
+fn read_journals(game_dir: &Path) -> Option<Vec<Journal>> {
+    let bytes = std::fs::read(journal_path(game_dir)).ok()?;
+    match serde_json::from_slice(&bytes).ok()? {
+        JournalFile::Single(j) => Some(vec![j]),
+        JournalFile::Multiple { sessions } => Some(sessions),
+    }
 }
 
 /// Whether the journal file is there but can't be used (cut short or zeroed by
@@ -63,7 +76,7 @@ fn journal_unreadable(game_dir: &Path) -> bool {
     if std::env::var_os("AD_ASIDE_REBUILD").is_some_and(|v| v == "0") {
         return false;
     }
-    journal_path(game_dir).is_file() && read_journal(game_dir).is_none()
+    journal_path(game_dir).is_file() && read_journals(game_dir).is_none()
 }
 
 /// Every file under each session folder of the aside folder, as (folder, paths
@@ -96,8 +109,18 @@ fn rebuilt_journals(game_dir: &Path) -> Vec<Journal> {
     out
 }
 
-fn write_journal(game_dir: &Path, j: &Journal) -> std::io::Result<()> {
-    crate::atomicfile::write(&journal_path(game_dir), &serde_json::to_vec_pretty(j).map_err(std::io::Error::other)?)
+fn write_journals(game_dir: &Path, sessions: Vec<Journal>) -> std::io::Result<()> {
+    let file = match sessions.as_slice() {
+        [] => {
+            return match std::fs::remove_file(journal_path(game_dir)) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                result => result,
+            };
+        }
+        [j] => JournalFile::Single(j.clone()),
+        _ => JournalFile::Multiple { sessions },
+    };
+    crate::atomicfile::write(&journal_path(game_dir), &serde_json::to_vec_pretty(&file).map_err(std::io::Error::other)?)
 }
 
 /// Whether a set-aside is waiting to be put back.
@@ -105,24 +128,27 @@ pub fn pending(game_dir: &Path) -> bool {
     if journal_unreadable(game_dir) {
         return !rebuilt_journals(game_dir).is_empty();
     }
-    read_journal(game_dir).is_some_and(|j| !j.moved.is_empty())
+    read_journals(game_dir).is_some_and(|sessions| sessions.iter().any(|j| !j.moved.is_empty()))
 }
 
 /// Moves the extras aside. The journal is saved first, so whatever happens
 /// next, `restore` knows where everything went. A file that cannot be moved is
 /// reported and left where it is (the caller then refuses to start the game).
 pub fn set_aside(game_dir: &Path, extras: &[Extra], stamp: &str) -> std::io::Result<Moved> {
-    // Anything still waiting from an earlier session goes back first, so a
-    // journal never holds two sessions.
+    // Restore what we can; retain earlier conflicts alongside the new session.
     restore(game_dir)?;
     if extras.is_empty() {
         return Ok(Moved::default());
     }
     let folder = stamp.to_string();
     let dest = aside_dir(game_dir).join(&folder);
-    std::fs::create_dir_all(&dest)?;
+    std::fs::create_dir_all(aside_dir(game_dir))?;
+    // A repeated timestamp must never overwrite an earlier session's copies.
+    std::fs::create_dir(&dest)?;
+    let mut sessions = read_journals(game_dir).unwrap_or_default();
     let all: Vec<String> = extras.iter().map(|e| e.rel.clone()).collect();
-    write_journal(game_dir, &Journal { folder: folder.clone(), moved: all })?;
+    sessions.push(Journal { folder: folder.clone(), moved: all });
+    write_journals(game_dir, sessions.clone())?;
     let mut done = Moved::default();
     let mut kept_moved = Vec::new();
     for e in extras {
@@ -138,7 +164,13 @@ pub fn set_aside(game_dir: &Path, extras: &[Extra], stamp: &str) -> std::io::Res
         }
     }
     // The journal lists only what really moved.
-    write_journal(game_dir, &Journal { folder, moved: kept_moved })?;
+    sessions.pop();
+    if !kept_moved.is_empty() {
+        sessions.push(Journal { folder, moved: kept_moved });
+    } else {
+        let _ = std::fs::remove_dir(&dest);
+    }
+    write_journals(game_dir, sessions)?;
     Ok(done)
 }
 
@@ -166,35 +198,26 @@ fn same_file(a: &Path, b: &Path) -> bool {
 /// new in it stays in the aside folder (and is reported); nothing is ever
 /// overwritten.
 pub fn restore(game_dir: &Path) -> std::io::Result<Restored> {
-    if journal_unreadable(game_dir) {
-        let mut out = Restored::default();
-        let mut keep: Option<Journal> = None;
+    let sessions = if journal_unreadable(game_dir) {
         let found = rebuilt_journals(game_dir);
         eprintln!("profile: journal.json is unreadable; putting back the {} session folder(s) found in the aside folder", found.len());
-        for j in found {
-            let (r, left) = restore_folder(game_dir, &j);
-            out.files += r.files;
-            out.duplicates += r.duplicates;
-            out.kept.extend(r.kept);
-            if !left.is_empty() && keep.is_none() {
-                keep = Some(Journal { folder: j.folder, moved: left });
-            }
-        }
-        match keep {
-            Some(j) => write_journal(game_dir, &j)?,
-            None => {
-                let _ = std::fs::remove_file(journal_path(game_dir));
-            }
-        }
-        return Ok(out);
-    }
-    let Some(j) = read_journal(game_dir) else { return Ok(Restored::default()) };
-    let (out, left) = restore_folder(game_dir, &j);
-    if left.is_empty() {
-        let _ = std::fs::remove_file(journal_path(game_dir));
+        found
     } else {
-        write_journal(game_dir, &Journal { folder: j.folder, moved: left })?;
+        let Some(sessions) = read_journals(game_dir) else { return Ok(Restored::default()) };
+        sessions
+    };
+    let mut out = Restored::default();
+    let mut keep = Vec::new();
+    for j in sessions {
+        let (r, left) = restore_folder(game_dir, &j);
+        out.files += r.files;
+        out.duplicates += r.duplicates;
+        out.kept.extend(r.kept);
+        if !left.is_empty() {
+            keep.push(Journal { folder: j.folder, moved: left });
+        }
     }
+    write_journals(game_dir, keep)?;
     Ok(out)
 }
 
@@ -368,7 +391,59 @@ mod tests {
         assert_eq!(std::fs::read_to_string(g.join("Data/Mod.esp")).unwrap(), "reinstalled");
         assert_eq!(std::fs::read_to_string(aside_dir(g).join("t1/Data/Mod.esp")).unwrap(), "old");
         assert!(pending(g), "it stays listed until the player sorts it out");
-        assert_eq!(read_journal(g).unwrap().moved, vec!["Data/Mod.esp".to_string()]);
+        assert_eq!(read_journals(g).unwrap()[0].moved, vec!["Data/Mod.esp".to_string()]);
+    }
+
+    #[test]
+    fn a_new_session_keeps_earlier_conflicts_recoverable() {
+        let d = tempfile::tempdir().unwrap();
+        let g = d.path();
+        put(g, "Data/A.esp", "original a");
+        set_aside(g, &[extra("Data/A.esp")], "t1").unwrap();
+        put(g, "Data/A.esp", "replacement a");
+        put(g, "Data/B.esp", "original b");
+        set_aside(g, &[extra("Data/B.esp")], "t2").unwrap();
+        restore(g).unwrap();
+        assert!(pending(g), "the earlier conflict must remain tracked after the new session ends");
+        assert_eq!(std::fs::read_to_string(g.join("Data/A.esp")).unwrap(), "replacement a");
+        std::fs::remove_file(g.join("Data/A.esp")).unwrap();
+        assert_eq!(restore(g).unwrap().files, 1);
+        assert_eq!(std::fs::read_to_string(g.join("Data/A.esp")).unwrap(), "original a");
+        assert_eq!(std::fs::read_to_string(g.join("Data/B.esp")).unwrap(), "original b");
+        assert!(!pending(g));
+    }
+
+    #[test]
+    fn rebuilt_conflicts_from_multiple_sessions_all_remain_recoverable() {
+        let d = tempfile::tempdir().unwrap();
+        let g = d.path();
+        put(g, ".aetherial-dawn/aside/t1/Data/A.esp", "original a");
+        put(g, ".aetherial-dawn/aside/t2/Data/B.esp", "original b");
+        put(g, "Data/A.esp", "replacement a");
+        put(g, "Data/B.esp", "replacement b");
+        put(g, ".aetherial-dawn/aside/journal.json", "broken");
+        assert_eq!(restore(g).unwrap().kept.len(), 2);
+        std::fs::remove_file(g.join("Data/A.esp")).unwrap();
+        assert_eq!(restore(g).unwrap().files, 1);
+        assert!(pending(g), "the second session must stay tracked after the first is restored");
+        std::fs::remove_file(g.join("Data/B.esp")).unwrap();
+        assert_eq!(restore(g).unwrap().files, 1);
+        assert_eq!(std::fs::read_to_string(g.join("Data/B.esp")).unwrap(), "original b");
+        assert!(!pending(g));
+    }
+
+    #[test]
+    fn a_reused_session_folder_cannot_replace_an_unrestored_copy() {
+        let d = tempfile::tempdir().unwrap();
+        let g = d.path();
+        put(g, "Data/A.esp", "original a");
+        set_aside(g, &[extra("Data/A.esp")], "t1").unwrap();
+        put(g, "Data/A.esp", "replacement a");
+        let err = set_aside(g, &[extra("Data/A.esp")], "t1").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(aside_dir(g).join("t1/Data/A.esp")).unwrap(), "original a");
+        assert_eq!(std::fs::read_to_string(g.join("Data/A.esp")).unwrap(), "replacement a");
+        assert!(pending(g));
     }
 
     #[test]
