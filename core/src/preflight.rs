@@ -324,7 +324,7 @@ pub fn triage(log: &str) -> Vec<Suggestion> {
         } else if l.contains("loaded correctly") {
             Suggestion { file, status: "loads", reason: "SKSE: loaded correctly".into() }
         } else if l.contains("couldn't load") || l.contains("could not load") {
-            Suggestion { file, status: "refused", reason: format!("SKSE: {}", &line[l.find("couldn't load").or_else(|| l.find("could not load")).unwrap_or(0)..].trim()) }
+            Suggestion { file, status: "refused", reason: format!("SKSE: {}", line[l.find("couldn't load").or_else(|| l.find("could not load")).unwrap_or(0)..].trim()) }
         } else {
             continue;
         };
