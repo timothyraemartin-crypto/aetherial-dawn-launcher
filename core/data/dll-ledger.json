@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "runtime": "1.6.1170.0",
+  "skse": "2.2.6",
+  "note": "What each SKSE plugin DLL did on Skyrim 1.6.1170 with SKSE 2.2.6 in a real game. Matched by file name (and sha256 when given). A DLL that is not listed is UNVERIFIED. Grow it with `pack-preflight triage skse64.log` after every play-test.",
+  "entries": [
+    {
+      "file": "ActorLimitFix.dll",
+      "status": "crashes",
+      "reason": "Address Library \"Identifier not found, 523948\", then 0xC0000409 3 s after start",
+      "evidence": "CONFIRMED skse64.log, Timothy's PC 2026-10-14 00:30Z (collection rev 7, Actor Limit Fix mod 32349 file 795423 v9, Address Library 13). Why the ID is missing: UNKNOWN."
+    },
+    {
+      "file": "JContainers64.dll",
+      "status": "refused",
+      "reason": "SKSE Plugin Loader box: disabled, incompatible with current version of the game",
+      "evidence": "REPORTED screenshot, Timothy's PC 2026-10-14 00:34Z (JContainers SE 4.3.2). Not a build for 1.6.1170."
+    },
+    {
+      "file": "CustomSkills.dll",
+      "status": "loads",
+      "reason": "SKSE listed it as loading",
+      "evidence": "REPORTED by the coordinator from skse64.log 2026-10-14 00:30Z; whether it works in game: UNKNOWN."
+    }
+  ]
+}

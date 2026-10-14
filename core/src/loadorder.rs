@@ -448,6 +448,27 @@ pub mod tests {
         plugin_form(version, 44, records)
     }
 
+    /// A header-only plugin (version 1.71) naming `masters`.
+    pub fn plugin_with_masters(masters: &[&str]) -> Vec<u8> {
+        let mut sub = b"HEDR".to_vec();
+        sub.extend(12u16.to_le_bytes());
+        sub.extend(1.71f32.to_le_bytes());
+        sub.extend([0u8; 8]);
+        for m in masters {
+            sub.extend(b"MAST");
+            sub.extend(((m.len() + 1) as u16).to_le_bytes());
+            sub.extend(m.as_bytes());
+            sub.push(0);
+        }
+        let mut b = b"TES4".to_vec();
+        b.extend((sub.len() as u32).to_le_bytes());
+        b.extend([0u8; 12]);
+        b.extend(44u16.to_le_bytes());
+        b.extend([0u8; 2]);
+        b.extend(sub);
+        b
+    }
+
     fn plugin_form(version: f32, form: u16, records: bool) -> Vec<u8> {
         let mut sub = b"HEDR".to_vec();
         sub.extend(12u16.to_le_bytes());
