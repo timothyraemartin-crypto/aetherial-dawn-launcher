@@ -709,6 +709,10 @@
           msg = 'NO_PATCH:' + msg.slice(15) + ' Only the Steam copy of Skyrim Special Edition can be changed to the server\'s version.';
         }
       }
+      // SkyrimSE.exe is already the server's build and there is nothing to patch: do what "My game is already on this version" does, since Steam's record can't tell.
+      if (msg === "NO_PATCH:Your Skyrim is already the server's version.") {
+        try { await dgDone(await invoke('mark_game_ok')); return; } catch (e3) { msg = String(e3); }
+      }
       if (msg.startsWith('NO_PATCH:')) dgFail(msg.slice(9));
       else dgFail(msg);
     }

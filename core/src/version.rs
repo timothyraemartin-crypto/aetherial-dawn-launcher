@@ -239,6 +239,20 @@ pub fn forget_manual(game_dir: &Path) -> bool {
     !trusted && std::fs::remove_file(path).is_ok()
 }
 
+/// After a crash, with the server's spec: drops the hand-set mark only when
+/// SkyrimSE.exe is not the server's build. An exe that matches means the
+/// crash was something else (a plugin, a mod), and dropping the mark made the
+/// false "Steam has updated your game data" warning come back after every
+/// crash. Kill switch: env AD_FORGET_MANUAL_ALWAYS=1 (the old behaviour).
+pub fn forget_manual_after_crash(game_dir: &Path, spec: Option<&GameSpec>) -> bool {
+    let target = spec.and_then(|s| s.version.as_deref()).and_then(parse_version);
+    let exe_ok = target.is_some() && exe_version(&game_dir.join(GAME_EXE)) == target;
+    if exe_ok && std::env::var_os("AD_FORGET_MANUAL_ALWAYS").is_none() {
+        return false;
+    }
+    forget_manual(game_dir)
+}
+
 /// Stops Steam updating Skyrim past the build the launcher just put in place:
 /// sets "Only update this game when I launch it" in the app manifest and makes
 /// the file read-only, as the SkyMP and modding downgrade guides do.
@@ -574,6 +588,22 @@ mod tests {
         // Steam rewrites the data afterwards: the record no longer holds.
         std::fs::write(d.join("Data/Skyrim.esm"), b"newer esm").unwrap();
         assert!(check(&d, Some(&spec())).needed);
+    }
+
+    #[test]
+    fn a_crash_keeps_the_hand_set_mark_while_the_exe_is_the_servers() {
+        let g = game([1, 6, 1170, 0], &ACF.replace("8442952117333549665", "1111"));
+        let d = dir(&g);
+        record(&d, &spec(), true).unwrap();
+        assert!(!forget_manual_after_crash(&d, Some(&spec())), "exe matches: the mark stays");
+        assert!(d.join(MARKER).exists());
+        let c = check(&d, Some(&spec()));
+        assert!(!c.needed, "no Fix version prompt after the crash");
+        // No spec, or a different exe: the old behaviour (the version is the usual suspect).
+        std::fs::write(d.join(GAME_EXE), fake_exe([1, 6, 1179, 0])).unwrap();
+        assert!(forget_manual_after_crash(&d, Some(&spec())));
+        assert!(!d.join(MARKER).exists());
+        record(&d, &spec(), true).ok();
     }
 
     #[test]
