@@ -479,6 +479,10 @@ pub fn point_at_links(game_dir: &Path, plugins_txt: &Path) -> std::io::Result<Ve
 /// A plugin the SkyMP client can't load as it is: its name has spaces, or it names such a plugin as a master
 /// (USSEP, and MoreCraftableEquipment_USSEP.esp which needs it). These get a link or a rewritten "-AD" copy too.
 fn client_cannot_load(data: &Path, name: &str) -> bool {
+    // Kill switch: AD_ALIAS_ONLY_SERVER=1 restores the old behaviour (only the server's .esl files).
+    if std::env::var_os("AD_ALIAS_ONLY_SERVER").is_some_and(|v| v == "1") {
+        return false;
+    }
     !client_can_load_name(name) || crate::loadorder::masters(&data.join(name)).unwrap_or_default().iter().any(|m| !client_can_load_name(m))
 }
 
