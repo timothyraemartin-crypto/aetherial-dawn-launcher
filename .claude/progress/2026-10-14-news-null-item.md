@@ -1,0 +1,3 @@
+# 2026-10-14 Launcher news null item
+
+ui/app.js: a null, text or number item in status.json `news` threw in newsHtml (n.title), so the news panels stayed empty on every 30 s poll, and because remember() saved the list to localStorage first, the start-up redraw of the saved list threw inside init before showWindow. Now cleanNews() drops non-object items (log_ui line); kill switch localStorage ad.newsRawItems=1. CONFIRMED by 2 new ui-fast-play-test scenarios (failed before, pass after); full ui-fast-play-test and ui-contract-test pass locally on Chromium. Implemented only: not built as a Windows app, not merged, released or game-verified. No version bump.

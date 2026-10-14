@@ -831,6 +831,16 @@
   }
 
   // ---------- server status.json (optional) ----------
+  // status.json is hand-edited by staff: a null, text or number in "news" must not stop the launcher drawing.
+  // Kill switch: localStorage 'ad.newsRawItems' = '1' passes the list through as it comes.
+  function cleanNews(items) {
+    let raw = false;
+    try { raw = localStorage.getItem('ad.newsRawItems') === '1'; } catch (_) {}
+    if (raw || !Array.isArray(items)) return items;
+    const ok = items.filter(n => n && typeof n === 'object' && !Array.isArray(n));
+    if (ok.length !== items.length) logUi(`news: skipped ${items.length - ok.length} item(s) in status.json that are not objects`);
+    return ok;
+  }
   function newsHtml(items, full) {
     return items.map((n, i) =>
       `<article class="news-item"><img src="${THUMBS[i % THUMBS.length]}" alt="">
@@ -841,7 +851,7 @@
   async function loadStatus() {
     status = await invoke('server_status').catch(() => null);
     statusAsked = true;
-    if (status) remember({ news: Array.isArray(status.news) ? status.news.slice(0, 20) : lastSeen.news, invite: status.discordInvite || lastSeen.invite });
+    if (status) remember({ news: Array.isArray(status.news) ? cleanNews(status.news).slice(0, 20) : lastSeen.news, invite: status.discordInvite || lastSeen.invite });
     renderInvite();
     keepLauncherNote();
     renderStatus();
@@ -860,9 +870,10 @@
     $('srv-players').textContent = status.online && typeof status.players === 'number'
       ? (status.maxPlayers ? `${status.players} / ${status.maxPlayers}` : status.players) : '–';
     if (status.sinceReset) $('srv-reset').textContent = status.sinceReset;
-    if (Array.isArray(status.news) && status.news.length) {
-      showNews(status.news);
-    } else if (Array.isArray(status.news) && shownNews) {
+    const liveNews = Array.isArray(status.news) ? cleanNews(status.news) : null;
+    if (liveNews && liveNews.length) {
+      showNews(liveNews);
+    } else if (liveNews && shownNews) {
       // Staff removed every item: the panels go back to the empty line.
       shownNews = '';
       $('news').innerHTML = $('news-full').innerHTML = EMPTY_NEWS;
@@ -871,6 +882,8 @@
   // News changes the height of the box above Play, so it is only redrawn when
   // it changed, and the last session's news is drawn at start-up.
   function showNews(items) {
+    items = cleanNews(items);
+    if (!items.length) return;
     const key = JSON.stringify(items.slice(0, 20));
     if (key === shownNews) return;
     shownNews = key;

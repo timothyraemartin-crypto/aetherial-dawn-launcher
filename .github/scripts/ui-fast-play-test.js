@@ -798,6 +798,14 @@ scenarios.push({ name: 'News: when staff remove every item, the news panels go b
   ['the old items are gone', !/Body\./.test(r.newsText || ''), String(r.newsText)],
   ['the empty line shows in both panels', (r.newsText || '').split('News from the server will show here.').length === 3, String(r.newsText)],
 ] });
+scenarios.push({ name: 'News: a null or non-object item in status.json news is skipped, the real items still show and the launcher starts', s: { ...base, clicks: [], statusNow: { news: [null, 'text', 7, { title: 'Real item', date: '1 Oct', body: 'Real body.' }] }, end: 4000 }, expect: r => [
+  ['the real item shows in both panels', (r.newsText || '').split('Real body.').length === 3, String(r.newsText)],
+  ['Play is available', r.playState === 'ready', r.playState],
+] });
+scenarios.push({ name: 'News: a null item saved from an earlier session does not stop the launcher drawing at start', s: { ...base, clicks: [], seed: { news: [null, { title: 'Saved item', date: '1 Oct', body: 'Saved body.' }] }, statusNow: 'down', end: 4000 }, expect: r => [
+  ['the saved real item shows', /Saved body\./.test(r.newsText || ''), String(r.newsText)],
+  ['the launcher got as far as showing its window', r.invokes.some(i => i[2] === 'window_ready'), JSON.stringify(r.invokes.slice(-4))],
+] });
 scenarios.push({ name: 'Update button: if the progress listener cannot be set up, the button is released with RETRY and nothing is downloaded', s: { ...base, clicks: [2500], check: { build: 'B2', files: 3, bytes: 3000000 }, listenFails: 'sync-progress', end: 5000 }, expect: r => [
   ['the update is never started', askedAt(r, 'update') === null],
   ['the button shows RETRY after the press, not UPDATING for good', r.labels.some(l => l[0] > 2500 && /^RETRY/.test(l[1])), JSON.stringify(r.labels.slice(-6))],
