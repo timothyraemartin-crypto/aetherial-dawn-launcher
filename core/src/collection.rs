@@ -124,7 +124,17 @@ fn find_ci(root: &Path, rel: &str) -> Option<PathBuf> {
 
 /// Same plugin: equal ignoring case, or equal after the launcher's dash-joined alias.
 fn same_plugin(a: &str, b: &str) -> bool {
-    a.eq_ignore_ascii_case(b) || alias_name(a).eq_ignore_ascii_case(&alias_name(b))
+    a.eq_ignore_ascii_case(b) || run_key(a) == run_key(b)
+}
+
+/// The name with the launcher's changes undone: dash alias for a spaced name, and no "-AD" before the extension
+/// (the rewritten copy of a plugin whose masters needed new names, aliases.rs `run_name`).
+fn run_key(n: &str) -> String {
+    let a = alias_name(n).to_ascii_lowercase();
+    match a.rsplit_once('.') {
+        Some((stem, ext)) => format!("{}.{ext}", stem.strip_suffix("-ad").unwrap_or(stem)),
+        None => a,
+    }
 }
 
 /// A mod's file is there directly, or (for a plugin with spaces) under its alias name.
@@ -581,6 +591,13 @@ mod tests {
         b.extend([0u8; 16]);
         b.extend(sub);
         b
+    }
+
+    #[test]
+    fn the_launchers_run_names_count_as_the_collection_plugin() {
+        assert!(same_plugin("MoreCraftableEquipment_USSEP.esp", "MoreCraftableEquipment_USSEP-AD.esp"));
+        assert!(same_plugin(USSEP, ALIAS));
+        assert!(!same_plugin("MoreCraftableEquipment.esp", "MoreCraftableEquipment_USSEP.esp"));
     }
 
     #[test]
