@@ -43,7 +43,7 @@ fn f(sev: Sev, check: &'static str, subject: impl Into<String>, detail: impl Int
     Finding { sev, check, subject: subject.into(), detail: detail.into() }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct LedgerEntry {
     pub file: String,
     /// "crashes", "refused" or "loads".
@@ -85,7 +85,14 @@ pub struct Input<'a> {
     /// The pack's plugins in load order (collection pluginOrder); empty = order not checked.
     pub plugin_order: &'a [String],
     pub ledger: &'a Ledger,
+    /// `root` is a player's game Data folder, not an extracted pack: only the top level and
+    /// SKSE/Plugins are read, only the collection's plugins are judged, DLLs in `skip_dlls`
+    /// (SkyMP's own) are left out, and the full-plugin count is not made.
+    pub installed: bool,
 }
+
+/// SkyMP's own SKSE plugins, installed by the launcher; never judged.
+pub const SKYMP_DLLS: [&str; 2] = ["mpclientplugin.dll", "skyrimplatform.dll"];
 
 fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
@@ -118,7 +125,15 @@ fn light(p: &Path) -> bool {
 /// Runs every check. Order of findings: DLLs, Address Library, plugins.
 pub fn scan(i: &Input) -> Vec<Finding> {
     let mut files = Vec::new();
-    walk(i.root, 0, &mut files);
+    if i.installed {
+        for d in [i.root.to_path_buf(), i.root.join("SKSE").join("Plugins")] {
+            if let Ok(rd) = std::fs::read_dir(d) {
+                files.extend(rd.flatten().map(|e| e.path()).filter(|p| p.is_file()));
+            }
+        }
+    } else {
+        walk(i.root, 0, &mut files);
+    }
     files.sort();
     let mut out = Vec::new();
 
@@ -134,12 +149,15 @@ pub fn scan(i: &Input) -> Vec<Finding> {
     }
     let mut needs_al = Vec::new();
     for (name, copies) in &dlls {
+        if i.installed && SKYMP_DLLS.contains(&name.as_str()) {
+            continue;
+        }
         let distinct: BTreeSet<&String> = copies.iter().map(|c| &c.1).collect();
         // Several different builds under one name (FOMOD variants in an unextracted archive): which one
         // gets installed is the installer's choice, so a bad one is a warning, not a failure.
         let variants = distinct.len() > 1;
         for (p, sha) in copies {
-            let shown = p.strip_prefix(i.root).unwrap_or(p).display().to_string();
+            let shown = p.strip_prefix(i.root).unwrap_or(p).display().to_string().replace('\\', "/");
             let cap = |s: Sev| if variants && s == Sev::Fail { Sev::Warn } else { s };
             let tag = if variants { " (one of several builds under this name; the installer picks)" } else { "" };
             let bytes = std::fs::read(p).unwrap_or_default();
@@ -182,15 +200,21 @@ pub fn scan(i: &Input) -> Vec<Finding> {
 
     // ---- Plugins
     let mut plugins: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let mut plugins_all: BTreeSet<String> = BTreeSet::new();
     for p in &files {
         let n = lower_name(p);
         if is_plugin_file(&n) {
             plugins.entry(n).or_insert_with(|| p.clone());
         }
     }
+    if i.installed {
+        let mine: BTreeSet<String> = i.plugin_order.iter().flat_map(|n| [n.to_ascii_lowercase(), aliases::alias_name(n).to_ascii_lowercase()]).collect();
+        plugins_all = plugins.keys().cloned().collect();
+        plugins.retain(|n, _| mine.contains(n));
+    }
     let base: Vec<String> = serverorder::BASE.iter().map(|s| s.to_ascii_lowercase()).collect();
     let server: Vec<String> = i.server.iter().map(|s| s.to_ascii_lowercase()).collect();
-    let pack_names: BTreeSet<String> = plugins.keys().flat_map(|n| [n.clone(), aliases::alias_name(n).to_ascii_lowercase()]).collect();
+    let pack_names: BTreeSet<String> = plugins.keys().chain(plugins_all.iter()).flat_map(|n| [n.clone(), aliases::alias_name(n).to_ascii_lowercase()]).collect();
     // Position of each plugin: base, then the server's, then the pack's own order.
     let mut pos: BTreeMap<String, usize> = BTreeMap::new();
     for n in base.iter().chain(server.iter()).cloned().chain(i.plugin_order.iter().flat_map(|n| [n.to_ascii_lowercase(), aliases::alias_name(n).to_ascii_lowercase()])) {
@@ -199,7 +223,7 @@ pub fn scan(i: &Input) -> Vec<Finding> {
     }
     let mut full = base.len() + server.len();
     for (name, p) in &plugins {
-        let shown = p.strip_prefix(i.root).unwrap_or(p).display().to_string();
+        let shown = p.strip_prefix(i.root).unwrap_or(p).display().to_string().replace('\\', "/");
         if let Some(why) = loadorder::broken(p) {
             out.push(f(Sev::Fail, "plugin", &shown, format!("unusable plugin: {why}")));
             continue;
@@ -207,7 +231,7 @@ pub fn scan(i: &Input) -> Vec<Finding> {
         if !light(p) && !server.contains(name) && !server.contains(&aliases::alias_name(name).to_ascii_lowercase()) {
             full += 1;
         }
-        if name.contains(' ') {
+        if name.contains(' ') && !i.installed {
             out.push(f(Sev::Info, "plugin", &shown, format!("name has spaces; the launcher runs it as {} (the SkyMP client rejects spaces)", aliases::alias_name(name))));
         }
         if !i.plugin_order.is_empty() && !pos.contains_key(name) {
@@ -225,7 +249,7 @@ pub fn scan(i: &Input) -> Vec<Finding> {
             }
         }
     }
-    if full > 254 {
+    if full > 254 && !i.installed {
         out.push(f(Sev::Fail, "light-limit", "plugins", format!("{full} full (non-light) plugins with the base and the server's; the limit is 254")));
     }
     out
@@ -249,6 +273,26 @@ pub fn render(fs: &[Finding]) -> String {
     }
     s.push_str(&format!("\nResult: {:?} ({} findings)\n", worst(fs), fs.len()));
     s
+}
+
+/// The Play-time health row: warn-only, never Fail. Problems (a DLL SKSE refuses or the ledger knows
+/// crashes, a missing master, a late master) are a Warn; a DLL never seen loading is only Info.
+pub fn health_check(fs: &[Finding]) -> crate::health::Check {
+    use crate::health::Status;
+    let unverified = |x: &&Finding| x.check == "ledger" && x.sev == Sev::Warn;
+    let problems: Vec<&Finding> = fs.iter().filter(|x| x.sev >= Sev::Warn && !unverified(x)).collect();
+    let fresh: Vec<&Finding> = fs.iter().filter(unverified).collect();
+    let line = |x: &&Finding| format!("{}: {}", x.subject, x.detail);
+    let mut items: Vec<String> = problems.iter().take(12).map(line).collect();
+    items.extend(fresh.iter().take(12).map(|x| format!("{}: not seen loading on 1.6.1170 yet", x.subject)));
+    let (status, detail) = if !problems.is_empty() {
+        (Status::Warn, format!("{} problem(s) in the installed mods that would stop them loading; Play goes on.", problems.len()))
+    } else if !fresh.is_empty() {
+        (Status::Info, format!("{} mod DLL(s) have not been seen loading on this Skyrim yet; they may be fine.", fresh.len()))
+    } else {
+        (Status::Ok, "The installed mod DLLs and plugins pass the checks.".into())
+    };
+    crate::health::Check { id: "pack", title: "Mod pack pre-flight", status, detail, items }
 }
 
 /// A ledger line proposed from an skse64.log, to paste into data/dll-ledger.json after a play-test.
@@ -275,11 +319,12 @@ pub fn triage(log: &str) -> Vec<Suggestion> {
             let id: String = line[at..].chars().skip_while(|c| !c.is_ascii_digit()).take_while(|c| c.is_ascii_digit()).collect();
             Suggestion { file, status: "crashes", reason: format!("Address Library \"Identifier not found, {id}\"") }
         } else if l.contains("disabled, incompatible") || l.contains("disabled, only compatible") || l.contains("disabled, no version data") || l.contains("disabled, bad version") {
-            Suggestion { file, status: "refused", reason: line.trim().to_string() }
+            // Only the words after the path, so a player's folder names never travel.
+            Suggestion { file, status: "refused", reason: line[l.find("disabled").unwrap_or(0)..].trim().to_string() }
         } else if l.contains("loaded correctly") {
             Suggestion { file, status: "loads", reason: "SKSE: loaded correctly".into() }
         } else if l.contains("couldn't load") || l.contains("could not load") {
-            Suggestion { file, status: "refused", reason: line.trim().to_string() }
+            Suggestion { file, status: "refused", reason: format!("SKSE: {}", line[l.find("couldn't load").or_else(|| l.find("could not load")).unwrap_or(0)..].trim()) }
         } else {
             continue;
         };
@@ -293,6 +338,22 @@ pub fn triage(log: &str) -> Vec<Suggestion> {
     out
 }
 
+/// The mod DLL results for a session report (and the bot's crash reports): what SKSE said about each
+/// plugin DLL in skse64.log, with the ledger lines to add. None when the log says nothing about DLLs.
+pub fn verdict_text(skse_log: &str) -> Option<String> {
+    let t = triage(skse_log);
+    if t.is_empty() {
+        return None;
+    }
+    let loaded = t.iter().filter(|x| x.status == "loads").count();
+    let mut out = format!("SKSE plugin results from skse64.log: {loaded} loaded, {} refused or crashed.\n", t.len() - loaded);
+    for x in t.iter().filter(|x| x.status != "loads") {
+        out.push_str(&format!("- {}: {}, {}\n", x.file, x.status, x.reason));
+    }
+    out.push_str(&format!("Ledger lines: {}\n", serde_json::to_string(&t).unwrap_or_default()));
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,7 +365,7 @@ mod tests {
         t
     }
     fn input<'a>(t: &'a Path, server: &'a [String], order: &'a [String], l: &'a Ledger) -> Input<'a> {
-        Input { root: t, server, plugin_order: order, ledger: l }
+        Input { root: t, server, plugin_order: order, ledger: l, installed: false }
     }
 
     #[test]
@@ -381,6 +442,33 @@ mod tests {
     }
 
     #[test]
+    fn installed_mode_reads_the_top_level_only_judges_collection_plugins_and_gives_a_warn_only_row() {
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path().join("Data");
+        std::fs::create_dir_all(d.join("SKSE/Plugins")).unwrap();
+        std::fs::create_dir_all(d.join("deep/SKSE/Plugins")).unwrap();
+        std::fs::write(d.join("SKSE/Plugins/ActorLimitFix.dll"), dllgen::good_dll()).unwrap();
+        std::fs::write(d.join("SKSE/Plugins/MpClientPlugin.dll"), dllgen::old_dll()).unwrap();
+        std::fs::write(d.join("deep/SKSE/Plugins/Old.dll"), dllgen::old_dll()).unwrap();
+        std::fs::write(d.join("Mine.esp"), loadorder::tests::plugin_with_masters(&["Gone.esp"])).unwrap();
+        std::fs::write(d.join("Other.esp"), loadorder::tests::plugin_with_masters(&["Gone.esp"])).unwrap();
+        let order = vec!["Mine.esp".to_string()];
+        let l = Ledger::built_in();
+        let r = scan(&Input { root: &d, server: &[], plugin_order: &order, ledger: &l, installed: true });
+        assert!(r.iter().any(|x| x.subject.contains("ActorLimitFix.dll") && x.sev == Sev::Fail));
+        assert!(!r.iter().any(|x| x.subject.contains("MpClientPlugin") || x.subject.contains("Old.dll")));
+        assert!(r.iter().any(|x| x.check == "master" && x.subject.contains("Mine.esp")));
+        assert!(!r.iter().any(|x| x.subject.contains("Other.esp")));
+        let c = health_check(&r);
+        assert_eq!(c.status, crate::health::Status::Warn);
+        assert_eq!(c.id, "pack");
+        let none = health_check(&[]);
+        assert_eq!(none.status, crate::health::Status::Ok);
+        let fresh = health_check(&[f(Sev::Warn, "ledger", "X.dll", "UNVERIFIED")]);
+        assert_eq!(fresh.status, crate::health::Status::Info);
+    }
+
+    #[test]
     fn triage_turns_the_rev7_boxes_into_ledger_lines() {
         let log = "plugin D:\\Skyrim\\Data\\SKSE\\Plugins\\ActorLimitFix.dll (00000001 Actor Limit Fix 00000001) loaded correctly\n\
                    AddressLibrary.cpp(102,34): Identifier not found, 523948 ActorLimitFix.dll\n\
@@ -392,5 +480,10 @@ mod tests {
         assert!(s[0].reason.contains("523948"));
         assert_eq!(s[1].status, "refused");
         assert_eq!(s[2].status, "loads");
+        assert_eq!(s[1].reason, "disabled, incompatible with current version of the game", "no folder names in the reason");
+        let v = verdict_text(log).unwrap();
+        assert!(v.starts_with("SKSE plugin results from skse64.log: 1 loaded, 2 refused or crashed."), "{v}");
+        assert!(v.contains("- ActorLimitFix.dll: crashes, Address Library") && !v.contains("D:\\"), "{v}");
+        assert!(verdict_text("nothing here").is_none());
     }
 }

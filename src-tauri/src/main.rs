@@ -547,6 +547,8 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     let mut report = run_health_with_masters(&app, &dir, Some(&m), Some(masters)).await;
     rules.adjust_order_check(&mut report);
     rules.add_collection_check(&dir, plugins_txt(&app).as_deref(), &mut report);
+    // Warn-only: the installed mod DLLs and plugins against Skyrim 1.6.1170, SKSE 2.2.6 and the ledger of real runs (core/src/preflight.rs).
+    rules.add_pack_check(&dir, &order.iter().map(|p| p.name.clone()).collect::<Vec<_>>(), &mut report);
     // "Same game files as the server": warn-only, so it can never stop Play (core/src/parity.rs).
     if flags.parity_report {
         if let Some(txt) = plugins_txt(&app) {
@@ -759,6 +761,11 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
         if let Some(txt) = plugins_txt(&app) {
             tauri::async_runtime::spawn(keep_load_order(app.clone(), dir.clone(), txt, order.clone()));
         }
+    }
+    // Trial verdict: 90 s in, say in the launcher log what SKSE did with each mod DLL (the same text goes into the end-of-game report).
+    // Kill: AD_PACKPREFLIGHT_OFF=1 or rules checks.packPreflight:false.
+    if rules.pack_preflight && !std::env::var_os("AD_PACKPREFLIGHT_OFF").is_some_and(|v| v == "1") {
+        tauri::async_runtime::spawn(trial_verdict(app.clone()));
     }
     tauri::async_runtime::spawn(watch_game(app.clone(), dir.clone(), started, config.close_on_launch));
     Ok(Vec::new())
@@ -1008,10 +1015,19 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
         summary.push_str(" Skyrim never loaded into the world, so it most likely never connected to the server. Staff can see why if you leave sharing on; a firewall, router or VPN blocking UDP is the usual cause.");
     }
     report.push_str(&format!("\n===== game health =====\n{}", health.text()));
+    // What SKSE said about each mod DLL (core/src/preflight.rs): feeds the DLL ledger and the staff's crash reports.
+    let dll_verdict = launcher_core::preflight::verdict_text(&skse_text);
+    if let Some(v) = &dll_verdict {
+        report.push_str(&format!("\n===== mod DLL results =====\n{v}"));
+        log::line(&format!("game: {}", v.lines().next().unwrap_or_default()));
+    }
     // The player's own folders stay private in what staff get (quality L1).
     let private: Vec<PathBuf> = [app.path().home_dir().ok(), app.path().document_dir().ok()].into_iter().flatten().collect();
     let private: Vec<&std::path::Path> = private.iter().map(|p| p.as_path()).collect();
     let mut staff_summary = watch::redact_paths(&summary, &private);
+    if let Some(v) = dll_verdict.as_deref().filter(|v| v.contains("\n- ")) {
+        staff_summary.push_str(&format!("\n\n{v}"));
+    }
     let crash_log = if crashed { watch::crash_log_for_staff(&skse_logs, started, &private) } else { None };
     if crashed {
         if let Some(cl) = watch::crash_logger_summary(&skse_logs, started) {
@@ -1969,6 +1985,20 @@ fn send_client_status(app: &AppHandle, dir: &std::path::Path) {
 /// Nothing is awaited, so Play never waits; 404 (route not live) and any failure are silent for the player.
 /// For the first 10 minutes of a session (the client reads the list around login, about 2.5 minutes in), every second: if plugins.txt no longer lists the server's plugins first, in order,
 /// with nothing the client can't load switched on, write it that way again and log what it had and when.
+/// 90 s after the game starts: logs what SKSE did with each mod DLL, from skse64.log. Read-only.
+async fn trial_verdict(app: AppHandle) {
+    tokio::time::sleep(std::time::Duration::from_secs(90)).await;
+    if !app.state::<AppState>().active_session.load(Ordering::SeqCst) {
+        return;
+    }
+    let docs = app.path().document_dir().or_else(|_| app.path().home_dir().map(|h| h.join("Documents"))).unwrap_or_default();
+    let text = std::fs::read_to_string(docs.join("My Games").join("Skyrim Special Edition").join("SKSE").join("skse64.log")).unwrap_or_default();
+    match launcher_core::preflight::verdict_text(&text) {
+        Some(v) => log::line(&format!("trial: 90 s in. {v}")),
+        None => log::line("trial: 90 s in; skse64.log says nothing about mod DLLs yet"),
+    }
+}
+
 async fn keep_load_order(app: AppHandle, dir: PathBuf, txt: PathBuf, order: Vec<launcher_core::serverorder::ServerPlugin>) {
     let started = std::time::Instant::now();
     let mut fixes = 0u32;

@@ -62,6 +62,10 @@ pub struct Rules {
     pub ping_stats: bool,
     /// The required Nexus collection (collection.rs); the file's `collection` object replaces the built-in one.
     pub collection: crate::collection::Collection,
+    /// The "Mod pack pre-flight" health row (preflight.rs); rules `checks.packPreflight:false` or env AD_PACKPREFLIGHT_OFF=1 hides it.
+    pub pack_preflight: bool,
+    /// DLL ledger entries published in the rules (`preflight.ledger`); they win over the built-in ledger, so a play-test result needs no release.
+    pub ledger_extra: Vec<crate::preflight::LedgerEntry>,
 }
 
 impl Default for Rules {
@@ -78,6 +82,8 @@ impl Default for Rules {
             tune: Vec::new(),
             ping_stats: true,
             collection: crate::collection::Collection::built_in(),
+            pack_preflight: true,
+            ledger_extra: Vec::new(),
         }
     }
 }
@@ -139,6 +145,10 @@ impl Rules {
         // A collection that doesn't parse keeps the built-in one.
         if let Some(c) = v.get("collection").and_then(|c| crate::collection::Collection::parse(c.to_string().as_bytes()).ok()) {
             r.collection = c;
+        }
+        r.pack_preflight = on(&checks, "packPreflight");
+        if let Some(l) = v.pointer("/preflight/ledger").and_then(|l| crate::preflight::Ledger::parse(serde_json::json!({ "entries": l }).to_string().as_bytes()).ok()) {
+            r.ledger_extra = l.entries.into_iter().take(MAX_LIST * 5).collect();
         }
         // tune.settings: [{file, section, key, mode, value, on?}]; "tune.on": false drops all.
         let tune = section("tune");
@@ -216,6 +226,20 @@ impl Rules {
         report.worst = report.checks.iter().map(|c| c.status).max().unwrap_or(Status::Ok);
     }
 
+    /// Adds the "Mod pack pre-flight" row for the installed Data folder. Warn-only: the row is never Fail.
+    pub fn add_pack_check(&self, game_dir: &Path, server_plugins: &[String], report: &mut Report) {
+        report.checks.retain(|c| c.id != "pack");
+        if !self.pack_preflight || std::env::var_os("AD_PACKPREFLIGHT_OFF").is_some_and(|v| v == "1") {
+            return;
+        }
+        let mut ledger = crate::preflight::Ledger::built_in();
+        ledger.entries.splice(0..0, self.ledger_extra.iter().cloned());
+        let data = game_dir.join("Data");
+        let found = crate::preflight::scan(&crate::preflight::Input { root: &data, server: server_plugins, plugin_order: &self.collection.plugin_order, ledger: &ledger, installed: true });
+        report.checks.push(crate::preflight::health_check(&found));
+        report.worst = report.checks.iter().map(|c| c.status).max().unwrap_or(Status::Ok);
+    }
+
     /// The message when the order check stops Play.
     pub fn order_mismatch_message(&self, which: &str, tell: &str) -> String {
         match &self.order_mismatch_text {
@@ -264,6 +288,26 @@ mod tests {
     fn order_report(items: &[&str]) -> Report {
         let c = Check { id: "serverorder", title: "Server plugin order", status: Status::Fail, detail: "x".into(), items: items.iter().map(|s| s.to_string()).collect() };
         Report { checks: vec![c], worst: Status::Fail }
+    }
+
+    #[test]
+    fn pack_row_switch_and_ledger_entries_come_from_the_file() {
+        let r = Rules::parse(br#"{"schema":1,"rev":"x","checks":{"packPreflight":false},"preflight":{"ledger":[{"file":"X.dll","status":"crashes","reason":"r"},{"file":"Y.dll","status":"bogus"}]}}"#).unwrap();
+        assert!(!r.pack_preflight);
+        assert!(r.ledger_extra.is_empty(), "one bad entry refuses the list rather than half-applying it");
+        let r = Rules::parse(br#"{"schema":1,"rev":"x","preflight":{"ledger":[{"file":"X.dll","status":"crashes","reason":"r"}]}}"#).unwrap();
+        assert!(r.pack_preflight);
+        assert_eq!(r.ledger_extra.len(), 1);
+        let t = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(t.path().join("Data/SKSE/Plugins")).unwrap();
+        std::fs::write(t.path().join("Data/SKSE/Plugins/X.dll"), crate::skse::tests::good_dll()).unwrap();
+        let mut rep = Report { checks: vec![], worst: Status::Ok };
+        r.add_pack_check(t.path(), &[], &mut rep);
+        assert_eq!(rep.checks[0].id, "pack");
+        assert_eq!(rep.checks[0].status, Status::Warn, "a ledger crash is a warning, never a stop");
+        let mut off = Report { checks: vec![], worst: Status::Ok };
+        Rules { pack_preflight: false, ..r }.add_pack_check(t.path(), &[], &mut off);
+        assert!(off.checks.is_empty());
     }
 
     #[test]

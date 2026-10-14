@@ -1,6 +1,6 @@
 //! Checks a mod pack before anyone plays it. Read-only; nothing is changed, downloaded or uploaded.
 //!
-//!     pack-preflight scan DIR [--masters masters.json] [--rules launcher-rules.json] [--ledger FILE] [--json] [--strict]
+//!     pack-preflight scan DIR [--masters masters.json] [--rules launcher-rules.json] [--ledger FILE] [--json] [--strict] [--installed]
 //!     pack-preflight triage SKSE64.LOG        (ledger lines proposed from a play-test's skse64.log)
 //!     pack-preflight addrlib versionlib-1-6-1170-0.bin ID...   (is each Address Library ID in the file?)
 //!
@@ -34,7 +34,7 @@ fn main() {
                 Some(p) => Ledger::parse(&std::fs::read(&p).unwrap_or_else(|e| die(&format!("can't read {p}: {e}")))).unwrap_or_else(|e| die(&e)),
                 None => Ledger::built_in(),
             };
-            let found = preflight::scan(&preflight::Input { root: std::path::Path::new(dir), server: &server, plugin_order: &order, ledger: &ledger });
+            let found = preflight::scan(&preflight::Input { root: std::path::Path::new(dir), server: &server, plugin_order: &order, ledger: &ledger, installed: args.iter().any(|a| a == "--installed") });
             if args.iter().any(|a| a == "--json") {
                 println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "result": preflight::worst(&found), "findings": found })).expect("plain data"));
             } else {

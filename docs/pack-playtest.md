@@ -7,7 +7,7 @@ Why: collection rev 7 (2026-10-13) reached Timothy's PC and failed three ways be
 | Layer | Where | Time | Catches | State |
 | --- | --- | --- | --- | --- |
 | 1. Pre-flight | CI (`Pack pre-flight` workflow) or any PC (`pack-preflight scan DIR`) | minutes, no game | DLL that SKSE 2.2.6 refuses on 1.6.1170; DLL the ledger knows crashes; DLL needing Address Library with no `versionlib-1-6-1170-0.bin`; plugin with a missing master; master after its plugin; > 254 full plugins; unusable plugin; every DLL never seen loading is listed UNVERIFIED | built, offline-tested |
-| 2. Trial launch | one PC, one Play | ~2 min | what only the real game shows: Address Library IDs, load crashes, SKSE boxes, black screens | `pack-preflight triage` built; the one-click trial in the launcher is NOT built (see Next) |
+| 2. Trial launch | the player's own Play, nothing to run | ~2 min | what only the real game shows: Address Library IDs, load crashes, SKSE boxes, black screens | built into Play: a health row before launch (`pack`), a log line 90 s in (`trial:`), and a "mod DLL results" block in the end-of-game report and the staff crash report; no PC check yet |
 | 3. Server join | staging server 7790 + a tester | ~5 min | server-side load order, desync, join failures | exists on the VPS (UNKNOWN, cloud cannot reach it); not wired to packs |
 
 A pack runs layer 1 on every revision, then layer 2 on one PC for anything layer 1 marks FAIL or UNVERIFIED, then layer 3. Layer 1 cannot say a DLL runs; it can say it will not, and which DLLs to test first.
@@ -30,7 +30,10 @@ prints ledger lines for each DLL SKSE loaded, refused or that hit "Identifier no
 - Nothing here blocks Play. Every check is a report; the launcher is unchanged.
 - Kill switches: nothing to switch off in the launcher (no launcher change); the workflow is manual (or on PRs touching it).
 
-## Next (not built, defaults chosen)
-1. **Trial launch button** (launcher, warn-only): Play with a "trial" flag that, 90 s after the game starts, reads skse64.log, runs `triage`, and shows "these DLLs loaded / these did not" plus the ledger lines. Needs a Windows build and a PC check.
-2. **Pre-flight at Play**: run layer 1 on the installed Data folder and show a health row (`pack`), ledger from the signed rules feed. Needs `health.rs` plus a rules field and a PC check.
-3. **Staging join**: after layers 1-2 pass, a tester joins staging (7790) with the new pack; the headless bot checks the server's load order. The launcher's server address is a build-time setting (`AD_BASE_URL`), so a staging build is a separate tagged build; recommended only if layer 2 passes and the server side changed.
+## In the launcher (Play, warn-only)
+- Before launch: health row "Mod pack pre-flight" on the installed `Data/SKSE/Plugins` DLLs and the collection's plugins. Never Fail. Kill: rules `checks.packPreflight:false` or env `AD_PACKPREFLIGHT_OFF=1`.
+- 90 s after start: `launcher.log` gets `trial: 90 s in. SKSE plugin results ...`. At game end (and in crash reports to staff) the same text plus ready-to-paste ledger lines. Rules `preflight.ledger` publishes ledger entries without a release.
+
+## Next (defaults chosen)
+1. **Address Library format 2 reader**: owned by the Actor Limit Fix thread (it reads the real file on the PC); fold it into `addrlib.rs` when it exists.
+2. **Staging join**: after layers 1-2 pass, a tester joins staging (7790) with the new pack; the headless bot checks the server's load order. The launcher's server address is a build-time setting (`AD_BASE_URL`), so a staging build is a separate tagged build; recommended only if layer 2 passes and the server side changed.
