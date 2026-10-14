@@ -547,6 +547,8 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
     let mut report = run_health_with_masters(&app, &dir, Some(&m), Some(masters)).await;
     rules.adjust_order_check(&mut report);
     rules.add_collection_check(&dir, plugins_txt(&app).as_deref(), &mut report);
+    // Warn-only: the installed mod DLLs and plugins against Skyrim 1.6.1170, SKSE 2.2.6 and the ledger of real runs (core/src/preflight.rs).
+    rules.add_pack_check(&dir, &order.iter().map(|p| p.name.clone()).collect::<Vec<_>>(), &mut report);
     // "Same game files as the server": warn-only, so it can never stop Play (core/src/parity.rs).
     if flags.parity_report {
         if let Some(txt) = plugins_txt(&app) {
