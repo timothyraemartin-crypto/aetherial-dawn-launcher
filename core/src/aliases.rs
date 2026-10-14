@@ -62,7 +62,12 @@ fn save(game_dir: &Path, r: &Record) {
         let _ = std::fs::create_dir_all(d);
     }
     if let Ok(b) = serde_json::to_vec_pretty(r) {
-        let _ = std::fs::write(p, b);
+        // tmp + rename: a power cut leaves the old record, not a cut one that reads as empty.
+        if std::env::var_os("AD_ALIASES_ATOMIC_SAVE").is_some_and(|v| v == "0") {
+            let _ = std::fs::write(p, b);
+        } else {
+            let _ = crate::atomicfile::write(&p, &b);
+        }
     }
 }
 
@@ -559,6 +564,7 @@ pub fn ensure_full(game_dir: &Path, plugins_txt: Option<&Path>, full: &[String])
         }
     }
     let mut out = Vec::new();
+    let done = (|| -> std::io::Result<()> {
     for (p, rewritten) in plugins {
         let alias = run_name_full(&p, rewritten, full);
         if rewritten {
@@ -584,7 +590,21 @@ pub fn ensure_full(game_dir: &Path, plugins_txt: Option<&Path>, full: &[String])
         }
         out.push((p, alias));
     }
-    save(game_dir, &rec);
+    Ok(())
+    })();
+    // Save even when a later plugin failed: the copies and links made before it are the launcher's,
+    // and without the record the next run calls them someone else's file and refuses to go on.
+    // AD_ALIASES_SAVE_ON_ERROR=0 gives the old behaviour (record saved only after a clean run).
+    match done {
+        Ok(()) => save(game_dir, &rec),
+        Err(e) => {
+            if std::env::var_os("AD_ALIASES_SAVE_ON_ERROR").is_none_or(|v| v != "0") {
+                eprintln!("aliases: stopped part-way ({e}); the {} link(s) made so far are kept in aliases.json", rec.links.len());
+                save(game_dir, &rec);
+            }
+            return Err(e);
+        }
+    }
     Ok(out)
 }
 
@@ -726,6 +746,27 @@ mod tests {
         let full = vec!["_ResourcePack.esl".to_string()];
         assert!(ensure_full(g, None, &full).is_err());
         assert_eq!(std::fs::read(data.join("_ResourcePack.esm")).unwrap(), b"someone else's");
+    }
+
+    #[test]
+    fn a_failed_later_plugin_does_not_make_the_earlier_copy_look_foreign() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path();
+        let data = g.join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        let mut esl = plugin_with_masters(&[]);
+        esl[8..12].copy_from_slice(&0x200u32.to_le_bytes());
+        std::fs::write(data.join("_ResourcePack.esl"), esl).unwrap();
+        std::fs::write(data.join("zed mod.esp"), plugin_with_masters(&["Skyrim.esm"])).unwrap();
+        // The player's own dash-named file: zed mod is refused, after _ResourcePack was already converted.
+        std::fs::write(data.join("zed-mod.esp"), b"players own file").unwrap();
+        let full = vec!["_ResourcePack.esl".to_string()];
+        assert!(ensure_full(g, None, &full).is_err());
+        assert!(data.join("_ResourcePack.esm").exists());
+        std::fs::remove_file(data.join("zed-mod.esp")).unwrap();
+        // The earlier copy is the launcher's own: the next run must go through, not call it someone else's.
+        let got = ensure_full(g, None, &full).expect("the launcher's own copy is still its own");
+        assert_eq!(got.len(), 2);
     }
 
     #[test]
