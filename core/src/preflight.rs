@@ -157,7 +157,7 @@ pub fn scan(i: &Input) -> Vec<Finding> {
         // gets installed is the installer's choice, so a bad one is a warning, not a failure.
         let variants = distinct.len() > 1;
         for (p, sha) in copies {
-            let shown = p.strip_prefix(i.root).unwrap_or(p).display().to_string();
+            let shown = p.strip_prefix(i.root).unwrap_or(p).display().to_string().replace('\\', "/");
             let cap = |s: Sev| if variants && s == Sev::Fail { Sev::Warn } else { s };
             let tag = if variants { " (one of several builds under this name; the installer picks)" } else { "" };
             let bytes = std::fs::read(p).unwrap_or_default();
@@ -223,7 +223,7 @@ pub fn scan(i: &Input) -> Vec<Finding> {
     }
     let mut full = base.len() + server.len();
     for (name, p) in &plugins {
-        let shown = p.strip_prefix(i.root).unwrap_or(p).display().to_string();
+        let shown = p.strip_prefix(i.root).unwrap_or(p).display().to_string().replace('\\', "/");
         if let Some(why) = loadorder::broken(p) {
             out.push(f(Sev::Fail, "plugin", &shown, format!("unusable plugin: {why}")));
             continue;
