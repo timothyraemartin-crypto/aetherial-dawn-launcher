@@ -319,11 +319,12 @@ pub fn triage(log: &str) -> Vec<Suggestion> {
             let id: String = line[at..].chars().skip_while(|c| !c.is_ascii_digit()).take_while(|c| c.is_ascii_digit()).collect();
             Suggestion { file, status: "crashes", reason: format!("Address Library \"Identifier not found, {id}\"") }
         } else if l.contains("disabled, incompatible") || l.contains("disabled, only compatible") || l.contains("disabled, no version data") || l.contains("disabled, bad version") {
-            Suggestion { file, status: "refused", reason: line.trim().to_string() }
+            // Only the words after the path, so a player's folder names never travel.
+            Suggestion { file, status: "refused", reason: line[l.find("disabled").unwrap_or(0)..].trim().to_string() }
         } else if l.contains("loaded correctly") {
             Suggestion { file, status: "loads", reason: "SKSE: loaded correctly".into() }
         } else if l.contains("couldn't load") || l.contains("could not load") {
-            Suggestion { file, status: "refused", reason: line.trim().to_string() }
+            Suggestion { file, status: "refused", reason: format!("SKSE: {}", &line[l.find("couldn't load").or_else(|| l.find("could not load")).unwrap_or(0)..].trim()) }
         } else {
             continue;
         };
@@ -335,6 +336,22 @@ pub fn triage(log: &str) -> Vec<Suggestion> {
         }
     }
     out
+}
+
+/// The mod DLL results for a session report (and the bot's crash reports): what SKSE said about each
+/// plugin DLL in skse64.log, with the ledger lines to add. None when the log says nothing about DLLs.
+pub fn verdict_text(skse_log: &str) -> Option<String> {
+    let t = triage(skse_log);
+    if t.is_empty() {
+        return None;
+    }
+    let loaded = t.iter().filter(|x| x.status == "loads").count();
+    let mut out = format!("SKSE plugin results from skse64.log: {loaded} loaded, {} refused or crashed.\n", t.len() - loaded);
+    for x in t.iter().filter(|x| x.status != "loads") {
+        out.push_str(&format!("- {}: {}, {}\n", x.file, x.status, x.reason));
+    }
+    out.push_str(&format!("Ledger lines: {}\n", serde_json::to_string(&t).unwrap_or_default()));
+    Some(out)
 }
 
 #[cfg(test)]
@@ -463,5 +480,10 @@ mod tests {
         assert!(s[0].reason.contains("523948"));
         assert_eq!(s[1].status, "refused");
         assert_eq!(s[2].status, "loads");
+        assert_eq!(s[1].reason, "disabled, incompatible with current version of the game", "no folder names in the reason");
+        let v = verdict_text(log).unwrap();
+        assert!(v.starts_with("SKSE plugin results from skse64.log: 1 loaded, 2 refused or crashed."), "{v}");
+        assert!(v.contains("- ActorLimitFix.dll: crashes, Address Library") && !v.contains("D:\\"), "{v}");
+        assert!(verdict_text("nothing here").is_none());
     }
 }
