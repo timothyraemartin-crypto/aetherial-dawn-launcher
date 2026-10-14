@@ -962,7 +962,8 @@ async fn watch_game_inner(app: AppHandle, game_dir: &std::path::Path, started: s
     let crashed = pid.is_none() || watch::crashed(code, ran);
     log::line(&format!("game: {summary}{}", if crashed { " Treated as a crash." } else { "" }));
     let mut summary = summary;
-    if crashed && version::forget_manual(&game_dir) {
+    let crash_spec = app.state::<AppState>().manifest.lock().await.as_ref().and_then(|m| m.game.clone());
+    if crashed && version::forget_manual_after_crash(&game_dir, crash_spec.as_ref()) {
         // A wrong game build is the usual reason Skyrim dies within seconds.
         log::line("game: removed the hand-set \"already on this version\" mark so the version check runs again");
         summary.push_str(" Your game files may not be the version Aetherial Dawn needs, so the launcher is checking them again.");
