@@ -1,5 +1,8 @@
 # Decisions (newest first)
 
+## D-2026-10-14-1 Mod pack pre-flight: report-only checks plus a DLL ledger
+Timothy, 2026-10-14 00:55Z: "I really need a way to play test the mod packs easily and fast going forward" (rev 7 failed three ways before Play). Defaults chosen while he is away: (1) a read-only `pack-preflight` tool (`core/src/preflight.rs`) and a manual CI workflow, not a launcher change, so nothing can block Play and no launcher release is needed; (2) `skse::build_of` (already written, called by nothing) is now used; (3) a ledger of what each SKSE DLL did in a real game, because passing SKSE's version test is not proof a DLL runs (Actor Limit Fix passes it and crashes); (4) unknown DLLs are UNVERIFIED warnings, not failures; (5) several builds under one DLL name (FOMOD variants) only warn. Not built: the one-click trial launch and the Play-time health row (docs/pack-playtest.md, Next). See docs/pack-playtest.md.
+
 ## D-2026-10-11-1 No mods: Play refuses while anything extra is installed
 Timothy, 2026-10-11: the launcher checks the game version on every launch and must not let a player join if any mod beyond the allowed set is installed; the allowed set is exactly none.
 

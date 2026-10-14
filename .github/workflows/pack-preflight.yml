@@ -1,0 +1,53 @@
+name: Pack pre-flight
+# Checks a Nexus collection revision against Skyrim 1.6.1170 + SKSE 2.2.6 and the server's plugin order
+# BEFORE anyone presses Play (docs/pack-playtest.md). Read-only: publishes nothing, changes no file in the repo.
+# Warn-only by default; `strict` makes a failed check fail this job. Needs the NEXUS_API_KEY secret.
+on:
+  # Also runs on pull requests that touch it, so it can be tried before it is on main (dispatch needs the file on main).
+  pull_request:
+    paths: ['.github/workflows/pack-preflight.yml', 'scripts/pack-fetch.sh', 'core/src/preflight.rs', 'core/data/dll-ledger.json']
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Nexus collection revision (empty = the revision in server/launcher-rules.json)
+        required: false
+      strict:
+        description: Fail this job when a check fails
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pack-preflight
+        run: cargo build --release -p launcher-core --bin pack-preflight
+      - name: Fetch what can be judged (DLLs, plugins, Address Library)
+        env:
+          NEXUS_API_KEY: ${{ secrets.NEXUS_API_KEY }}
+          REVISION: ${{ inputs.revision }}
+        run: |
+          set +x
+          sudo apt-get install -y p7zip-full >/dev/null
+          REV=${REVISION:-$(jq -r .collection.revision server/launcher-rules.json)}
+          # A new revision: its plugin order comes from the revision itself, not from the published rules.
+          if [ "$REV" != "$(jq -r .collection.revision server/launcher-rules.json)" ]; then scripts/collection-rules.sh "$REV"; fi
+          scripts/pack-fetch.sh "$REV" pack
+      - name: Scan
+        run: |
+          # The server's own plugins, from the public feed (skipped quietly when unreachable).
+          MASTERS=""
+          if curl -fsS -m 30 -o masters.json https://vps-d38c928e.vps.ovh.us/launcher/masters.json; then MASTERS="--masters masters.json"; else echo "masters.json not reachable: server plugins not known to the check"; fi
+          target/release/pack-preflight scan pack --rules server/launcher-rules.json $MASTERS --json > preflight.json || true
+          target/release/pack-preflight scan pack --rules server/launcher-rules.json $MASTERS | tee preflight.txt
+          { echo '## Pack pre-flight'; echo '```'; cat pack/fetch-report.txt preflight.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ inputs.strict }}" = "true" ] && [ "$(jq -r .result preflight.json)" = "fail" ]; then exit 1; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pack-preflight
+          path: |
+            preflight.txt
+            preflight.json
+            pack/fetch-report.txt

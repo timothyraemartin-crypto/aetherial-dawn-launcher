@@ -171,6 +171,16 @@ pub fn describe(p: &Path) -> String {
     out
 }
 
+/// Whether the DLL declares the post-AE Address Library flag, so it looks its
+/// code up by ID in Data/SKSE/Plugins/versionlib-1-6-1170-0.bin (Some(false) =
+/// a plugin built for exact game versions; None = not a readable SKSE plugin).
+pub fn uses_address_library(b: &[u8]) -> Option<bool> {
+    let ex = exports(b)?;
+    let (_, at) = ex.iter().find(|(n, _)| n == "SKSEPlugin_Version")?;
+    let v = &b[(*at)?..(*at)? + 848];
+    Some(u32_at(v, 776)? & ADDRESS_LIBRARY_POST_AE != 0)
+}
+
 /// What SKSE would make of the DLL at `p` (Unknown when it can't be read).
 pub fn build_of(p: &Path) -> Build {
     match std::fs::read(p) {
