@@ -476,6 +476,12 @@ pub fn point_at_links(game_dir: &Path, plugins_txt: &Path) -> std::io::Result<Ve
     Ok(done)
 }
 
+/// A plugin the SkyMP client can't load as it is: its name has spaces, or it names such a plugin as a master
+/// (USSEP, and MoreCraftableEquipment_USSEP.esp which needs it). These get a link or a rewritten "-AD" copy too.
+fn client_cannot_load(data: &Path, name: &str) -> bool {
+    !client_can_load_name(name) || crate::loadorder::masters(&data.join(name)).unwrap_or_default().iter().any(|m| !client_can_load_name(m))
+}
+
 /// Gives each .esl in `full` (from `light_as_full`: the game's own light
 /// plugins that the server runs as full ones, _ResourcePack.esl) its
 /// "<stem>.esm" copy with the light flag cleared, the same bytes as the
@@ -483,7 +489,8 @@ pub fn point_at_links(game_dir: &Path, plugins_txt: &Path) -> std::io::Result<Ve
 /// original is gone are removed. A "<stem>.esm" in Data that isn't the
 /// launcher's own copy stops it: two files would load under one name.
 /// Returns the plugins now running under another name, (original, alias).
-/// No other plugin is renamed or rewritten.
+/// Other plugins the client can't load (a spaced name, or a spaced master) are linked or rewritten the same way
+/// (`client_cannot_load`); the rest are not renamed or rewritten.
 pub fn ensure_full(game_dir: &Path, plugins_txt: Option<&Path>, full: &[String]) -> std::io::Result<Vec<(String, String)>> {
     let data = game_dir.join("Data");
     let mut rec = load(game_dir);
@@ -500,7 +507,7 @@ pub fn ensure_full(game_dir: &Path, plugins_txt: Option<&Path>, full: &[String])
     if let Ok(rd) = std::fs::read_dir(&data) {
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
-            if is_plugin(&n) && full_esl(&n, full) && e.path().is_file() && !rec.links.iter().any(|l| l.to.eq_ignore_ascii_case(&format!("Data/{n}"))) {
+            if is_plugin(&n) && (full_esl(&n, full) || client_cannot_load(&data, &n)) && e.path().is_file() && !rec.links.iter().any(|l| l.to.eq_ignore_ascii_case(&format!("Data/{n}"))) {
                 let rewritten = needs_rewrite(&data, &e.path(), full);
                 if !client_can_load_name(&n) || rewritten {
                     plugins.push((n, rewritten));
@@ -597,6 +604,31 @@ mod tests {
     }
     use super::*;
 
+    #[test]
+    fn a_spaced_plugin_and_the_plugin_that_needs_it_run_under_names_the_client_can_load() {
+        let g = tempfile::tempdir().unwrap();
+        let data = g.path().join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        let usse = "Unofficial Skyrim Special Edition Patch.esp";
+        std::fs::write(data.join(usse), plugin_with_masters(&["Skyrim.esm"])).unwrap();
+        std::fs::write(data.join("MoreCraftableEquipment_USSEP.esp"), plugin_with_masters(&["Skyrim.esm", usse])).unwrap();
+        std::fs::write(data.join("SkyUI_SE.esp"), plugin_with_masters(&["Skyrim.esm"])).unwrap();
+        let txt = g.path().join("plugins.txt");
+        std::fs::write(&txt, format!("*{usse}\r\n*MoreCraftableEquipment_USSEP.esp\r\n*SkyUI_SE.esp\r\n")).unwrap();
+        let got = ensure_full(g.path(), Some(&txt), &[]).unwrap();
+        assert_eq!(got, vec![
+            ("MoreCraftableEquipment_USSEP.esp".to_string(), "MoreCraftableEquipment_USSEP-AD.esp".to_string()),
+            (usse.to_string(), "Unofficial-Skyrim-Special-Edition-Patch.esp".to_string()),
+        ]);
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*Unofficial-Skyrim-Special-Edition-Patch.esp\r\n*MoreCraftableEquipment_USSEP-AD.esp\r\n*SkyUI_SE.esp\r\n");
+        let masters = crate::loadorder::masters(&data.join("MoreCraftableEquipment_USSEP-AD.esp")).unwrap();
+        assert_eq!(masters, vec!["Skyrim.esm".to_string(), "Unofficial-Skyrim-Special-Edition-Patch.esp".to_string()]);
+        assert!(!data.join("SkyUI_SE-AD.esp").exists());
+        // the original (Vortex's) is untouched, and a second run changes nothing
+        assert!(data.join(usse).is_file() && data.join("MoreCraftableEquipment_USSEP.esp").is_file());
+        assert!(ensure_full(g.path(), Some(&txt), &[]).unwrap().len() == 2);
+    }
+
     fn plugin_with_masters(ms: &[&str]) -> Vec<u8> {
         let mut sub = b"HEDR".to_vec();
         sub.extend(12u16.to_le_bytes());
@@ -649,8 +681,8 @@ mod tests {
         std::fs::write(data.join("Skyrim.esm"), flags(plugin_with_masters(&[]), 0x1)).unwrap();
         std::fs::write(data.join("_ResourcePack.esl"), flags(plugin_with_masters(&["Skyrim.esm"]), 0x201)).unwrap();
         std::fs::write(data.join("_ResourcePack.bsa"), b"bsa").unwrap();
-        // An .esl the list doesn't name stays light, and a plugin with a
-        // name the client can't load is not this module's business.
+        // An .esl the list doesn't name stays light; a plugin with a name the client
+        // can't load gets its dash-named link too (USSEP, 2026-10-14).
         std::fs::write(data.join("Other.esl"), flags(plugin_with_masters(&["Skyrim.esm"]), 0x200)).unwrap();
         std::fs::write(data.join("Some Mod.esp"), plugin_with_masters(&["Skyrim.esm"])).unwrap();
         let server: Vec<String> = ["Skyrim.esm", "_ResourcePack.esm"].iter().map(|s| s.to_string()).collect();
@@ -661,20 +693,20 @@ mod tests {
         std::fs::write(&txt, "*_ResourcePack.esl\n*Some Mod.esp\n").unwrap();
         let before = std::fs::read(data.join("_ResourcePack.esl")).unwrap();
         let got = ensure_full(&g, Some(&txt), &full).unwrap();
-        assert_eq!(got, [("_ResourcePack.esl".to_string(), "_ResourcePack.esm".to_string())]);
+        assert_eq!(got, [("Some Mod.esp".to_string(), "Some-Mod.esp".to_string()), ("_ResourcePack.esl".to_string(), "_ResourcePack.esm".to_string())]);
         // Light cleared, master set; the original and archive are untouched.
         assert_eq!(flag(&data.join("_ResourcePack.esm")), 0x1);
         assert_eq!(flag(&data.join("Other.esl")), 0x200);
         assert_eq!(std::fs::read(data.join("_ResourcePack.esl")).unwrap(), before);
-        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*_ResourcePack.esm\n*Some Mod.esp\n");
-        assert!(!data.join("Some-Mod.esp").exists() && !data.join("Some Mod-AD.esp").exists(), "no other plugin is copied");
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*_ResourcePack.esm\n*Some-Mod.esp\n");
+        assert!(data.join("Some-Mod.esp").exists() && !data.join("Some Mod-AD.esp").exists(), "a spaced plugin is linked, not rewritten");
         assert_eq!(run_name_full("_ResourcePack.esl", true, &full), "_ResourcePack.esm");
         // Again: the copy is the launcher's own, so nothing changes.
         assert_eq!(light_as_full(&g, &server), full);
         ensure_full(&g, Some(&txt), &full).unwrap();
-        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*_ResourcePack.esm\n*Some Mod.esp\n");
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "*_ResourcePack.esm\n*Some-Mod.esp\n");
         // With no list, nothing is converted.
-        assert!(ensure_full(&g, Some(&txt), &[]).unwrap().is_empty());
+        assert_eq!(ensure_full(&g, Some(&txt), &[]).unwrap(), [("Some Mod.esp".to_string(), "Some-Mod.esp".to_string())], "only the spaced plugin is linked again");
     }
 
     #[test]
