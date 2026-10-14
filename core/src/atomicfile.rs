@@ -1,17 +1,41 @@
 //! Whole-file writes that can't leave a half-written file behind.
 
 use std::path::Path;
+use std::io::Write;
 
-/// Writes `bytes` to a sibling temp file, then renames it over `path`, so a
-/// crash or power cut leaves either the old file or the new one.
+/// Writes and syncs `bytes` to an exclusively created sibling temp file, then
+/// renames it over `path`. Each writer owns its temp file. This syncs file data;
+/// directory-entry durability after power loss still depends on the filesystem.
 pub fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = std::path::PathBuf::from(tmp);
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path).inspect_err(|_| {
+    write_with_sync(path, bytes, std::fs::File::sync_all)
+}
+
+fn write_with_sync(path: &Path, bytes: &[u8], sync: impl FnOnce(&std::fs::File) -> std::io::Result<()>) -> std::io::Result<()> {
+    if path.file_name().is_none() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "A file name is required"));
+    }
+    let mut owned = None;
+    for _ in 0..16 {
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(format!(".tmp.{:016x}", rand::random::<u64>()));
+        let tmp = std::path::PathBuf::from(tmp);
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp) {
+            Ok(file) => { owned = Some((tmp, file)); break; }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    let (tmp, mut file) = owned.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::AlreadyExists, "Could not reserve a temporary file"))?;
+    let result = (|| {
+        file.write_all(bytes)?;
+        sync(&file)?;
+        drop(file);
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
-    })
+    }
+    result
 }
 
 /// How many earlier copies `safe_write` keeps.
@@ -42,6 +66,41 @@ pub fn safe_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_preexisting_temp_hard_link_cannot_overwrite_another_file() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("config.json");
+        let victim = d.path().join("unrelated.txt");
+        std::fs::write(&p, b"old").unwrap();
+        std::fs::write(&victim, b"keep").unwrap();
+        std::fs::hard_link(&victim, d.path().join("config.json.tmp")).unwrap();
+        super::write(&p, b"new").unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        assert_eq!(std::fs::read(&p).unwrap(), b"new");
+    }
+
+    #[test]
+    fn concurrent_writers_never_share_a_temporary_file() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("config.json");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let mut workers = Vec::new();
+        for byte in 1..=4 {
+            let p = p.clone();
+            let barrier = barrier.clone();
+            workers.push(std::thread::spawn(move || {
+                let payload = vec![byte; 32 * 1024];
+                barrier.wait();
+                for _ in 0..20 { super::write(&p, &payload).unwrap(); }
+            }));
+        }
+        for worker in workers { worker.join().unwrap(); }
+        let saved = std::fs::read(&p).unwrap();
+        assert_eq!(saved.len(), 32 * 1024);
+        assert!(saved.iter().all(|b| *b == saved[0]));
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
+    }
+
     #[test]
     fn replaces_the_old_file_and_leaves_no_temp() {
         let d = tempfile::tempdir().unwrap();
@@ -94,9 +153,13 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("config.json");
         super::write(&p, b"old").unwrap();
-        // A directory in the temp file's place makes the write fail.
-        std::fs::create_dir(d.path().join("config.json.tmp")).unwrap();
-        assert!(super::write(&p, b"new").is_err());
+        // A sync failure happens after writing the temp data, before replacing the old file.
+        assert!(super::write_with_sync(&p, b"new", |file| {
+            assert_eq!(file.metadata()?.len(), 3);
+            assert_eq!(std::fs::read(&p)?, b"old");
+            Err(std::io::Error::other("sync failed"))
+        }).is_err());
         assert_eq!(std::fs::read(&p).unwrap(), b"old");
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1, "failed temp is cleaned up");
     }
 }
