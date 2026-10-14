@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "rev": "2026-10-13.9",
+  "rev": "2026-10-14.2",
   "off": false,
   "checks": {
     "firewallFix": true,
@@ -348,6 +348,7 @@
         "modId": 32349,
         "fileId": 795423,
         "version": "9",
+        "hold": true,
         "files": [
           "Data/SKSE/Plugins/ActorLimitFix.dll"
         ],
@@ -400,6 +401,7 @@
         "modId": 16495,
         "fileId": 800245,
         "version": "4.3.2",
+        "hold": true,
         "files": [
           "Data/SKSE/Plugins/JContainers64.dll"
         ],

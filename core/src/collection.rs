@@ -53,6 +53,10 @@ pub struct CollMod {
     /// More game-relative prefixes this mod owns (loose files, archives) that the no-mods guard must leave alone.
     #[serde(default)]
     pub allow: Vec<String>,
+    /// The launcher sets this mod's files aside for the session, like any other mod (rules `hold: true`; kill switch: remove it).
+    /// Used while a collection mod crashes the game on a PC (Actor Limit Fix on 1.6.1170, 2026-10-14).
+    #[serde(default)]
+    pub hold: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -175,7 +179,7 @@ impl Collection {
             rel_l == p || rel_l.starts_with(&format!("{p}/"))
         };
         // `files` are exact paths or folders; `allow` entries are plain prefixes (a folder, or a file-name start).
-        if self.mods.iter().any(|m| m.files.iter().any(|p| under(p)) || m.allow.iter().any(|p| rel_l.starts_with(&p.to_ascii_lowercase()))) {
+        if self.mods.iter().filter(|m| !m.hold).any(|m| m.files.iter().any(|p| under(p)) || m.allow.iter().any(|p| rel_l.starts_with(&p.to_ascii_lowercase()))) {
             return true;
         }
         if kind == "plugin" || kind == "archive" {
@@ -294,7 +298,9 @@ pub fn check(c: &Collection, game_dir: &Path, plugins_txt: Option<&Path>) -> Che
     let mut found = Vec::new();
     for m in &c.mods {
         let v = if m.version.is_empty() { String::new() } else { format!(" {}", m.version) };
-        if m.files.is_empty() {
+        if m.hold {
+            found.push(format!("Set aside by the launcher for now: {}{v}", m.name));
+        } else if m.files.is_empty() {
             found.push(format!("Not checked: {}{v}", m.name));
         } else if m.files.iter().all(|f| present(game_dir, f)) {
             found.push(format!("Installed: {}{v}", m.name));
@@ -530,7 +536,7 @@ mod tests {
         assert!(enable_plugins(&c, t.path(), &txt).unwrap().is_empty());
         // A mod with no known files is listed, not checked, and cannot block.
         let mut c2 = c.clone();
-        c2.mods.push(CollMod { name: "Mystery".into(), mod_id: 1, file_id: 1, version: String::new(), files: vec![], allow: vec![] });
+        c2.mods.push(CollMod { name: "Mystery".into(), mod_id: 1, file_id: 1, version: String::new(), files: vec![], allow: vec![], hold: false });
         let r = check(&c2, t.path(), None);
         assert!(r.items.iter().any(|i| i == "Not checked: Mystery"), "{:?}", r.items);
     }
@@ -625,5 +631,22 @@ mod tests {
         std::fs::write(&txt, format!("{ALIAS}\r\n*MoreCraftableEquipment_USSEP.esp\r\n")).unwrap();
         c.master_check = false;
         assert!(master_items(&check(&c, t.path(), Some(&txt))).is_empty());
+    }
+
+    #[test]
+    fn a_held_mod_is_not_owned_and_is_not_reported_missing() {
+        let t = tempfile::tempdir().unwrap();
+        let mut c = Collection::built_in();
+        install_all(t.path(), &c);
+        let mod_files = c.mods[1].files.clone();
+        let rel = mod_files[0].clone();
+        assert!(c.owns("dll", &rel));
+        c.mods[1].hold = true;
+        // The no-mods guard now sets the file aside like any other mod's.
+        assert!(!c.owns("dll", &rel));
+        std::fs::remove_file(t.path().join(&rel)).ok();
+        let r = check(&c, t.path(), None);
+        assert!(!r.items.iter().any(|i| i.starts_with("Missing: ") && i.contains(&c.mods[1].name)), "{:?}", r.items);
+        assert!(r.items.iter().any(|i| i.starts_with("Set aside by the launcher for now: ")));
     }
 }
