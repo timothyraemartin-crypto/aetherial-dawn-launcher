@@ -54,12 +54,57 @@ fn read_journal(game_dir: &Path) -> Option<Journal> {
     std::fs::read(journal_path(game_dir)).ok().and_then(|b| serde_json::from_slice(&b).ok())
 }
 
+/// Whether the journal file is there but can't be used (cut short or zeroed by
+/// a power cut, edited by hand). The files it listed are still in the aside
+/// folder, so `restore` rebuilds the list from what is there. Switch:
+/// AD_ASIDE_REBUILD=0 gives the old behaviour (an unreadable journal means
+/// nothing is waiting).
+fn journal_unreadable(game_dir: &Path) -> bool {
+    if std::env::var_os("AD_ASIDE_REBUILD").is_some_and(|v| v == "0") {
+        return false;
+    }
+    journal_path(game_dir).is_file() && read_journal(game_dir).is_none()
+}
+
+/// Every file under each session folder of the aside folder, as (folder, paths
+/// relative to the game folder).
+fn rebuilt_journals(game_dir: &Path) -> Vec<Journal> {
+    fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                walk(&p, base, out);
+            } else if let Ok(r) = p.strip_prefix(base) {
+                out.push(r.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(aside_dir(game_dir)) else { return out };
+    let mut folders: Vec<String> = rd.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    folders.sort();
+    for folder in folders {
+        let base = aside_dir(game_dir).join(&folder);
+        let mut moved = Vec::new();
+        walk(&base, &base, &mut moved);
+        moved.sort();
+        if !moved.is_empty() {
+            out.push(Journal { folder, moved });
+        }
+    }
+    out
+}
+
 fn write_journal(game_dir: &Path, j: &Journal) -> std::io::Result<()> {
     crate::atomicfile::write(&journal_path(game_dir), &serde_json::to_vec_pretty(j).map_err(std::io::Error::other)?)
 }
 
 /// Whether a set-aside is waiting to be put back.
 pub fn pending(game_dir: &Path) -> bool {
+    if journal_unreadable(game_dir) {
+        return !rebuilt_journals(game_dir).is_empty();
+    }
     read_journal(game_dir).is_some_and(|j| !j.moved.is_empty())
 }
 
@@ -121,7 +166,41 @@ fn same_file(a: &Path, b: &Path) -> bool {
 /// new in it stays in the aside folder (and is reported); nothing is ever
 /// overwritten.
 pub fn restore(game_dir: &Path) -> std::io::Result<Restored> {
+    if journal_unreadable(game_dir) {
+        let mut out = Restored::default();
+        let mut keep: Option<Journal> = None;
+        let found = rebuilt_journals(game_dir);
+        eprintln!("profile: journal.json is unreadable; putting back the {} session folder(s) found in the aside folder", found.len());
+        for j in found {
+            let (r, left) = restore_folder(game_dir, &j);
+            out.files += r.files;
+            out.duplicates += r.duplicates;
+            out.kept.extend(r.kept);
+            if !left.is_empty() && keep.is_none() {
+                keep = Some(Journal { folder: j.folder, moved: left });
+            }
+        }
+        match keep {
+            Some(j) => write_journal(game_dir, &j)?,
+            None => {
+                let _ = std::fs::remove_file(journal_path(game_dir));
+            }
+        }
+        return Ok(out);
+    }
     let Some(j) = read_journal(game_dir) else { return Ok(Restored::default()) };
+    let (out, left) = restore_folder(game_dir, &j);
+    if left.is_empty() {
+        let _ = std::fs::remove_file(journal_path(game_dir));
+    } else {
+        write_journal(game_dir, &Journal { folder: j.folder, moved: left })?;
+    }
+    Ok(out)
+}
+
+/// Puts back one session folder's files, never overwriting. Returns the tally
+/// and the paths still left in the folder; an emptied folder is removed.
+fn restore_folder(game_dir: &Path, j: &Journal) -> (Restored, Vec<String>) {
     let src = aside_dir(game_dir).join(&j.folder);
     let mut out = Restored::default();
     let mut left = Vec::new();
@@ -153,11 +232,8 @@ pub fn restore(game_dir: &Path) -> std::io::Result<Restored> {
     }
     if left.is_empty() {
         let _ = std::fs::remove_dir_all(&src);
-        let _ = std::fs::remove_file(journal_path(game_dir));
-    } else {
-        write_journal(game_dir, &Journal { folder: j.folder, moved: left })?;
     }
-    Ok(out)
+    (out, left)
 }
 
 #[cfg(test)]
@@ -247,6 +323,52 @@ mod tests {
         assert_eq!((r.files, r.duplicates, r.kept.len()), (0, 1, 1));
         assert!(!g.join(".aetherial-dawn/aside/1/Data/a.esp").exists());
         assert!(g.join(".aetherial-dawn/aside/1/Data/b.esp").exists());
+    }
+
+    #[test]
+    fn an_unreadable_journal_does_not_strand_the_mods() {
+        let d = tempfile::tempdir().unwrap();
+        let g = d.path();
+        put(g, "Data/Mod.esp", "plugin");
+        put(g, "Data/meshes/a/b.nif", "mesh");
+        set_aside(g, &[extra("Data/Mod.esp"), extra("Data/meshes/a/b.nif")], "t1").unwrap();
+        // A power cut after the rename but before the data reached the disk leaves a file of zero bytes.
+        std::fs::write(journal_path(g), [0u8; 16]).unwrap();
+        assert!(pending(g), "the aside folder still holds the player's files");
+        let back = restore(g).unwrap();
+        assert_eq!((back.files, back.kept.len()), (2, 0));
+        assert_eq!(std::fs::read_to_string(g.join("Data/Mod.esp")).unwrap(), "plugin");
+        assert_eq!(std::fs::read_to_string(g.join("Data/meshes/a/b.nif")).unwrap(), "mesh");
+        assert!(!pending(g) && !journal_path(g).exists() && !aside_dir(g).join("t1").exists());
+    }
+
+    #[test]
+    fn the_next_set_aside_puts_back_what_an_unreadable_journal_listed() {
+        let d = tempfile::tempdir().unwrap();
+        let g = d.path();
+        put(g, "Data/A.esp", "a");
+        set_aside(g, &[extra("Data/A.esp")], "t1").unwrap();
+        std::fs::write(journal_path(g), b"{\"folder\": \"t1\", \"mo").unwrap();
+        put(g, "Data/B.esp", "b");
+        set_aside(g, &[extra("Data/B.esp")], "t2").unwrap();
+        assert!(g.join("Data/A.esp").exists(), "the earlier session's file is back");
+        assert!(!aside_dir(g).join("t1").exists());
+    }
+
+    #[test]
+    fn a_rebuilt_restore_never_overwrites() {
+        let d = tempfile::tempdir().unwrap();
+        let g = d.path();
+        put(g, "Data/Mod.esp", "old");
+        set_aside(g, &[extra("Data/Mod.esp")], "t1").unwrap();
+        put(g, "Data/Mod.esp", "reinstalled");
+        std::fs::write(journal_path(g), b"garbage").unwrap();
+        let back = restore(g).unwrap();
+        assert_eq!((back.files, back.kept.clone()), (0, vec!["Data/Mod.esp".to_string()]));
+        assert_eq!(std::fs::read_to_string(g.join("Data/Mod.esp")).unwrap(), "reinstalled");
+        assert_eq!(std::fs::read_to_string(aside_dir(g).join("t1/Data/Mod.esp")).unwrap(), "old");
+        assert!(pending(g), "it stays listed until the player sorts it out");
+        assert_eq!(read_journal(g).unwrap().moved, vec!["Data/Mod.esp".to_string()]);
     }
 
     #[test]
