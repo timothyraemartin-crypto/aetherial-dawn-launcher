@@ -22,16 +22,18 @@ jobs:
         continue-on-error: true
         env:
           NEXUS_API_KEY: ${{ secrets.NEXUS_API_KEY }}
-          REVISION: ${{ inputs.revision || '6' }}
+          REVISION: ${{ inputs.revision || '7' }}
+          # mods whose content preview 404s (Nexus modIds); their archives are downloaded and listed
+          ARCHIVE_MODS: '81409 32349 41780 57339 16495 53000 120352'
         run: |
           set +x
           sudo apt-get install -y p7zip-full >/dev/null
-          scripts/collection-inspect.sh "$REVISION" 2>&1 | tee inspect.txt
+          bash scripts/collection-inspect.sh "$REVISION" 2>&1 | tee inspect.txt
       - name: Rebuild the collection list
         continue-on-error: true
         env:
           NEXUS_API_KEY: ${{ secrets.NEXUS_API_KEY }}
-          REVISION: ${{ inputs.revision || (github.event_name == 'pull_request' && '6' || '') }}
+          REVISION: ${{ inputs.revision || (github.event_name == 'pull_request' && '7' || '') }}
         run: |
           set +x
           sudo apt-get install -y p7zip-full >/dev/null

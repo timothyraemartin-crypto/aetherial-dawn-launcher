@@ -24,6 +24,10 @@ use crate::health::{Check, Status};
 const BUILT_IN: &str = include_str!("../data/collection-nzwgrw-r1.json");
 const MAX_MODS: usize = 200;
 
+fn yes() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Level {
@@ -68,6 +72,9 @@ pub struct Collection {
     /// Before Play, switch on every installed collection plugin in plugins.txt (Vortex leaves some off).
     #[serde(default)]
     pub enable_plugins: bool,
+    /// Report a collection plugin that is switched on while a master it names is off or loads after it (rules `collection.masterCheck`).
+    #[serde(default = "yes")]
+    pub master_check: bool,
     /// The server's own plugins (masters.json), set by Play. Their order and on/off state belong to the server order (serverorder.rs).
     #[serde(skip)]
     pub pinned: Vec<String>,
@@ -117,7 +124,17 @@ fn find_ci(root: &Path, rel: &str) -> Option<PathBuf> {
 
 /// Same plugin: equal ignoring case, or equal after the launcher's dash-joined alias.
 fn same_plugin(a: &str, b: &str) -> bool {
-    a.eq_ignore_ascii_case(b) || alias_name(a).eq_ignore_ascii_case(&alias_name(b))
+    a.eq_ignore_ascii_case(b) || run_key(a) == run_key(b)
+}
+
+/// The name with the launcher's changes undone: dash alias for a spaced name, and no "-AD" before the extension
+/// (the rewritten copy of a plugin whose masters needed new names, aliases.rs `run_name`).
+fn run_key(n: &str) -> String {
+    let a = alias_name(n).to_ascii_lowercase();
+    match a.rsplit_once('.') {
+        Some((stem, ext)) => format!("{}.{ext}", stem.strip_suffix("-ad").unwrap_or(stem)),
+        None => a,
+    }
 }
 
 /// A mod's file is there directly, or (for a plugin with spaces) under its alias name.
@@ -238,6 +255,35 @@ pub fn enable_plugins(c: &Collection, game_dir: &Path, plugins_txt: &Path) -> cr
     Ok(changed)
 }
 
+/// Collection plugins that are switched on while a master they name is not: the game stops with a missing-master
+/// error (or loads the plugin before its master) and MoreCraftableEquipment_USSEP.esp, whose master is the spaced
+/// USSEP name, is the known case (rev 7). Only the plugins of `pluginOrder` count; the base game and Creation Club
+/// masters are always there. Warn-only wording, never a blocker (`is_blocker`).
+fn master_problems(c: &Collection, game_dir: &Path, active: &[String]) -> Vec<String> {
+    let data = game_dir.join("Data");
+    let mut out = Vec::new();
+    for (i, a) in active.iter().enumerate() {
+        if !c.plugin_order.iter().any(|w| same_plugin(w, a)) {
+            continue;
+        }
+        let Some(file) = find_ci(&data, a) else { continue };
+        for m in crate::loadorder::masters(&file).unwrap_or_default() {
+            if crate::aliases::shipped_with_game(&m) || same_plugin(&m, a) {
+                continue;
+            }
+            if active[..i].iter().any(|x| same_plugin(x, &m)) {
+                continue;
+            }
+            if active[i + 1..].iter().any(|x| same_plugin(x, &m)) {
+                out.push(format!("Master loads after it: {a} needs {m} above it"));
+            } else {
+                out.push(format!("Master not switched on: {a} needs {m}"));
+            }
+        }
+    }
+    out
+}
+
 /// The health row for this collection. `plugins_txt` None skips the order part.
 pub fn check(c: &Collection, game_dir: &Path, plugins_txt: Option<&Path>) -> Check {
     let title = "Required mods (Nexus collection)";
@@ -272,6 +318,9 @@ pub fn check(c: &Collection, game_dir: &Path, plugins_txt: Option<&Path>) -> Che
                 }
             }
             last = Some((pos, want));
+        }
+        if c.master_check {
+            items.extend(master_problems(c, game_dir, &active));
         }
     }
     let rev = format!("revision {}", c.revision);
@@ -521,5 +570,60 @@ mod tests {
         c.pinned.clear();
         assert_eq!(check(&c, t.path(), Some(&txt)).status, Status::Fail);
         assert_eq!(enable_plugins(&c, t.path(), &txt).unwrap(), vec!["SkyUI_SE.esp".to_string()]);
+    }
+
+    fn plugin_with_masters(ms: &[&str]) -> Vec<u8> {
+        let mut sub = b"HEDR".to_vec();
+        sub.extend(12u16.to_le_bytes());
+        sub.extend(1.7f32.to_le_bytes());
+        sub.extend([0u8; 8]);
+        for m in ms {
+            sub.extend(b"MAST");
+            sub.extend(((m.len() + 1) as u16).to_le_bytes());
+            sub.extend(m.as_bytes());
+            sub.push(0);
+            sub.extend(b"DATA");
+            sub.extend(8u16.to_le_bytes());
+            sub.extend([0u8; 8]);
+        }
+        let mut b = b"TES4".to_vec();
+        b.extend((sub.len() as u32).to_le_bytes());
+        b.extend([0u8; 16]);
+        b.extend(sub);
+        b
+    }
+
+    #[test]
+    fn the_launchers_run_names_count_as_the_collection_plugin() {
+        assert!(same_plugin("MoreCraftableEquipment_USSEP.esp", "MoreCraftableEquipment_USSEP-AD.esp"));
+        assert!(same_plugin(USSEP, ALIAS));
+        assert!(!same_plugin("MoreCraftableEquipment.esp", "MoreCraftableEquipment_USSEP.esp"));
+    }
+
+    #[test]
+    fn a_plugin_on_with_its_master_off_or_below_it_is_named() {
+        // Rev 7: MoreCraftableEquipment_USSEP.esp names the spaced USSEP as a master.
+        let t = tempfile::tempdir().unwrap();
+        let mut c = Collection::built_in();
+        c.plugin_order = vec![USSEP.into(), "MoreCraftableEquipment_USSEP.esp".into()];
+        let data = t.path().join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("MoreCraftableEquipment_USSEP.esp"), plugin_with_masters(&["Skyrim.esm", USSEP, "ccBGSSSE001-Fish.esm"])).unwrap();
+        std::fs::write(data.join(ALIAS), plugin_with_masters(&["Skyrim.esm"])).unwrap();
+        let txt = t.path().join("plugins.txt");
+        let master_items = |r: &Check| r.items.iter().filter(|i| i.starts_with("Master ")).cloned().collect::<Vec<_>>();
+        // Master listed but off.
+        std::fs::write(&txt, format!("{ALIAS}\r\n*MoreCraftableEquipment_USSEP.esp\r\n")).unwrap();
+        assert_eq!(master_items(&check(&c, t.path(), Some(&txt))), vec![format!("Master not switched on: MoreCraftableEquipment_USSEP.esp needs {USSEP}")]);
+        // On, but below the plugin that needs it.
+        std::fs::write(&txt, format!("*MoreCraftableEquipment_USSEP.esp\r\n*{ALIAS}\r\n")).unwrap();
+        assert_eq!(master_items(&check(&c, t.path(), Some(&txt))), vec![format!("Master loads after it: MoreCraftableEquipment_USSEP.esp needs {USSEP} above it")]);
+        // On and above it (by alias name): nothing. Base game and Creation Club masters are never reported.
+        std::fs::write(&txt, format!("*{ALIAS}\r\n*MoreCraftableEquipment_USSEP.esp\r\n")).unwrap();
+        assert!(master_items(&check(&c, t.path(), Some(&txt))).is_empty());
+        // Kill switch (rules collection.masterCheck:false).
+        std::fs::write(&txt, format!("{ALIAS}\r\n*MoreCraftableEquipment_USSEP.esp\r\n")).unwrap();
+        c.master_check = false;
+        assert!(master_items(&check(&c, t.path(), Some(&txt))).is_empty());
     }
 }
