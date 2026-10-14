@@ -752,6 +752,14 @@ async fn play_run(app: &AppHandle, state: &AppState) -> CmdResult<Vec<String>> {
             send_client_parity(&app, &dir, &order, true, secs);
         }
     }
+    // Something (Vortex, Steam's Creation Club, the game) rewrote plugins.txt a few seconds after the start on Timothy's PC
+    // (2026-10-13 23:42-23:44Z): put the server's order back if that happens in the first minutes.
+    // Kill: AD_KEEP_ORDER_OFF=1 or rules checks.keepLoadOrder:false.
+    if flags.keep_load_order && serverorder::beyond_base(&order) && !std::env::var_os("AD_KEEP_ORDER_OFF").is_some_and(|v| v == "1") {
+        if let Some(txt) = plugins_txt(&app) {
+            tauri::async_runtime::spawn(keep_load_order(app.clone(), dir.clone(), txt, order.clone()));
+        }
+    }
     tauri::async_runtime::spawn(watch_game(app.clone(), dir.clone(), started, config.close_on_launch));
     Ok(Vec::new())
 }
@@ -1958,6 +1966,37 @@ fn send_client_status(app: &AppHandle, dir: &std::path::Path) {
 /// Tells the login service, in the background, what this PC will start the game with: game version,
 /// the plugin order, Creation Club files and archive names (core/src/parity.rs; names and hashes only).
 /// Nothing is awaited, so Play never waits; 404 (route not live) and any failure are silent for the player.
+/// For the first 10 minutes of a session (the client reads the list around login, about 2.5 minutes in), every second: if plugins.txt no longer lists the server's plugins first, in order,
+/// with nothing the client can't load switched on, write it that way again and log what it had and when.
+async fn keep_load_order(app: AppHandle, dir: PathBuf, txt: PathBuf, order: Vec<launcher_core::serverorder::ServerPlugin>) {
+    let started = std::time::Instant::now();
+    let mut fixes = 0u32;
+    while started.elapsed() < std::time::Duration::from_secs(600) {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        if !app.state::<AppState>().active_session.load(Ordering::SeqCst) {
+            return;
+        }
+        let (d, t, o) = (dir.clone(), txt.clone(), order.clone());
+        let res = tauri::async_runtime::spawn_blocking(move || {
+            let before = launcher_core::loadorder::read_text(&t).unwrap_or_default();
+            // A ticked original ("Unofficial Skyrim Special Edition Patch.esp") goes back to the link the game runs, not just off.
+            let pointed = launcher_core::aliases::point_at_links(&d, &t);
+            let exact = serverorder::set_exact(&d, &t, &o);
+            (before, match (pointed, exact) { (Err(e), _) | (_, Err(e)) => Err(e), (Ok(p), Ok(e)) => Ok(e || !p.is_empty()) })
+        })
+        .await;
+        match res {
+            Ok((before, Ok(true))) => {
+                fixes += 1;
+                let active: Vec<&str> = before.lines().filter_map(|l| l.trim().strip_prefix('*')).collect();
+                log::line(&format!("play: plugins.txt was rewritten {}s after the start (not by the launcher); put the server's order back (fix {fixes}). It had {} switched on: {}", started.elapsed().as_secs(), active.len(), active.iter().take(12).cloned().collect::<Vec<_>>().join(", ")));
+            }
+            Ok((_, Err(e))) => log::line(&format!("play: couldn't put plugins.txt back during the session: {e}")),
+            _ => {}
+        }
+    }
+}
+
 fn send_client_parity(app: &AppHandle, dir: &std::path::Path, order: &[launcher_core::serverorder::ServerPlugin], running: bool, after_secs: u64) {
     let (Some(token), Some(txt)) = (token(app), plugins_txt(app)) else { return };
     let (app, dir, order) = (app.clone(), dir.to_path_buf(), order.to_vec());

@@ -43,11 +43,13 @@ pub struct Flags {
     pub archive_gate: bool,
     /// Send the join fingerprint (game version, plugin order, Creation Club files) and show the "same files as the server" row (parity.rs).
     pub parity_report: bool,
+    /// For the first minutes of a session, put plugins.txt back to the server's order if anything else rewrites it (main.rs `keep_load_order`).
+    pub keep_load_order: bool,
 }
 
 impl Default for Flags {
     fn default() -> Self {
-        Flags { firewall_fix: true, udp_probe: true, connect_watch: true, platform_guard: true, session_upload: true, connect_ladder: true, browser_guard: true, isolate_temp: true, asset_report: true, archive_gate: false, parity_report: true }
+        Flags { firewall_fix: true, udp_probe: true, connect_watch: true, platform_guard: true, session_upload: true, connect_ladder: true, browser_guard: true, isolate_temp: true, asset_report: true, archive_gate: false, parity_report: true, keep_load_order: true }
     }
 }
 
@@ -55,7 +57,7 @@ impl Flags {
     pub fn from_status(status: Option<&serde_json::Value>) -> Flags {
         let launcher = status.and_then(|s| s.get("launcher"));
         let on = |key: &str| launcher.and_then(|l| l.get(key)).and_then(|v| v.as_bool()) != Some(false);
-        Flags { firewall_fix: on("firewallFix"), udp_probe: on("udpProbe"), connect_watch: on("connectWatch"), platform_guard: on("platformGuard"), session_upload: on("sessionUpload"), connect_ladder: on("connectLadder"), browser_guard: on("browserGuard"), isolate_temp: on("isolateTemp"), asset_report: on("assetReport"), archive_gate: launcher.and_then(|l| l.get("archiveGate")).and_then(|v| v.as_bool()) == Some(true), parity_report: on("parityReport") }
+        Flags { firewall_fix: on("firewallFix"), udp_probe: on("udpProbe"), connect_watch: on("connectWatch"), platform_guard: on("platformGuard"), session_upload: on("sessionUpload"), connect_ladder: on("connectLadder"), browser_guard: on("browserGuard"), isolate_temp: on("isolateTemp"), asset_report: on("assetReport"), archive_gate: launcher.and_then(|l| l.get("archiveGate")).and_then(|v| v.as_bool()) == Some(true), parity_report: on("parityReport"), keep_load_order: on("keepLoadOrder") }
     }
 }
 
