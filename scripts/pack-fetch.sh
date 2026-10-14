@@ -4,7 +4,7 @@
 # `pack-preflight scan OUTDIR` reads them. Textures, meshes and sound are never extracted.
 # Needs NEXUS_API_KEY (never echoed) and 7z. Read-only toward Nexus and the repo.
 #   scripts/pack-fetch.sh REVISION OUTDIR      MAX_ARCHIVE_MB=300 skips bigger archives and says so
-# UNTESTED end to end from the cloud box (no Nexus key there): the calls are the ones collection-inspect.sh uses.
+# First CI run (PR 192, rev 7): 19 archives extracted, 7 'download failed' (spaces in the link, fixed here; RaceMenu, FNIS, XPMSE among them), 3 over 300 MB or no DLL.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 RULES=server/launcher-rules.json
@@ -29,7 +29,7 @@ for pair in $(jq -r '.mods[] | select(.source.modId != null) | "\(.source.modId)
   if [ "$KB" -gt $((MAX_MB * 1024)) ]; then echo "mod $m file $f: $((KB / 1024)) MB > $MAX_MB MB, NOT CHECKED" >>"$OUT/fetch-report.txt"; continue; fi
   U=$(curl -sS -m 60 -H "apikey: $NEXUS_API_KEY" "https://api.nexusmods.com/v1/games/$GAME/mods/$m/files/$f/download_link.json" | jq -r '.[0].URI // empty' || true)
   if [ -z "$U" ]; then echo "mod $m file $f: no download link, NOT CHECKED" >>"$OUT/fetch-report.txt"; continue; fi
-  curl -fsS -m 900 -o "$W/a.bin" "$U" || { echo "mod $m file $f: download failed, NOT CHECKED" >>"$OUT/fetch-report.txt"; continue; }
+  curl -fsS -m 900 -o "$W/a.bin" "${U// /%20}" || { echo "mod $m file $f: download failed, NOT CHECKED" >>"$OUT/fetch-report.txt"; continue; }
   mkdir -p "$D"; 7z x -y -o"$D" "$W/a.bin" '-ir!*.dll' '-ir!*.esp' '-ir!*.esm' '-ir!*.esl' '-ir!versionlib-*.bin' >/dev/null || true
   echo "mod $m file $f: extracted $(find "$D" -type f | wc -l) file(s)" >>"$OUT/fetch-report.txt"; rm -f "$W/a.bin"
 done

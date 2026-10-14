@@ -3,8 +3,9 @@
 //! offline: does this Address Library file hold ID N at all?
 //!
 //! The layout is the one CommonLibSSE's REL::IDDatabase reads (format 1: header, then
-//! delta-coded id/offset pairs). INFERRED from that reader, not yet run against a real file:
-//! `pack-preflight addrlib FILE ID...` on a real file is the check.
+//! delta-coded id/offset pairs). The real `versionlib-1-6-1170-0.bin` (Address Library 13) is
+//! format 2, which this does NOT read (CONFIRMED by the first CI run, 2026-10-14): it reports
+//! "format 2, only 1 is read". Format 2 still needs a reader written against the real file.
 
 use std::collections::HashMap;
 

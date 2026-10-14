@@ -215,7 +215,7 @@ pub fn scan(i: &Input) -> Vec<Finding> {
         }
         for m in loadorder::masters(p).unwrap_or_default() {
             let ml = m.to_ascii_lowercase();
-            let known = base.contains(&ml) || server.contains(&ml) || pack_names.contains(&ml) || pack_names.contains(&aliases::alias_name(&m).to_ascii_lowercase()) || crate::modguard::is_cc(&m);
+            let known = base.contains(&ml) || server.contains(&ml) || pack_names.contains(&ml) || pack_names.contains(&aliases::alias_name(&m).to_ascii_lowercase()) || ml == "_resourcepack.esl" || crate::modguard::is_cc(&m);
             if !known {
                 out.push(f(Sev::Fail, "master", &shown, format!("needs {m}, which is not in the pack, the server's plugins or the base game; the plugin must stay off")));
             } else if let (Some(a), Some(b)) = (pos.get(&ml).or_else(|| pos.get(&aliases::alias_name(&m).to_ascii_lowercase())), pos.get(name).or_else(|| pos.get(&aliases::alias_name(name).to_ascii_lowercase()))) {
@@ -353,12 +353,15 @@ mod tests {
         std::fs::write(d.join("Needs.esp"), loadorder::tests::plugin_with_masters(&["Gone.esp"])).unwrap();
         std::fs::write(d.join("Early.esp"), loadorder::tests::plugin_with_masters(&["Late.esp"])).unwrap();
         std::fs::write(d.join("Late.esp"), loadorder::tests::plugin_with_masters(&[])).unwrap();
+        // The base game's own light file is never "missing" (the first CI run flagged USSEP for it).
+        std::fs::write(d.join("Resource.esp"), loadorder::tests::plugin_with_masters(&["_ResourcePack.esl"])).unwrap();
         let order: Vec<String> = ["Early.esp", "Late.esp"].map(String::from).to_vec();
         let l = Ledger::default();
         let r = scan(&input(t.path(), &[], &order, &l));
         assert!(r.iter().any(|x| x.check == "master" && x.sev == Sev::Fail && x.subject.contains("Needs.esp")));
         assert!(r.iter().any(|x| x.check == "order" && x.sev == Sev::Warn && x.subject.contains("Early.esp")));
         assert!(!r.iter().any(|x| x.subject.contains("Late.esp") && x.sev >= Sev::Warn));
+        assert!(!r.iter().any(|x| x.subject.contains("Resource.esp") && x.sev >= Sev::Warn));
     }
 
     #[test]
