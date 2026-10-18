@@ -74,7 +74,9 @@ impl Ledger {
         Ok(l)
     }
     fn find(&self, file: &str, sha: &str) -> Option<&LedgerEntry> {
-        self.entries.iter().find(|e| e.file.eq_ignore_ascii_case(file) && e.sha256.as_deref().is_none_or(|s| s.eq_ignore_ascii_case(sha)))
+        // A filename is shared by many builds. Historical outcomes, including
+        // successful loads, only apply to the exact bytes that were tested.
+        self.entries.iter().find(|e| e.file.eq_ignore_ascii_case(file) && e.sha256.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(sha)))
     }
 }
 
@@ -175,7 +177,7 @@ pub fn scan(i: &Input) -> Vec<Finding> {
             }
             match i.ledger.find(name, sha) {
                 Some(e) if e.status != "loads" => {
-                    out.push(f(cap(Sev::Fail), "ledger", &shown, format!("known {} on 1.6.1170: {} [{}]{tag}", e.status, e.reason, e.evidence)));
+                    out.push(f(cap(Sev::Fail), "ledger", &shown, format!("known {} on 1.6.1170 (SHA-256 {sha}): {} [{}]{tag}", e.status, e.reason, e.evidence)));
                 }
                 Some(e) => out.push(f(Sev::Ok, "ledger", &shown, format!("seen loading on 1.6.1170 [{}]", e.evidence))),
                 None if !bad => out.push(f(Sev::Warn, "ledger", &shown, "UNVERIFIED: never seen loading on 1.6.1170 in a real game; put it on the play-test list")),
@@ -286,7 +288,7 @@ pub fn health_check(fs: &[Finding]) -> crate::health::Check {
     let mut items: Vec<String> = problems.iter().take(12).map(line).collect();
     items.extend(fresh.iter().take(12).map(|x| format!("{}: not seen loading on 1.6.1170 yet", x.subject)));
     let (status, detail) = if !problems.is_empty() {
-        (Status::Warn, format!("{} problem(s) in the installed mods that would stop them loading; Play goes on.", problems.len()))
+        (Status::Warn, format!("{} compatibility problem(s) found in the installed mods; review the details. Play goes on.", problems.len()))
     } else if !fresh.is_empty() {
         (Status::Info, format!("{} mod DLL(s) have not been seen loading on this Skyrim yet; they may be fine.", fresh.len()))
     } else {
@@ -369,11 +371,33 @@ mod tests {
     }
 
     #[test]
-    fn built_in_ledger_parses_and_knows_the_two_rev7_dlls() {
+    fn historical_name_only_entries_do_not_judge_current_builds() {
         let l = Ledger::built_in();
-        assert_eq!(l.find("actorlimitfix.dll", "x").unwrap().status, "crashes");
-        assert_eq!(l.find("JContainers64.dll", "x").unwrap().status, "refused");
+        assert!(l.entries.iter().any(|e| e.file == "ActorLimitFix.dll" && e.status == "crashes"));
+        assert!(l.find("actorlimitfix.dll", "x").is_none());
+        assert!(l.find("JContainers64.dll", "x").is_none());
         assert!(Ledger::parse(br#"{"entries":[{"file":"a.dll","status":"fine"}]}"#).is_err());
+    }
+
+    fn pinned_ledger() -> Ledger {
+        use sha2::Digest;
+        let mut l = Ledger::built_in();
+        l.entries[0].sha256 = Some(hex::encode(sha2::Sha256::digest(dllgen::good_dll())));
+        l
+    }
+
+    #[test]
+    fn exact_build_evidence_matches_but_a_different_build_does_not() {
+        let l = pinned_ledger();
+        let sha = l.entries[0].sha256.as_ref().unwrap();
+        assert_eq!(l.find("actorlimitfix.DLL", &sha.to_uppercase()).unwrap().status, "crashes");
+        assert!(l.find("ActorLimitFix.dll", &"0".repeat(64)).is_none());
+        let t = pack();
+        std::fs::write(t.path().join("Data/SKSE/Plugins/ActorLimitFix.dll"), dllgen::good_dll()).unwrap();
+        std::fs::write(t.path().join("Data/SKSE/Plugins").join(ADDRESS_LIBRARY_FILE), crate::addrlib::tests::sample()).unwrap();
+        let r = scan(&input(t.path(), &[], &[], &Ledger::built_in()));
+        assert!(!r.iter().any(|x| x.check == "ledger" && x.sev == Sev::Fail));
+        assert_eq!(health_check(&r).status, crate::health::Status::Info);
     }
 
     #[test]
@@ -383,7 +407,7 @@ mod tests {
         std::fs::write(d.join("Old.dll"), dllgen::old_dll()).unwrap();
         std::fs::write(d.join("ActorLimitFix.dll"), dllgen::good_dll()).unwrap();
         std::fs::write(d.join("Fresh.dll"), dllgen::good_dll()).unwrap();
-        let l = Ledger::built_in();
+        let l = pinned_ledger();
         let r = scan(&input(t.path(), &[], &[], &l));
         let get = |c: &str, s: &str| r.iter().find(|x| x.check == c && x.subject.contains(s)).map(|x| x.sev);
         assert_eq!(get("skse-build", "Old.dll"), Some(Sev::Fail));
@@ -453,7 +477,7 @@ mod tests {
         std::fs::write(d.join("Mine.esp"), loadorder::tests::plugin_with_masters(&["Gone.esp"])).unwrap();
         std::fs::write(d.join("Other.esp"), loadorder::tests::plugin_with_masters(&["Gone.esp"])).unwrap();
         let order = vec!["Mine.esp".to_string()];
-        let l = Ledger::built_in();
+        let l = pinned_ledger();
         let r = scan(&Input { root: &d, server: &[], plugin_order: &order, ledger: &l, installed: true });
         assert!(r.iter().any(|x| x.subject.contains("ActorLimitFix.dll") && x.sev == Sev::Fail));
         assert!(!r.iter().any(|x| x.subject.contains("MpClientPlugin") || x.subject.contains("Old.dll")));
