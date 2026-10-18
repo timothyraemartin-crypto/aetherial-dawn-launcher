@@ -95,9 +95,9 @@
       try { return document.execCommand('copy'); } catch (_) { return false; } finally { box.remove(); }
     }
   }
-  function setStatus(msg, isError) {
+  function setStatus(msg, isError, isWarning = false) {
     copyNote = '';
-    statusMsg = msg ? { msg, isError } : null;
+    statusMsg = msg ? { msg, isError, isWarning } : null;
     renderStatus();
     const live = $('status-live');
     if (live && live.textContent !== (msg || '')) live.textContent = msg || '';
@@ -108,7 +108,7 @@
       // An error that ends in the help line shows the message plus one button, instead of the paragraph of steps.
       const help = statusMsg.isError && statusMsg.msg.endsWith(HELP);
       const text = help ? statusMsg.msg.slice(0, -HELP.length) : statusMsg.msg;
-      parts.push(`<span${statusMsg.isError ? ' class="error"' : ''}>${esc(text)}</span>`);
+      parts.push(`<span${statusMsg.isError ? ' class="error"' : statusMsg.isWarning ? ' class="warning"' : ''}>${esc(text)}</span>`);
       // The button stays so it can be pressed again; its result sits beside it on a row of fixed height.
       if (help) parts.push(`<span class="copy-row"><button class="btn small" id="status-copy">Copy details for staff</button><span class="copy-note">${esc(copyNote)}</span></span>`);
     }
@@ -218,10 +218,10 @@
     if (!pending && !busy) check();
   }
 
-  // ok: true (done), false (needs the player), null (the launcher does it).
+  // true: ready; false: failure; null: informational; 'warning': non-blocking uncertainty.
   function renderRow(el, ok, title, detail) {
-    el.classList.remove('ok', 'bad', 'info'); el.classList.add(ok === null ? 'info' : ok ? 'ok' : 'bad');
-    el.querySelector('svg').innerHTML = ok === null ? ICON_INFO : ok ? ICON_OK : ICON_BAD;
+    el.classList.remove('ok', 'bad', 'info', 'warn'); el.classList.add(ok === 'warning' ? 'warn' : ok === null ? 'info' : ok ? 'ok' : 'bad');
+    el.querySelector('svg').innerHTML = ok === null || ok === 'warning' ? ICON_INFO : ok ? ICON_OK : ICON_BAD;
     el.querySelector('b').textContent = title;
     el.querySelector('small').textContent = detail;
   }
@@ -251,7 +251,7 @@
     // the check was satisfied (for example by "already on this version").
     $('g-downgrade').hidden = !c.canDowngrade;
     $('g-downgrade').textContent = c.needed || c.warning ? 'Fix version' : 'Re-download';
-    if (c.warning) renderRow(row, false, have, c.warning);
+    if (c.warning && !c.needed) renderRow(row, 'warning', have, c.warning);
     if (g.hasSkse && c.target && !c.skseOk) {
       const skse = [false, "SKSE doesn't match", `Install SKSE ${c.skseVersion || ''} for Skyrim ${shortVer(c.target)}. ${c.skseDll} is missing.`.replace('  ', ' ')];
       renderRow($('g-skse'), ...skse); renderRow($('c-skse'), ...skse);
@@ -333,6 +333,7 @@
       renderGame();
       $('srv-name').textContent = pending.server.name;
       $('srv-addr').textContent = `${pending.server.ip}:${pending.server.port}`;
+      $('srv-addr').title = $('srv-addr').textContent;
       $('srv-build').textContent = pending.build;
       showWhatsNew(pending.files || pending.remove ? pending.notes : null);
       if (pending.files || pending.remove) {
@@ -471,7 +472,7 @@
       return;
     }
     setPlay('play', 'PLAY');
-    if (gameCheck && gameCheck.warning) setStatus(gameCheck.warning, true);
+    if (gameCheck && gameCheck.warning) setStatus('Game data is not fully verified. See Server Info for details.', false, true);
     else if (gameCheck && gameCheck.target && !gameCheck.skseOk) setStatus(`The launcher installs SKSE ${gameCheck.skseVersion || ''} for you when you press Play.`);
     else setStatus(null);
     if (helperWarning && !(gameCheck && gameCheck.warning)) setStatus(helperWarning, true);

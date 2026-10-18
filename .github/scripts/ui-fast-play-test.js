@@ -207,6 +207,10 @@ function fakeBackEnd() {
       log.siGoLabel = document.getElementById('si-go').textContent.trim();
       log.siGoDisabled = document.getElementById('si-go').disabled;
       log.status = document.getElementById('status').textContent;
+      log.versionClass = document.getElementById('g-ver').className;
+      log.statusClass = document.querySelector('#status > span')?.className || '';
+      { const addr = document.getElementById('srv-addr'), range = document.createRange(); range.selectNodeContents(addr);
+        log.address = { text: addr.textContent, lines: range.getClientRects().length, fits: addr.scrollWidth <= addr.clientWidth }; }
       const live = document.getElementById('status-live');
       log.announced = live ? live.textContent : null;
       // Before the focus-ring check below moves focus to PLAY.
@@ -286,6 +290,22 @@ const firstLabel = (r, text) => (r.labels.find(l => l[1] === text) || [null])[0]
 const lastLabel = r => r.labels[r.labels.length - 1][1];
 
 const scenarios = [
+  ...[1360, 1024].map(width => ({ name: `game-data warning stays non-blocking and address fits at ${width}px`, s: { ...base, clicks: [], viewport: [width,880],
+    actions: [{ at: 1500, kind: 'click', id: 'nav-server' }],
+    check: { build: '2026.10.17-npc-host-1', server: { name: 'Aetherial Dawn', ip: '40.160.90.225', port: 7777 } },
+    game: { needed: false, warning: "Skyrim's executable matches 1.6.1170. Steam's depot record differs; the game data has not been fully verified." } }, expect: r => [
+      ['Play remains enabled', lastLabel(r) === 'PLAY', lastLabel(r)],
+      ['the version row is a warning rather than a failure', /\bwarn\b/.test(r.versionClass) && !/\bbad\b/.test(r.versionClass)],
+      ['the dock uses non-blocking warning styling', /\bwarning\b/.test(r.statusClass) && !/\berror\b/.test(r.statusClass)],
+      ['no repair runs automatically', askedAt(r, 'patch_game') === null],
+      ['the full server address is readable on one line', r.address.text === '40.160.90.225:7777' && r.address.lines === 1 && r.address.fits, JSON.stringify(r.address)],
+  ] })),
+  { name: 'a game-data warning never masks a blocking version failure', s: { ...base, clicks: [],
+    game: { needed: true, canDowngrade: false, reason: 'Required game files are missing.', warning: 'Depot record also differs.' } }, expect: r => [
+      ['the version row remains a failure', /\bbad\b/.test(r.versionClass) && !/\bwarn\b/.test(r.versionClass)],
+      ['the dock remains an error', /\berror\b/.test(r.statusClass)],
+      ['Play stays blocked', lastLabel(r) === 'WRONG VERSION [off]'],
+  ] },
   { name: 'Bug report: the saved F10 snapshot is shown and Send needs consent', s: { ...base, clicks: [], end: 3500, actions: [{ at: 1500, kind: 'click', id: 'w-settings' }, { at: 1800, kind: 'click', id: 'set-bug' }] }, expect: r => [
     ['the sheet shows what the game saved', r.bug.shown && /pos 4,5,6 cell Whiterun/.test(r.bug.summary), r.bug.summary],
     ['Send is off until the player agrees', r.bug.sendOff === true],
@@ -852,7 +872,7 @@ async function runScenario(sc) {
     // Chrome refuses to run as root on Linux without this.
     const root = process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : [];
     return runChrome([...root, '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-      `--user-data-dir=${path.join(dir, 'profile')}`, '--allow-file-access-from-files', '--window-size=1360,880',
+      `--user-data-dir=${path.join(dir, 'profile')}`, '--allow-file-access-from-files', `--window-size=${(sc.s.viewport || [1360,880]).join(',')}`,
       `--virtual-time-budget=${Math.max(8000, (sc.s.end || 6000) + 2000)}`, '--dump-dom', url]);
   };
   const result = /<pre id="ui-test-result">([\s\S]*?)<\/pre>/;

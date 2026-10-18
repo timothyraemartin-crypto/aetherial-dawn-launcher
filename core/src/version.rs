@@ -1,9 +1,9 @@
 //! Works out whether the player's Skyrim is the build the server needs.
 //!
-//! The executable's version alone isn't enough: Bethesda's 1.7.99 update
-//! (August 2026) changed the game data but left SkyrimSE.exe at 1.6.1170.0.
-//! So the check also looks at which depot manifests Steam says it installed,
-//! and remembers the files the launcher's own downgrade put in place.
+//! The executable's version alone doesn't identify every installed game-data
+//! file. Compare Steam's depot records and remember the files the launcher's
+//! own downgrade put in place. Different depot IDs do not establish which
+//! content is newer, or prove that a manually managed folder is incompatible.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -375,20 +375,20 @@ pub fn check(game_dir: &Path, spec: Option<&GameSpec>) -> GameCheck {
                 ));
                 return c;
             }
-            let stale = spec.depots.iter().any(|d| matches!(have.get(&d.depot), Some(m) if m.to_string() != d.manifest));
+            let depot_mismatch = spec.depots.iter().any(|d| matches!(have.get(&d.depot), Some(m) if m.to_string() != d.manifest));
             if marker_holds(game_dir, spec) {
                 // Steam's record never changes after a downgrade, so only a
                 // mark the launcher didn't make itself gets the soft warning.
                 let by_launcher = read_marker(game_dir).and_then(|m| m.manual) == Some(false);
-                if stale && !by_launcher {
+                if depot_mismatch && !by_launcher {
                     c.warning = Some(format!(
-                        "Your game was marked as {} by hand, but Steam says it has newer game files. If Skyrim crashes on start, click Fix version.",
+                        "Skyrim's executable matches {}. Steam's depot record differs from the server's target, so the game data has not been fully verified.",
                         short(target)
                     ));
                 }
-            } else if stale {
+            } else if depot_mismatch {
                 c.needed = true;
-                c.reason = Some(format!("Steam has updated your game data past {}. Aetherial Dawn needs {}.", short(target), short(target)));
+                c.reason = Some(format!("Steam's depot record does not match the game data required for {}. The launcher cannot confirm this installation's compatibility.", short(target)));
             }
         }
     }
@@ -567,13 +567,17 @@ mod tests {
     }
 
     #[test]
-    fn newer_data_under_same_exe_needs_downgrade_until_recorded() {
+    fn different_depot_record_requires_confirmation_without_claiming_newer_files() {
         let g = game([1, 6, 1170, 0], &ACF.replace("8442952117333549665", "1111"));
         let d = dir(&g);
         assert!(check(&d, Some(&spec())).needed);
         record(&d, &spec(), true).unwrap();
         let c = check(&d, Some(&spec()));
         assert!(!c.needed && c.warning.is_some(), "a hand-set mark over stale depots gets the soft warning");
+        let warning = c.warning.as_deref().unwrap();
+        assert!(warning.contains("executable matches 1.6.1170"));
+        assert!(warning.contains("not been fully verified"));
+        assert!(!warning.contains("newer") && !warning.contains("crash") && !warning.contains("by hand"));
         // A mark from before 0.1.13 (no "manual" field) is treated the same way.
         let legacy = std::fs::read_to_string(d.join(MARKER)).unwrap().replace("\"manual\": true", "\"x\": 0");
         std::fs::write(d.join(MARKER), legacy).unwrap();
